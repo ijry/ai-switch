@@ -30,6 +30,25 @@ pub enum AppError {
         details: Option<String>,
         recoverable: bool,
     },
+    #[error("{message}")]
+    Adapter {
+        code: &'static str,
+        message: String,
+        details: Option<String>,
+        recoverable: bool,
+    },
+}
+
+impl AppError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            AppError::Validation { code, .. }
+            | AppError::Filesystem { code, .. }
+            | AppError::Database { code, .. }
+            | AppError::Secret { code, .. }
+            | AppError::Adapter { code, .. } => code,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,6 +82,12 @@ impl From<AppError> for ApiError {
                 recoverable,
             }
             | AppError::Secret {
+                code,
+                message,
+                details,
+                recoverable,
+            }
+            | AppError::Adapter {
                 code,
                 message,
                 details,

@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub mod provider_renderers;
+
 use crate::config_writer::WriteOutcome;
 use crate::error::AppError;
 use serde::{Deserialize, Serialize};
