@@ -96,16 +96,17 @@ impl BatchRepository {
         pool: &SqlitePool,
         search: Option<&str>,
     ) -> Result<Vec<BatchGroup>, AppError> {
-        let batches =
-            sqlx::query_as::<_, Batch>("SELECT * FROM batches ORDER BY sort_order ASC, created_at DESC")
-                .fetch_all(pool)
-                .await
-                .map_err(|err| AppError::Database {
-                    code: "database.batch_list",
-                    message: "Could not list batches".to_string(),
-                    details: Some(err.to_string()),
-                    recoverable: true,
-                })?;
+        let batches = sqlx::query_as::<_, Batch>(
+            "SELECT * FROM batches ORDER BY sort_order ASC, created_at DESC",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.batch_list",
+            message: "Could not list batches".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
 
         let mut groups = Vec::new();
         let needle = search.map(|value| value.to_lowercase());
@@ -207,7 +208,8 @@ impl BatchRepository {
                         title: row
                             .get::<Option<String>, _>("account_name")
                             .unwrap_or_default(),
-                        subtitle: email.or_else(|| row.get::<Option<String>, _>("account_platform")),
+                        subtitle: email
+                            .or_else(|| row.get::<Option<String>, _>("account_platform")),
                         status: row
                             .get::<Option<String>, _>("account_status")
                             .unwrap_or_else(|| "error".to_string()),
