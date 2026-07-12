@@ -7,6 +7,19 @@ use uuid::Uuid;
 pub struct TargetRepository;
 
 impl TargetRepository {
+    pub async fn get(pool: &SqlitePool, id: &str) -> Result<TargetApp, AppError> {
+        sqlx::query_as::<_, TargetApp>("SELECT * FROM target_apps WHERE id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.target_get",
+                message: "Could not load target app".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })
+    }
+
     pub async fn ensure_defaults(pool: &SqlitePool) -> Result<Vec<TargetApp>, AppError> {
         let defaults = [
             ("claude_code", "Claude Code"),
@@ -61,5 +74,27 @@ impl TargetRepository {
                 details: Some(err.to_string()),
                 recoverable: true,
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::{create_memory_pool, run_migrations};
+
+    #[tokio::test]
+    async fn get_returns_default_target_by_id() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let targets = TargetRepository::ensure_defaults(&pool)
+            .await
+            .expect("targets");
+
+        let loaded = TargetRepository::get(&pool, &targets[0].id)
+            .await
+            .expect("target");
+
+        assert_eq!(loaded.id, targets[0].id);
+        assert_eq!(loaded.key, "claude_code");
     }
 }

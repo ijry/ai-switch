@@ -48,4 +48,63 @@ impl ProviderRepository {
                 recoverable: true,
             })
     }
+
+    pub async fn list(pool: &SqlitePool) -> Result<Vec<Provider>, AppError> {
+        sqlx::query_as::<_, Provider>(
+            "SELECT * FROM providers ORDER BY sort_order ASC, created_at DESC",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.provider_list",
+            message: "Could not list providers".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::{create_memory_pool, run_migrations};
+
+    #[tokio::test]
+    async fn list_returns_providers_ordered_by_sort_and_created_at() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+
+        ProviderRepository::create(
+            &pool,
+            NewProvider {
+                name: "First Provider".to_string(),
+                kind: "openai_compatible".to_string(),
+                base_url: Some("https://first.example.com/v1".to_string()),
+                model_config_json: "{}".to_string(),
+                target_options_json: "{}".to_string(),
+                secret_ref: None,
+            },
+        )
+        .await
+        .expect("first provider");
+        ProviderRepository::create(
+            &pool,
+            NewProvider {
+                name: "Second Provider".to_string(),
+                kind: "openai_compatible".to_string(),
+                base_url: Some("https://second.example.com/v1".to_string()),
+                model_config_json: "{}".to_string(),
+                target_options_json: "{}".to_string(),
+                secret_ref: None,
+            },
+        )
+        .await
+        .expect("second provider");
+
+        let providers = ProviderRepository::list(&pool).await.expect("providers");
+
+        assert_eq!(providers.len(), 2);
+        assert_eq!(providers[0].name, "Second Provider");
+        assert_eq!(providers[1].name, "First Provider");
+    }
 }
