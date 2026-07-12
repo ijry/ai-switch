@@ -101,8 +101,15 @@ pub fn render_codex_provider_config_from_str(
     let mut document = parse_existing_toml(existing)?;
 
     document["model_provider"] = value(provider_slug.clone());
-    if !document["model_providers"].is_table() {
-        document["model_providers"] = Item::Table(Table::new());
+    let has_model_providers_table = document
+        .as_table()
+        .get("model_providers")
+        .map(Item::is_table)
+        .unwrap_or(false);
+    if !has_model_providers_table {
+        document
+            .as_table_mut()
+            .insert("model_providers", Item::Table(Table::new()));
     }
 
     let mut provider_table = Table::new();
@@ -124,12 +131,14 @@ fn parse_existing_toml(existing: &str) -> Result<DocumentMut, AppError> {
         return Ok(DocumentMut::new());
     }
 
-    existing.parse::<DocumentMut>().map_err(|error| AppError::Validation {
-        code: "validation.codex_config_toml",
-        message: "Existing Codex config is not valid TOML".to_string(),
-        details: Some(error.to_string()),
-        recoverable: true,
-    })
+    existing
+        .parse::<DocumentMut>()
+        .map_err(|error| AppError::Validation {
+            code: "validation.codex_config_toml",
+            message: "Existing Codex config is not valid TOML".to_string(),
+            details: Some(error.to_string()),
+            recoverable: true,
+        })
 }
 
 fn resolve_env_key(provider: &Provider) -> Result<String, AppError> {
@@ -252,7 +261,10 @@ base_url = "https://other.example.com/v1"
 
         assert_eq!(rendered.provider_slug, "ai_switch_provider_1");
         assert_eq!(parsed["model"].as_str(), Some("gpt-5.4"));
-        assert_eq!(parsed["model_provider"].as_str(), Some("ai_switch_provider_1"));
+        assert_eq!(
+            parsed["model_provider"].as_str(),
+            Some("ai_switch_provider_1")
+        );
         assert_eq!(
             parsed["model_providers"]["other"]["name"].as_str(),
             Some("Other")
