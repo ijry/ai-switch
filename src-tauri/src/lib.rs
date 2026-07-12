@@ -15,8 +15,9 @@ use commands::batch_commands::{
     create_batch, create_official_account, create_provider, list_batch_groups,
 };
 use commands::import_commands::import_example_json;
+use commands::provider_commands::{list_providers, switch_target_provider};
 use commands::settings_commands::{get_settings, save_settings};
-use commands::target_commands::list_target_apps;
+use commands::target_commands::{list_target_apps, list_target_switch_statuses};
 use database::{create_pool, run_migrations};
 use paths::AppPaths;
 
@@ -44,7 +45,10 @@ pub fn run() {
             create_provider,
             create_official_account,
             import_example_json,
-            list_target_apps
+            list_target_apps,
+            list_target_switch_statuses,
+            list_providers,
+            switch_target_provider
         ])
         .run(tauri::generate_context!())
         .expect("failed to run AI Switch");

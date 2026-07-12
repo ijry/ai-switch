@@ -3,6 +3,7 @@ pub mod batch;
 pub mod config_snapshot;
 pub mod import_job;
 pub mod provider;
+pub mod provider_switch;
 pub mod settings;
 pub mod target_app;
 pub mod target_state;
