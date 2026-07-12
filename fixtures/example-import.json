@@ -1,0 +1,22 @@
+{
+  "providers": [
+    {
+      "name": "Acme Claude",
+      "kind": "openai_compatible",
+      "base_url": "https://api.example.com/v1",
+      "model_config_json": "{\"default\":\"claude-sonnet\"}",
+      "target_options_json": "{}",
+      "secret_ref": "secret://provider/acme"
+    }
+  ],
+  "accounts": [
+    {
+      "platform": "codex",
+      "display_name": "Team Account",
+      "email": "team@example.com",
+      "plan": "team",
+      "account_metadata_json": "{\"source\":\"example\"}",
+      "secret_ref": "secret://account/team"
+    }
+  ]
+}

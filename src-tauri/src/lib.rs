@@ -2,6 +2,7 @@ mod app_state;
 mod commands;
 mod database;
 mod error;
+mod importers;
 mod models;
 mod paths;
 mod services;
@@ -10,6 +11,7 @@ use app_state::AppState;
 use commands::batch_commands::{
     create_batch, create_official_account, create_provider, list_batch_groups,
 };
+use commands::import_commands::import_example_json;
 use commands::settings_commands::{get_settings, save_settings};
 use commands::target_commands::list_target_apps;
 use database::{create_pool, run_migrations};
@@ -38,6 +40,7 @@ pub fn run() {
             list_batch_groups,
             create_provider,
             create_official_account,
+            import_example_json,
             list_target_apps
         ])
         .run(tauri::generate_context!())
