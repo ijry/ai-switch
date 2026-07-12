@@ -33,5 +33,19 @@ describe("api client provider switching", () => {
         mode: "sandbox",
       },
     });
+
+    vi.mocked(invoke).mockResolvedValueOnce({ status: "written" });
+    await switchTargetProvider({
+      target_app_id: "target-codex",
+      provider_id: "provider-1",
+      mode: "real",
+    });
+    expect(invoke).toHaveBeenLastCalledWith("switch_target_provider", {
+      request: {
+        target_app_id: "target-codex",
+        provider_id: "provider-1",
+        mode: "real",
+      },
+    });
   });
 });

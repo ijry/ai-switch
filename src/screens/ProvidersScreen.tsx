@@ -52,7 +52,7 @@ export function ProvidersScreen() {
       <div>
         <h1 className="font-display text-3xl font-semibold text-ink">Providers</h1>
         <p className="text-steel">
-          Switch a provider into a sandbox target config without touching real tool files.
+          Switch a provider into sandbox configs, or write Codex user config explicitly.
         </p>
       </div>
 
@@ -60,6 +60,7 @@ export function ProvidersScreen() {
         {providers.map((provider) => {
           const selectedTargetId = selectedTargets[provider.id] ?? statuses[0]?.target.id ?? "";
           const selectedStatus = statuses.find((status) => status.target.id === selectedTargetId);
+          const canSwitchRealCodex = selectedStatus?.target.key === "codex";
           const selectId = `target-for-${provider.id}`;
 
           return (
@@ -117,6 +118,24 @@ export function ProvidersScreen() {
                   >
                     Switch in sandbox
                   </Button>
+                  {canSwitchRealCodex && (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={!selectedTargetId || switchMutation.isPending}
+                      aria-label={`Switch ${provider.name} Codex config`}
+                      className="cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
+                      onClick={() =>
+                        switchMutation.mutate({
+                          target_app_id: selectedTargetId,
+                          provider_id: provider.id,
+                          mode: "real",
+                        })
+                      }
+                    >
+                      Switch Codex config
+                    </Button>
+                  )}
                   {selectedStatus?.active_provider && (
                     <p className="text-xs text-steel">
                       Current: {selectedStatus.active_provider.name} on{" "}
@@ -132,12 +151,13 @@ export function ProvidersScreen() {
 
       {switchMutation.data && (
         <p className="rounded-2xl bg-moss/10 p-4 text-sm font-medium text-moss">
-          Wrote sandbox config for {switchMutation.data.provider_name} to {switchedTargetName}.
+          {switchMutation.data.mode === "real" ? "Wrote Codex config" : "Wrote sandbox config"} for{" "}
+          {switchMutation.data.provider_name} to {switchedTargetName}.
         </p>
       )}
       {switchMutation.error && (
         <p className="rounded-2xl bg-ember/10 p-4 text-sm font-medium text-ember">
-          Sandbox switch failed.
+          Provider switch failed.
         </p>
       )}
     </section>

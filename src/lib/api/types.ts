@@ -97,7 +97,7 @@ export type TargetSwitchStatus = {
 export type ProviderSwitchRequest = {
   target_app_id: string;
   provider_id: string;
-  mode: "sandbox";
+  mode: "sandbox" | "real";
 };
 
 export type ProviderSwitchOutcome = {
@@ -105,7 +105,7 @@ export type ProviderSwitchOutcome = {
   target_key: string;
   provider_id: string;
   provider_name: string;
-  mode: "sandbox";
+  mode: "sandbox" | "real";
   path: string;
   status: string;
   before_hash?: string | null;

@@ -72,4 +72,52 @@ describe("ProvidersScreen", () => {
     });
     expect(await screen.findByText("Wrote sandbox config for Acme Provider to Codex.")).toBeInTheDocument();
   });
+
+  it("shows a real Codex switch action when Codex is selected", async () => {
+    vi.mocked(listProviders).mockResolvedValueOnce(providersFixture);
+    vi.mocked(listTargetSwitchStatuses).mockResolvedValue(targetSwitchStatusesFixture);
+    vi.mocked(switchTargetProvider).mockResolvedValueOnce({
+      target_app_id: "target-codex",
+      target_key: "codex",
+      provider_id: "provider-1",
+      provider_name: "Acme Provider",
+      mode: "real",
+      path: "C:/Users/example/.codex/config.toml",
+      status: "written",
+      before_hash: null,
+      after_hash: "after",
+      snapshot_id: "snapshot-real",
+      state_id: "state-1",
+      written_at: "2026-07-13T00:00:00Z",
+    });
+
+    renderWithClient();
+
+    expect(await screen.findByText("Acme Provider")).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByLabelText("Target for Acme Provider"), "target-codex");
+    await userEvent.click(screen.getByRole("button", { name: "Switch Acme Provider Codex config" }));
+
+    await waitFor(() => {
+      expect(switchTargetProvider).toHaveBeenCalledWith({
+        target_app_id: "target-codex",
+        provider_id: "provider-1",
+        mode: "real",
+      });
+    });
+    expect(await screen.findByText("Wrote Codex config for Acme Provider to Codex.")).toBeInTheDocument();
+  });
+
+  it("hides the real Codex switch action for non-Codex targets", async () => {
+    vi.mocked(listProviders).mockResolvedValueOnce(providersFixture);
+    vi.mocked(listTargetSwitchStatuses).mockResolvedValue(targetSwitchStatusesFixture);
+
+    renderWithClient();
+
+    expect(await screen.findByText("Acme Provider")).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByLabelText("Target for Acme Provider"), "target-claude");
+
+    expect(
+      screen.queryByRole("button", { name: "Switch Acme Provider Codex config" }),
+    ).not.toBeInTheDocument();
+  });
 });
