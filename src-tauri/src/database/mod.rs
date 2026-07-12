@@ -37,6 +37,7 @@ pub async fn create_pool(database_file: &Path) -> Result<SqlitePool, AppError> {
         })
 }
 
+#[cfg(test)]
 pub async fn create_memory_pool() -> Result<SqlitePool, AppError> {
     let options = SqliteConnectOptions::from_str("sqlite::memory:")
         .map_err(|err| AppError::Database {

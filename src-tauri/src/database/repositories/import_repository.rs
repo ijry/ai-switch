@@ -82,18 +82,4 @@ impl ImportRepository {
                 recoverable: true,
             })
     }
-
-    pub async fn list_recent(pool: &SqlitePool) -> Result<Vec<ImportJob>, AppError> {
-        sqlx::query_as::<_, ImportJob>(
-            "SELECT * FROM import_jobs ORDER BY created_at DESC LIMIT 50",
-        )
-        .fetch_all(pool)
-        .await
-        .map_err(|err| AppError::Database {
-            code: "database.import_job_list",
-            message: "Could not list import jobs".to_string(),
-            details: Some(err.to_string()),
-            recoverable: true,
-        })
-    }
 }
