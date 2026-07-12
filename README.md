@@ -64,3 +64,32 @@ Verification flow:
 4. Click `Switch in sandbox`.
 5. Open `Targets`.
 6. Confirm the target shows the active provider, write status, and sandbox output path.
+
+## Provider Switching B2.1: Codex Real Mode
+
+B2.1 adds explicit real provider switching for Codex only. Sandbox switching remains available for all supported targets.
+
+Codex real mode writes:
+
+```text
+<CODEX_HOME>/config.toml
+```
+
+If `CODEX_HOME` is not set, the app uses:
+
+```text
+~/.codex/config.toml
+```
+
+The Codex config contains provider metadata such as `model_provider`, `base_url`, `wire_api`, and `env_key`. It does not store raw API keys.
+
+Safe smoke test:
+
+1. Set `CODEX_HOME` to a temporary directory.
+2. Start the app with `pnpm tauri:dev`.
+3. Import or create a provider with `base_url`.
+4. Open `Providers`.
+5. Select `Codex`.
+6. Click `Switch Codex config`.
+7. Verify `<CODEX_HOME>/config.toml` contains `model_provider` and `[model_providers.ai_switch_<id>]`.
+8. Verify your real `~/.codex/config.toml` was not modified when using temporary `CODEX_HOME`.
