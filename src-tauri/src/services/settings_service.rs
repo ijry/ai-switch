@@ -56,7 +56,9 @@ mod tests {
             data_dir: paths.data_dir.display().to_string(),
         };
 
-        SettingsService::save(&paths, &settings).await.expect("save");
+        SettingsService::save(&paths, &settings)
+            .await
+            .expect("save");
         let loaded = SettingsService::load(&paths).await.expect("load");
 
         assert_eq!(loaded.language, "en");
