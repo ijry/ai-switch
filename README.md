@@ -45,3 +45,22 @@ pnpm tauri:dev
 ## Clean-Room Boundary
 
 This project may study public behavior, public documentation, and public file formats from related tools. It must not copy or translate non-commercial source code from `cockpit-tools`.
+
+## Provider Switching B1
+
+Provider switching B1 writes sandbox target configs only. It does not write real Claude, Codex, Gemini, OpenCode, OpenClaw, or Hermes configuration files.
+
+Sandbox output path:
+
+```text
+~/.ai-switch/targets/<target_key>/provider.json
+```
+
+Verification flow:
+
+1. Import or create a provider.
+2. Open `Providers`.
+3. Select a target such as `Codex`.
+4. Click `Switch in sandbox`.
+5. Open `Targets`.
+6. Confirm the target shows the active provider, write status, and sandbox output path.
