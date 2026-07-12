@@ -1,10 +1,13 @@
+mod adapters;
 mod app_state;
 mod commands;
+mod config_writer;
 mod database;
 mod error;
 mod importers;
 mod models;
 mod paths;
+mod security;
 mod services;
 
 use app_state::AppState;
