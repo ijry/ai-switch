@@ -84,6 +84,37 @@ export type TargetApp = {
   updated_at: string;
 };
 
+export type TargetSwitchStatus = {
+  target: TargetApp;
+  active_provider?: Provider | null;
+  last_write_status?: string | null;
+  last_error_code?: string | null;
+  last_written_at?: string | null;
+  last_snapshot_path?: string | null;
+  last_snapshot_id?: string | null;
+};
+
+export type ProviderSwitchRequest = {
+  target_app_id: string;
+  provider_id: string;
+  mode: "sandbox";
+};
+
+export type ProviderSwitchOutcome = {
+  target_app_id: string;
+  target_key: string;
+  provider_id: string;
+  provider_name: string;
+  mode: "sandbox";
+  path: string;
+  status: string;
+  before_hash?: string | null;
+  after_hash?: string | null;
+  snapshot_id: string;
+  state_id: string;
+  written_at: string;
+};
+
 export type AppSettings = {
   language: string;
   theme: string;

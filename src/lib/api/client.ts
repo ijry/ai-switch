@@ -1,5 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, Batch, BatchGroup, ImportJob, TargetApp } from "./types";
+import type {
+  AppSettings,
+  Batch,
+  BatchGroup,
+  ImportJob,
+  Provider,
+  ProviderSwitchOutcome,
+  ProviderSwitchRequest,
+  TargetApp,
+  TargetSwitchStatus,
+} from "./types";
 
 export function listBatchGroups(search?: string): Promise<BatchGroup[]> {
   return invoke("list_batch_groups", { search: search || null });
@@ -24,6 +34,20 @@ export function importExampleJson(request: {
 
 export function listTargetApps(): Promise<TargetApp[]> {
   return invoke("list_target_apps");
+}
+
+export function listProviders(): Promise<Provider[]> {
+  return invoke("list_providers");
+}
+
+export function listTargetSwitchStatuses(): Promise<TargetSwitchStatus[]> {
+  return invoke("list_target_switch_statuses");
+}
+
+export function switchTargetProvider(
+  request: ProviderSwitchRequest,
+): Promise<ProviderSwitchOutcome> {
+  return invoke("switch_target_provider", { request });
 }
 
 export function getSettings(): Promise<AppSettings> {
