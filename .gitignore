@@ -1,1 +1,9 @@
 .worktrees/
+node_modules/
+dist/
+target/
+src-tauri/target/
+*.log
+.env
+.env.*
+!.env.example
