@@ -1,7 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { resizeTerminal, writeTerminalInput } from "../../lib/api/client";
 import type {
   TerminalErrorEvent,
@@ -14,17 +14,66 @@ import type {
 type XtermPaneProps = {
   session: TerminalSession;
   active?: boolean;
+  themeMode?: "dark" | "light";
   onStatusChange?: (sessionId: string, status: TerminalStatus) => void;
 };
+
+function createTheme(themeMode: "dark" | "light") {
+  if (themeMode === "light") {
+    return {
+      background: "#f8fafc",
+      black: "#334155",
+      blue: "#2563eb",
+      brightBlack: "#64748b",
+      brightBlue: "#3b82f6",
+      brightCyan: "#06b6d4",
+      brightGreen: "#16a34a",
+      brightMagenta: "#c026d3",
+      brightRed: "#dc2626",
+      brightWhite: "#0f172a",
+      brightYellow: "#ca8a04",
+      cyan: "#0891b2",
+      foreground: "#0f172a",
+      green: "#15803d",
+      magenta: "#a21caf",
+      red: "#b91c1c",
+      white: "#475569",
+      yellow: "#a16207",
+    };
+  }
+
+  return {
+    background: "#002b36",
+    black: "#073642",
+    blue: "#268bd2",
+    brightBlack: "#586e75",
+    brightBlue: "#839496",
+    brightCyan: "#2aa198",
+    brightGreen: "#859900",
+    brightMagenta: "#d33682",
+    brightRed: "#dc322f",
+    brightWhite: "#fdf6e3",
+    brightYellow: "#b58900",
+    cyan: "#2aa198",
+    foreground: "#d8e2dc",
+    green: "#859900",
+    magenta: "#6c71c4",
+    red: "#dc322f",
+    white: "#93a1a1",
+    yellow: "#b58900",
+  };
+}
 
 export function XtermPane({
   session,
   active = true,
+  themeMode = "dark",
   onStatusChange,
 }: XtermPaneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const theme = useMemo(() => createTheme(themeMode), [themeMode]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -34,30 +83,11 @@ export function XtermPane({
 
     const terminal = new Terminal({
       allowProposedApi: false,
-      cursorBlink: true,
       convertEol: true,
+      cursorBlink: true,
       fontFamily: '"JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace',
       fontSize: 13,
-      theme: {
-        background: "#10100f",
-        black: "#27272a",
-        blue: "#38bdf8",
-        brightBlack: "#52525b",
-        brightBlue: "#7dd3fc",
-        brightCyan: "#67e8f9",
-        brightGreen: "#86efac",
-        brightMagenta: "#f0abfc",
-        brightRed: "#fca5a5",
-        brightWhite: "#fafafa",
-        brightYellow: "#fde68a",
-        cyan: "#22d3ee",
-        foreground: "#f4f4f5",
-        green: "#4ade80",
-        magenta: "#e879f9",
-        red: "#f87171",
-        white: "#e4e4e7",
-        yellow: "#fbbf24",
-      },
+      theme,
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
@@ -115,9 +145,7 @@ export function XtermPane({
     }
 
     const resizeObserver =
-      typeof ResizeObserver === "undefined"
-        ? null
-        : new ResizeObserver(() => fitAndResize());
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => fitAndResize());
     resizeObserver?.observe(host);
     window.addEventListener("resize", fitAndResize);
     const frame = window.requestAnimationFrame(fitAndResize);
@@ -136,6 +164,15 @@ export function XtermPane({
       fitAddonRef.current = null;
     };
   }, [onStatusChange, session.id]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+    terminal.options.theme = theme;
+    terminal.refresh(0, terminal.rows - 1);
+  }, [theme]);
 
   useEffect(() => {
     if (!active) {

@@ -61,6 +61,7 @@ function renderScreen() {
 
 describe("VibeScreen", () => {
   beforeEach(() => {
+    window.localStorage.clear();
     vi.mocked(createTerminalSession).mockReset();
     vi.mocked(killTerminalSession).mockReset();
     vi.mocked(listSessions).mockReset();
@@ -117,8 +118,20 @@ describe("VibeScreen", () => {
   it("opens Vibe from the app navigation", async () => {
     render(<App />);
 
-    await userEvent.click(screen.getByRole("button", { name: "Vibe" }));
+    await userEvent.click(screen.getByRole("button", { name: "Switch to Vibe mode" }));
 
-    expect(await screen.findByText("Terminal workspace")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Terminal workspace" })).toBeInTheDocument();
+    expect(screen.queryByText("Agent accounts placeholder")).not.toBeInTheDocument();
+  });
+
+  it("toggles Vibe between Solarized Dark and light themes", async () => {
+    renderScreen();
+
+    const themeButton = await screen.findByRole("button", { name: "Switch Vibe theme" });
+    expect(screen.getByText("Solarized Dark")).toBeInTheDocument();
+
+    await userEvent.click(themeButton);
+
+    expect(screen.getByText("Light")).toBeInTheDocument();
   });
 });

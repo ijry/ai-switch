@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { TerminalSquare } from "lucide-react";
 import { supportedLanguages, useI18n, type Language } from "../../lib/i18n";
 
 export type AgentPlatform =
@@ -46,6 +47,7 @@ type AppLayoutProps = {
   children: ReactNode;
   activeScreen: string;
   onNavigate: (screen: string) => void;
+  onOpenVibe?: () => void;
   onLanguageChange?: (language: Language) => void;
   languageSaving?: boolean;
 };
@@ -123,6 +125,7 @@ export function AppLayout({
   children,
   activeScreen,
   onNavigate,
+  onOpenVibe,
   onLanguageChange,
   languageSaving = false,
 }: AppLayoutProps) {
@@ -154,6 +157,14 @@ export function AppLayout({
                   <p className="truncate text-[11px] text-stone-500">{t("layout.brandBadge")}</p>
                 </div>
               </div>
+              <button
+                aria-label={t("layout.switchToVibe")}
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-stone-200 bg-white/70 text-stone-600 shadow-sm transition-colors hover:border-stone-300 hover:bg-white hover:text-stone-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                onClick={onOpenVibe}
+                type="button"
+              >
+                <TerminalSquare className="h-4 w-4" />
+              </button>
             </div>
 
             <label className="mb-5 flex items-center justify-between gap-2 rounded-2xl border border-white/70 bg-white/50 px-3 py-2 text-[12px] font-medium text-stone-500 backdrop-blur-xl">
@@ -174,26 +185,6 @@ export function AppLayout({
             </label>
 
             <div className="space-y-4">
-              <section>
-                <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-stone-400">
-                  Mode
-                </p>
-                <div className="space-y-1">
-                  <NavButton
-                    active={!settingsActive && activeScreen !== "Vibe"}
-                    label="Agent"
-                    onClick={() => onNavigate("Codex")}
-                    variant="primary"
-                  />
-                  <NavButton
-                    active={activeScreen === "Vibe"}
-                    label="Vibe"
-                    onClick={() => onNavigate("Vibe")}
-                    variant="primary"
-                  />
-                </div>
-              </section>
-
               <section>
                 <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-stone-400">
                   {t("layout.agents")}
