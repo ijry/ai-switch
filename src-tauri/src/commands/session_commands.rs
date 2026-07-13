@@ -1,10 +1,14 @@
 use crate::session_manager;
 
 #[tauri::command]
-pub async fn list_sessions(platform: Option<String>) -> Result<Vec<session_manager::SessionMeta>, String> {
-    tauri::async_runtime::spawn_blocking(move || session_manager::scan_sessions(platform.as_deref()))
-        .await
-        .map_err(|error| format!("Failed to scan sessions: {error}"))
+pub async fn list_sessions(
+    platform: Option<String>,
+) -> Result<Vec<session_manager::SessionMeta>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        session_manager::scan_sessions(platform.as_deref())
+    })
+    .await
+    .map_err(|error| format!("Failed to scan sessions: {error}"))
 }
 
 #[tauri::command]

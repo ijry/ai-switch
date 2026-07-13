@@ -238,3 +238,42 @@ export type SessionMessage = {
   content: string;
   ts?: number | null;
 };
+
+export type TerminalLaunchKind = "shell" | "agent" | "resume";
+
+export type TerminalStatus = "running" | "exited" | "error";
+
+export type CreateTerminalSessionInput = {
+  kind: TerminalLaunchKind;
+  platform?: string | null;
+  command?: string | null;
+  title?: string | null;
+  cwd: string;
+  cols?: number | null;
+  rows?: number | null;
+};
+
+export type TerminalSession = {
+  id: string;
+  title: string;
+  platform?: string | null;
+  cwd: string;
+  command: string;
+  status: TerminalStatus;
+  createdAt: number;
+};
+
+export type TerminalOutputEvent = {
+  sessionId: string;
+  data: string;
+};
+
+export type TerminalExitEvent = {
+  sessionId: string;
+  exitCode?: number | null;
+};
+
+export type TerminalErrorEvent = {
+  sessionId: string;
+  message: string;
+};

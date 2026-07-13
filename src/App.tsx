@@ -16,6 +16,7 @@ import { SessionsScreen } from "./screens/SessionsScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { TargetsScreen } from "./screens/TargetsScreen";
 import { UpdatesScreen } from "./screens/UpdatesScreen";
+import { VibeScreen } from "./screens/VibeScreen";
 
 const queryClient = createQueryClient();
 
@@ -39,6 +40,7 @@ const implementedScreens = new Set([
   "Sessions",
   "Updates",
   "Log",
+  "Vibe",
 ]);
 
 export function App() {
@@ -72,6 +74,7 @@ export function App() {
           {screen === "Updates" && <UpdatesScreen />}
           {screen === "Settings" && <SettingsScreen onOpenFeature={navigate} />}
           {screen === "Log" && <OperationLogScreen />}
+          {screen === "Vibe" && <VibeScreen />}
           {!implementedScreens.has(screen) && (
             <div className="rounded-2xl border border-stone-200 bg-white/80 p-5 text-sm text-stone-500 shadow-sm">
               {screen}

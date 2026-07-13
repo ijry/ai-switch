@@ -112,7 +112,9 @@ function NavButton({
         />
         <span className="truncate font-medium">{label}</span>
       </span>
-      <span className={active ? "text-stone-400" : "text-transparent"}>/</span>
+      <span aria-hidden="true" className={active ? "text-stone-400" : "text-transparent"}>
+        /
+      </span>
     </button>
   );
 }
@@ -172,6 +174,26 @@ export function AppLayout({
             </label>
 
             <div className="space-y-4">
+              <section>
+                <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-stone-400">
+                  Mode
+                </p>
+                <div className="space-y-1">
+                  <NavButton
+                    active={!settingsActive && activeScreen !== "Vibe"}
+                    label="Agent"
+                    onClick={() => onNavigate("Codex")}
+                    variant="primary"
+                  />
+                  <NavButton
+                    active={activeScreen === "Vibe"}
+                    label="Vibe"
+                    onClick={() => onNavigate("Vibe")}
+                    variant="primary"
+                  />
+                </div>
+              </section>
+
               <section>
                 <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-stone-400">
                   {t("layout.agents")}

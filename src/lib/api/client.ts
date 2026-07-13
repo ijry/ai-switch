@@ -5,6 +5,7 @@ import type {
   BatchGroup,
   ImportJob,
   CreateApiRouteCredentialInput,
+  CreateTerminalSessionInput,
   NewOfficialAccount,
   OfficialAccount,
   RouteConfigWriteOutcome,
@@ -17,6 +18,7 @@ import type {
   SessionMessage,
   SessionMeta,
   TargetApp,
+  TerminalSession,
   UpdateOfficialAccount,
   UpdateRouteCredentialInput,
 } from "./types";
@@ -150,4 +152,30 @@ export function getSessionMessages(input: {
     providerId: input.providerId,
     sourcePath: input.sourcePath,
   });
+}
+
+export function createTerminalSession(
+  input: CreateTerminalSessionInput,
+): Promise<TerminalSession> {
+  return invoke("create_terminal_session", { input });
+}
+
+export function writeTerminalInput(sessionId: string, data: string): Promise<void> {
+  return invoke("write_terminal_input", { sessionId, data });
+}
+
+export function resizeTerminal(
+  sessionId: string,
+  cols: number,
+  rows: number,
+): Promise<void> {
+  return invoke("resize_terminal", { sessionId, cols, rows });
+}
+
+export function killTerminalSession(sessionId: string): Promise<void> {
+  return invoke("kill_terminal_session", { sessionId });
+}
+
+export function listTerminalSessions(): Promise<TerminalSession[]> {
+  return invoke("list_terminal_sessions");
 }

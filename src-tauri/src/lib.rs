@@ -8,8 +8,9 @@ mod importers;
 mod models;
 mod paths;
 mod security;
-mod session_manager;
 mod services;
+mod session_manager;
+mod terminal_manager;
 
 use app_state::AppState;
 use commands::batch_commands::{
@@ -28,12 +29,17 @@ use commands::route_pool_commands::{
 use commands::route_proxy_commands::{
     get_route_proxy_status, start_route_proxy, stop_route_proxy, write_route_proxy_configs,
 };
-use commands::settings_commands::{get_settings, save_settings};
 use commands::session_commands::{get_session_messages, list_sessions};
+use commands::settings_commands::{get_settings, save_settings};
 use commands::target_commands::list_target_apps;
+use commands::terminal_commands::{
+    create_terminal_session, kill_terminal_session, list_terminal_sessions, resize_terminal,
+    write_terminal_input,
+};
 use database::open_migrated_pool;
 use paths::AppPaths;
 use services::route_proxy_service::RouteProxyRuntimeState;
+use terminal_manager::TerminalManager;
 
 pub fn run() {
     let paths = AppPaths::resolve().expect("failed to resolve app paths");
@@ -52,6 +58,7 @@ pub fn run() {
             paths,
             pool,
             route_proxy: RouteProxyRuntimeState::default(),
+            terminals: TerminalManager::default(),
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -79,7 +86,12 @@ pub fn run() {
             write_route_proxy_configs,
             list_sessions,
             get_session_messages,
-            list_target_apps
+            list_target_apps,
+            create_terminal_session,
+            write_terminal_input,
+            resize_terminal,
+            kill_terminal_session,
+            list_terminal_sessions
         ])
         .run(tauri::generate_context!())
         .expect("failed to run AI Switch");

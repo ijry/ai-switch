@@ -144,12 +144,7 @@ fn provider_specs() -> Vec<ProviderSpec> {
     ]
 }
 
-fn collect_session_files(
-    dir: &Path,
-    extensions: &[&str],
-    depth: usize,
-    files: &mut Vec<PathBuf>,
-) {
+fn collect_session_files(dir: &Path, extensions: &[&str], depth: usize, files: &mut Vec<PathBuf>) {
     if depth == 0 || files.len() >= 1_000 {
         return;
     }
@@ -188,8 +183,14 @@ fn session_from_file(provider_id: &str, path: &Path) -> Option<SessionMeta> {
     let messages = preview_messages(path, 80);
     let first_message = messages.first();
     let title = first_message.map(|message| title_from_content(&message.content));
-    let created_at = messages.first().and_then(|message| message.ts).or(modified_at);
-    let last_active_at = messages.last().and_then(|message| message.ts).or(modified_at);
+    let created_at = messages
+        .first()
+        .and_then(|message| message.ts)
+        .or(modified_at);
+    let last_active_at = messages
+        .last()
+        .and_then(|message| message.ts)
+        .or(modified_at);
     let session_id = extract_session_id(path).unwrap_or_else(|| {
         path.file_stem()
             .and_then(|value| value.to_str())
