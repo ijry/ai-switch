@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   FolderOpen,
   MoonStar,
@@ -71,8 +72,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const { t } = useI18n();
   const [tabs, setTabs] = useState<TerminalSession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [projectDir, setProjectDir] = useState("");
-  const [platform, setPlatform] = useState<(typeof agentOptions)[number]["platform"]>("codex");
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [createProjectDir, setCreateProjectDir] = useState("");
+  const [createPlatform, setCreatePlatform] = useState<(typeof agentOptions)[number]["platform"]>("codex");
   const [themeMode, setThemeMode] = useState<VibeTheme>("dark");
   const [error, setError] = useState<string | null>(null);
 
@@ -85,6 +87,16 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     () => groupSessions(sessionsQuery.data ?? [], t("vibe.unknownDirectory")),
     [sessionsQuery.data, t],
   );
+  const projectDirectories = useMemo(() => {
+    const directories = new Set<string>();
+    for (const session of sessionsQuery.data ?? []) {
+      const directory = session.projectDir?.trim();
+      if (directory) {
+        directories.add(directory);
+      }
+    }
+    return Array.from(directories);
+  }, [sessionsQuery.data]);
 
   const openTerminal = useCallback(async (input: CreateTerminalSessionInput) => {
     setError(null);
@@ -114,22 +126,39 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     });
   };
 
-  const launchNew = (kind: "agent" | "shell") => {
-    const cwd = projectDir.trim();
+  const openCreateDialog = () => {
+    setCreateProjectDir((current) => current || projectDirectories[0] || "");
+    setCreateDialogOpen(true);
+  };
+
+  const chooseFolder = async () => {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: t("vibe.chooseFolder"),
+    });
+    if (typeof selected === "string") {
+      setCreateProjectDir(selected);
+    }
+  };
+
+  const launchNewAgent = () => {
+    const cwd = createProjectDir.trim();
     if (!cwd) {
       setError(t("vibe.errorProjectRequired"));
       return;
     }
 
     void openTerminal({
-      kind,
-      platform: kind === "agent" ? platform : null,
+      kind: "agent",
+      platform: createPlatform,
       command: null,
-      title: kind === "agent" ? `${platform} - ${cwd}` : `Shell - ${cwd}`,
+      title: `${createPlatform} - ${cwd}`,
       cwd,
       cols: 100,
       rows: 30,
     });
+    setCreateDialogOpen(false);
   };
 
   const closeTab = async (session: TerminalSession) => {
@@ -204,11 +233,11 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                   AS
                 </div>
                 <div className="min-w-0">
-                  <p className={isDark ? "truncate text-[13px] font-semibold text-[#fdf6e3]" : "truncate text-[13px] font-semibold text-stone-950"}>
-                    {t("vibe.title")}
-                  </p>
+                  <h1 className={isDark ? "truncate text-[13px] font-semibold text-[#fdf6e3]" : "truncate text-[13px] font-semibold text-stone-950"}>
+                    {t("vibe.title")} · {t("vibe.kicker")}
+                  </h1>
                   <p className={isDark ? "truncate text-[11px] text-[#93a1a1]" : "truncate text-[11px] text-stone-500"}>
-                    {t("vibe.kicker")}
+                    {t("vibe.subtitle")}
                   </p>
                 </div>
               </div>
@@ -229,98 +258,38 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
             <div
               className={
                 isDark
-                  ? "space-y-3 rounded-2xl border border-[#073642] bg-[#073642]/55 p-4"
-                  : "space-y-3 border-b border-zinc-800 p-4"
+                  ? "mb-2 flex items-center gap-2 rounded-2xl border border-[#073642] bg-[#073642]/55 p-3"
+                  : "mb-2 flex items-center gap-2 rounded-2xl border border-white/80 bg-white/56 p-3 shadow-sm backdrop-blur-xl"
               }
             >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h1 className={isDark ? "text-lg font-semibold tracking-tight text-[#fdf6e3]" : "text-2xl font-semibold tracking-tight"}>
-                    {t("vibe.title")}
-                  </h1>
-                  <p className={isDark ? "mt-1 text-[13px] leading-5 text-[#93a1a1]" : "mt-2 text-[13px] leading-5 text-zinc-400"}>
-                    {t("vibe.subtitle")}
-                  </p>
-                </div>
-                <button
-                  aria-label={t("vibe.switchTheme")}
-                  className={
-                    isDark
-                      ? "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-xl border border-[#586e75] bg-[#002b36] px-2 text-[12px] font-semibold text-[#fdf6e3] transition-colors hover:border-[#839496] hover:bg-[#073642]"
-                      : "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-2 text-[12px] font-semibold text-stone-700 transition-colors hover:border-stone-300 hover:bg-stone-50"
-                  }
-                  onClick={() => setThemeMode((current) => (current === "dark" ? "light" : "dark"))}
-                  type="button"
-                >
-                  {isDark ? <SunMedium className="h-4 w-4" /> : <MoonStar className="h-4 w-4" />}
-                  <span>{isDark ? t("vibe.themeDark") : t("vibe.themeLight")}</span>
-                </button>
-              </div>
-
-              <label className={isDark ? "block text-[12px] font-semibold text-[#93a1a1]" : "block text-[12px] font-semibold text-zinc-400"}>
-                {t("vibe.projectDirectory")}
-                <input
-                  className={
-                    isDark
-                      ? "mt-1 w-full rounded-xl border border-[#586e75] bg-[#002b36] px-3 py-2 text-[13px] text-[#fdf6e3] outline-none placeholder:text-[#586e75] focus:border-[#268bd2]"
-                      : "mt-1 w-full rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2 text-[13px] text-zinc-100 outline-none focus:border-amber-400"
-                  }
-                  onChange={(event) => setProjectDir(event.target.value)}
-                  placeholder={t("vibe.projectPlaceholder")}
-                  value={projectDir}
-                />
-              </label>
-
-              <label className={isDark ? "block text-[12px] font-semibold text-[#93a1a1]" : "block text-[12px] font-semibold text-zinc-400"}>
-                {t("vibe.agent")}
-                <select
-                  className={
-                    isDark
-                      ? "mt-1 w-full rounded-xl border border-[#586e75] bg-[#002b36] px-3 py-2 text-[13px] text-[#fdf6e3] outline-none focus:border-[#268bd2]"
-                      : "mt-1 w-full rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2 text-[13px] text-zinc-100 outline-none focus:border-amber-400"
-                  }
-                  onChange={(event) =>
-                    setPlatform(event.target.value as (typeof agentOptions)[number]["platform"])
-                  }
-                  value={platform}
-                >
-                  {agentOptions.map((option) => (
-                    <option key={option.platform} value={option.platform}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  className={
-                    isDark
-                      ? "inline-flex items-center justify-center gap-2 rounded-xl border border-[#b58900] bg-[#b58900] px-3 py-2 text-[13px] font-semibold text-[#002b36] transition hover:bg-[#cb4b16] hover:text-white"
-                      : "inline-flex items-center justify-center gap-2 rounded-xl bg-amber-400 px-3 py-2 text-[13px] font-semibold text-zinc-950 transition hover:bg-amber-300"
-                  }
-                  onClick={() => launchNew("agent")}
-                  type="button"
-                >
-                  <TerminalSquare className="h-4 w-4" />
-                  {t("vibe.newAgent")}
-                </button>
-                <button
-                  className={
-                    isDark
-                      ? "inline-flex items-center justify-center gap-2 rounded-xl border border-[#586e75] bg-[#002b36] px-3 py-2 text-[13px] font-semibold text-[#fdf6e3] transition hover:border-[#839496]"
-                      : "inline-flex items-center justify-center gap-2 rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2 text-[13px] font-semibold text-zinc-100 transition hover:border-amber-400"
-                  }
-                  onClick={() => launchNew("shell")}
-                  type="button"
-                >
-                  <Plus className="h-4 w-4" />
-                  {t("vibe.shell")}
-                </button>
-              </div>
+              <button
+                className={
+                  isDark
+                    ? "inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-[#b58900] bg-[#b58900] px-3 py-2 text-[13px] font-semibold text-[#002b36] transition hover:bg-[#cb4b16] hover:text-white"
+                    : "inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-stone-950 px-3 py-2 text-[13px] font-semibold text-white transition hover:bg-stone-800"
+                }
+                onClick={openCreateDialog}
+                type="button"
+              >
+                <Plus className="h-4 w-4" />
+                {t("vibe.newSession")}
+              </button>
+              <button
+                aria-label={t("vibe.switchTheme")}
+                className={
+                  isDark
+                    ? "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-[#586e75] bg-[#002b36] px-2 text-[12px] font-semibold text-[#fdf6e3] transition-colors hover:border-[#839496] hover:bg-[#073642]"
+                    : "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-2 text-[12px] font-semibold text-stone-700 transition-colors hover:border-stone-300 hover:bg-stone-50"
+                }
+                onClick={() => setThemeMode((current) => (current === "dark" ? "light" : "dark"))}
+                type="button"
+              >
+                {isDark ? <SunMedium className="h-4 w-4" /> : <MoonStar className="h-4 w-4" />}
+                <span>{isDark ? t("vibe.themeDark") : t("vibe.themeLight")}</span>
+              </button>
 
               {error && (
-                <p className="rounded-xl border border-red-400/40 bg-red-950/60 p-2 text-[12px] text-red-100">
+                <p className="absolute left-3 right-3 top-[8.75rem] rounded-xl border border-red-400/40 bg-red-950/90 p-2 text-[12px] text-red-100 shadow-lg">
                   {error}
                 </p>
               )}
@@ -481,6 +450,141 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
           </div>
         </div>
       </div>
+
+      {createDialogOpen && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-4">
+          <div
+            className={
+              isDark
+                ? "w-full max-w-lg rounded-3xl border border-[#073642] bg-[#002b36] p-4 text-[#fdf6e3] shadow-2xl shadow-black/40"
+                : "w-full max-w-lg rounded-3xl border border-stone-200 bg-white p-4 text-stone-950 shadow-2xl shadow-stone-950/15"
+            }
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="vibe-create-title"
+          >
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h2 id="vibe-create-title" className="text-base font-semibold">
+                  {t("vibe.createTitle")}
+                </h2>
+                <p className={isDark ? "mt-1 text-[12px] text-[#93a1a1]" : "mt-1 text-[12px] text-stone-500"}>
+                  {t("vibe.createSubtitle")}
+                </p>
+              </div>
+              <button
+                aria-label={t("vibe.cancel")}
+                className={
+                  isDark
+                    ? "grid h-8 w-8 place-items-center rounded-xl border border-[#586e75] text-[#93a1a1] transition hover:text-[#fdf6e3]"
+                    : "grid h-8 w-8 place-items-center rounded-xl border border-stone-200 text-stone-500 transition hover:text-stone-950"
+                }
+                onClick={() => setCreateDialogOpen(false)}
+                type="button"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <label className={isDark ? "block text-[12px] font-semibold text-[#93a1a1]" : "block text-[12px] font-semibold text-stone-600"}>
+                {t("vibe.agent")}
+                <select
+                  className={
+                    isDark
+                      ? "mt-1 w-full rounded-xl border border-[#586e75] bg-[#073642] px-3 py-2 text-[13px] text-[#fdf6e3] outline-none focus:border-[#268bd2]"
+                      : "mt-1 w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] text-stone-950 outline-none focus:border-blue-400"
+                  }
+                  onChange={(event) =>
+                    setCreatePlatform(event.target.value as (typeof agentOptions)[number]["platform"])
+                  }
+                  value={createPlatform}
+                >
+                  {agentOptions.map((option) => (
+                    <option key={option.platform} value={option.platform}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {projectDirectories.length > 0 && (
+                <label className={isDark ? "block text-[12px] font-semibold text-[#93a1a1]" : "block text-[12px] font-semibold text-stone-600"}>
+                  {t("vibe.existingFolder")}
+                  <select
+                    className={
+                      isDark
+                        ? "mt-1 w-full rounded-xl border border-[#586e75] bg-[#073642] px-3 py-2 text-[13px] text-[#fdf6e3] outline-none focus:border-[#268bd2]"
+                        : "mt-1 w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] text-stone-950 outline-none focus:border-blue-400"
+                    }
+                    onChange={(event) => setCreateProjectDir(event.target.value)}
+                    value={createProjectDir}
+                  >
+                    <option value="">{t("vibe.selectFolder")}</option>
+                    {projectDirectories.map((directory) => (
+                      <option key={directory} value={directory}>
+                        {directory}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              <label className={isDark ? "block text-[12px] font-semibold text-[#93a1a1]" : "block text-[12px] font-semibold text-stone-600"}>
+                {t("vibe.projectDirectory")}
+                <div className="mt-1 flex gap-2">
+                  <input
+                    className={
+                      isDark
+                        ? "min-w-0 flex-1 rounded-xl border border-[#586e75] bg-[#073642] px-3 py-2 text-[13px] text-[#fdf6e3] outline-none placeholder:text-[#586e75] focus:border-[#268bd2]"
+                        : "min-w-0 flex-1 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] text-stone-950 outline-none focus:border-blue-400"
+                    }
+                    onChange={(event) => setCreateProjectDir(event.target.value)}
+                    placeholder={t("vibe.projectPlaceholder")}
+                    value={createProjectDir}
+                  />
+                  <button
+                    className={
+                      isDark
+                        ? "shrink-0 rounded-xl border border-[#586e75] bg-[#073642] px-3 py-2 text-[13px] font-semibold text-[#fdf6e3] transition hover:border-[#839496]"
+                        : "shrink-0 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 transition hover:border-stone-300"
+                    }
+                    onClick={() => void chooseFolder()}
+                    type="button"
+                  >
+                    {t("vibe.chooseFolder")}
+                  </button>
+                </div>
+              </label>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                className={
+                  isDark
+                    ? "rounded-xl border border-[#586e75] px-3 py-2 text-[13px] font-semibold text-[#93a1a1] transition hover:text-[#fdf6e3]"
+                    : "rounded-xl border border-stone-200 px-3 py-2 text-[13px] font-semibold text-stone-600 transition hover:text-stone-950"
+                }
+                onClick={() => setCreateDialogOpen(false)}
+                type="button"
+              >
+                {t("vibe.cancel")}
+              </button>
+              <button
+                className={
+                  isDark
+                    ? "rounded-xl bg-[#b58900] px-3 py-2 text-[13px] font-semibold text-[#002b36] transition hover:bg-[#cb4b16] hover:text-white"
+                    : "rounded-xl bg-stone-950 px-3 py-2 text-[13px] font-semibold text-white transition hover:bg-stone-800"
+                }
+                onClick={launchNewAgent}
+                type="button"
+              >
+                {t("vibe.create")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

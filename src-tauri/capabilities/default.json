@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default permissions for the main AI Switch window.",
   "windows": ["main"],
-  "permissions": ["core:default", "updater:default", "process:allow-restart"]
+  "permissions": ["core:default", "updater:default", "process:allow-restart", "dialog:allow-open"]
 }

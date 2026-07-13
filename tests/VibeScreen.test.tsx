@@ -12,6 +12,10 @@ import type { SessionMeta, TerminalSession } from "../src/lib/api/types";
 import { createQueryClient } from "../src/lib/query/queryClient";
 import { VibeScreen } from "../src/screens/VibeScreen";
 
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn(),
+}));
+
 vi.mock("../src/components/terminal/XtermPane", () => ({
   XtermPane: ({ session }: { session: TerminalSession }) => (
     <div data-testid={`terminal-pane-${session.id}`}>{session.title}</div>
@@ -120,7 +124,9 @@ describe("VibeScreen", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Switch to Vibe mode" }));
 
-    expect(await screen.findByRole("heading", { name: "Terminal workspace" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Terminal workspace · Vibe mode" }),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Agent accounts placeholder")).not.toBeInTheDocument();
   });
 
@@ -133,5 +139,27 @@ describe("VibeScreen", () => {
     await userEvent.click(themeButton);
 
     expect(screen.getByText("Light")).toBeInTheDocument();
+  });
+
+  it("creates a new agent session through the modal", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "New session" }));
+    await screen.findByRole("dialog", { name: "Create session" });
+    await userEvent.selectOptions(screen.getByLabelText("Existing folder"), "D:/repo/app");
+    await userEvent.selectOptions(screen.getByLabelText("Agent"), "claude");
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() =>
+      expect(createTerminalSession).toHaveBeenCalledWith({
+        kind: "agent",
+        platform: "claude",
+        command: null,
+        title: "claude - D:/repo/app",
+        cwd: "D:/repo/app",
+        cols: 100,
+        rows: 30,
+      }),
+    );
   });
 });
