@@ -8,9 +8,9 @@ type BatchListProps = {
 };
 
 const statusClassName: Record<BatchGroup["health"], string> = {
-  ok: "bg-moss/10 text-moss",
-  warning: "bg-sun/20 text-ink",
-  error: "bg-ember/10 text-ember",
+  ok: "bg-emerald-50 text-emerald-700",
+  warning: "bg-amber-50 text-amber-700",
+  error: "bg-red-50 text-red-700",
 };
 
 export function BatchList({ groups, search }: BatchListProps) {
@@ -19,7 +19,7 @@ export function BatchList({ groups, search }: BatchListProps) {
 
   if (groups.length === 0) {
     return (
-      <div className="rounded-3xl border border-dashed border-ink/20 bg-white/55 p-8 text-center text-steel">
+      <div className="rounded-xl border border-dashed border-stone-300 bg-white/70 p-6 text-center text-sm text-stone-500">
         No batches or records yet.
       </div>
     );
@@ -40,12 +40,12 @@ export function BatchList({ groups, search }: BatchListProps) {
         return (
           <section
             key={group.batch.id}
-            className="rounded-3xl border border-ink/10 bg-white/80 p-4 shadow-sm shadow-ink/5"
+            className="rounded-xl border border-stone-200 bg-white/82 p-3 shadow-sm"
           >
             <button
               type="button"
               aria-label={`expand ${group.batch.name}`}
-              className="flex w-full cursor-pointer items-center justify-between gap-4 rounded-2xl text-left outline-none transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-moss/50"
+              className="flex w-full items-center justify-between gap-3 rounded-xl text-left outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-blue-400"
               onClick={() =>
                 setExpanded((current) => ({
                   ...current,
@@ -53,22 +53,22 @@ export function BatchList({ groups, search }: BatchListProps) {
                 }))
               }
             >
-              <span className="flex items-center gap-3">
-                <span className="flex h-9 w-9 items-center justify-center rounded-2xl bg-paper text-ink">
-                  {isExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+              <span className="flex min-w-0 items-center gap-2.5">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-stone-100 text-stone-700">
+                  {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                 </span>
-                <span>
-                  <span className="block font-display text-lg font-semibold text-ink">
+                <span className="min-w-0">
+                  <span className="block truncate text-[13px] font-semibold text-stone-950">
                     {group.batch.name}
                   </span>
-                  <span className="text-sm text-steel">
+                  <span className="text-[12px] text-stone-500">
                     {group.batch.source} · {group.children.length} item
                     {group.children.length === 1 ? "" : "s"}
                   </span>
                 </span>
               </span>
               <span
-                className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide ${
+                className={`rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${
                   statusClassName[group.health]
                 }`}
               >
@@ -77,17 +77,17 @@ export function BatchList({ groups, search }: BatchListProps) {
             </button>
 
             {isExpanded && (
-              <div className="mt-4 divide-y divide-ink/10 overflow-hidden rounded-2xl border border-ink/10">
+              <div className="mt-3 divide-y divide-stone-100 overflow-hidden rounded-xl border border-stone-200">
                 {group.children.map((child) => (
                   <div
                     key={`${child.item_type}:${child.id}`}
-                    className="flex items-center justify-between gap-4 bg-paper/60 px-4 py-3"
+                    className="flex items-center justify-between gap-3 bg-stone-50/70 px-3 py-2"
                   >
-                    <div>
-                      <p className="font-medium text-ink">{child.title}</p>
-                      <p className="text-sm text-steel">{child.subtitle ?? child.item_type}</p>
+                    <div className="min-w-0">
+                      <p className="truncate text-[13px] font-medium text-stone-950">{child.title}</p>
+                      <p className="truncate text-[12px] text-stone-500">{child.subtitle ?? child.item_type}</p>
                     </div>
-                    <span className="rounded-full bg-white px-3 py-1 text-xs text-steel">
+                    <span className="rounded-full bg-white px-2 py-0.5 text-[11px] text-stone-500">
                       {child.item_type}
                     </span>
                   </div>

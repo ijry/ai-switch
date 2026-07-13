@@ -185,7 +185,7 @@ describe("AccountsScreen", () => {
         account_ids: ["cred-official-1"],
       }),
     );
-    expect(screen.getByText("已加入 1 个账号用于本地路由。")).toBeInTheDocument();
+    expect(screen.getByText("已加入 1 个账号")).toBeInTheDocument();
   });
 
   it("imports a single official CPA credential from the add dialog", async () => {

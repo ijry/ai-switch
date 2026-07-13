@@ -1,4 +1,3 @@
-import { Settings } from "lucide-react";
 import type { ReactNode } from "react";
 import { supportedLanguages, useI18n, type Language } from "../../lib/i18n";
 
@@ -99,15 +98,15 @@ function NavButton({
   variant?: "primary" | "standard";
 }) {
   const baseClasses =
-    "group flex w-full items-center justify-between rounded-2xl border px-4 py-3 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500";
+    "group flex w-full items-center justify-between rounded-xl border px-3 py-2 text-left text-[13px] transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400";
   const activeClasses =
     variant === "primary"
-      ? "border-amber-500 bg-stone-950 text-white shadow-xl shadow-amber-900/20"
-      : "border-stone-900 bg-stone-900 text-white shadow-lg shadow-stone-900/10";
+      ? "border-stone-300 bg-white text-stone-950 shadow-sm"
+      : "border-stone-300 bg-stone-100 text-stone-950 shadow-sm";
   const idleClasses =
     variant === "primary"
-      ? "border-amber-300/70 bg-amber-100/80 text-stone-950 hover:-translate-y-0.5 hover:bg-amber-200"
-      : "border-stone-200 bg-white/70 text-stone-700 hover:-translate-y-0.5 hover:border-stone-300 hover:bg-white";
+      ? "border-transparent bg-transparent text-stone-600 hover:bg-white/60 hover:text-stone-950"
+      : "border-transparent bg-transparent text-stone-600 hover:bg-stone-100 hover:text-stone-950";
 
   return (
     <button
@@ -116,15 +115,15 @@ function NavButton({
       onClick={onClick}
       type="button"
     >
-      <span className="flex items-center gap-3">
+      <span className="flex min-w-0 items-center gap-2">
         <span
-          className={`h-2.5 w-2.5 rounded-full ${
-            active ? "bg-amber-300" : "bg-stone-300 group-hover:bg-amber-400"
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+            active ? "bg-amber-500" : "bg-stone-300 group-hover:bg-stone-400"
           }`}
         />
-        <span className="text-sm font-semibold">{label}</span>
+        <span className="truncate font-medium">{label}</span>
       </span>
-      <span className={active ? "text-amber-200" : "text-stone-300"}>→</span>
+      <span className={active ? "text-stone-400" : "text-transparent"}>/</span>
     </button>
   );
 }
@@ -149,31 +148,20 @@ export function AppLayout({
   };
 
   return (
-    <main className="min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(245,158,11,0.22),_transparent_34%),radial-gradient(circle_at_80%_10%,_rgba(20,83,45,0.16),_transparent_28%),linear-gradient(135deg,_#f7f1e5_0%,_#ece1cf_45%,_#e4ece4_100%)] px-4 py-5 text-stone-950 sm:px-6 lg:px-8">
-      <div className="mx-auto flex max-w-7xl flex-col gap-5">
-        <header className="flex flex-col gap-5 rounded-[2rem] border border-white/70 bg-white/60 p-5 shadow-2xl shadow-stone-900/5 backdrop-blur-xl sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-4">
-            <div className="grid h-14 w-14 place-items-center rounded-2xl bg-stone-950 text-lg font-black tracking-tight text-amber-200 shadow-xl shadow-stone-950/20">
-              AS
-            </div>
-            <div>
-              <p className="text-xs font-bold uppercase tracking-[0.32em] text-amber-700">
-                {t("layout.brandBadge")}
-              </p>
-              <h1 className="mt-1 text-3xl font-black tracking-tight text-stone-950">
-                AI Switch
-              </h1>
-              <p className="mt-1 max-w-2xl text-sm text-stone-600">
-                {t("layout.brandSubtitle")}
-              </p>
-            </div>
+    <main className="min-h-screen p-3 text-stone-950 sm:p-4">
+      <div className="mx-auto h-[calc(100vh-1.5rem)] max-w-[1440px] overflow-hidden rounded-[22px] border border-white/70 bg-white/55 shadow-2xl shadow-stone-900/12 backdrop-blur-2xl sm:h-[calc(100vh-2rem)]">
+        <div className="flex h-10 items-center justify-between border-b border-stone-200/75 bg-white/60 px-3">
+          <div className="flex items-center gap-2">
+            <span className="h-3 w-3 rounded-full bg-[#ff5f57]" />
+            <span className="h-3 w-3 rounded-full bg-[#febc2e]" />
+            <span className="h-3 w-3 rounded-full bg-[#28c840]" />
           </div>
-
-          <label className="flex min-w-48 items-center justify-between gap-3 rounded-2xl border border-stone-200 bg-white/80 px-4 py-3 text-sm font-semibold text-stone-700 shadow-sm">
+          <div className="text-[13px] font-semibold text-stone-600">AI Switch</div>
+          <label className="flex items-center gap-2 text-[12px] font-medium text-stone-500">
             <span>{t("layout.language")}</span>
             <select
               aria-label={t("layout.language")}
-              className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-900 outline-none transition focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+              className="rounded-lg border border-stone-200 bg-white/80 px-2 py-1 text-[12px] font-medium text-stone-800 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-200"
               disabled={languageSaving}
               onChange={(event) => handleLanguageChange(event.target.value as Language)}
               value={language}
@@ -185,46 +173,52 @@ export function AppLayout({
               ))}
             </select>
           </label>
-        </header>
+        </div>
 
-        <div className="grid gap-6 lg:grid-cols-[288px_minmax(0,1fr)]">
-          <aside className="space-y-4">
-            <section className="rounded-[2rem] border border-stone-950/10 bg-stone-950 p-4 text-white shadow-2xl shadow-stone-900/20">
-              <p className="px-1 text-xs font-bold uppercase tracking-[0.22em] text-amber-200/80">
-                {t("layout.agents")}
-              </p>
-              <div className="mt-3 space-y-2">
-                {agentItems.map((item) => (
-                  <NavButton
-                    active={activeScreen === item.screen}
-                    key={item.screen}
-                    label={t(item.labelKey)}
-                    onClick={() => onNavigate(item.screen)}
-                    variant="primary"
-                  />
-                ))}
+        <div className="grid h-[calc(100%-2.5rem)] grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)]">
+          <aside className="min-h-0 border-b border-stone-200/75 bg-stone-100/70 p-3 lg:border-b-0 lg:border-r">
+            <div className="mb-3 flex items-center gap-2 px-1">
+              <div className="grid h-8 w-8 place-items-center rounded-xl bg-stone-900 text-[12px] font-black text-white shadow-sm">
+                AS
               </div>
-            </section>
+              <div className="min-w-0">
+                <p className="truncate text-[13px] font-semibold text-stone-950">AI Switch</p>
+                <p className="truncate text-[11px] text-stone-500">{t("layout.brandBadge")}</p>
+              </div>
+            </div>
 
-            <section className="rounded-[2rem] border border-stone-200 bg-white/70 p-4 shadow-sm">
-              <p className="px-1 text-xs font-bold uppercase tracking-[0.22em] text-stone-500">
-                {t("layout.system")}
-              </p>
-              <div className="mt-3">
+            <div className="space-y-4">
+              <section>
+                <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-stone-400">
+                  {t("layout.agents")}
+                </p>
+                <div className="space-y-1">
+                  {agentItems.map((item) => (
+                    <NavButton
+                      active={activeScreen === item.screen}
+                      key={item.screen}
+                      label={t(item.labelKey)}
+                      onClick={() => onNavigate(item.screen)}
+                      variant="primary"
+                    />
+                  ))}
+                </div>
+              </section>
+
+              <section>
+                <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-stone-400">
+                  {t("layout.system")}
+                </p>
                 <NavButton
                   active={settingsActive}
                   label={t("nav.settings")}
                   onClick={() => onNavigate("Settings")}
                 />
-              </div>
-              <p className="mt-3 flex items-start gap-2 rounded-2xl bg-stone-50 px-3 py-2 text-xs leading-5 text-stone-500">
-                <Settings className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                {t("layout.settingsHint")}
-              </p>
-            </section>
+              </section>
+            </div>
           </aside>
 
-          <section className="min-w-0 animate-shell-in">{children}</section>
+          <section className="min-h-0 min-w-0 overflow-auto bg-white/50 p-3 sm:p-4">{children}</section>
         </div>
       </div>
     </main>

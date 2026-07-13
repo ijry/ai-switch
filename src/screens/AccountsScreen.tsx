@@ -326,45 +326,58 @@ export function AccountsScreen({ platform = "codex" }: AccountsScreenProps) {
     }
   };
 
+  const fieldClass =
+    "rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100";
+  const monoFieldClass = `${fieldClass} font-mono`;
+  const labelClass = "grid gap-1.5 text-[12px] font-semibold text-stone-600";
+  const secondaryButtonClass =
+    "rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:bg-stone-50";
+  const primaryButtonClass =
+    "rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-stone-800 disabled:opacity-50";
+
   return (
-    <section className="space-y-5">
-      <div className="rounded-[2rem] border border-stone-950/10 bg-stone-950 p-5 text-white shadow-2xl shadow-stone-950/15">
-        <p className="text-xs font-black uppercase tracking-[0.3em] text-amber-200">
-          {platformLabels[activePlatform]}
-        </p>
-        <div className="mt-4 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <h1 className="text-3xl font-black tracking-tight">账号列表</h1>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-stone-300">
-              当前一级 Tab 对应一个智能体；这里管理该智能体可用的官方账号和 API 账号。
+    <section className="space-y-3">
+      <div className="rounded-2xl border border-stone-200 bg-white/82 shadow-sm">
+        <div className="flex flex-col gap-3 border-b border-stone-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
+              {platformLabels[activePlatform]}
             </p>
+            <h1 className="mt-0.5 text-lg font-semibold tracking-tight text-stone-950">账号列表</h1>
           </div>
           <button
-            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-amber-400 px-4 py-3 text-sm font-black text-stone-950 shadow-lg shadow-amber-900/20 transition hover:-translate-y-0.5"
+            className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-stone-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
             onClick={() => setCreateOpen(true)}
             type="button"
           >
-            <Plus className="h-4 w-4" />
+            <Plus className="h-3.5 w-3.5" />
             新增账号
           </button>
         </div>
-      </div>
 
-      <section className="rounded-[2rem] border border-amber-300 bg-amber-50 p-4 shadow-sm">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <div className="grid h-11 w-11 place-items-center rounded-2xl bg-amber-400 text-stone-950">
-              <KeyRound className="h-5 w-5" />
-            </div>
-            <div>
-              <p className="text-sm font-black text-stone-950">算力池</p>
-              <p className="text-sm text-stone-600">已加入 {draftPoolIds.size} 个账号用于本地路由。</p>
-            </div>
+        <div className="flex flex-col gap-3 px-4 py-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-stone-50 px-2.5 py-1.5 text-[12px] font-semibold text-stone-700">
+              <KeyRound className="h-3.5 w-3.5 text-amber-600" />
+              算力池
+            </span>
+            <span className="rounded-xl border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-stone-600">
+              已加入 {draftPoolIds.size} 个账号
+            </span>
+            <span className="rounded-xl border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-stone-600">
+              本地代理：{routeProxyQuery.data?.running ? routeProxyQuery.data.base_url ?? "运行中" : "未启动"}
+            </span>
+            {lastRouteAccount && (
+              <span className="rounded-xl border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-stone-600">
+                最近路由到：{lastRouteAccount}
+              </span>
+            )}
           </div>
+
           <div className="flex flex-wrap gap-2">
             <button
               aria-label={routeProxyQuery.data?.running ? "停止本地路由代理" : "启动本地路由代理"}
-              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-stone-300 bg-white px-4 py-3 text-sm font-black text-stone-950 transition hover:bg-stone-50"
+              className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-stone-300 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 transition-colors hover:bg-stone-50 disabled:opacity-50"
               disabled={startProxyMutation.isPending || stopProxyMutation.isPending}
               onClick={() => {
                 if (routeProxyQuery.data?.running) {
@@ -375,52 +388,44 @@ export function AccountsScreen({ platform = "codex" }: AccountsScreenProps) {
               }}
               type="button"
             >
-              {routeProxyQuery.data?.running ? <PowerOff className="h-4 w-4" /> : <Power className="h-4 w-4" />}
+              {routeProxyQuery.data?.running ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
               {routeProxyQuery.data?.running ? "停止代理" : "启动代理"}
             </button>
             <button
               aria-label="写入路由配置文件"
-              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-stone-300 bg-white px-4 py-3 text-sm font-black text-stone-950 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-stone-300 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 transition-colors hover:bg-stone-50 disabled:opacity-50"
               disabled={!routeProxyQuery.data?.running || writeConfigsMutation.isPending}
               onClick={() => writeConfigsMutation.mutate()}
               type="button"
             >
-              <FileCode2 className="h-4 w-4" />
+              <FileCode2 className="h-3.5 w-3.5" />
               写入配置
             </button>
             <button
               aria-label="测试算力池路由"
-              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-stone-950 px-4 py-3 text-sm font-black text-white transition hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-stone-800 disabled:opacity-50"
               disabled={draftPoolIds.size === 0 || routeOnceMutation.isPending}
               onClick={testRoute}
               type="button"
             >
-              <Play className="h-4 w-4" />
+              <Play className="h-3.5 w-3.5" />
               测试路由
             </button>
             <button
               aria-label="查看算力池统计"
-              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-amber-400 bg-white px-4 py-3 text-sm font-black text-stone-950 transition hover:bg-amber-100"
+              className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-stone-300 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 transition-colors hover:bg-stone-50"
               onClick={() => setStatsOpen((open) => !open)}
               type="button"
             >
-              <BarChart3 className="h-4 w-4" />
+              <BarChart3 className="h-3.5 w-3.5" />
               统计
             </button>
           </div>
         </div>
 
-        <p className="mt-3 rounded-2xl bg-white px-3 py-2 text-sm font-bold text-stone-700">
-          本地代理：{routeProxyQuery.data?.running ? routeProxyQuery.data.base_url ?? "运行中" : "未启动"}
-        </p>
-        {lastRouteAccount && (
-          <p className="mt-3 rounded-2xl bg-white px-3 py-2 text-sm font-bold text-stone-700">
-            最近路由到：{lastRouteAccount}
-          </p>
-        )}
         {configWriteOutcomes.length > 0 && (
-          <div className="mt-3 space-y-1 rounded-2xl bg-white px-3 py-2 text-sm text-stone-700">
-            <p className="font-black text-stone-950">配置写入结果</p>
+          <div className="mx-4 mb-3 space-y-1 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] text-stone-600">
+            <p className="font-semibold text-stone-950">配置写入结果</p>
             {configWriteOutcomes.map((outcome) => (
               <p key={`${outcome.target_key}:${outcome.path}`}>
                 {outcome.target_key}: {outcome.path} ({outcome.status})
@@ -429,79 +434,78 @@ export function AccountsScreen({ platform = "codex" }: AccountsScreenProps) {
           </div>
         )}
         {statsOpen && (
-          <div className="mt-4 grid gap-3 border-t border-amber-200 pt-4 sm:grid-cols-3">
-            <div className="rounded-2xl bg-white p-3">
-              <p className="text-xs font-bold text-stone-500">请求</p>
-              <p className="mt-1 text-2xl font-black text-stone-950">{routeStats?.request_count ?? 0}</p>
+          <div className="grid gap-2 border-t border-stone-200 px-4 py-3 sm:grid-cols-3">
+            <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
+              <p className="text-[11px] font-medium text-stone-500">请求</p>
+              <p className="mt-1 text-lg font-semibold text-stone-950">{routeStats?.request_count ?? 0}</p>
             </div>
-            <div className="rounded-2xl bg-white p-3">
-              <p className="text-xs font-bold text-stone-500">Token</p>
-              <p className="mt-1 text-2xl font-black text-stone-950">
+            <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
+              <p className="text-[11px] font-medium text-stone-500">Token</p>
+              <p className="mt-1 text-lg font-semibold text-stone-950">
                 {(routeStats?.token_count ?? 0).toLocaleString()}
               </p>
             </div>
-            <div className="rounded-2xl bg-white p-3">
-              <p className="text-xs font-bold text-stone-500">费用</p>
-              <p className="mt-1 text-2xl font-black text-stone-950">${costTotal.toFixed(2)}</p>
+            <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
+              <p className="text-[11px] font-medium text-stone-500">费用</p>
+              <p className="mt-1 text-lg font-semibold text-stone-950">${costTotal.toFixed(2)}</p>
             </div>
           </div>
         )}
-      </section>
+      </div>
 
-      <section className="rounded-[2rem] border border-stone-200 bg-white/80 p-4 shadow-xl shadow-stone-900/5">
-        <div className="flex items-center justify-between gap-3 border-b border-stone-200 pb-4">
+      <section className="rounded-2xl border border-stone-200 bg-white/82 shadow-sm">
+        <div className="flex items-center justify-between gap-3 border-b border-stone-200 px-4 py-3">
           <div>
-            <h2 className="text-xl font-black text-stone-950">{platformLabels[activePlatform]} 账号</h2>
-            <p className="mt-1 text-sm text-stone-500">右侧编辑按钮可修改账号 JSON、状态和展示名。</p>
+            <h2 className="text-[15px] font-semibold text-stone-950">{platformLabels[activePlatform]} 账号</h2>
           </div>
-          <span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-black text-stone-600">
+          <span className="rounded-full bg-stone-100 px-2.5 py-1 text-[12px] font-semibold text-stone-600">
             {credentials.length} 个
           </span>
         </div>
 
-        <div className="mt-4 space-y-4">
-          {credentialsQuery.isLoading && <p className="rounded-2xl bg-stone-50 p-4 text-stone-500">正在加载账号...</p>}
-          {credentialsQuery.error && <p className="rounded-2xl bg-red-50 p-4 text-red-700">账号加载失败。</p>}
+        <div className="space-y-3 p-3">
+          {credentialsQuery.isLoading && <p className="rounded-xl bg-stone-50 p-4 text-sm text-stone-500">正在加载账号...</p>}
+          {credentialsQuery.error && <p className="rounded-xl bg-red-50 p-4 text-sm text-red-700">账号加载失败。</p>}
           {!credentialsQuery.isLoading && credentials.length === 0 && (
-            <div className="rounded-3xl border border-dashed border-stone-300 bg-stone-50 p-8 text-center text-stone-500">
-              当前 Tab 还没有账号，点击右上角加号新增单个账号或批量导入。
+            <div className="rounded-xl border border-dashed border-stone-300 bg-stone-50 p-6 text-center text-sm text-stone-500">
+              暂无账号
             </div>
           )}
 
           {groupedCredentials.map((group) => (
-            <div className="overflow-hidden rounded-3xl border border-stone-200 bg-white" key={group.name}>
-              <div className="flex items-center justify-between bg-stone-50 px-4 py-3">
-                <p className="text-sm font-black text-stone-950">{group.name}</p>
-                <p className="text-xs font-bold text-stone-500">{group.items.length} 个账号</p>
+            <div className="overflow-hidden rounded-xl border border-stone-200 bg-white" key={group.name}>
+              <div className="flex items-center justify-between border-b border-stone-100 bg-stone-50/80 px-3 py-2">
+                <p className="text-[12px] font-semibold text-stone-700">{group.name}</p>
+                <p className="text-[11px] font-medium text-stone-500">{group.items.length} 个账号</p>
               </div>
               <div className="divide-y divide-stone-100">
                 {group.items.map((credential) => (
-                  <div className="grid gap-3 px-4 py-3 lg:grid-cols-[auto_1fr_auto] lg:items-center" key={credential.id}>
+                  <div className="grid gap-2 px-3 py-2.5 lg:grid-cols-[auto_1fr_auto] lg:items-center" key={credential.id}>
                     <input
                       aria-label={`将 ${credential.display_name} 加入算力池`}
                       checked={draftPoolIds.has(credential.id)}
-                      className="h-4 w-4 rounded border-stone-300 text-amber-500 focus:ring-amber-400"
+                      className="h-4 w-4 rounded border-stone-300 text-amber-500 focus:ring-blue-400"
                       disabled={routePoolMutation.isPending}
                       onChange={() => togglePool(credential.id)}
                       type="checkbox"
                     />
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <p className="truncate font-bold text-stone-950">{credential.display_name}</p>
-                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-black text-amber-800">
+                        <p className="truncate text-[13px] font-semibold text-stone-950">{credential.display_name}</p>
+                        <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
                           {kindLabel(credential.kind)}
                         </span>
-                        <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs font-bold text-stone-600">
+                        <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[11px] font-medium text-stone-600">
                           {credential.status}
                         </span>
                       </div>
-                      <p className="mt-1 truncate text-sm text-stone-500">
+                      <p className="mt-0.5 truncate text-[12px] text-stone-500">
                         {credential.email ?? credential.platform} · {shortId(credential.id)}
                       </p>
                     </div>
                     <button
                       aria-label={`编辑 ${credential.display_name}`}
-                      className="inline-flex items-center justify-center gap-2 rounded-xl border border-stone-200 px-3 py-2 text-sm font-bold text-stone-700 transition hover:bg-stone-50"
+                      className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-stone-200 px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50"
                       onClick={() => {
                         updateMutation.reset();
                         deleteMutation.reset();
@@ -509,7 +513,7 @@ export function AccountsScreen({ platform = "codex" }: AccountsScreenProps) {
                       }}
                       type="button"
                     >
-                      <Edit3 className="h-4 w-4" />
+                      <Edit3 className="h-3.5 w-3.5" />
                       编辑
                     </button>
                   </div>
@@ -521,33 +525,33 @@ export function AccountsScreen({ platform = "codex" }: AccountsScreenProps) {
       </section>
 
       {createOpen && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/45 p-4 backdrop-blur-sm">
-          <div className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-[2rem] bg-white p-5 shadow-2xl">
+        <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">
+          <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-stone-200 bg-white p-4 shadow-2xl">
             <div className="flex items-center justify-between gap-4">
               <div>
-                <p className="text-xs font-black uppercase tracking-[0.24em] text-amber-700">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
                   {platformLabels[activePlatform]}
                 </p>
-                <h3 className="text-2xl font-black text-stone-950">新增账号</h3>
+                <h3 className="text-lg font-semibold text-stone-950">新增账号</h3>
               </div>
               <button
                 aria-label="关闭新增账号"
-                className="rounded-2xl border border-stone-200 p-2 text-stone-500 hover:bg-stone-50"
+                className="rounded-xl border border-stone-200 p-1.5 text-stone-500 transition-colors hover:bg-stone-50"
                 onClick={() => setCreateOpen(false)}
                 type="button"
               >
-                <X className="h-5 w-5" />
+                <X className="h-4 w-4" />
               </button>
             </div>
 
-            <div className="mt-5 grid gap-2 rounded-2xl bg-stone-100 p-1 sm:grid-cols-3">
+            <div className="mt-4 grid gap-1 rounded-xl bg-stone-100 p-1 sm:grid-cols-3">
               {[
                 ["official-single", "官方单个"],
                 ["official-bulk", "官方批量"],
                 ["api", "API 账号"],
               ].map(([mode, label]) => (
                 <button
-                  className={`rounded-xl px-4 py-2 text-sm font-black ${
+                  className={`rounded-lg px-3 py-1.5 text-[13px] font-semibold transition-colors ${
                     createMode === mode ? "bg-white text-stone-950 shadow-sm" : "text-stone-500"
                   }`}
                   key={mode}
@@ -560,21 +564,21 @@ export function AccountsScreen({ platform = "codex" }: AccountsScreenProps) {
             </div>
 
             {createMode === "official-single" && (
-              <div className="mt-5 grid gap-4">
-                <label className="grid gap-2 text-sm font-bold text-stone-700">
+              <div className="mt-4 grid gap-3">
+                <label className={labelClass}>
                   批量名称（可选）
                   <input
                     aria-label="导入批量名称"
-                    className="rounded-2xl border border-stone-200 px-4 py-3 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+                    className={fieldClass}
                     onChange={(event) => setOfficialBatchName(event.target.value)}
                     value={officialBatchName}
                   />
                 </label>
-                <label className="grid gap-2 text-sm font-bold text-stone-700">
+                <label className={labelClass}>
                   CPA JSON
                   <textarea
                     aria-label="CPA JSON"
-                    className="min-h-56 rounded-2xl border border-stone-200 px-4 py-3 font-mono text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+                    className={`${monoFieldClass} min-h-44`}
                     onChange={(event) => setOfficialText(event.target.value)}
                     value={officialText}
                   />
@@ -583,21 +587,21 @@ export function AccountsScreen({ platform = "codex" }: AccountsScreenProps) {
             )}
 
             {createMode === "official-bulk" && (
-              <div className="mt-5 grid gap-4">
-                <label className="grid gap-2 text-sm font-bold text-stone-700">
+              <div className="mt-4 grid gap-3">
+                <label className={labelClass}>
                   批量名称（可选）
                   <input
                     aria-label="批量导入名称"
-                    className="rounded-2xl border border-stone-200 px-4 py-3 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+                    className={fieldClass}
                     onChange={(event) => setOfficialBatchName(event.target.value)}
                     value={officialBatchName}
                   />
                 </label>
-                <label className="grid gap-2 text-sm font-bold text-stone-700">
+                <label className={labelClass}>
                   文件路径（每行一个 JSON 文件）
                   <textarea
                     aria-label="批量文件路径"
-                    className="min-h-40 rounded-2xl border border-stone-200 px-4 py-3 font-mono text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+                    className={`${monoFieldClass} min-h-32`}
                     onChange={(event) => setBulkFilePaths(event.target.value)}
                     placeholder="C:\\Users\\me\\codex-account.json"
                     value={bulkFilePaths}
@@ -607,22 +611,22 @@ export function AccountsScreen({ platform = "codex" }: AccountsScreenProps) {
             )}
 
             {createMode === "api" && (
-              <div className="mt-5 grid gap-4">
-                <label className="grid gap-2 text-sm font-bold text-stone-700">
+              <div className="mt-4 grid gap-3">
+                <label className={labelClass}>
                   账号名称
                   <input
                     aria-label="API 账号名称"
-                    className="rounded-2xl border border-stone-200 px-4 py-3 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+                    className={fieldClass}
                     onChange={(event) => setApiName(event.target.value)}
                     value={apiName}
                   />
                 </label>
-                <label className="grid gap-2 text-sm font-bold text-stone-700">
+                <label className={labelClass}>
                   API Key
                   <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
                     <input
                       aria-label="API Key"
-                      className="rounded-2xl border border-stone-200 px-4 py-3 font-mono text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+                      className={monoFieldClass}
                       onChange={(event) => {
                         setApiKey(event.target.value);
                         setApiKeyDecodeError(null);
@@ -631,29 +635,29 @@ export function AccountsScreen({ platform = "codex" }: AccountsScreenProps) {
                     />
                     <button
                       aria-label="Base64 解码 API Key"
-                      className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-black text-amber-800 transition hover:bg-amber-100"
+                      className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:bg-white"
                       onClick={decodeApiKey}
                       type="button"
                     >
                       Base64 解码
                     </button>
                   </div>
-                  {apiKeyDecodeError && <span className="text-sm font-bold text-red-700">{apiKeyDecodeError}</span>}
+                  {apiKeyDecodeError && <span className="text-[12px] font-semibold text-red-700">{apiKeyDecodeError}</span>}
                 </label>
-                <label className="grid gap-2 text-sm font-bold text-stone-700">
+                <label className={labelClass}>
                   Base URL
                   <input
                     aria-label="Base URL"
-                    className="rounded-2xl border border-stone-200 px-4 py-3 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+                    className={fieldClass}
                     onChange={(event) => setApiBaseUrl(event.target.value)}
                     value={apiBaseUrl}
                   />
                 </label>
-                <label className="grid gap-2 text-sm font-bold text-stone-700">
+                <label className={labelClass}>
                   接口格式
                   <select
                     aria-label="接口格式"
-                    className="rounded-2xl border border-stone-200 px-4 py-3 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+                    className={fieldClass}
                     onChange={(event) => setApiInterfaceFormat(event.target.value as InterfaceFormat)}
                     value={apiInterfaceFormat}
                   >
@@ -664,20 +668,20 @@ export function AccountsScreen({ platform = "codex" }: AccountsScreenProps) {
                     ))}
                   </select>
                 </label>
-                <label className="grid gap-2 text-sm font-bold text-stone-700">
+                <label className={labelClass}>
                   模型映射 JSON
                   <textarea
                     aria-label="模型映射 JSON"
-                    className="min-h-24 rounded-2xl border border-stone-200 px-4 py-3 font-mono text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+                    className={`${monoFieldClass} min-h-20`}
                     onChange={(event) => setApiMappings(event.target.value)}
                     value={apiMappings}
                   />
                 </label>
-                <label className="grid gap-2 text-sm font-bold text-stone-700">
+                <label className={labelClass}>
                   预览 JSON（可选）
                   <textarea
                     aria-label="预览 JSON"
-                    className="min-h-24 rounded-2xl border border-stone-200 px-4 py-3 font-mono text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+                    className={`${monoFieldClass} min-h-20`}
                     onChange={(event) => setApiPreviewJson(event.target.value)}
                     value={apiPreviewJson}
                   />
@@ -686,21 +690,21 @@ export function AccountsScreen({ platform = "codex" }: AccountsScreenProps) {
             )}
 
             {createMutation.error && (
-              <p className="mt-4 rounded-2xl bg-red-50 p-3 text-sm font-bold text-red-700">
+              <p className="mt-4 rounded-xl bg-red-50 p-3 text-[13px] font-semibold text-red-700">
                 {(createMutation.error as Error).message || "新增账号失败。"}
               </p>
             )}
 
-            <div className="mt-6 flex justify-end gap-3">
+            <div className="mt-4 flex justify-end gap-2 border-t border-stone-100 pt-3">
               <button
-                className="rounded-2xl border border-stone-200 px-4 py-3 text-sm font-black text-stone-700 hover:bg-stone-50"
+                className={secondaryButtonClass}
                 onClick={() => setCreateOpen(false)}
                 type="button"
               >
                 取消
               </button>
               <button
-                className="rounded-2xl bg-amber-400 px-4 py-3 text-sm font-black text-stone-950 shadow-lg shadow-amber-900/10 disabled:cursor-not-allowed disabled:opacity-50"
+                className={primaryButtonClass}
                 disabled={createMutation.isPending}
                 onClick={() => createMutation.mutate()}
                 type="button"
@@ -713,50 +717,50 @@ export function AccountsScreen({ platform = "codex" }: AccountsScreenProps) {
       )}
 
       {editingCredential && (
-        <div className="fixed inset-0 z-50 flex justify-end bg-stone-950/35 backdrop-blur-sm">
-          <aside className="h-full w-full max-w-xl overflow-y-auto bg-white p-6 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex justify-end bg-stone-950/28 backdrop-blur-sm">
+          <aside className="m-3 h-[calc(100%-1.5rem)] w-full max-w-lg overflow-y-auto rounded-2xl border border-stone-200 bg-white p-4 shadow-2xl">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-xs font-black uppercase tracking-[0.24em] text-amber-700">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
                   {kindLabel(editingCredential.kind)} Account
                 </p>
-                <h3 className="mt-1 text-2xl font-black text-stone-950">{editingCredential.display_name}</h3>
-                <p className="mt-2 text-sm text-stone-500">{editingCredential.id}</p>
+                <h3 className="mt-0.5 text-lg font-semibold text-stone-950">{editingCredential.display_name}</h3>
+                <p className="mt-1 text-[12px] text-stone-500">{editingCredential.id}</p>
               </div>
               <button
                 aria-label="关闭编辑账号"
-                className="rounded-2xl border border-stone-200 p-2 text-stone-500 hover:bg-stone-50"
+                className="rounded-xl border border-stone-200 p-1.5 text-stone-500 transition-colors hover:bg-stone-50"
                 onClick={() => setEditingCredential(null)}
                 type="button"
               >
-                <X className="h-5 w-5" />
+                <X className="h-4 w-4" />
               </button>
             </div>
 
-            <div className="mt-6 grid gap-4">
-              <label className="grid gap-2 text-sm font-bold text-stone-700">
+            <div className="mt-4 grid gap-3">
+              <label className={labelClass}>
                 账号名称
                 <input
                   aria-label="编辑账号名称"
-                  className="rounded-2xl border border-stone-200 px-4 py-3 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+                  className={fieldClass}
                   onChange={(event) => setEditName(event.target.value)}
                   value={editName}
                 />
               </label>
-              <label className="grid gap-2 text-sm font-bold text-stone-700">
+              <label className={labelClass}>
                 邮箱
                 <input
                   aria-label="编辑邮箱"
-                  className="rounded-2xl border border-stone-200 px-4 py-3 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+                  className={fieldClass}
                   onChange={(event) => setEditEmail(event.target.value)}
                   value={editEmail}
                 />
               </label>
-              <label className="grid gap-2 text-sm font-bold text-stone-700">
+              <label className={labelClass}>
                 状态
                 <select
                   aria-label="编辑状态"
-                  className="rounded-2xl border border-stone-200 px-4 py-3 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+                  className={fieldClass}
                   onChange={(event) => setEditStatus(event.target.value as AccountStatus)}
                   value={editStatus}
                 >
@@ -765,29 +769,29 @@ export function AccountsScreen({ platform = "codex" }: AccountsScreenProps) {
                   <option value="error">error</option>
                 </select>
               </label>
-              <label className="grid gap-2 text-sm font-bold text-stone-700">
+              <label className={labelClass}>
                 Secret JSON
                 <textarea
                   aria-label="编辑 Secret JSON"
-                  className="min-h-28 rounded-2xl border border-stone-200 px-4 py-3 font-mono text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+                  className={`${monoFieldClass} min-h-24`}
                   onChange={(event) => setEditSecretJson(event.target.value)}
                   value={editSecretJson}
                 />
               </label>
-              <label className="grid gap-2 text-sm font-bold text-stone-700">
+              <label className={labelClass}>
                 Config JSON
                 <textarea
                   aria-label="编辑 Config JSON"
-                  className="min-h-28 rounded-2xl border border-stone-200 px-4 py-3 font-mono text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+                  className={`${monoFieldClass} min-h-24`}
                   onChange={(event) => setEditConfigJson(event.target.value)}
                   value={editConfigJson}
                 />
               </label>
-              <label className="grid gap-2 text-sm font-bold text-stone-700">
+              <label className={labelClass}>
                 Preview JSON
                 <textarea
                   aria-label="编辑 Preview JSON"
-                  className="min-h-28 rounded-2xl border border-stone-200 px-4 py-3 font-mono text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+                  className={`${monoFieldClass} min-h-24`}
                   onChange={(event) => setEditPreviewJson(event.target.value)}
                   value={editPreviewJson}
                 />
@@ -795,32 +799,32 @@ export function AccountsScreen({ platform = "codex" }: AccountsScreenProps) {
             </div>
 
             {updateMutation.error && (
-              <p className="mt-4 rounded-2xl bg-red-50 p-3 text-sm font-bold text-red-700">保存账号失败。</p>
+              <p className="mt-4 rounded-xl bg-red-50 p-3 text-[13px] font-semibold text-red-700">保存账号失败。</p>
             )}
             {deleteMutation.error && (
-              <p className="mt-4 rounded-2xl bg-red-50 p-3 text-sm font-bold text-red-700">删除账号失败。</p>
+              <p className="mt-4 rounded-xl bg-red-50 p-3 text-[13px] font-semibold text-red-700">删除账号失败。</p>
             )}
 
-            <div className="mt-6 flex flex-wrap justify-between gap-3 border-t border-stone-100 pt-5">
+            <div className="mt-4 flex flex-wrap justify-between gap-2 border-t border-stone-100 pt-3">
               <button
-                className="inline-flex items-center gap-2 rounded-2xl border border-red-200 px-4 py-3 text-sm font-black text-red-700 hover:bg-red-50"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-red-200 bg-white px-3 py-2 text-[13px] font-semibold text-red-700 transition-colors hover:bg-red-50"
                 disabled={deleteMutation.isPending}
                 onClick={() => deleteMutation.mutate(editingCredential.id)}
                 type="button"
               >
-                <Trash2 className="h-4 w-4" />
+                <Trash2 className="h-3.5 w-3.5" />
                 删除账号
               </button>
-              <div className="flex gap-3">
+              <div className="flex gap-2">
                 <button
-                  className="rounded-2xl border border-stone-200 px-4 py-3 text-sm font-black text-stone-700 hover:bg-stone-50"
+                  className={secondaryButtonClass}
                   onClick={() => setEditingCredential(null)}
                   type="button"
                 >
                   取消
                 </button>
                 <button
-                  className="rounded-2xl bg-amber-400 px-4 py-3 text-sm font-black text-stone-950 shadow-lg shadow-amber-900/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  className={primaryButtonClass}
                   disabled={updateMutation.isPending}
                   onClick={() => updateMutation.mutate()}
                   type="button"

@@ -44,7 +44,7 @@ type FeatureEntry = {
   icon: ComponentType<{ className?: string }>;
 };
 
-// Keep only secondary tools in the settings hub.
+// Keep utility entries in the settings hub.
 // Providers / Imports / Targets map to agent-first flows, so they stay out of the UI.
 const featureEntries: FeatureEntry[] = [
   {
@@ -132,11 +132,11 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
   });
 
   if (settingsQuery.isLoading) {
-    return <p className="text-steel">{t("settings.loading")}</p>;
+    return <p className="text-sm text-stone-500">{t("settings.loading")}</p>;
   }
 
   if (!settingsQuery.data) {
-    return <p className="text-ember">{t("settings.error")}</p>;
+    return <p className="text-sm text-red-700">{t("settings.error")}</p>;
   }
 
   const settings = settingsQuery.data;
@@ -146,43 +146,36 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
   };
 
   return (
-    <section className="space-y-5">
-      <div className="rounded-[2rem] border border-stone-950/10 bg-stone-950 p-5 text-white shadow-2xl shadow-stone-950/15">
-        <p className="text-xs font-black uppercase tracking-[0.3em] text-amber-200">
-          {t("settings.hub.kicker")}
-        </p>
-        <h1 className="mt-3 text-3xl font-black tracking-tight">{t("settings.title")}</h1>
-        <p className="mt-2 max-w-3xl text-sm leading-6 text-stone-300">
-          {t("settings.hub.subtitle")}
-        </p>
-      </div>
-
-      <div className="rounded-[2rem] border border-stone-200 bg-white/80 p-5 shadow-xl shadow-stone-900/5">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="text-xl font-black text-stone-950">{t("settings.features.title")}</h2>
-            <p className="mt-1 text-sm text-stone-500">{t("settings.features.subtitle")}</p>
-          </div>
+    <section className="space-y-3">
+      <div className="rounded-2xl border border-stone-200 bg-white/82 shadow-sm">
+        <div className="border-b border-stone-200 px-4 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
+            {t("settings.hub.kicker")}
+          </p>
+          <h1 className="mt-0.5 text-lg font-semibold tracking-tight text-stone-950">
+            {t("settings.title")}
+          </h1>
         </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+
+        <div className="px-4 py-3">
+          <h2 className="text-[15px] font-semibold text-stone-950">{t("settings.features.title")}</h2>
+        </div>
+        <div className="grid gap-2 px-3 pb-3 sm:grid-cols-2 xl:grid-cols-3">
           {featureEntries.map((entry) => {
             const Icon = entry.icon;
             return (
               <button
-                className="rounded-3xl border border-stone-200 bg-stone-50 px-4 py-4 text-left transition hover:-translate-y-0.5 hover:border-amber-300 hover:bg-amber-50"
+                className="rounded-xl border border-stone-200 bg-stone-50/70 px-3 py-2.5 text-left transition-colors hover:border-stone-300 hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
                 key={entry.screen}
                 onClick={() => onOpenFeature?.(entry.screen)}
                 type="button"
               >
-                <div className="flex items-center gap-3">
-                  <span className="grid h-10 w-10 place-items-center rounded-2xl bg-stone-950 text-amber-200">
-                    <Icon className="h-4 w-4" />
+                <div className="flex items-center gap-2.5">
+                  <span className="grid h-8 w-8 place-items-center rounded-lg bg-white text-stone-700 shadow-sm ring-1 ring-stone-200">
+                    <Icon className="h-3.5 w-3.5" />
                   </span>
-                  <div>
-                    <p className="text-sm font-black text-stone-950">{t(entry.titleKey)}</p>
-                    <p className="mt-1 text-xs leading-5 text-stone-500">
-                      {t(entry.descriptionKey)}
-                    </p>
+                  <div className="min-w-0">
+                    <p className="truncate text-[13px] font-semibold text-stone-950">{t(entry.titleKey)}</p>
                   </div>
                 </div>
               </button>
@@ -191,17 +184,16 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
         </div>
       </div>
 
-      <div className="space-y-4 rounded-[2rem] border border-stone-200 bg-white/80 p-6 shadow-xl shadow-stone-900/5">
-        <div>
-          <h2 className="text-xl font-black text-stone-950">{t("settings.app.title")}</h2>
-          <p className="mt-1 text-sm text-stone-500">{t("settings.app.subtitle")}</p>
-        </div>
-        <p className="text-sm text-stone-600">{t("settings.dataDir", { path: settings.data_dir })}</p>
-        <label className="flex max-w-sm flex-col gap-2 text-sm font-semibold text-stone-800">
+      <div className="space-y-3 rounded-2xl border border-stone-200 bg-white/82 p-4 shadow-sm">
+        <h2 className="text-[15px] font-semibold text-stone-950">{t("settings.app.title")}</h2>
+        <p className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] text-stone-600">
+          {t("settings.dataDir", { path: settings.data_dir })}
+        </p>
+        <label className="flex max-w-sm flex-col gap-1.5 text-[12px] font-semibold text-stone-600">
           <span>{t("settings.language")}</span>
           <select
             aria-label={t("settings.language")}
-            className="rounded-2xl border border-stone-200 bg-white px-4 py-3 text-sm font-semibold text-stone-900 shadow-sm outline-none transition focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+            className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-medium text-stone-900 shadow-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
             disabled={saveMutation.isPending}
             onChange={(event) => handleLanguageChange(event.target.value as Language)}
             value={language}
@@ -215,7 +207,7 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
         </label>
         <button
           type="button"
-          className="rounded-full bg-stone-950 px-4 py-2 text-sm font-semibold text-white transition-colors duration-200 hover:bg-stone-800"
+          className="w-fit rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white transition-colors duration-150 hover:bg-stone-800"
           onClick={() =>
             saveMutation.mutate({
               ...settings,
@@ -226,8 +218,8 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
         >
           {t("settings.themeToggle")}
         </button>
-        {saveMutation.data && <p className="text-emerald-700">{t("settings.saved")}</p>}
-        {saveMutation.error && <p className="text-red-700">{t("settings.saveError")}</p>}
+        {saveMutation.data && <p className="text-[13px] font-medium text-emerald-700">{t("settings.saved")}</p>}
+        {saveMutation.error && <p className="text-[13px] font-medium text-red-700">{t("settings.saveError")}</p>}
       </div>
     </section>
   );

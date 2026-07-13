@@ -1,16 +1,15 @@
 export function DashboardScreen() {
   return (
-    <section className="overflow-hidden rounded-3xl border border-ink/10 bg-white/75 p-8 shadow-xl shadow-ink/5">
-      <p className="text-sm uppercase tracking-[0.3em] text-moss">Foundation</p>
-      <h1 className="mt-3 font-display text-4xl font-semibold text-ink">AI Switch</h1>
-      <p className="mt-4 max-w-2xl text-base leading-7 text-steel">
-        Batch-first provider and official account switching foundation.
-      </p>
-      <div className="mt-8 grid gap-3 sm:grid-cols-3">
+    <section className="rounded-2xl border border-stone-200 bg-white/82 shadow-sm">
+      <div className="border-b border-stone-200 px-4 py-3">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">Overview</p>
+        <h1 className="mt-0.5 text-lg font-semibold text-stone-950">AI Switch</h1>
+      </div>
+      <div className="grid gap-2 p-3 sm:grid-cols-3">
         {["Batch imports", "Provider metadata", "Target adapters"].map((label) => (
-          <div key={label} className="rounded-2xl bg-paper/70 p-4">
-            <p className="text-sm font-semibold text-ink">{label}</p>
-            <p className="mt-1 text-sm text-steel">Phase A foundation</p>
+          <div key={label} className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2">
+            <p className="text-[13px] font-semibold text-stone-950">{label}</p>
+            <p className="mt-0.5 text-[12px] text-stone-500">Ready</p>
           </div>
         ))}
       </div>

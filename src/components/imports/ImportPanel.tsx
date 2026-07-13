@@ -33,34 +33,38 @@ export function ImportPanel({ onImport }: ImportPanelProps) {
     });
   }
 
+  const fieldClass =
+    "mt-1.5 w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100";
+  const labelClass = "block text-[12px] font-semibold text-stone-600";
+
   return (
-    <div className="space-y-4 rounded-3xl border border-ink/10 bg-white/75 p-5 shadow-sm shadow-ink/5">
-      <label className="block text-sm font-semibold text-ink">
+    <div className="space-y-3 rounded-2xl border border-stone-200 bg-white/82 p-4 shadow-sm">
+      <label className={labelClass}>
         Batch name
         <input
           value={batchName}
           onChange={(event) => setBatchName(event.target.value)}
-          className="mt-2 w-full rounded-2xl border border-ink/10 px-4 py-3 outline-none focus:border-moss focus:ring-2 focus:ring-moss/20"
+          className={fieldClass}
         />
       </label>
-      <label className="block text-sm font-semibold text-ink">
+      <label className={labelClass}>
         Source label
         <input
           value={sourceLabel}
           onChange={(event) => setSourceLabel(event.target.value)}
-          className="mt-2 w-full rounded-2xl border border-ink/10 px-4 py-3 outline-none focus:border-moss focus:ring-2 focus:ring-moss/20"
+          className={fieldClass}
         />
       </label>
-      <label className="block text-sm font-semibold text-ink">
+      <label className={labelClass}>
         JSON
         <textarea
           value={json}
           onChange={(event) => setJson(event.target.value)}
           rows={8}
-          className="mt-2 w-full rounded-2xl border border-ink/10 px-4 py-3 font-mono text-sm outline-none focus:border-moss focus:ring-2 focus:ring-moss/20"
+          className={`${fieldClass} font-mono`}
         />
       </label>
-      {error && <p className="text-sm font-medium text-ember">{error}</p>}
+      {error && <p className="text-[13px] font-medium text-red-700">{error}</p>}
       <Button type="button" onClick={submit}>
         Import
       </Button>

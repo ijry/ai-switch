@@ -12,22 +12,24 @@ export function BatchesScreen() {
   });
 
   return (
-    <section className="space-y-4">
-      <div>
-        <h1 className="font-display text-3xl font-semibold text-ink">Batches</h1>
-        <p className="text-steel">
-          Imported providers and official accounts are grouped by batch.
-        </p>
+    <section className="space-y-3">
+      <div className="rounded-2xl border border-stone-200 bg-white/82 shadow-sm">
+        <div className="border-b border-stone-200 px-4 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">Library</p>
+          <h1 className="mt-0.5 text-lg font-semibold text-stone-950">Batches</h1>
+        </div>
+        <div className="p-3">
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            aria-label="Search batches, accounts, providers"
+            placeholder="Search batches, accounts, providers"
+            className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition placeholder:text-stone-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+          />
+        </div>
       </div>
-      <input
-        value={search}
-        onChange={(event) => setSearch(event.target.value)}
-        aria-label="Search batches, accounts, providers"
-        placeholder="Search batches, accounts, providers"
-        className="w-full rounded-2xl border border-ink/10 bg-white/85 px-4 py-3 text-ink outline-none transition-colors duration-200 placeholder:text-steel/60 focus:border-moss focus:ring-2 focus:ring-moss/20"
-      />
-      {groupsQuery.isLoading && <p className="text-steel">Loading batches...</p>}
-      {groupsQuery.error && <p className="text-ember">Could not load batches.</p>}
+      {groupsQuery.isLoading && <p className="text-sm text-stone-500">Loading batches...</p>}
+      {groupsQuery.error && <p className="text-sm text-red-700">Could not load batches.</p>}
       {groupsQuery.data && <BatchList groups={groupsQuery.data} search={deferredSearch} />}
     </section>
   );

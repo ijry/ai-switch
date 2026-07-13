@@ -10,18 +10,18 @@ export function ImportsScreen() {
   });
 
   return (
-    <section className="space-y-4">
-      <div>
-        <h1 className="font-display text-3xl font-semibold text-ink">Imports</h1>
-        <p className="text-steel">Paste example JSON and assign it to a named batch.</p>
+    <section className="space-y-3">
+      <div className="rounded-2xl border border-stone-200 bg-white/82 px-4 py-3 shadow-sm">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">Data</p>
+        <h1 className="mt-0.5 text-lg font-semibold text-stone-950">Imports</h1>
       </div>
       <ImportPanel onImport={(request) => importMutation.mutateAsync(request).then(() => undefined)} />
       {importMutation.data && (
-        <p className="rounded-2xl bg-moss/10 p-4 text-moss">
+        <p className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-[13px] font-medium text-emerald-700">
           Imported {importMutation.data.success_count} records into batch {importMutation.data.batch_id}.
         </p>
       )}
-      {importMutation.error && <p className="text-ember">Import failed.</p>}
+      {importMutation.error && <p className="text-[13px] font-medium text-red-700">Import failed.</p>}
     </section>
   );
 }
