@@ -12,7 +12,8 @@
     "test": "vitest",
     "test:run": "vitest run",
     "rust:check": "cd src-tauri && cargo check",
-    "rust:test": "cd src-tauri && cargo test"
+    "rust:test": "cd src-tauri && cargo test",
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.51.1",

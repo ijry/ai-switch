@@ -1,4 +1,10 @@
 pub mod batch_service;
+pub mod cpa_import_service;
 pub mod import_service;
+pub mod route_config_service;
+pub mod route_credential_service;
+pub mod route_pool_service;
+pub mod route_preview_service;
+pub mod route_proxy_service;
 pub mod settings_service;
 pub mod target_service;

@@ -1,6 +1,10 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { useState } from "react";
-import { AppLayout } from "./components/layout/AppLayout";
+import {
+  AppLayout,
+  platformByAgentScreen,
+} from "./components/layout/AppLayout";
+import { I18nProvider } from "./lib/i18n";
 import { createQueryClient } from "./lib/query/queryClient";
 import { AccountsScreen } from "./screens/AccountsScreen";
 import { BatchesScreen } from "./screens/BatchesScreen";
@@ -13,28 +17,49 @@ import { TargetsScreen } from "./screens/TargetsScreen";
 
 const queryClient = createQueryClient();
 
+const agentScreens = new Set([
+  "Codex",
+  "Claude",
+  "Gemini",
+  "OpenCode",
+  "OpenClaw",
+  "Hermes",
+]);
+
+const implementedScreens = new Set([
+  ...agentScreens,
+  "Dashboard",
+  "Batches",
+  "Providers",
+  "Imports",
+  "Targets",
+  "Settings",
+  "Log",
+]);
+
 export function App() {
-  const [screen, setScreen] = useState("Dashboard");
+  const [screen, setScreen] = useState("Codex");
+  const agentPlatform = platformByAgentScreen[screen];
 
   return (
     <QueryClientProvider client={queryClient}>
-      <AppLayout activeScreen={screen} onNavigate={setScreen}>
-        {screen === "Dashboard" && <DashboardScreen />}
-        {screen === "Batches" && <BatchesScreen />}
-        {screen === "Providers" && <ProvidersScreen />}
-        {screen === "Accounts" && <AccountsScreen />}
-        {screen === "Imports" && <ImportsScreen />}
-        {screen === "Targets" && <TargetsScreen />}
-        {screen === "Settings" && <SettingsScreen />}
-        {screen === "Log" && <OperationLogScreen />}
-        {!["Dashboard", "Batches", "Providers", "Accounts", "Imports", "Targets", "Settings", "Log"].includes(
-          screen,
-        ) && (
-          <div className="rounded-3xl border border-ink/10 bg-white/75 p-6 text-steel shadow-sm">
-            {screen} foundation screen.
-          </div>
-        )}
-      </AppLayout>
+      <I18nProvider>
+        <AppLayout activeScreen={screen} onNavigate={setScreen}>
+          {agentPlatform && <AccountsScreen platform={agentPlatform} />}
+          {screen === "Dashboard" && <DashboardScreen />}
+          {screen === "Batches" && <BatchesScreen />}
+          {screen === "Providers" && <ProvidersScreen />}
+          {screen === "Imports" && <ImportsScreen />}
+          {screen === "Targets" && <TargetsScreen />}
+          {screen === "Settings" && <SettingsScreen onOpenFeature={setScreen} />}
+          {screen === "Log" && <OperationLogScreen />}
+          {!implementedScreens.has(screen) && (
+            <div className="rounded-3xl border border-ink/10 bg-white/75 p-6 text-steel shadow-sm">
+              {screen} foundation screen.
+            </div>
+          )}
+        </AppLayout>
+      </I18nProvider>
     </QueryClientProvider>
   );
 }

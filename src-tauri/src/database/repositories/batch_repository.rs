@@ -157,7 +157,53 @@ impl BatchRepository {
             }
         }
 
+        let ungrouped_children = Self::ungrouped_children(pool).await?;
+        let filtered_ungrouped_children: Vec<BatchChild> = match &needle {
+            Some(value) => ungrouped_children
+                .into_iter()
+                .filter(|child| {
+                    "ungrouped".contains(value)
+                        || child.title.to_lowercase().contains(value)
+                        || child
+                            .subtitle
+                            .clone()
+                            .unwrap_or_default()
+                            .to_lowercase()
+                            .contains(value)
+                })
+                .collect(),
+            None => ungrouped_children,
+        };
+
+        if !filtered_ungrouped_children.is_empty() {
+            let now = Utc::now().to_rfc3339();
+            let health = Self::health_for_children(&filtered_ungrouped_children);
+            groups.push(BatchGroup {
+                batch: Batch {
+                    id: "__ungrouped__".to_string(),
+                    name: "Ungrouped".to_string(),
+                    source: "manual".to_string(),
+                    notes: None,
+                    sort_order: i64::MAX,
+                    created_at: now.clone(),
+                    updated_at: now,
+                },
+                health,
+                children: filtered_ungrouped_children,
+            });
+        }
+
         Ok(groups)
+    }
+
+    fn health_for_children(children: &[BatchChild]) -> String {
+        if children.iter().any(|child| child.status == "error") {
+            "error".to_string()
+        } else if children.iter().any(|child| child.status == "warning") {
+            "warning".to_string()
+        } else {
+            "ok".to_string()
+        }
     }
 
     async fn children_for_batch(
@@ -196,6 +242,7 @@ impl BatchRepository {
                             .get::<Option<String>, _>("provider_name")
                             .unwrap_or_default(),
                         subtitle: row.get::<Option<String>, _>("provider_kind"),
+                        platform: None,
                         status: row
                             .get::<Option<String>, _>("provider_status")
                             .unwrap_or_else(|| "error".to_string()),
@@ -210,6 +257,7 @@ impl BatchRepository {
                             .unwrap_or_default(),
                         subtitle: email
                             .or_else(|| row.get::<Option<String>, _>("account_platform")),
+                        platform: row.get::<Option<String>, _>("account_platform"),
                         status: row
                             .get::<Option<String>, _>("account_status")
                             .unwrap_or_else(|| "error".to_string()),
@@ -217,6 +265,74 @@ impl BatchRepository {
                 }
             })
             .collect())
+    }
+
+    async fn ungrouped_children(pool: &SqlitePool) -> Result<Vec<BatchChild>, AppError> {
+        let provider_rows = sqlx::query(
+            "SELECT p.id, p.name, p.kind, p.status
+             FROM providers p
+             WHERE NOT EXISTS (
+               SELECT 1 FROM batch_items bi
+               WHERE bi.item_type = 'provider' AND bi.item_id = p.id
+             )
+             ORDER BY p.sort_order ASC, p.created_at ASC",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.ungrouped_providers",
+            message: "Could not load ungrouped providers".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+
+        let account_rows = sqlx::query(
+            "SELECT a.id, a.display_name, a.platform, a.email, a.status
+             FROM official_accounts a
+             WHERE NOT EXISTS (
+               SELECT 1 FROM batch_items bi
+               WHERE bi.item_type = 'official_account' AND bi.item_id = a.id
+             )
+             ORDER BY a.sort_order ASC, a.created_at ASC",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.ungrouped_accounts",
+            message: "Could not load ungrouped official accounts".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+
+        let mut children = Vec::new();
+        children.extend(provider_rows.into_iter().map(|row| {
+            BatchChild {
+                item_type: "provider".to_string(),
+                id: row.get("id"),
+                title: row.get("name"),
+                subtitle: row.get::<Option<String>, _>("kind"),
+                platform: None,
+                status: row
+                    .get::<Option<String>, _>("status")
+                    .unwrap_or_else(|| "error".to_string()),
+            }
+        }));
+        children.extend(account_rows.into_iter().map(|row| {
+            let email: Option<String> = row.get("email");
+            let platform: Option<String> = row.get("platform");
+            BatchChild {
+                item_type: "official_account".to_string(),
+                id: row.get("id"),
+                title: row.get("display_name"),
+                subtitle: email.or_else(|| platform.clone()),
+                platform,
+                status: row
+                    .get::<Option<String>, _>("status")
+                    .unwrap_or_else(|| "error".to_string()),
+            }
+        }));
+
+        Ok(children)
     }
 }
 
@@ -289,5 +405,35 @@ mod tests {
         assert_eq!(groups[0].batch.name, "July imports");
         assert_eq!(groups[0].health, "ok");
         assert_eq!(groups[0].children.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_groups_returns_ungrouped_accounts() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+
+        AccountRepository::create(
+            &pool,
+            NewOfficialAccount {
+                platform: "codex".to_string(),
+                display_name: "Personal Codex".to_string(),
+                email: Some("me@example.com".to_string()),
+                plan: Some("plus".to_string()),
+                account_metadata_json: "{}".to_string(),
+                secret_ref: None,
+            },
+        )
+        .await
+        .expect("account");
+
+        let groups = BatchRepository::list_groups(&pool, None)
+            .await
+            .expect("groups");
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].batch.id, "__ungrouped__");
+        assert_eq!(groups[0].children.len(), 1);
+        assert_eq!(groups[0].children[0].title, "Personal Codex");
+        assert_eq!(groups[0].children[0].platform.as_deref(), Some("codex"));
     }
 }

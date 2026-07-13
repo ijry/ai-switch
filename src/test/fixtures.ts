@@ -18,6 +18,7 @@ export const batchGroupsFixture: BatchGroup[] = [
         id: "provider-1",
         title: "Acme Claude",
         subtitle: "openai_compatible",
+        platform: null,
         status: "ok",
       },
       {
@@ -25,6 +26,7 @@ export const batchGroupsFixture: BatchGroup[] = [
         id: "account-1",
         title: "Team Account",
         subtitle: "team@example.com",
+        platform: "codex",
         status: "ok",
       },
     ],

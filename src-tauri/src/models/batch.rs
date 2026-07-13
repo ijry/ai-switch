@@ -28,6 +28,7 @@ pub struct BatchChild {
     pub id: String,
     pub title: String,
     pub subtitle: Option<String>,
+    pub platform: Option<String>,
     pub status: String,
 }
 

@@ -16,12 +16,24 @@ export type Batch = {
   updated_at: string;
 };
 
+export type AccountStatus = "ok" | "warning" | "error";
+
+export type RouteCredentialKind = "official" | "api";
+
+export type InterfaceFormat =
+  | "openai"
+  | "openai-responses"
+  | "anthropic"
+  | "anthropic-messages"
+  | "gemini";
+
 export type BatchChild = {
   item_type: "provider" | "official_account";
   id: string;
   title: string;
   subtitle?: string | null;
-  status: "ok" | "warning" | "error";
+  platform?: string | null;
+  status: AccountStatus;
 };
 
 export type BatchGroup = {
@@ -53,10 +65,127 @@ export type OfficialAccount = {
   account_metadata_json: string;
   secret_ref?: string | null;
   quota_snapshot_id?: string | null;
-  status: string;
+  status: AccountStatus;
   sort_order: number;
   created_at: string;
   updated_at: string;
+};
+
+export type NewOfficialAccount = {
+  platform: string;
+  display_name: string;
+  email?: string | null;
+  plan?: string | null;
+  account_metadata_json: string;
+  secret_ref?: string | null;
+};
+
+export type UpdateOfficialAccount = {
+  display_name: string;
+  email?: string | null;
+  plan?: string | null;
+  account_metadata_json: string;
+  secret_ref?: string | null;
+  status: AccountStatus;
+};
+
+export type ModelMapping = {
+  from: string;
+  to: string;
+  label?: string | null;
+};
+
+export type RouteCredential = {
+  id: string;
+  platform: string;
+  kind: RouteCredentialKind;
+  display_name: string;
+  email?: string | null;
+  status: AccountStatus;
+  sort_order: number;
+  batch_id?: string | null;
+  secret_payload_json: string;
+  config_json: string;
+  preview_json: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreateApiRouteCredentialInput = {
+  platform: string;
+  display_name: string;
+  api_key: string;
+  base_url: string;
+  interface_format: InterfaceFormat;
+  model_mappings_json: string;
+  preview_json?: string | null;
+  batch_id?: string | null;
+};
+
+export type UpdateRouteCredentialInput = {
+  display_name: string;
+  email?: string | null;
+  status: AccountStatus;
+  secret_payload_json: string;
+  config_json: string;
+  preview_json: string;
+};
+
+export type RouteCredentialImportResult = {
+  imported: RouteCredential[];
+  failed: Array<{ label: string; error: string }>;
+};
+
+export type RoutePoolUsageLog = {
+  id: string;
+  account_id?: string | null;
+  account_name?: string | null;
+  metric_type: string;
+  amount: number;
+  unit: string;
+  metadata_json: string;
+  created_at: string;
+};
+
+export type RoutePoolStats = {
+  member_count: number;
+  request_count: number;
+  token_count: number;
+  cost_micros: number;
+  recent_logs: RoutePoolUsageLog[];
+};
+
+export type RoutePoolState = {
+  platform: string;
+  account_ids: string[];
+  stats: RoutePoolStats;
+};
+
+export type RoutePoolRouteRequest = {
+  platform: string;
+  token_count?: number | null;
+  cost_micros?: number | null;
+  metadata_json?: string | null;
+};
+
+export type RoutePoolRouteOutcome = {
+  platform: string;
+  selected_account_id: string;
+  selected_account_name: string;
+  stats: RoutePoolStats;
+};
+
+export type RouteProxyStatus = {
+  running: boolean;
+  bind_host: string;
+  port?: number | null;
+  base_url?: string | null;
+};
+
+export type RouteConfigWriteOutcome = {
+  target_key: string;
+  path: string;
+  status: string;
 };
 
 export type ImportJob = {

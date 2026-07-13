@@ -1,0 +1,565 @@
+import { createContext, useContext, useEffect, useState } from "react";
+import type { ReactNode } from "react";
+
+export type Language = "en" | "zh-CN";
+
+const STORAGE_KEY = "ai-switch.language";
+const defaultLanguage: Language = "en";
+
+const en = {
+  "layout.brandBadge": "Command center",
+  "layout.brandSubtitle": "Model switching, target tooling, and automation in one shell.",
+  "layout.language": "Language",
+  "layout.primary": "Primary",
+  "layout.agents": "Agents",
+  "layout.system": "System",
+  "layout.settingsHint": "MCP and other non-core tools live under Settings.",
+  "layout.workspace": "Workspace",
+  "layout.more": "More tools",
+  "layout.secondary": "Secondary",
+  "layout.secondaryHint": "Hidden utilities and diagnostics",
+  "layout.saved": "saved",
+  "nav.dashboard": "Overview",
+  "nav.providers": "AI Models",
+  "nav.imports": "Imports",
+  "nav.accounts": "Accounts",
+  "nav.agent.codex": "Codex",
+  "nav.agent.claude": "Claude",
+  "nav.agent.gemini": "Gemini",
+  "nav.agent.opencode": "OpenCode",
+  "nav.agent.openclaw": "OpenClaw",
+  "nav.agent.hermes": "Hermes",
+  "nav.library": "Library",
+  "nav.targets": "Targets",
+  "nav.routing": "Routing",
+  "nav.mcp": "MCP",
+  "nav.instances": "Instances",
+  "nav.wakeups": "Wakeups",
+  "nav.bulk": "Bulk",
+  "nav.sync": "Sync",
+  "nav.sessions": "Sessions",
+  "nav.updates": "Updates",
+  "nav.settings": "Settings",
+  "nav.log": "Log",
+  "dashboard.kicker": "Foundation",
+  "dashboard.title": "AI Switch",
+  "dashboard.subtitle": "Batch-first provider and official account switching foundation.",
+  "dashboard.card.providers": "Provider metadata",
+  "dashboard.card.targets": "Target adapters",
+  "dashboard.card.imports": "Batch imports",
+  "dashboard.card.detail": "Phase A foundation",
+  "providers.loading": "Loading provider command center...",
+  "providers.error": "Could not load provider switching data.",
+  "providers.empty.title": "No providers yet.",
+  "providers.empty.body": "Import example JSON to create one.",
+  "providers.hero.kicker": "Primary switchboard",
+  "providers.hero.title": "Model providers on the left, target workspaces on the right.",
+  "providers.hero.subtitle":
+    "Pick a target once, then switch providers directly from the cards. Sandbox writes and rollback stay in secondary tools.",
+  "providers.hero.summary.targets": "{count} targets",
+  "providers.hero.summary.providers": "{count} providers",
+  "providers.hero.summary.real": "{count} real-write targets",
+  "providers.tabs.label": "Target apps",
+  "providers.tabs.claude_code": "ClaudeCode",
+  "providers.tabs.claude_desktop": "Claude Desktop",
+  "providers.tabs.codex": "Codex",
+  "providers.tabs.gemini_cli": "Gemini",
+  "providers.tabs.opencode": "OpenCode",
+  "providers.tabs.openclaw": "OpenClaw",
+  "providers.tabs.hermes": "Hermes",
+  "providers.target.enabled": "Enabled",
+  "providers.target.disabled": "Disabled",
+  "providers.target.activeProvider": "Active provider",
+  "providers.target.noProvider": "No provider selected",
+  "providers.target.lastWrite": "Last write",
+  "providers.target.neverWritten": "Never written",
+  "providers.target.lastPath": "Last output path",
+  "providers.target.lastError": "Last error",
+  "providers.target.lastWrittenAt": "Last written at",
+  "providers.target.snapshotOperation": "Snapshot operation",
+  "providers.target.realReady": "Real write available",
+  "providers.target.sandboxReady": "Sandbox tools available",
+  "providers.target.secondaryTitle": "Sandbox and recovery",
+  "providers.target.secondaryBody":
+    "Use this drawer for sandbox writes, rollback, and raw config paths.",
+  "providers.target.sandboxAction": "Switch in sandbox",
+  "providers.target.sandboxActionAria": "Switch {provider} in sandbox",
+  "providers.target.realAction": "Write {target} config",
+  "providers.target.realActionAria": "Switch {provider} {target} config",
+  "providers.target.realUnavailable": "Real write is hidden for this target.",
+  "providers.target.restore": "Restore previous real config",
+  "providers.target.restoring": "Restoring...",
+  "providers.target.restoreError": "Could not restore previous config.",
+  "providers.target.sandboxSuccess": "Wrote sandbox config for {provider} to {target}.",
+  "providers.target.realSuccess": "Wrote {target} config for {provider} to {target}.",
+  "providers.target.failure": "Provider switch failed.",
+  "providers.target.noProviders": "No providers yet. Import example JSON to create one.",
+  "providers.provider.heading": "Provider roster",
+  "providers.provider.subheading":
+    "Each card keeps the provider metadata visible while routing it into the selected target.",
+  "providers.provider.kind": "Kind",
+  "providers.provider.baseUrl": "Base URL",
+  "providers.provider.model": "Model",
+  "providers.provider.status": "Status",
+  "providers.provider.primary": "Activate for {target}",
+  "providers.provider.primaryAria": "Switch {provider} {target} config",
+  "providers.provider.sandboxHint": "Sandbox writes live under the app data directory.",
+  "providers.provider.sandboxToggle": "Open sandbox tools",
+  "providers.provider.advancedHint": "Advanced switching, rollback, and output paths.",
+  "providers.provider.noModel": "Model config hidden",
+  "providers.provider.noUrl": "No base URL",
+  "providers.provider.currentTarget": "Current target",
+  "providers.provider.targetState": "Current state",
+  "providers.provider.statusBadge": "Ready",
+  "providers.provider.disabledTarget": "Target disabled",
+  "providers.provider.activeSummary": "Active provider: {provider}",
+  "providers.provider.pathSummary": "Latest path: {path}",
+  "providers.provider.writeSummary": "Last write: {status}",
+  "providers.provider.rollBackSummary": "Rollback available",
+  "providers.provider.unavailable": "No provider yet",
+  "providers.provider.supportedReal": "Real writes supported",
+  "providers.provider.unsupportedReal": "Sandbox only",
+  "providers.provider.successDetail": "{mode} write completed",
+  "providers.provider.failureDetail": "Last write failed",
+  "providers.provider.switchModeSandbox": "sandbox",
+  "providers.provider.switchModeReal": "real",
+  "providers.provider.selected": "Selected",
+  "providers.provider.targetKey": "Key",
+  "providers.provider.targetDisplay": "Display name",
+  "providers.provider.targetPath": "Output path",
+  "providers.provider.previewTitle": "Selected target",
+  "providers.provider.previewSubtitle": "Switching actions for the current target stay on the right.",
+  "providers.provider.previewPath": "Path",
+  "providers.provider.previewStatus": "Status",
+  "providers.provider.previewProvider": "Provider",
+  "providers.provider.previewMode": "Mode",
+  "providers.provider.previewRollback": "Rollback",
+  "providers.provider.previewEmpty": "No target selected.",
+  "providers.provider.previewCurrent": "Current provider",
+  "providers.provider.previewLastWrite": "Last write status",
+  "providers.provider.previewLastError": "Last error code",
+  "providers.provider.previewNoHistory": "No write history yet.",
+  "providers.provider.previewSecondary": "Keep real writes on top. Sandbox and recovery stay one click deeper.",
+  "providers.provider.previewSummary": "Switch the selected target without leaving this command center.",
+  "providers.provider.secondaryEntry": "More switch tools",
+  "providers.provider.secondaryEntryHint": "Sandbox and recovery stay tucked away here.",
+  "providers.provider.cardTitle": "{provider} on {target}",
+  "providers.provider.cardCaption": "{kind} • {baseUrl}",
+  "providers.provider.cardStatus": "{status}",
+  "providers.provider.cardModel": "Model config",
+  "providers.provider.cardSecret": "Secret refs stay redacted",
+  "providers.provider.cardSandbox": "Sandbox preview",
+  "providers.provider.cardAdvanced": "Advanced details",
+  "providers.provider.cardOpenTools": "Open secondary tools",
+  "providers.provider.cardWrite": "Write target config",
+  "providers.provider.cardSandboxExplain": "Sandbox writes and rollback are grouped here.",
+  "providers.provider.cardRealExplain": "Primary action writes the selected target config.",
+  "providers.provider.cardActionUnavailable": "This target only exposes sandbox tools.",
+  "providers.provider.cardState": "State",
+  "providers.provider.cardWriteAt": "Written",
+  "providers.provider.cardPath": "Path",
+  "providers.provider.cardSnapshot": "Snapshot",
+  "providers.provider.cardError": "Error",
+  "providers.provider.cardNoSnapshot": "No snapshot yet",
+  "providers.provider.cardRestore": "Restore previous real config",
+  "providers.provider.cardRestoring": "Restoring...",
+  "providers.provider.cardSandboxButton": "Switch in sandbox",
+  "providers.provider.cardSandboxButtonAria": "Switch {provider} in sandbox",
+  "providers.provider.cardRealButton": "Write {target} config",
+  "providers.provider.cardRealButtonAria": "Switch {provider} {target} config",
+  "providers.provider.cardSandboxSuccess": "Wrote sandbox config for {provider} to {target}.",
+  "providers.provider.cardRealSuccess": "Wrote {target} config for {provider} to {target}.",
+  "providers.provider.cardFailure": "Provider switch failed.",
+  "providers.provider.cardUnsupported": "Real write is hidden for this target.",
+  "settings.loading": "Loading settings...",
+  "settings.error": "Could not load settings.",
+  "settings.title": "Settings",
+  "settings.hub.kicker": "System hub",
+  "settings.hub.subtitle": "Core agents stay on the left. Put MCP and other secondary tools here.",
+  "settings.features.title": "Feature entries",
+  "settings.features.subtitle": "Open non-core tools without cluttering the primary agent navigation.",
+  "settings.app.title": "App preferences",
+  "settings.app.subtitle": "Language, theme, and data location.",
+  "settings.feature.dashboard": "Foundation overview and health summary.",
+  "settings.feature.providers": "Provider metadata and model switching tools.",
+  "settings.feature.imports": "Batch import workflows.",
+  "settings.feature.library": "Shared assets and library entries.",
+  "settings.feature.targets": "Target adapter diagnostics and rollback.",
+  "settings.feature.routing": "Routing policies and advanced route tools.",
+  "settings.feature.mcp": "MCP server management.",
+  "settings.feature.instances": "Managed instances.",
+  "settings.feature.wakeups": "Wakeup task automation.",
+  "settings.feature.bulk": "Bulk operations.",
+  "settings.feature.sync": "Sync profiles and transfers.",
+  "settings.feature.sessions": "Session records.",
+  "settings.feature.updates": "Updater channels and releases.",
+  "settings.feature.log": "Operation logs.",
+  "settings.dataDir": "Data directory: {path}",
+  "settings.themeToggle": "Toggle theme value",
+  "settings.saved": "Settings saved.",
+  "settings.saveError": "Could not save settings.",
+  "settings.language": "Language",
+  "settings.languageEnglish": "English",
+  "settings.languageChinese": "Simplified Chinese",
+  "targets.loading": "Loading targets...",
+  "targets.error": "Could not load targets.",
+  "targets.title": "Targets",
+  "targets.subtitle": "Switch state and rollback controls for supported target apps.",
+  "targets.activeProvider": "Active provider: {provider}",
+  "targets.noProvider": "Active provider: No provider selected",
+  "targets.lastWrite": "Last write: {status}",
+  "targets.neverWritten": "Last write: Never written",
+  "targets.lastError": "Last error: {code}",
+  "targets.lastWrittenAt": "Last written at: {time}",
+  "targets.lastSnapshotPath": "Last path: {path}",
+  "targets.snapshotOperation": "Snapshot operation: {operation}",
+  "targets.restore": "Restore previous real config",
+  "targets.restoring": "Restoring...",
+  "targets.restoreError": "Could not restore previous config.",
+  "targets.enabled": "Enabled",
+  "targets.disabled": "Disabled",
+  "targets.rollbackReady": "Rollback ready",
+  "targets.noRollback": "No rollback available",
+  "targets.currentNone": "No provider selected",
+  "targets.targetKey": "Key",
+  "targets.targetDisplay": "Display name",
+  "targets.targetStatus": "Status",
+  "targets.targetHistory": "History",
+  "targets.targetPath": "Last path",
+  "targets.targetState": "State",
+  "targets.targetSummary": "Target summary",
+  "targets.targetHint": "This screen keeps diagnostics and rollback out of the primary switchboard.",
+  "targets.targetEmpty": "No target data available.",
+} as const;
+
+const zh = {
+  "layout.brandBadge": "指挥中心",
+  "layout.brandSubtitle": "模型切换、目标工具和自动化都放在一个壳里。",
+  "layout.language": "语言",
+  "layout.primary": "主入口",
+  "layout.agents": "智能体",
+  "layout.system": "系统",
+  "layout.settingsHint": "MCP 和其他非核心功能统一放在设置里。",
+  "layout.workspace": "工作区",
+  "layout.more": "更多工具",
+  "layout.secondary": "二级入口",
+  "layout.secondaryHint": "隐藏的工具和诊断面板",
+  "layout.saved": "已保存",
+  "nav.dashboard": "总览",
+  "nav.providers": "AI 模型",
+  "nav.imports": "导入",
+  "nav.accounts": "账号",
+  "nav.agent.codex": "Codex",
+  "nav.agent.claude": "Claude",
+  "nav.agent.gemini": "Gemini",
+  "nav.agent.opencode": "OpenCode",
+  "nav.agent.openclaw": "OpenClaw",
+  "nav.agent.hermes": "Hermes",
+  "nav.library": "资源库",
+  "nav.targets": "目标",
+  "nav.routing": "路由",
+  "nav.mcp": "MCP",
+  "nav.instances": "实例",
+  "nav.wakeups": "唤醒任务",
+  "nav.bulk": "批量",
+  "nav.sync": "同步",
+  "nav.sessions": "会话",
+  "nav.updates": "更新",
+  "nav.settings": "设置",
+  "nav.log": "日志",
+  "dashboard.kicker": "基础层",
+  "dashboard.title": "AI Switch",
+  "dashboard.subtitle": "以批量为中心的供应商与官方账号切换基础层。",
+  "dashboard.card.providers": "供应商元数据",
+  "dashboard.card.targets": "目标适配器",
+  "dashboard.card.imports": "批量导入",
+  "dashboard.card.detail": "A 阶段基础层",
+  "providers.loading": "正在加载模型指挥台...",
+  "providers.error": "无法加载供应商切换数据。",
+  "providers.empty.title": "还没有供应商。",
+  "providers.empty.body": "导入示例 JSON 先创建一个。",
+  "providers.hero.kicker": "主切换台",
+  "providers.hero.title": "左边管模型供应，右边管目标工作区。",
+  "providers.hero.subtitle": "先选目标，再从卡片直接切换供应商。沙盒写入和回滚保留在二级工具里。",
+  "providers.hero.summary.targets": "{count} 个目标",
+  "providers.hero.summary.providers": "{count} 个供应商",
+  "providers.hero.summary.real": "{count} 个支持真写",
+  "providers.tabs.label": "目标应用",
+  "providers.tabs.claude_code": "ClaudeCode",
+  "providers.tabs.claude_desktop": "Claude Desktop",
+  "providers.tabs.codex": "Codex",
+  "providers.tabs.gemini_cli": "Gemini",
+  "providers.tabs.opencode": "OpenCode",
+  "providers.tabs.openclaw": "OpenClaw",
+  "providers.tabs.hermes": "Hermes",
+  "providers.target.enabled": "已启用",
+  "providers.target.disabled": "已禁用",
+  "providers.target.activeProvider": "当前供应商",
+  "providers.target.noProvider": "未选择供应商",
+  "providers.target.lastWrite": "最近写入",
+  "providers.target.neverWritten": "从未写入",
+  "providers.target.lastPath": "最近输出路径",
+  "providers.target.lastError": "最近错误",
+  "providers.target.lastWrittenAt": "最近写入时间",
+  "providers.target.snapshotOperation": "快照操作",
+  "providers.target.realReady": "支持真写",
+  "providers.target.sandboxReady": "支持沙盒工具",
+  "providers.target.secondaryTitle": "沙盒与回滚",
+  "providers.target.secondaryBody": "这个抽屉放沙盒写入、回滚和原始配置路径。",
+  "providers.target.sandboxAction": "写入沙盒",
+  "providers.target.sandboxActionAria": "将 {provider} 写入沙盒",
+  "providers.target.realAction": "写入 {target} 配置",
+  "providers.target.realActionAria": "将 {provider} 切到 {target} 配置",
+  "providers.target.realUnavailable": "该目标隐藏真写入口。",
+  "providers.target.restore": "恢复上一个真实配置",
+  "providers.target.restoring": "正在恢复...",
+  "providers.target.restoreError": "无法恢复上一个配置。",
+  "providers.target.sandboxSuccess": "已将 {provider} 的沙盒配置写到 {target}。",
+  "providers.target.realSuccess": "已将 {provider} 的 {target} 配置写到 {target}。",
+  "providers.target.failure": "供应商切换失败。",
+  "providers.target.noProviders": "还没有供应商。导入示例 JSON 先创建一个。",
+  "providers.provider.heading": "供应商列表",
+  "providers.provider.subheading": "每张卡都保留供应商元数据可见，同时路由到当前选中的目标。",
+  "providers.provider.kind": "类型",
+  "providers.provider.baseUrl": "基础地址",
+  "providers.provider.model": "模型",
+  "providers.provider.status": "状态",
+  "providers.provider.primary": "应用到 {target}",
+  "providers.provider.primaryAria": "将 {provider} 写入 {target} 配置",
+  "providers.provider.sandboxHint": "沙盒写入都在应用数据目录里。",
+  "providers.provider.sandboxToggle": "打开沙盒工具",
+  "providers.provider.advancedHint": "高级切换、回滚和输出路径。",
+  "providers.provider.noModel": "模型配置隐藏",
+  "providers.provider.noUrl": "没有基础地址",
+  "providers.provider.currentTarget": "当前目标",
+  "providers.provider.targetState": "当前状态",
+  "providers.provider.statusBadge": "就绪",
+  "providers.provider.disabledTarget": "目标已禁用",
+  "providers.provider.activeSummary": "当前供应商：{provider}",
+  "providers.provider.pathSummary": "最新路径：{path}",
+  "providers.provider.writeSummary": "最近写入：{status}",
+  "providers.provider.rollBackSummary": "可回滚",
+  "providers.provider.unavailable": "暂未配置供应商",
+  "providers.provider.supportedReal": "支持真写",
+  "providers.provider.unsupportedReal": "仅沙盒",
+  "providers.provider.successDetail": "{mode} 写入完成",
+  "providers.provider.failureDetail": "最近写入失败",
+  "providers.provider.switchModeSandbox": "沙盒",
+  "providers.provider.switchModeReal": "真实",
+  "providers.provider.selected": "已选",
+  "providers.provider.targetKey": "键名",
+  "providers.provider.targetDisplay": "显示名",
+  "providers.provider.targetPath": "输出路径",
+  "providers.provider.previewTitle": "选中的目标",
+  "providers.provider.previewSubtitle": "针对当前目标的切换动作都放在右侧。",
+  "providers.provider.previewPath": "路径",
+  "providers.provider.previewStatus": "状态",
+  "providers.provider.previewProvider": "供应商",
+  "providers.provider.previewMode": "模式",
+  "providers.provider.previewRollback": "回滚",
+  "providers.provider.previewEmpty": "还没有选择目标。",
+  "providers.provider.previewCurrent": "当前供应商",
+  "providers.provider.previewLastWrite": "最近写入状态",
+  "providers.provider.previewLastError": "最近错误码",
+  "providers.provider.previewNoHistory": "还没有写入历史。",
+  "providers.provider.previewSecondary": "真写放前面，沙盒和回滚只需要再点一下抽屉。",
+  "providers.provider.previewSummary": "不用离开这个指挥台，就能切换当前目标。",
+  "providers.provider.secondaryEntry": "更多切换工具",
+  "providers.provider.secondaryEntryHint": "沙盒和回滚都收在这里。",
+  "providers.provider.cardTitle": "{provider} · {target}",
+  "providers.provider.cardCaption": "{kind} • {baseUrl}",
+  "providers.provider.cardStatus": "{status}",
+  "providers.provider.cardModel": "模型配置",
+  "providers.provider.cardSecret": "密钥引用会被打码",
+  "providers.provider.cardSandbox": "沙盒预览",
+  "providers.provider.cardAdvanced": "高级详情",
+  "providers.provider.cardOpenTools": "打开二级工具",
+  "providers.provider.cardWrite": "写入目标配置",
+  "providers.provider.cardSandboxExplain": "沙盒写入和回滚都放在这里。",
+  "providers.provider.cardRealExplain": "主动作会写入当前选中的目标配置。",
+  "providers.provider.cardActionUnavailable": "这个目标只暴露沙盒工具。",
+  "providers.provider.cardState": "状态",
+  "providers.provider.cardWriteAt": "写入时间",
+  "providers.provider.cardPath": "路径",
+  "providers.provider.cardSnapshot": "快照",
+  "providers.provider.cardError": "错误",
+  "providers.provider.cardNoSnapshot": "还没有快照",
+  "providers.provider.cardRestore": "恢复上一个真实配置",
+  "providers.provider.cardRestoring": "正在恢复...",
+  "providers.provider.cardSandboxButton": "写入沙盒",
+  "providers.provider.cardSandboxButtonAria": "将 {provider} 写入沙盒",
+  "providers.provider.cardRealButton": "写入 {target} 配置",
+  "providers.provider.cardRealButtonAria": "将 {provider} 切到 {target} 配置",
+  "providers.provider.cardSandboxSuccess": "已将 {provider} 的沙盒配置写到 {target}。",
+  "providers.provider.cardRealSuccess": "已将 {provider} 的 {target} 配置写到 {target}。",
+  "providers.provider.cardFailure": "供应商切换失败。",
+  "providers.provider.cardUnsupported": "该目标隐藏真写入口。",
+  "settings.loading": "正在加载设置...",
+  "settings.error": "无法加载设置。",
+  "settings.title": "设置",
+  "settings.hub.kicker": "系统中枢",
+  "settings.hub.subtitle": "左侧只保留智能体；MCP 和其他非核心入口统一放在这里。",
+  "settings.features.title": "功能入口",
+  "settings.features.subtitle": "不把二级工具挤进主导航。",
+  "settings.app.title": "应用设置",
+  "settings.app.subtitle": "语言、主题和数据目录。",
+  "settings.feature.dashboard": "基础总览和状态摘要。",
+  "settings.feature.providers": "供应商元数据和模型切换工具。",
+  "settings.feature.imports": "批量导入流程。",
+  "settings.feature.library": "共享资源库。",
+  "settings.feature.targets": "目标适配器诊断与回滚。",
+  "settings.feature.routing": "路由策略与高级路由工具。",
+  "settings.feature.mcp": "MCP 服务管理。",
+  "settings.feature.instances": "受管实例。",
+  "settings.feature.wakeups": "唤醒任务自动化。",
+  "settings.feature.bulk": "批量操作。",
+  "settings.feature.sync": "同步配置与传输。",
+  "settings.feature.sessions": "会话记录。",
+  "settings.feature.updates": "更新通道与发布。",
+  "settings.feature.log": "操作日志。",
+  "settings.dataDir": "数据目录：{path}",
+  "settings.themeToggle": "切换主题值",
+  "settings.saved": "设置已保存。",
+  "settings.saveError": "无法保存设置。",
+  "settings.language": "语言",
+  "settings.languageEnglish": "English",
+  "settings.languageChinese": "简体中文",
+  "targets.loading": "正在加载目标...",
+  "targets.error": "无法加载目标。",
+  "targets.title": "目标",
+  "targets.subtitle": "支持目标应用的切换状态和回滚控制。",
+  "targets.activeProvider": "当前供应商：{provider}",
+  "targets.noProvider": "当前供应商：未选择供应商",
+  "targets.lastWrite": "最近写入：{status}",
+  "targets.neverWritten": "最近写入：从未写入",
+  "targets.lastError": "最近错误：{code}",
+  "targets.lastWrittenAt": "最近写入时间：{time}",
+  "targets.lastSnapshotPath": "最近路径：{path}",
+  "targets.snapshotOperation": "快照操作：{operation}",
+  "targets.restore": "恢复上一个真实配置",
+  "targets.restoring": "正在恢复...",
+  "targets.restoreError": "无法恢复上一个配置。",
+  "targets.enabled": "已启用",
+  "targets.disabled": "已禁用",
+  "targets.rollbackReady": "可回滚",
+  "targets.noRollback": "没有可回滚内容",
+  "targets.currentNone": "未选择供应商",
+  "targets.targetKey": "键名",
+  "targets.targetDisplay": "显示名",
+  "targets.targetStatus": "状态",
+  "targets.targetHistory": "历史",
+  "targets.targetPath": "最近路径",
+  "targets.targetState": "状态",
+  "targets.targetSummary": "目标摘要",
+  "targets.targetHint": "这个页面把诊断和回滚留在主切换台之外。",
+  "targets.targetEmpty": "没有目标数据。",
+} as const satisfies Record<keyof typeof en, string>;
+
+const dictionaries = {
+  en,
+  "zh-CN": zh,
+} as const;
+
+export const supportedLanguages: Array<{
+  code: Language;
+  label: string;
+}> = [
+  { code: "en", label: en["settings.languageEnglish"] },
+  { code: "zh-CN", label: en["settings.languageChinese"] },
+];
+
+type TranslationKey = keyof typeof en;
+type TranslationParams = Record<string, string | number>;
+
+function readStoredLanguage(): Language | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const stored = window.localStorage.getItem(STORAGE_KEY);
+  if (!stored) {
+    return null;
+  }
+
+  return normalizeLanguage(stored);
+}
+
+export function normalizeLanguage(language?: string | null): Language {
+  const value = (language ?? "").trim().toLowerCase();
+  if (value.startsWith("zh")) {
+    return "zh-CN";
+  }
+  if (value.startsWith("en")) {
+    return "en";
+  }
+  return defaultLanguage;
+}
+
+function format(template: string, params?: TranslationParams): string {
+  if (!params) {
+    return template;
+  }
+
+  return template.replace(/\{(\w+)\}/g, (_, key: string) => {
+    const value = params[key];
+    return value === undefined || value === null ? "" : String(value);
+  });
+}
+
+function getDocumentLanguage(language: Language) {
+  if (typeof document !== "undefined") {
+    document.documentElement.lang = language;
+  }
+}
+
+type I18nContextValue = {
+  language: Language;
+  setLanguage: (language: Language) => void;
+  t: (key: TranslationKey, params?: TranslationParams) => string;
+};
+
+const fallbackT: I18nContextValue["t"] = (key, params) => format(en[key], params);
+
+const I18nContext = createContext<I18nContextValue>({
+  language: defaultLanguage,
+  setLanguage: () => undefined,
+  t: fallbackT,
+});
+
+export function I18nProvider({
+  children,
+  initialLanguage = defaultLanguage,
+}: {
+  children: ReactNode;
+  initialLanguage?: Language;
+}) {
+  const [language, setLanguageState] = useState<Language>(() => {
+    return readStoredLanguage() ?? normalizeLanguage(initialLanguage);
+  });
+
+  useEffect(() => {
+    getDocumentLanguage(language);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(STORAGE_KEY, language);
+    }
+  }, [language]);
+
+  const setLanguage = (nextLanguage: Language) => {
+    setLanguageState(normalizeLanguage(nextLanguage));
+  };
+
+  const t: I18nContextValue["t"] = (key, params) => {
+    const dictionary = dictionaries[language] ?? dictionaries[defaultLanguage];
+    return format(dictionary[key], params);
+  };
+
+  return (
+    <I18nContext.Provider value={{ language, setLanguage, t }}>
+      {children}
+    </I18nContext.Provider>
+  );
+}
+
+export function useI18n() {
+  return useContext(I18nContext);
+}

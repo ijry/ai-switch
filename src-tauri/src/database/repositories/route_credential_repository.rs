@@ -153,16 +153,17 @@ impl RouteCredentialRepository {
     }
 
     pub async fn platform_of(pool: &SqlitePool, id: &str) -> Result<String, AppError> {
-        let row = sqlx::query_scalar::<_, String>("SELECT platform FROM route_credentials WHERE id = ?")
-            .bind(id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|err| AppError::Database {
-                code: "database.route_credential_platform",
-                message: "Could not load route credential platform".to_string(),
-                details: Some(err.to_string()),
-                recoverable: true,
-            })?;
+        let row =
+            sqlx::query_scalar::<_, String>("SELECT platform FROM route_credentials WHERE id = ?")
+                .bind(id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|err| AppError::Database {
+                    code: "database.route_credential_platform",
+                    message: "Could not load route credential platform".to_string(),
+                    details: Some(err.to_string()),
+                    recoverable: true,
+                })?;
 
         row.ok_or_else(|| AppError::Validation {
             code: "validation.route_credential_not_found",

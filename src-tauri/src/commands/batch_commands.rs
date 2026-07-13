@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::error::ApiError;
-use crate::models::account::{NewOfficialAccount, OfficialAccount};
+use crate::models::account::{NewOfficialAccount, OfficialAccount, UpdateOfficialAccount};
 use crate::models::batch::{Batch, BatchGroup, NewBatch};
 use crate::models::provider::{NewProvider, Provider};
 use crate::services::batch_service::BatchService;
@@ -17,6 +17,12 @@ pub struct CreateProviderRequest {
 pub struct CreateAccountRequest {
     pub account: NewOfficialAccount,
     pub batch_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateAccountRequest {
+    pub id: String,
+    pub account: UpdateOfficialAccount,
 }
 
 #[tauri::command]
@@ -52,6 +58,26 @@ pub async fn create_official_account(
     request: CreateAccountRequest,
 ) -> Result<OfficialAccount, ApiError> {
     BatchService::create_official_account(&state.pool, request.account, request.batch_id)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn get_official_account(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<OfficialAccount, ApiError> {
+    BatchService::get_official_account(&state.pool, id)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn update_official_account(
+    state: State<'_, AppState>,
+    input: UpdateAccountRequest,
+) -> Result<OfficialAccount, ApiError> {
+    BatchService::update_official_account(&state.pool, input.id, input.account)
         .await
         .map_err(ApiError::from)
 }

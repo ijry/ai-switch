@@ -26,3 +26,13 @@ pub struct NewOfficialAccount {
     pub account_metadata_json: String,
     pub secret_ref: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateOfficialAccount {
+    pub display_name: String,
+    pub email: Option<String>,
+    pub plan: Option<String>,
+    pub account_metadata_json: String,
+    pub secret_ref: Option<String>,
+    pub status: String,
+}
