@@ -2,6 +2,7 @@ mod adapters;
 mod app_state;
 mod commands;
 mod config_writer;
+mod core;
 mod database;
 mod error;
 mod importers;
@@ -11,6 +12,7 @@ mod security;
 mod services;
 mod session_manager;
 mod terminal_manager;
+mod web;
 
 use app_state::AppState;
 use commands::batch_commands::{

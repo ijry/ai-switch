@@ -5,8 +5,9 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tauri::Emitter;
 use uuid::Uuid;
+
+use crate::web::event_bridge::EventEmitter;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -137,7 +138,7 @@ pub fn resolve_launch_command(
 impl TerminalManager {
     pub fn create_session(
         &self,
-        app: tauri::AppHandle,
+        emitter: EventEmitter,
         input: CreateTerminalSessionInput,
     ) -> Result<TerminalSession, String> {
         validate_launch_input(&input)?;
@@ -212,7 +213,7 @@ impl TerminalManager {
             },
         );
 
-        let output_app = app.clone();
+        let output_emitter = emitter.clone();
         let output_id = id.clone();
         std::thread::spawn(move || {
             let mut buffer = [0_u8; 8192];
@@ -221,18 +222,18 @@ impl TerminalManager {
                     Ok(0) => break,
                     Ok(count) => {
                         let data = String::from_utf8_lossy(&buffer[..count]).to_string();
-                        let _ = output_app.emit(
+                        output_emitter.emit(
                             "terminal://output",
-                            TerminalOutputEvent {
+                            &TerminalOutputEvent {
                                 session_id: output_id.clone(),
                                 data,
                             },
                         );
                     }
                     Err(error) => {
-                        let _ = output_app.emit(
+                        output_emitter.emit(
                             "terminal://error",
-                            TerminalErrorEvent {
+                            &TerminalErrorEvent {
                                 session_id: output_id.clone(),
                                 message: format!("Failed to read terminal output: {error}"),
                             },
@@ -243,7 +244,7 @@ impl TerminalManager {
             }
         });
 
-        let exit_app = app;
+        let exit_emitter = emitter;
         let exit_id = id.clone();
         let sessions = Arc::clone(&self.sessions);
         std::thread::spawn(move || match child.wait() {
@@ -251,9 +252,9 @@ impl TerminalManager {
                 if let Some(process) = sessions.lock().unwrap().get_mut(&exit_id) {
                     process.meta.status = TerminalStatus::Exited;
                 }
-                let _ = exit_app.emit(
+                exit_emitter.emit(
                     "terminal://exit",
-                    TerminalExitEvent {
+                    &TerminalExitEvent {
                         session_id: exit_id,
                         exit_code: Some(status.exit_code() as i32),
                     },
@@ -263,9 +264,9 @@ impl TerminalManager {
                 if let Some(process) = sessions.lock().unwrap().get_mut(&exit_id) {
                     process.meta.status = TerminalStatus::Error;
                 }
-                let _ = exit_app.emit(
+                exit_emitter.emit(
                     "terminal://error",
-                    TerminalErrorEvent {
+                    &TerminalErrorEvent {
                         session_id: exit_id,
                         message: format!("Failed to wait for terminal exit: {error}"),
                     },
