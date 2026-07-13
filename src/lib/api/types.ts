@@ -221,3 +221,20 @@ export type AppSettings = {
   secret_storage: string;
   data_dir: string;
 };
+
+export type SessionMeta = {
+  providerId: string;
+  sessionId: string;
+  title?: string | null;
+  projectDir?: string | null;
+  createdAt?: number | null;
+  lastActiveAt?: number | null;
+  sourcePath: string;
+  resumeCommand?: string | null;
+};
+
+export type SessionMessage = {
+  role: string;
+  content: string;
+  ts?: number | null;
+};

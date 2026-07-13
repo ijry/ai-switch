@@ -14,6 +14,8 @@ import type {
   RoutePoolRouteRequest,
   RoutePoolState,
   RouteProxyStatus,
+  SessionMessage,
+  SessionMeta,
   TargetApp,
   UpdateOfficialAccount,
   UpdateRouteCredentialInput,
@@ -134,4 +136,18 @@ export function updateRouteCredential(
 
 export function deleteRouteCredential(id: string): Promise<void> {
   return invoke("delete_route_credential", { id });
+}
+
+export function listSessions(platform?: string | null): Promise<SessionMeta[]> {
+  return invoke("list_sessions", { platform: platform ?? null });
+}
+
+export function getSessionMessages(input: {
+  providerId: string;
+  sourcePath: string;
+}): Promise<SessionMessage[]> {
+  return invoke("get_session_messages", {
+    providerId: input.providerId,
+    sourcePath: input.sourcePath,
+  });
 }

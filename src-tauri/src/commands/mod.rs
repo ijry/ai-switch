@@ -4,4 +4,5 @@ pub mod route_credential_commands;
 pub mod route_pool_commands;
 pub mod route_proxy_commands;
 pub mod settings_commands;
+pub mod session_commands;
 pub mod target_commands;

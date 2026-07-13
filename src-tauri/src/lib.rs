@@ -8,6 +8,7 @@ mod importers;
 mod models;
 mod paths;
 mod security;
+mod session_manager;
 mod services;
 
 use app_state::AppState;
@@ -28,6 +29,7 @@ use commands::route_proxy_commands::{
     get_route_proxy_status, start_route_proxy, stop_route_proxy, write_route_proxy_configs,
 };
 use commands::settings_commands::{get_settings, save_settings};
+use commands::session_commands::{get_session_messages, list_sessions};
 use commands::target_commands::list_target_apps;
 use database::open_migrated_pool;
 use paths::AppPaths;
@@ -43,7 +45,9 @@ pub fn run() {
     });
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState {
             paths,
             pool,
@@ -73,6 +77,8 @@ pub fn run() {
             stop_route_proxy,
             get_route_proxy_status,
             write_route_proxy_configs,
+            list_sessions,
+            get_session_messages,
             list_target_apps
         ])
         .run(tauri::generate_context!())

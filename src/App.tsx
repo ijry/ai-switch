@@ -12,8 +12,10 @@ import { DashboardScreen } from "./screens/DashboardScreen";
 import { ImportsScreen } from "./screens/ImportsScreen";
 import { OperationLogScreen } from "./screens/OperationLogScreen";
 import { ProvidersScreen } from "./screens/ProvidersScreen";
+import { SessionsScreen } from "./screens/SessionsScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { TargetsScreen } from "./screens/TargetsScreen";
+import { UpdatesScreen } from "./screens/UpdatesScreen";
 
 const queryClient = createQueryClient();
 
@@ -34,6 +36,8 @@ const implementedScreens = new Set([
   "Imports",
   "Targets",
   "Settings",
+  "Sessions",
+  "Updates",
   "Log",
 ]);
 
@@ -51,11 +55,13 @@ export function App() {
           {screen === "Providers" && <ProvidersScreen />}
           {screen === "Imports" && <ImportsScreen />}
           {screen === "Targets" && <TargetsScreen />}
+          {screen === "Sessions" && <SessionsScreen />}
+          {screen === "Updates" && <UpdatesScreen />}
           {screen === "Settings" && <SettingsScreen onOpenFeature={setScreen} />}
           {screen === "Log" && <OperationLogScreen />}
           {!implementedScreens.has(screen) && (
-            <div className="rounded-3xl border border-ink/10 bg-white/75 p-6 text-steel shadow-sm">
-              {screen} foundation screen.
+            <div className="rounded-2xl border border-stone-200 bg-white/80 p-5 text-sm text-stone-500 shadow-sm">
+              {screen}
             </div>
           )}
         </AppLayout>
