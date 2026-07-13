@@ -4,6 +4,7 @@ import {
   Edit3,
   FileCode2,
   KeyRound,
+  MessageSquareText,
   Play,
   Plus,
   Power,
@@ -39,6 +40,7 @@ type CreateMode = "official-single" | "official-bulk" | "api";
 
 type AccountsScreenProps = {
   platform?: PlatformKey;
+  onOpenSessions?: (platform: PlatformKey) => void;
 };
 
 const platformLabels: Record<PlatformKey, string> = {
@@ -95,7 +97,7 @@ function decodeBase64Text(value: string) {
   return new TextDecoder().decode(bytes);
 }
 
-export function AccountsScreen({ platform = "codex" }: AccountsScreenProps) {
+export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsScreenProps) {
   const queryClient = useQueryClient();
   const activePlatform = platform;
   const [draftPoolIds, setDraftPoolIds] = useState<Set<string>>(() => new Set());
@@ -345,15 +347,46 @@ export function AccountsScreen({ platform = "codex" }: AccountsScreenProps) {
             </p>
             <h1 className="mt-0.5 text-lg font-semibold tracking-tight text-stone-950">账号列表</h1>
           </div>
-          <button
-            className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-stone-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
-            onClick={() => setCreateOpen(true)}
-            type="button"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            新增账号
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[13px] font-semibold text-emerald-900 shadow-sm transition-colors hover:bg-emerald-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
+              onClick={() => onOpenSessions?.(activePlatform)}
+              type="button"
+            >
+              <MessageSquareText className="h-3.5 w-3.5" />
+              会话管理
+            </button>
+            <button
+              className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-stone-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+              onClick={() => setCreateOpen(true)}
+              type="button"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              新增账号
+            </button>
+          </div>
         </div>
+
+        <button
+          className="mx-4 mt-3 flex w-[calc(100%-2rem)] cursor-pointer items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-gradient-to-r from-emerald-50 to-white px-3 py-2.5 text-left transition-colors hover:border-emerald-300 hover:from-emerald-100"
+          onClick={() => onOpenSessions?.(activePlatform)}
+          type="button"
+        >
+          <span className="flex min-w-0 items-center gap-2.5">
+            <span className="grid h-9 w-9 place-items-center rounded-xl bg-emerald-600 text-white shadow-sm">
+              <MessageSquareText className="h-4 w-4" />
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate text-[13px] font-semibold text-stone-950">
+                查看 {platformLabels[activePlatform]} 本机会话
+              </span>
+              <span className="block truncate text-[12px] text-stone-500">
+                搜索历史对话、复制恢复命令并回到正确项目目录。
+              </span>
+            </span>
+          </span>
+          <span className="shrink-0 text-[12px] font-semibold text-emerald-700">打开</span>
+        </button>
 
         <div className="flex flex-col gap-3 px-4 py-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="flex flex-wrap items-center gap-2">

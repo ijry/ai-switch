@@ -43,21 +43,34 @@ const implementedScreens = new Set([
 
 export function App() {
   const [screen, setScreen] = useState("Codex");
+  const [sessionPlatform, setSessionPlatform] = useState<string | null>(null);
   const agentPlatform = platformByAgentScreen[screen];
+
+  const navigate = (nextScreen: string) => {
+    if (nextScreen === "Sessions") {
+      setSessionPlatform(null);
+    }
+    setScreen(nextScreen);
+  };
+
+  const openSessions = (platform?: string | null) => {
+    setSessionPlatform(platform ?? null);
+    setScreen("Sessions");
+  };
 
   return (
     <QueryClientProvider client={queryClient}>
       <I18nProvider>
-        <AppLayout activeScreen={screen} onNavigate={setScreen}>
-          {agentPlatform && <AccountsScreen platform={agentPlatform} />}
+        <AppLayout activeScreen={screen} onNavigate={navigate}>
+          {agentPlatform && <AccountsScreen onOpenSessions={openSessions} platform={agentPlatform} />}
           {screen === "Dashboard" && <DashboardScreen />}
           {screen === "Batches" && <BatchesScreen />}
           {screen === "Providers" && <ProvidersScreen />}
           {screen === "Imports" && <ImportsScreen />}
           {screen === "Targets" && <TargetsScreen />}
-          {screen === "Sessions" && <SessionsScreen />}
+          {screen === "Sessions" && <SessionsScreen initialPlatform={sessionPlatform} />}
           {screen === "Updates" && <UpdatesScreen />}
-          {screen === "Settings" && <SettingsScreen onOpenFeature={setScreen} />}
+          {screen === "Settings" && <SettingsScreen onOpenFeature={navigate} />}
           {screen === "Log" && <OperationLogScreen />}
           {!implementedScreens.has(screen) && (
             <div className="rounded-2xl border border-stone-200 bg-white/80 p-5 text-sm text-stone-500 shadow-sm">

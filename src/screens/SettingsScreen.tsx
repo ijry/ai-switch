@@ -1,15 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Layers3,
-  Library,
   Network,
-  Plug,
-  RefreshCw,
-  Route,
-  Server,
   Settings2,
-  TimerReset,
-  UploadCloud,
 } from "lucide-react";
 import type { ComponentType } from "react";
 import { getSettings, saveSettings } from "../lib/api/client";
@@ -17,84 +10,13 @@ import { normalizeLanguage, supportedLanguages, useI18n, type Language } from ".
 
 type FeatureEntry = {
   screen: string;
-  titleKey:
-    | "nav.dashboard"
-    | "nav.library"
-    | "nav.routing"
-    | "nav.mcp"
-    | "nav.instances"
-    | "nav.wakeups"
-    | "nav.bulk"
-    | "nav.sync"
-    | "nav.sessions"
-    | "nav.updates"
-    | "nav.log";
-  descriptionKey:
-    | "settings.feature.dashboard"
-    | "settings.feature.library"
-    | "settings.feature.routing"
-    | "settings.feature.mcp"
-    | "settings.feature.instances"
-    | "settings.feature.wakeups"
-    | "settings.feature.bulk"
-    | "settings.feature.sync"
-    | "settings.feature.sessions"
-    | "settings.feature.updates"
-    | "settings.feature.log";
+  titleKey: "nav.sessions" | "nav.updates" | "nav.log";
+  descriptionKey: "settings.feature.sessions" | "settings.feature.updates" | "settings.feature.log";
   icon: ComponentType<{ className?: string }>;
 };
 
-// Keep utility entries in the settings hub.
-// Providers / Imports / Targets map to agent-first flows, so they stay out of the UI.
+// Keep only shipped utility entries here. Agent-facing workflows stay in the agent tabs.
 const featureEntries: FeatureEntry[] = [
-  {
-    screen: "Dashboard",
-    titleKey: "nav.dashboard",
-    descriptionKey: "settings.feature.dashboard",
-    icon: Layers3,
-  },
-  {
-    screen: "Library",
-    titleKey: "nav.library",
-    descriptionKey: "settings.feature.library",
-    icon: Library,
-  },
-  {
-    screen: "Routing",
-    titleKey: "nav.routing",
-    descriptionKey: "settings.feature.routing",
-    icon: Route,
-  },
-  {
-    screen: "MCP",
-    titleKey: "nav.mcp",
-    descriptionKey: "settings.feature.mcp",
-    icon: Plug,
-  },
-  {
-    screen: "Instances",
-    titleKey: "nav.instances",
-    descriptionKey: "settings.feature.instances",
-    icon: Server,
-  },
-  {
-    screen: "Wakeups",
-    titleKey: "nav.wakeups",
-    descriptionKey: "settings.feature.wakeups",
-    icon: TimerReset,
-  },
-  {
-    screen: "Bulk",
-    titleKey: "nav.bulk",
-    descriptionKey: "settings.feature.bulk",
-    icon: UploadCloud,
-  },
-  {
-    screen: "Sync",
-    titleKey: "nav.sync",
-    descriptionKey: "settings.feature.sync",
-    icon: RefreshCw,
-  },
   {
     screen: "Sessions",
     titleKey: "nav.sessions",
@@ -176,6 +98,7 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
                   </span>
                   <div className="min-w-0">
                     <p className="truncate text-[13px] font-semibold text-stone-950">{t(entry.titleKey)}</p>
+                    <p className="mt-0.5 truncate text-[12px] text-stone-500">{t(entry.descriptionKey)}</p>
                   </div>
                 </div>
               </button>

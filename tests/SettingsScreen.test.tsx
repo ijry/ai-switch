@@ -34,7 +34,13 @@ describe("SettingsScreen", () => {
 
     expect(await screen.findByText(`数据目录：${settingsFixture.data_dir}`)).toBeInTheDocument();
     expect(screen.getByText("功能入口")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /MCP/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /会话/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /更新/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /日志/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /MCP/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /批量/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /实例/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /唤醒任务/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /AI 模型/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /导入/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /目标/ })).not.toBeInTheDocument();
@@ -87,7 +93,7 @@ describe("SettingsScreen", () => {
       </QueryClientProvider>,
     );
 
-    await userEvent.click(await screen.findByRole("button", { name: /MCP/ }));
-    expect(onOpenFeature).toHaveBeenCalledWith("MCP");
+    await userEvent.click(await screen.findByRole("button", { name: /会话/ }));
+    expect(onOpenFeature).toHaveBeenCalledWith("Sessions");
   });
 });

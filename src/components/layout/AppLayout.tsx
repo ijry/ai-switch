@@ -37,17 +37,6 @@ export const platformByAgentScreen: Record<string, AgentPlatform> = {
 };
 
 export const settingsFeatureScreens = [
-  "Dashboard",
-  "Providers",
-  "Imports",
-  "Library",
-  "Targets",
-  "Routing",
-  "MCP",
-  "Instances",
-  "Wakeups",
-  "Bulk",
-  "Sync",
   "Sessions",
   "Updates",
   "Log",
@@ -148,16 +137,24 @@ export function AppLayout({
   };
 
   return (
-    <main className="min-h-screen p-3 text-stone-950 sm:p-4">
-      <div className="mx-auto h-[calc(100vh-1.5rem)] max-w-[1440px] overflow-hidden rounded-[22px] border border-white/70 bg-white/55 shadow-2xl shadow-stone-900/12 backdrop-blur-2xl sm:h-[calc(100vh-2rem)]">
-        <div className="flex h-10 items-center justify-between border-b border-stone-200/75 bg-white/60 px-3">
-          <div className="flex items-center gap-2">
-            <span className="h-3 w-3 rounded-full bg-[#ff5f57]" />
-            <span className="h-3 w-3 rounded-full bg-[#febc2e]" />
-            <span className="h-3 w-3 rounded-full bg-[#28c840]" />
-          </div>
-          <div className="text-[13px] font-semibold text-stone-600">AI Switch</div>
-          <label className="flex items-center gap-2 text-[12px] font-medium text-stone-500">
+    <main className="min-h-screen text-stone-950">
+      <div className="grid min-h-screen grid-cols-1 lg:grid-cols-[236px_minmax(0,1fr)]">
+        <aside className="relative min-h-0 overflow-hidden border-b border-white/70 bg-gradient-to-br from-slate-50/92 via-emerald-50/74 to-amber-50/70 p-3 shadow-xl shadow-stone-900/5 backdrop-blur-2xl lg:border-b-0 lg:border-r lg:border-white/80">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_15%,rgba(16,185,129,0.18),transparent_34%),radial-gradient(circle_at_88%_8%,rgba(245,158,11,0.16),transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.72),rgba(255,255,255,0.38))]" />
+          <div className="relative flex min-h-full flex-col">
+            <div className="mb-5 flex items-start justify-between gap-3 rounded-2xl border border-white/80 bg-white/56 p-3 shadow-sm backdrop-blur-xl">
+              <div className="flex min-w-0 items-center gap-2">
+                <div className="grid h-9 w-9 place-items-center rounded-2xl bg-stone-950 text-[12px] font-black text-white shadow-sm">
+                  AS
+                </div>
+                <div className="min-w-0">
+                  <p className="truncate text-[13px] font-semibold text-stone-950">AI Switch</p>
+                  <p className="truncate text-[11px] text-stone-500">{t("layout.brandBadge")}</p>
+                </div>
+              </div>
+            </div>
+
+            <label className="mb-5 flex items-center justify-between gap-2 rounded-2xl border border-white/70 bg-white/50 px-3 py-2 text-[12px] font-medium text-stone-500 backdrop-blur-xl">
             <span>{t("layout.language")}</span>
             <select
               aria-label={t("layout.language")}
@@ -172,20 +169,7 @@ export function AppLayout({
                 </option>
               ))}
             </select>
-          </label>
-        </div>
-
-        <div className="grid h-[calc(100%-2.5rem)] grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)]">
-          <aside className="min-h-0 border-b border-stone-200/75 bg-stone-100/70 p-3 lg:border-b-0 lg:border-r">
-            <div className="mb-3 flex items-center gap-2 px-1">
-              <div className="grid h-8 w-8 place-items-center rounded-xl bg-stone-900 text-[12px] font-black text-white shadow-sm">
-                AS
-              </div>
-              <div className="min-w-0">
-                <p className="truncate text-[13px] font-semibold text-stone-950">AI Switch</p>
-                <p className="truncate text-[11px] text-stone-500">{t("layout.brandBadge")}</p>
-              </div>
-            </div>
+            </label>
 
             <div className="space-y-4">
               <section>
@@ -216,10 +200,12 @@ export function AppLayout({
                 />
               </section>
             </div>
-          </aside>
+          </div>
+        </aside>
 
-          <section className="min-h-0 min-w-0 overflow-auto bg-white/50 p-3 sm:p-4">{children}</section>
-        </div>
+        <section className="min-h-screen min-w-0 overflow-auto bg-gradient-to-br from-white via-stone-50 to-slate-100 p-3 sm:p-4">
+          {children}
+        </section>
       </div>
     </main>
   );
