@@ -9,6 +9,7 @@ mod importers;
 mod models;
 mod paths;
 mod security;
+pub mod server;
 mod services;
 mod session_manager;
 mod terminal_manager;
@@ -42,6 +43,8 @@ use database::open_migrated_pool;
 use paths::AppPaths;
 use services::route_proxy_service::RouteProxyRuntimeState;
 use terminal_manager::TerminalManager;
+use std::sync::Arc;
+use web::event_bridge::WebEventBroadcaster;
 
 pub fn run() {
     let paths = AppPaths::resolve().expect("failed to resolve app paths");
@@ -62,6 +65,7 @@ pub fn run() {
             pool,
             route_proxy: RouteProxyRuntimeState::default(),
             terminals: TerminalManager::default(),
+            event_broadcaster: Arc::new(WebEventBroadcaster::new()),
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,

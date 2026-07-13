@@ -9,6 +9,10 @@ edition = "2021"
 name = "ai_switch_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "ai-switch-server"
+path = "src/bin/ai_switch_server.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -28,7 +32,7 @@ directories = "5"
 keyring = "3"
 sha2 = "0.10"
 tempfile = "3"
-axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 portable-pty = "0.8"
 tauri-plugin-dialog = "2"
