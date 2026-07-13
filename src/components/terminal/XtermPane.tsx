@@ -1,6 +1,5 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
-import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useRef } from "react";
 import { resizeTerminal, writeTerminalInput } from "../../lib/api/client";
 import type {
@@ -10,6 +9,7 @@ import type {
   TerminalSession,
   TerminalStatus,
 } from "../../lib/api/types";
+import { getTransport } from "../../lib/transport";
 
 type XtermPaneProps = {
   session: TerminalSession;
@@ -114,20 +114,21 @@ export function XtermPane({
     });
 
     let disposed = false;
-    const outputUnlisten = listen<TerminalOutputEvent>("terminal://output", (event) => {
-      if (event.payload.sessionId === session.id) {
-        terminal.write(event.payload.data);
+    const transport = getTransport();
+    const outputUnlisten = transport.subscribe<TerminalOutputEvent>("terminal://output", (payload) => {
+      if (payload.sessionId === session.id) {
+        terminal.write(payload.data);
       }
     });
-    const exitUnlisten = listen<TerminalExitEvent>("terminal://exit", (event) => {
-      if (event.payload.sessionId === session.id) {
-        terminal.writeln(`\r\n[process exited: ${event.payload.exitCode ?? "unknown"}]`);
+    const exitUnlisten = transport.subscribe<TerminalExitEvent>("terminal://exit", (payload) => {
+      if (payload.sessionId === session.id) {
+        terminal.writeln(`\r\n[process exited: ${payload.exitCode ?? "unknown"}]`);
         onStatusChange?.(session.id, "exited");
       }
     });
-    const errorUnlisten = listen<TerminalErrorEvent>("terminal://error", (event) => {
-      if (event.payload.sessionId === session.id) {
-        terminal.writeln(`\r\n[terminal error] ${event.payload.message}`);
+    const errorUnlisten = transport.subscribe<TerminalErrorEvent>("terminal://error", (payload) => {
+      if (payload.sessionId === session.id) {
+        terminal.writeln(`\r\n[terminal error] ${payload.message}`);
         onStatusChange?.(session.id, "error");
       }
     });

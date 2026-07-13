@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { getTransport } from "../transport";
 import type {
   AppSettings,
   Batch,
@@ -22,6 +22,10 @@ import type {
   UpdateOfficialAccount,
   UpdateRouteCredentialInput,
 } from "./types";
+
+function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  return getTransport().call<T>(command, args);
+}
 
 export function listBatchGroups(search?: string): Promise<BatchGroup[]> {
   return invoke("list_batch_groups", { search: search || null });
