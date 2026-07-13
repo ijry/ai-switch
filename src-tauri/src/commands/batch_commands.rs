@@ -1,8 +1,12 @@
 use crate::app_state::AppState;
 use crate::error::ApiError;
-use crate::models::account::{NewOfficialAccount, OfficialAccount};
+use crate::models::account::{
+    NewOfficialAccount, OfficialAccount, OfficialAccountStatus, RecordAccountQuotaSnapshotOutcome,
+    RecordAccountQuotaSnapshotRequest, RefreshAccountQuotaSnapshotRequest,
+};
 use crate::models::batch::{Batch, BatchGroup, NewBatch};
 use crate::models::provider::{NewProvider, Provider};
+use crate::services::account_service::AccountService;
 use crate::services::batch_service::BatchService;
 use serde::Deserialize;
 use tauri::State;
@@ -52,6 +56,44 @@ pub async fn create_official_account(
     request: CreateAccountRequest,
 ) -> Result<OfficialAccount, ApiError> {
     BatchService::create_official_account(&state.pool, request.account, request.batch_id)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn list_official_accounts(
+    state: State<'_, AppState>,
+) -> Result<Vec<OfficialAccount>, ApiError> {
+    BatchService::list_official_accounts(&state.pool)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn list_official_account_statuses(
+    state: State<'_, AppState>,
+) -> Result<Vec<OfficialAccountStatus>, ApiError> {
+    AccountService::list_official_account_statuses(&state.pool)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn record_official_account_quota_snapshot(
+    state: State<'_, AppState>,
+    request: RecordAccountQuotaSnapshotRequest,
+) -> Result<RecordAccountQuotaSnapshotOutcome, ApiError> {
+    AccountService::record_account_quota_snapshot(&state.pool, request)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn refresh_official_account_quota_snapshot(
+    state: State<'_, AppState>,
+    request: RefreshAccountQuotaSnapshotRequest,
+) -> Result<RecordAccountQuotaSnapshotOutcome, ApiError> {
+    AccountService::refresh_account_quota_snapshot(&state.pool, request)
         .await
         .map_err(ApiError::from)
 }

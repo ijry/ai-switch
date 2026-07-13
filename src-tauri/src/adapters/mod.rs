@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub mod codex_config;
+pub mod opencode_config;
 pub mod provider_renderers;
 
 use crate::config_writer::WriteOutcome;

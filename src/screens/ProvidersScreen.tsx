@@ -4,8 +4,14 @@ import { Button } from "../components/ui/Button";
 import {
   listProviders,
   listTargetSwitchStatuses,
+  refreshTrayMenu,
   switchTargetProvider,
 } from "../lib/api/client";
+
+const realConfigTargetLabels: Record<string, string> = {
+  codex: "Codex",
+  opencode: "OpenCode",
+};
 
 export function ProvidersScreen() {
   const queryClient = useQueryClient();
@@ -21,6 +27,7 @@ export function ProvidersScreen() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["target-switch-statuses"] });
       queryClient.invalidateQueries({ queryKey: ["targets"] });
+      refreshTrayMenu().catch(() => undefined);
     },
   });
 
@@ -52,7 +59,7 @@ export function ProvidersScreen() {
       <div>
         <h1 className="font-display text-3xl font-semibold text-ink">Providers</h1>
         <p className="text-steel">
-          Switch a provider into sandbox configs, or write Codex user config explicitly.
+          Switch a provider into sandbox configs, or write supported user configs explicitly.
         </p>
       </div>
 
@@ -60,7 +67,9 @@ export function ProvidersScreen() {
         {providers.map((provider) => {
           const selectedTargetId = selectedTargets[provider.id] ?? statuses[0]?.target.id ?? "";
           const selectedStatus = statuses.find((status) => status.target.id === selectedTargetId);
-          const canSwitchRealCodex = selectedStatus?.target.key === "codex";
+          const realConfigTargetLabel = selectedStatus
+            ? realConfigTargetLabels[selectedStatus.target.key]
+            : undefined;
           const selectId = `target-for-${provider.id}`;
 
           return (
@@ -118,12 +127,12 @@ export function ProvidersScreen() {
                   >
                     Switch in sandbox
                   </Button>
-                  {canSwitchRealCodex && (
+                  {realConfigTargetLabel && (
                     <Button
                       type="button"
                       variant="secondary"
                       disabled={!selectedTargetId || switchMutation.isPending}
-                      aria-label={`Switch ${provider.name} Codex config`}
+                      aria-label={`Switch ${provider.name} ${realConfigTargetLabel} config`}
                       className="cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
                       onClick={() =>
                         switchMutation.mutate({
@@ -133,7 +142,7 @@ export function ProvidersScreen() {
                         })
                       }
                     >
-                      Switch Codex config
+                      Switch {realConfigTargetLabel} config
                     </Button>
                   )}
                   {selectedStatus?.active_provider && (
@@ -151,8 +160,10 @@ export function ProvidersScreen() {
 
       {switchMutation.data && (
         <p className="rounded-2xl bg-moss/10 p-4 text-sm font-medium text-moss">
-          {switchMutation.data.mode === "real" ? "Wrote Codex config" : "Wrote sandbox config"} for{" "}
-          {switchMutation.data.provider_name} to {switchedTargetName}.
+          {switchMutation.data.mode === "real"
+            ? `Wrote ${switchedTargetName} config`
+            : "Wrote sandbox config"}{" "}
+          for {switchMutation.data.provider_name} to {switchedTargetName}.
         </p>
       )}
       {switchMutation.error && (

@@ -166,10 +166,12 @@ impl BatchRepository {
     ) -> Result<Vec<BatchChild>, AppError> {
         let rows = sqlx::query(
             "SELECT bi.item_type, bi.item_id, p.name as provider_name, p.kind as provider_kind, p.status as provider_status,
-                    a.display_name as account_name, a.platform as account_platform, a.email as account_email, a.status as account_status
+                    a.display_name as account_name, a.platform as account_platform, a.email as account_email, a.status as account_status,
+                    qs.status as quota_status
              FROM batch_items bi
              LEFT JOIN providers p ON bi.item_type = 'provider' AND bi.item_id = p.id
              LEFT JOIN official_accounts a ON bi.item_type = 'official_account' AND bi.item_id = a.id
+             LEFT JOIN quota_snapshots qs ON bi.item_type = 'official_account' AND qs.id = a.quota_snapshot_id
              WHERE bi.batch_id = ?
              ORDER BY bi.sort_order ASC, bi.created_at ASC",
         )
@@ -202,6 +204,10 @@ impl BatchRepository {
                     }
                 } else {
                     let email: Option<String> = row.get("account_email");
+                    let account_status = row
+                        .get::<Option<String>, _>("account_status")
+                        .unwrap_or_else(|| "error".to_string());
+                    let quota_status: Option<String> = row.get("quota_status");
                     BatchChild {
                         item_type,
                         id,
@@ -210,9 +216,7 @@ impl BatchRepository {
                             .unwrap_or_default(),
                         subtitle: email
                             .or_else(|| row.get::<Option<String>, _>("account_platform")),
-                        status: row
-                            .get::<Option<String>, _>("account_status")
-                            .unwrap_or_else(|| "error".to_string()),
+                        status: account_child_status(&account_status, quota_status.as_deref()),
                     }
                 }
             })
@@ -220,18 +224,32 @@ impl BatchRepository {
     }
 }
 
+fn account_child_status(account_status: &str, quota_status: Option<&str>) -> String {
+    if account_status == "error" || quota_status == Some("error") {
+        return "error".to_string();
+    }
+
+    if quota_status.is_none() || matches!(quota_status, Some("warning" | "unknown")) {
+        return "warning".to_string();
+    }
+
+    account_status.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::database::repositories::account_repository::AccountRepository;
     use crate::database::repositories::provider_repository::ProviderRepository;
+    use crate::database::repositories::quota_snapshot_repository::QuotaSnapshotRepository;
     use crate::database::{create_memory_pool, run_migrations};
     use crate::models::account::NewOfficialAccount;
     use crate::models::batch::NewBatch;
     use crate::models::provider::NewProvider;
+    use crate::models::quota_snapshot::NewQuotaSnapshot;
 
     #[tokio::test]
-    async fn list_groups_returns_batch_with_provider_and_account_children() {
+    async fn list_groups_warns_when_account_has_no_quota_snapshot() {
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
 
@@ -287,7 +305,72 @@ mod tests {
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].batch.name, "July imports");
-        assert_eq!(groups[0].health, "ok");
+        assert_eq!(groups[0].health, "warning");
         assert_eq!(groups[0].children.len(), 2);
+        let account_child = groups[0]
+            .children
+            .iter()
+            .find(|child| child.item_type == "official_account")
+            .expect("account child");
+        assert_eq!(account_child.status, "warning");
+    }
+
+    #[tokio::test]
+    async fn list_groups_errors_when_account_quota_snapshot_errors() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+
+        let batch = BatchRepository::create(
+            &pool,
+            NewBatch {
+                name: "Quota batch".to_string(),
+                source: "manual".to_string(),
+                notes: None,
+            },
+        )
+        .await
+        .expect("batch");
+        let account = AccountRepository::create(
+            &pool,
+            NewOfficialAccount {
+                platform: "codex".to_string(),
+                display_name: "Quota Account".to_string(),
+                email: Some("quota@example.com".to_string()),
+                plan: Some("team".to_string()),
+                account_metadata_json: "{}".to_string(),
+                secret_ref: None,
+            },
+        )
+        .await
+        .expect("account");
+        let quota_snapshot = QuotaSnapshotRepository::insert(
+            &pool,
+            NewQuotaSnapshot {
+                owner_type: "official_account".to_string(),
+                owner_id: account.id.clone(),
+                status: "error".to_string(),
+                remaining_label: Some("quota unavailable".to_string()),
+                reset_at: None,
+                summary_json: "{}".to_string(),
+                raw_excerpt_json: "{}".to_string(),
+            },
+        )
+        .await
+        .expect("quota");
+        let account =
+            AccountRepository::update_quota_snapshot_id(&pool, &account.id, &quota_snapshot.id)
+                .await
+                .expect("account quota");
+
+        BatchRepository::add_item(&pool, &batch.id, "official_account", &account.id)
+            .await
+            .expect("account link");
+
+        let groups = BatchRepository::list_groups(&pool, None)
+            .await
+            .expect("groups");
+
+        assert_eq!(groups[0].health, "error");
+        assert_eq!(groups[0].children[0].status, "error");
     }
 }

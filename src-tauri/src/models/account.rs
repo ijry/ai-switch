@@ -1,3 +1,4 @@
+use crate::models::quota_snapshot::QuotaSnapshot;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
@@ -25,4 +26,31 @@ pub struct NewOfficialAccount {
     pub plan: Option<String>,
     pub account_metadata_json: String,
     pub secret_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficialAccountStatus {
+    pub account: OfficialAccount,
+    pub quota_snapshot: Option<QuotaSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecordAccountQuotaSnapshotRequest {
+    pub account_id: String,
+    pub status: String,
+    pub remaining_label: Option<String>,
+    pub reset_at: Option<String>,
+    pub summary_json: String,
+    pub raw_excerpt_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RefreshAccountQuotaSnapshotRequest {
+    pub account_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecordAccountQuotaSnapshotOutcome {
+    pub account: OfficialAccount,
+    pub quota_snapshot: QuotaSnapshot,
 }

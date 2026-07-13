@@ -51,4 +51,43 @@ impl AccountRepository {
                 recoverable: true,
             })
     }
+
+    pub async fn list(pool: &SqlitePool) -> Result<Vec<OfficialAccount>, AppError> {
+        sqlx::query_as::<_, OfficialAccount>(
+            "SELECT * FROM official_accounts ORDER BY sort_order ASC, created_at DESC",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.account_list",
+            message: "Could not list official accounts".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })
+    }
+
+    pub async fn update_quota_snapshot_id(
+        pool: &SqlitePool,
+        account_id: &str,
+        quota_snapshot_id: &str,
+    ) -> Result<OfficialAccount, AppError> {
+        let now = Utc::now().to_rfc3339();
+
+        sqlx::query(
+            "UPDATE official_accounts SET quota_snapshot_id = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(quota_snapshot_id)
+        .bind(&now)
+        .bind(account_id)
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.account_quota_update",
+            message: "Could not update account quota snapshot".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+
+        Self::get(pool, account_id).await
+    }
 }

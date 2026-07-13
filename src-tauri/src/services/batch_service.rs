@@ -79,6 +79,12 @@ impl BatchService {
     ) -> Result<Vec<BatchGroup>, AppError> {
         BatchRepository::list_groups(pool, search.as_deref()).await
     }
+
+    pub async fn list_official_accounts(
+        pool: &SqlitePool,
+    ) -> Result<Vec<OfficialAccount>, AppError> {
+        AccountRepository::list(pool).await
+    }
 }
 
 #[cfg(test)]
@@ -103,5 +109,33 @@ mod tests {
         .await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn list_official_accounts_returns_created_accounts() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+
+        BatchService::create_official_account(
+            &pool,
+            NewOfficialAccount {
+                platform: "codex".to_string(),
+                display_name: "Team Codex".to_string(),
+                email: Some("team@example.com".to_string()),
+                plan: Some("team".to_string()),
+                account_metadata_json: "{}".to_string(),
+                secret_ref: Some("secret://account/team".to_string()),
+            },
+            None,
+        )
+        .await
+        .expect("account");
+
+        let accounts = BatchService::list_official_accounts(&pool)
+            .await
+            .expect("accounts");
+
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].display_name, "Team Codex");
     }
 }

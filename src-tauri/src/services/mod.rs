@@ -1,5 +1,16 @@
+pub mod account_service;
+pub mod automation_service;
 pub mod batch_service;
 pub mod import_service;
+pub mod instance_service;
+pub mod mcp_service;
+pub mod prompt_asset_service;
+pub mod provider_preset_service;
 pub mod provider_switch_service;
+pub mod routing_service;
+pub mod session_service;
 pub mod settings_service;
+pub mod sync_service;
 pub mod target_service;
+pub mod updater_service;
+pub mod wakeup_service;

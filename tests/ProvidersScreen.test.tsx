@@ -2,13 +2,21 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { listProviders, listTargetSwitchStatuses, switchTargetProvider } from "../src/lib/api/client";
+import {
+  listProviders,
+  listTargetSwitchStatuses,
+  refreshTrayMenu,
+  switchTargetProvider,
+} from "../src/lib/api/client";
 import { ProvidersScreen } from "../src/screens/ProvidersScreen";
 import { providersFixture, targetSwitchStatusesFixture } from "../src/test/fixtures";
 
 vi.mock("../src/lib/api/client", () => ({
   listProviders: vi.fn(),
   listTargetSwitchStatuses: vi.fn(),
+  refreshTrayMenu: vi.fn(() =>
+    Promise.resolve({ provider_count: 0, target_count: 0, switch_item_count: 0 }),
+  ),
   switchTargetProvider: vi.fn(),
 }));
 
@@ -107,7 +115,41 @@ describe("ProvidersScreen", () => {
     expect(await screen.findByText("Wrote Codex config for Acme Provider to Codex.")).toBeInTheDocument();
   });
 
-  it("hides the real Codex switch action for non-Codex targets", async () => {
+  it("shows a real OpenCode switch action when OpenCode is selected", async () => {
+    vi.mocked(listProviders).mockResolvedValueOnce(providersFixture);
+    vi.mocked(listTargetSwitchStatuses).mockResolvedValue(targetSwitchStatusesFixture);
+    vi.mocked(switchTargetProvider).mockResolvedValueOnce({
+      target_app_id: "target-opencode",
+      target_key: "opencode",
+      provider_id: "provider-1",
+      provider_name: "Acme Provider",
+      mode: "real",
+      path: "C:/Users/example/.config/opencode/opencode.json",
+      status: "written",
+      before_hash: null,
+      after_hash: "after",
+      snapshot_id: "snapshot-real",
+      state_id: "state-1",
+      written_at: "2026-07-13T00:00:00Z",
+    });
+
+    renderWithClient();
+
+    expect(await screen.findByText("Acme Provider")).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByLabelText("Target for Acme Provider"), "target-opencode");
+    await userEvent.click(screen.getByRole("button", { name: "Switch Acme Provider OpenCode config" }));
+
+    await waitFor(() => {
+      expect(switchTargetProvider).toHaveBeenCalledWith({
+        target_app_id: "target-opencode",
+        provider_id: "provider-1",
+        mode: "real",
+      });
+    });
+    expect(await screen.findByText("Wrote OpenCode config for Acme Provider to OpenCode.")).toBeInTheDocument();
+  });
+
+  it("hides real switch actions for unsupported targets", async () => {
     vi.mocked(listProviders).mockResolvedValueOnce(providersFixture);
     vi.mocked(listTargetSwitchStatuses).mockResolvedValue(targetSwitchStatusesFixture);
 
@@ -118,6 +160,9 @@ describe("ProvidersScreen", () => {
 
     expect(
       screen.queryByRole("button", { name: "Switch Acme Provider Codex config" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Switch Acme Provider OpenCode config" }),
     ).not.toBeInTheDocument();
   });
 });

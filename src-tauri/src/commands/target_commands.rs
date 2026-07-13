@@ -1,5 +1,6 @@
 use crate::app_state::AppState;
 use crate::error::ApiError;
+use crate::models::provider_switch::ConfigRollbackOutcome;
 use crate::models::target_app::TargetApp;
 use crate::models::target_state::TargetSwitchStatus;
 use crate::services::provider_switch_service::ProviderSwitchService;
@@ -18,6 +19,16 @@ pub async fn list_target_switch_statuses(
     state: State<'_, AppState>,
 ) -> Result<Vec<TargetSwitchStatus>, ApiError> {
     ProviderSwitchService::list_target_switch_statuses(&state.pool)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn rollback_config_snapshot(
+    state: State<'_, AppState>,
+    snapshot_id: String,
+) -> Result<ConfigRollbackOutcome, ApiError> {
+    ProviderSwitchService::rollback_config_snapshot(&state.pool, &state.paths, &snapshot_id)
         .await
         .map_err(ApiError::from)
 }

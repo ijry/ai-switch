@@ -85,6 +85,41 @@ impl TargetStateRepository {
         Self::get_for_target(pool, target_app_id).await
     }
 
+    pub async fn record_rollback(
+        pool: &SqlitePool,
+        target_app_id: &str,
+        written_at: &str,
+    ) -> Result<TargetAppState, AppError> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+
+        sqlx::query(
+            "INSERT INTO target_app_states (id, target_app_id, active_item_type, active_item_id, last_write_status, last_error_code, last_written_at, updated_at)
+             VALUES (?, ?, NULL, NULL, 'rolled_back', NULL, ?, ?)
+             ON CONFLICT(target_app_id) DO UPDATE SET
+               active_item_type = NULL,
+               active_item_id = NULL,
+               last_write_status = excluded.last_write_status,
+               last_error_code = NULL,
+               last_written_at = excluded.last_written_at,
+               updated_at = excluded.updated_at",
+        )
+        .bind(&id)
+        .bind(target_app_id)
+        .bind(written_at)
+        .bind(&now)
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.target_state_upsert",
+            message: "Could not update target rollback state".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+
+        Self::get_for_target(pool, target_app_id).await
+    }
+
     pub async fn get_for_target(
         pool: &SqlitePool,
         target_app_id: &str,
@@ -130,7 +165,10 @@ impl TargetStateRepository {
                 p.created_at AS provider_created_at,
                 p.updated_at AS provider_updated_at,
                 cs.id AS snapshot_id,
-                cs.path AS snapshot_path
+                cs.path AS snapshot_path,
+                cs.operation AS snapshot_operation,
+                cs.status AS snapshot_status,
+                cs.backup_path AS snapshot_backup_path
              FROM target_apps t
              LEFT JOIN target_app_states s ON s.target_app_id = t.id
              LEFT JOIN providers p ON s.active_item_type = 'provider' AND p.id = s.active_item_id
@@ -201,6 +239,16 @@ impl TargetStateRepository {
                     last_written_at: row.get("last_written_at"),
                     last_snapshot_path: row.get("snapshot_path"),
                     last_snapshot_id: row.get("snapshot_id"),
+                    last_snapshot_operation: row.get("snapshot_operation"),
+                    can_rollback: row
+                        .get::<Option<String>, _>("snapshot_operation")
+                        .as_deref()
+                        == Some("switch_provider:real")
+                        && row.get::<Option<String>, _>("snapshot_status").as_deref()
+                            == Some("written")
+                        && row
+                            .get::<Option<String>, _>("snapshot_backup_path")
+                            .is_some(),
                 }
             })
             .collect())

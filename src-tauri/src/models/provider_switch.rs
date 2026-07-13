@@ -22,3 +22,17 @@ pub struct ProviderSwitchOutcome {
     pub state_id: String,
     pub written_at: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConfigRollbackOutcome {
+    pub target_app_id: String,
+    pub target_key: String,
+    pub source_snapshot_id: String,
+    pub rollback_snapshot_id: String,
+    pub state_id: String,
+    pub path: String,
+    pub status: String,
+    pub before_hash: Option<String>,
+    pub after_hash: Option<String>,
+    pub rolled_back_at: String,
+}

@@ -24,4 +24,6 @@ pub struct TargetSwitchStatus {
     pub last_written_at: Option<String>,
     pub last_snapshot_path: Option<String>,
     pub last_snapshot_id: Option<String>,
+    pub last_snapshot_operation: Option<String>,
+    pub can_rollback: bool,
 }

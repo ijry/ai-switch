@@ -4,7 +4,25 @@ type AppLayoutProps = {
   onNavigate: (screen: string) => void;
 };
 
-const screens = ["Dashboard", "Batches", "Providers", "Accounts", "Imports", "Targets", "Settings", "Log"];
+const screens = [
+  "Dashboard",
+  "Batches",
+  "Providers",
+  "Accounts",
+  "Imports",
+  "Instances",
+  "Wakeups",
+  "Bulk",
+  "Targets",
+  "MCP",
+  "Library",
+  "Routing",
+  "Sync",
+  "Sessions",
+  "Updates",
+  "Settings",
+  "Log",
+];
 
 export function AppLayout({ children, activeScreen, onNavigate }: AppLayoutProps) {
   return (

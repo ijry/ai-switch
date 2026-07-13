@@ -49,6 +49,7 @@ impl ConfigSnapshotRepository {
             })
     }
 
+    #[cfg(test)]
     pub async fn latest_for_target(
         pool: &SqlitePool,
         target_app_id: &str,
@@ -65,6 +66,19 @@ impl ConfigSnapshotRepository {
             details: Some(err.to_string()),
             recoverable: true,
         })
+    }
+
+    pub async fn get(pool: &SqlitePool, id: &str) -> Result<ConfigSnapshot, AppError> {
+        sqlx::query_as::<_, ConfigSnapshot>("SELECT * FROM config_snapshots WHERE id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.config_snapshot_get",
+                message: "Could not load config snapshot".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })
     }
 }
 

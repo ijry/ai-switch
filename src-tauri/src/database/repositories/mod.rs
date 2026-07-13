@@ -1,7 +1,17 @@
 pub mod account_repository;
+pub mod automation_repository;
 pub mod batch_repository;
 pub mod config_snapshot_repository;
 pub mod import_repository;
+pub mod instance_repository;
+pub mod mcp_repository;
+pub mod prompt_asset_repository;
 pub mod provider_repository;
+pub mod quota_snapshot_repository;
+pub mod routing_repository;
+pub mod session_repository;
+pub mod sync_repository;
 pub mod target_repository;
 pub mod target_state_repository;
+pub mod updater_repository;
+pub mod wakeup_repository;

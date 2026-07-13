@@ -1,5 +1,15 @@
+pub mod automation_commands;
 pub mod batch_commands;
 pub mod import_commands;
+pub mod instance_commands;
+pub mod mcp_commands;
+pub mod prompt_asset_commands;
 pub mod provider_commands;
+pub mod routing_commands;
+pub mod session_commands;
 pub mod settings_commands;
+pub mod sync_commands;
 pub mod target_commands;
+pub mod tray_commands;
+pub mod updater_commands;
+pub mod wakeup_commands;
