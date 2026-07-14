@@ -9,4 +9,6 @@ pub mod route_proxy_service;
 pub mod settings_service;
 pub mod target_service;
 pub mod tailscale_service;
+pub mod tailscale_sidecar;
+pub mod tailscale_types;
 pub mod web_service;
