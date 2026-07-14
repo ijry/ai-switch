@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::app_state::AppState;
@@ -10,6 +9,7 @@ use crate::services::web_service::WebServiceRuntimeState;
 use crate::terminal_manager::TerminalManager;
 use crate::web::event_bridge::WebEventBroadcaster;
 use crate::web::router::build_router;
+use crate::web::static_assets::resolve_static_dir;
 
 pub async fn run_from_env() -> Result<(), String> {
     let host = std::env::var("AI_SWITCH_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
@@ -18,9 +18,7 @@ pub async fn run_from_env() -> Result<(), String> {
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(3090);
     let token = std::env::var("AI_SWITCH_TOKEN").unwrap_or_default();
-    let static_dir = std::env::var("AI_SWITCH_STATIC_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("../dist"));
+    let static_dir = resolve_static_dir();
 
     let paths = AppPaths::resolve().map_err(|error| error.to_string())?;
     paths.ensure().await.map_err(|error| error.to_string())?;

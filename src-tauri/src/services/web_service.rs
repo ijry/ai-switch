@@ -2,9 +2,9 @@ use crate::app_state::AppState;
 use crate::error::AppError;
 use crate::paths::AppPaths;
 use crate::web::router::build_router;
+use crate::web::static_assets::resolve_static_dir;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
@@ -110,9 +110,7 @@ impl WebService {
         let port = addr.port();
         let base_url = format!("http://{host}:{port}");
         let token = config.token.clone().unwrap_or_default();
-        let static_dir = std::env::var("AI_SWITCH_STATIC_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("../dist"));
+        let static_dir = resolve_static_dir();
         let router = build_router(Arc::clone(&state), token, static_dir);
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let join_handle = tokio::spawn(async move {

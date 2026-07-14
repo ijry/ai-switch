@@ -101,6 +101,8 @@ Optional environment variables:
 - `AI_SWITCH_DATA_DIR` optional data directory override
 - `AI_SWITCH_STATIC_DIR` frontend `dist` directory for browser UI
 
+Installed desktop builds ship web assets next to the executable under web/. Standalone server mode can also use AI_SWITCH_STATIC_DIR or a sibling web/ / dist/ folder.
+
 ### Security notes
 
 - Every `/api/*` and `/ws/events` request requires the access token

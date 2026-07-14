@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -11,6 +12,7 @@ use serde_json::{json, Value};
 use crate::app_state::AppState;
 use crate::web::auth::is_authorized;
 use crate::web::handlers::dispatch_command;
+use crate::web::static_assets::resolve_static_file;
 use crate::web::ws::events_socket;
 
 #[derive(Clone)]
@@ -55,16 +57,48 @@ async fn api_command(
     }
 }
 
-async fn static_fallback(State(context): State<WebServerContext>) -> Response {
-    let index = context.static_dir.join("index.html");
-    match tokio::fs::read_to_string(index).await {
-        Ok(contents) => (
-            StatusCode::OK,
-            [("content-type", "text/html; charset=utf-8")],
-            contents,
-        )
-            .into_response(),
+async fn static_fallback(State(context): State<WebServerContext>, uri: Uri) -> Response {
+    let Some(file_path) = resolve_static_file(&context.static_dir, uri.path()) else {
+        return error_response(StatusCode::NOT_FOUND, "AI Switch web assets not found");
+    };
+
+    match tokio::fs::read(&file_path).await {
+        Ok(bytes) => {
+            let content_type = content_type_for(&file_path);
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, content_type)
+                .body(Body::from(bytes))
+                .unwrap_or_else(|_| {
+                    error_response(StatusCode::INTERNAL_SERVER_ERROR, "Could not build response")
+                })
+        }
         Err(_) => error_response(StatusCode::NOT_FOUND, "AI Switch web assets not found"),
+    }
+}
+
+fn content_type_for(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" => "application/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "map" => "application/json; charset=utf-8",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        _ => "application/octet-stream",
     }
 }
 

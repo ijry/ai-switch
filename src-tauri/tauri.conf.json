@@ -27,7 +27,10 @@
     "active": true,
     "targets": [
       "nsis"
-    ]
+    ],
+    "resources": {
+      "../dist": "web/"
+    }
   },
   "plugins": {
     "updater": {
