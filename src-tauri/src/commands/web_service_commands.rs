@@ -8,7 +8,6 @@ use crate::error::{ApiError, AppError};
 use crate::services::tailscale_service::{TailscaleLogin, TailscaleService, TailscaleStatus};
 use crate::services::web_service::{WebServerStatus, WebService, WebServiceConfig};
 
-
 async fn ensure_web_running(
     state: &AppState,
 ) -> Result<(WebServiceConfig, WebServerStatus), ApiError> {
@@ -40,9 +39,26 @@ pub async fn save_web_service_config(
     state: State<'_, AppState>,
     config: WebServiceConfig,
 ) -> Result<WebServiceConfig, ApiError> {
-    WebService::save_config(&state.paths, &config)
+    let saved = WebService::save_config(&state.paths, &config)
         .await
-        .map_err(ApiError::from)
+        .map_err(ApiError::from)?;
+
+    // Persist first, then rebind secure network so private/public switches take effect
+    // without requiring a full web restart.
+    if saved.tailscale_enabled {
+        let web_status = WebService::status(&state.web_service, &saved).await;
+        if web_status.running {
+            let _ = TailscaleService::ensure_started(
+                &state.tailscale,
+                &state.paths,
+                &saved,
+                Some(&web_status),
+            )
+            .await;
+        }
+    }
+
+    Ok(saved)
 }
 
 #[tauri::command]

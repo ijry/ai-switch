@@ -142,11 +142,11 @@ export function AppLayout({
   };
 
   return (
-    <main className="min-h-screen text-stone-950">
-      <div className="grid min-h-screen grid-cols-1 lg:grid-cols-[236px_minmax(0,1fr)]">
-        <aside className="relative min-h-0 overflow-hidden border-b border-white/70 bg-gradient-to-br from-slate-50/92 via-emerald-50/74 to-amber-50/70 p-3 shadow-xl shadow-stone-900/5 backdrop-blur-2xl lg:border-b-0 lg:border-r lg:border-white/80">
+    <main className="h-screen max-h-[100dvh] overflow-hidden text-stone-950">
+      <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[236px_minmax(0,1fr)]">
+        <aside className="relative flex h-full min-h-0 flex-col overflow-hidden border-b border-white/70 bg-gradient-to-br from-slate-50/92 via-emerald-50/74 to-amber-50/70 p-3 shadow-xl shadow-stone-900/5 backdrop-blur-2xl lg:border-b-0 lg:border-r lg:border-white/80">
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_15%,rgba(16,185,129,0.18),transparent_34%),radial-gradient(circle_at_88%_8%,rgba(245,158,11,0.16),transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.72),rgba(255,255,255,0.38))]" />
-          <div className="relative flex min-h-full flex-col">
+          <div className="relative flex min-h-0 flex-1 flex-col">
             <div className="mb-5 flex items-start justify-between gap-3 rounded-2xl border border-white/80 bg-white/56 p-3 shadow-sm backdrop-blur-xl">
               <div className="flex min-w-0 items-center gap-2">
                 <div className="grid h-9 w-9 place-items-center rounded-2xl bg-stone-950 text-[12px] font-black text-white shadow-sm">
@@ -184,7 +184,7 @@ export function AppLayout({
             </select>
             </label>
 
-            <div className="space-y-4">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-0.5">
               <section>
                 <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-stone-400">
                   {t("layout.agents")}
@@ -216,7 +216,7 @@ export function AppLayout({
           </div>
         </aside>
 
-        <section className="min-h-screen min-w-0 overflow-auto bg-gradient-to-br from-white via-stone-50 to-slate-100 p-3 sm:p-4">
+        <section className="h-full min-h-0 min-w-0 overflow-y-auto bg-gradient-to-br from-white via-stone-50 to-slate-100 p-3 sm:p-4">
           {children}
         </section>
       </div>

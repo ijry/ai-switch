@@ -74,12 +74,26 @@ impl SidecarControlClient for FakeSidecarControlClient {
                 login_url: None,
                 access_urls: Vec::new(),
                 serving: true,
+                public: request.public,
+                exposure_mode: Some(if request.public {
+                    "public".to_string()
+                } else {
+                    "private".to_string()
+                }),
+                public_port: if request.public { Some(443) } else { None },
                 message: None,
             };
         } else if inner.status.state == "connected" {
             // Rebind existing session to a new local backend without forcing re-login.
             inner.status.serving = true;
             inner.status.message = None;
+            inner.status.public = request.public;
+            inner.status.exposure_mode = Some(if request.public {
+                "public".to_string()
+            } else {
+                "private".to_string()
+            });
+            inner.status.public_port = if request.public { Some(443) } else { None };
         } else {
             inner.status = TailscaleStatus::needs_login("Sign in to connect secure network");
         }
@@ -101,6 +115,9 @@ impl SidecarControlClient for FakeSidecarControlClient {
             login_url: Some(login_url.clone()),
             access_urls: Vec::new(),
             serving: false,
+            public: false,
+            exposure_mode: Some("private".to_string()),
+            public_port: None,
             message: Some("Complete browser sign-in".to_string()),
         };
         Ok(TailscaleLogin {
@@ -222,12 +239,22 @@ impl HttpSidecarControlClient {
         // Replace any leftover process before spawning a fresh control plane.
         self.kill_process().await;
 
-        let mut child = tokio::process::Command::new(&self.binary)
+        let mut command = tokio::process::Command::new(&self.binary);
+        command
             .arg("--control-addr")
             .arg("127.0.0.1:0")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+
+        // Hide the sidecar console window on Windows; keep stdout/stderr piped.
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let mut child = command
             .spawn()
             .map_err(|error| format!("Could not start secure network component: {error}"))?;
 
@@ -456,6 +483,7 @@ mod tests {
                 auth_key: Some("tskey-auth-test".to_string()),
                 backend_addr: "127.0.0.1:3090".to_string(),
                 serve_port: 3090,
+                public: false,
             })
             .await
             .unwrap();

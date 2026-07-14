@@ -15,13 +15,14 @@ import (
 )
 
 type fakeNode struct {
-	started bool
-	online  bool
-	authURL string
-	host    string
-	ip      string
-	dns     string
-	ln      net.Listener
+	started     bool
+	online      bool
+	authURL     string
+	host        string
+	ip          string
+	dns         string
+	ln          net.Listener
+	listenCount int
 }
 
 func (f *fakeNode) Start(ctx context.Context, req StartRequest) (NodeInfo, error) {
@@ -69,8 +70,10 @@ func (f *fakeNode) Status(ctx context.Context) (NodeInfo, error) {
 	}, nil
 }
 
-func (f *fakeNode) Listen(ctx context.Context, network, addr string) (net.Listener, error) {
+func (f *fakeNode) Listen(ctx context.Context, network, addr string, public bool) (net.Listener, error) {
+	_ = public
 	_ = ctx
+	f.listenCount++
 	ln, err := net.Listen(network, "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -269,3 +272,107 @@ func TestRebindWithoutAuthKeyKeepsConnected(t *testing.T) {
 		t.Fatalf("active backend not updated: %s %d", rt.activeBackend, rt.activeServePort)
 	}
 }
+
+func TestRebindPublicModeUpdatesServing(t *testing.T) {
+	backend, cleanup := startTestBackend(t)
+	defer cleanup()
+	_, portStr, err := net.SplitHostPort(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	node := &fakeNode{}
+	rt := NewRuntime(node)
+	auth := "tskey-auth-test"
+	first, err := rt.Start(StartRequest{
+		StateDir:    "C:/tmp/ts",
+		Hostname:    "ai-switch",
+		AuthKey:     &auth,
+		BackendAddr: backend,
+		ServePort:   uint16(port),
+		Public:      false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.State != "connected" || first.Public || first.ExposureMode != "private" {
+		t.Fatalf("first start unexpected: state=%q public=%v mode=%q", first.State, first.Public, first.ExposureMode)
+	}
+
+	rebound, err := rt.Start(StartRequest{
+		StateDir:    "C:/tmp/ts",
+		Hostname:    "ai-switch",
+		BackendAddr: backend,
+		ServePort:   uint16(port),
+		Public:      true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebound.State != "connected" {
+		t.Fatalf("public rebind demoted state=%q", rebound.State)
+	}
+	if !rebound.Public || rebound.ExposureMode != "public" {
+		t.Fatalf("public flags missing: public=%v mode=%q", rebound.Public, rebound.ExposureMode)
+	}
+	if rebound.PublicPort != 443 {
+		t.Fatalf("public port=%d want 443", rebound.PublicPort)
+	}
+	if !rt.activePublic || rt.activeServePort != 443 {
+		t.Fatalf("active public serving not updated: public=%v port=%d", rt.activePublic, rt.activeServePort)
+	}
+}
+
+func TestPublicStatusDoesNotMiscompareListenPort(t *testing.T) {
+	backend, cleanup := startTestBackend(t)
+	defer cleanup()
+	_, portStr, err := net.SplitHostPort(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	node := &fakeNode{}
+	rt := NewRuntime(node)
+	auth := "tskey-auth-test"
+	first, err := rt.Start(StartRequest{
+		StateDir:    "C:/tmp/ts",
+		Hostname:    "ai-switch",
+		AuthKey:     &auth,
+		BackendAddr: backend,
+		ServePort:   uint16(port),
+		Public:      true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.State != "connected" || !first.Serving || !first.Public {
+		t.Fatalf("start unexpected: state=%q serving=%v public=%v", first.State, first.Serving, first.Public)
+	}
+	if rt.activeServePort != 443 {
+		t.Fatalf("active serve port=%d want 443", rt.activeServePort)
+	}
+	lnBefore := rt.serveLn
+	listenCountBefore := node.listenCount
+
+	// Status used to compare activeServePort(443) against servePort(local web),
+	// which falsely looked like a rebind was needed and bounced Funnel.
+	status := rt.Status()
+	if !status.Serving || !status.Public || status.PublicPort != 443 {
+		t.Fatalf("status unexpected: serving=%v public=%v port=%d", status.Serving, status.Public, status.PublicPort)
+	}
+	if rt.serveLn != lnBefore {
+		t.Fatal("status recreated funnel listener unexpectedly")
+	}
+	if node.listenCount != listenCountBefore {
+		t.Fatalf("status triggered extra listen calls: before=%d after=%d", listenCountBefore, node.listenCount)
+	}
+}
+

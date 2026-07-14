@@ -18,6 +18,7 @@ const defaultConfig: WebServiceConfig = {
   token: "",
   autoStart: false,
   tailscaleEnabled: false,
+  tailscaleExposureMode: "private",
 };
 
 function normalizeConfig(config: WebServiceConfig): WebServiceConfig {
@@ -29,6 +30,7 @@ function normalizeConfig(config: WebServiceConfig): WebServiceConfig {
     tailscaleEnabled: Boolean(config.tailscaleEnabled),
     tailscaleHostname: config.tailscaleHostname?.trim() || null,
     tailscaleAuthKeyPresent: Boolean(config.tailscaleAuthKeyPresent),
+    tailscaleExposureMode: config.tailscaleExposureMode === "public" ? "public" : "private",
   };
 }
 
@@ -55,6 +57,7 @@ export function WebServiceSettings() {
     mutationFn: async () => {
       const saved = await saveWebServiceConfig(normalizeConfig(form));
       queryClient.setQueryData(["web-service-config"], saved);
+      await queryClient.invalidateQueries({ queryKey: ["tailscale-status"] });
       return saved;
     },
   });
@@ -165,7 +168,34 @@ export function WebServiceSettings() {
               />
               {t("settings.webService.tailscaleEnabled")}
             </label>
+            {form.tailscaleEnabled ? (
+              <label className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-medium text-stone-700">
+                <span>{t("settings.webService.exposureMode")}</span>
+                <select
+                  className="rounded-lg border border-stone-200 bg-white px-2 py-1 text-[12px] font-semibold text-stone-800 outline-none focus:border-stone-400"
+                  onChange={(event) => {
+                    const nextMode = event.target.value === "public" ? "public" : "private";
+                    if (nextMode === "public") {
+                      const ok = window.confirm(t("settings.webService.publicConfirm"));
+                      if (!ok) {
+                        return;
+                      }
+                    }
+                    setForm((current) => ({ ...current, tailscaleExposureMode: nextMode }));
+                  }}
+                  value={form.tailscaleExposureMode ?? "private"}
+                >
+                  <option value="private">{t("settings.webService.exposurePrivate")}</option>
+                  <option value="public">{t("settings.webService.exposurePublic")}</option>
+                </select>
+              </label>
+            ) : null}
           </div>
+          {form.tailscaleEnabled && form.tailscaleExposureMode === "public" ? (
+            <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+              {t("settings.webService.publicHint")}
+            </p>
+          ) : null}
 
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -211,7 +241,10 @@ export function WebServiceSettings() {
             {saveMutation.isSuccess && <p className="mt-1 text-emerald-700">{t("settings.webService.saved")}</p>}
           </div>
 
-          <TailscaleSettings enabled={form.tailscaleEnabled} />
+          <TailscaleSettings
+            enabled={form.tailscaleEnabled}
+            exposureMode={form.tailscaleExposureMode ?? "private"}
+          />
         </>
       )}
     </section>

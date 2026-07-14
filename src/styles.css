@@ -1,5 +1,13 @@
 @import "@xterm/xterm/css/xterm.css";
 
+html,
+body,
+#root {
+  height: 100%;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
 :root {
   color: #1d1d1f;
   background: #e8e6e1;
@@ -15,7 +23,8 @@
 body {
   margin: 0;
   min-width: 320px;
-  min-height: 100vh;
+  height: 100%;
+  max-height: 100dvh;
   background:
     radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.9), transparent 34rem),
     linear-gradient(135deg, #f5f3ee 0%, #e7e4dd 48%, #dcd9d1 100%);

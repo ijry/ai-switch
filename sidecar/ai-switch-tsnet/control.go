@@ -16,14 +16,17 @@ import (
 )
 
 type Status struct {
-	State        string   `json:"state"`
-	DeviceName   *string  `json:"deviceName"`
-	TailnetIP    *string  `json:"tailnetIp"`
-	MagicDNSName *string  `json:"magicDnsName"`
-	LoginURL     *string  `json:"loginUrl"`
-	AccessURLs   []string `json:"accessUrls"`
-	Serving      bool     `json:"serving"`
-	Message      *string  `json:"message"`
+	State         string   `json:"state"`
+	DeviceName    *string  `json:"deviceName"`
+	TailnetIP     *string  `json:"tailnetIp"`
+	MagicDNSName  *string  `json:"magicDnsName"`
+	LoginURL      *string  `json:"loginUrl"`
+	AccessURLs    []string `json:"accessUrls"`
+	Serving       bool     `json:"serving"`
+	Public        bool     `json:"public"`
+	ExposureMode  string   `json:"exposureMode"`
+	PublicPort    uint16   `json:"publicPort"`
+	Message       *string  `json:"message"`
 }
 
 type LoginResponse struct {
@@ -37,6 +40,7 @@ type StartRequest struct {
 	AuthKey     *string `json:"authKey"`
 	BackendAddr string  `json:"backendAddr"`
 	ServePort   uint16  `json:"servePort"`
+	Public      bool    `json:"public"`
 }
 
 type NodeInfo struct {
@@ -53,7 +57,7 @@ type Node interface {
 	Stop(ctx context.Context) error
 	Logout(ctx context.Context) error
 	Status(ctx context.Context) (NodeInfo, error)
-	Listen(ctx context.Context, network, addr string) (net.Listener, error)
+	Listen(ctx context.Context, network, addr string, public bool) (net.Listener, error)
 }
 
 type Runtime struct {
@@ -62,8 +66,10 @@ type Runtime struct {
 	status          Status
 	backendAddr     string
 	servePort       uint16
+	public          bool
 	activeBackend   string
 	activeServePort uint16
+	activePublic    bool
 	serveCancel     context.CancelFunc
 	serveLn         net.Listener
 }
@@ -139,6 +145,9 @@ func (r *Runtime) applyNodeInfo(info NodeInfo, serving bool, message string) Sta
 		LoginURL:     strPtr(info.LoginURL),
 		AccessURLs:   []string{},
 		Serving:      serving,
+		Public:       r.public,
+		ExposureMode: exposureMode(r.public),
+		PublicPort:   publicPortFor(r.public, r.servePort),
 		Message:      strPtr(message),
 	}
 	if !info.Online && info.LoginURL != "" {
@@ -184,7 +193,8 @@ func (r *Runtime) Start(req StartRequest) (Status, error) {
 		if err == nil && info.Online {
 			r.backendAddr = req.BackendAddr
 			r.servePort = req.ServePort
-			if err := r.rebindServingLocked(req.BackendAddr, req.ServePort); err != nil {
+			r.public = req.Public
+			if err := r.rebindServingLocked(req.BackendAddr, req.ServePort, req.Public); err != nil {
 				status := errorStatus(err.Error())
 				r.setStatus(status)
 				return status, err
@@ -198,6 +208,7 @@ func (r *Runtime) Start(req StartRequest) (Status, error) {
 	r.stopServingLocked()
 	r.backendAddr = req.BackendAddr
 	r.servePort = req.ServePort
+	r.public = req.Public
 
 	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 	defer cancel()
@@ -211,12 +222,15 @@ func (r *Runtime) Start(req StartRequest) (Status, error) {
 
 	status := r.applyNodeInfo(info, false, "")
 	if status.State == "connected" {
-		if err := r.startServingLocked(req.BackendAddr, req.ServePort); err != nil {
+		if err := r.startServingLocked(req.BackendAddr, req.ServePort, req.Public); err != nil {
 			status = errorStatus(err.Error())
 			r.setStatus(status)
 			return status, err
 		}
 		status.Serving = true
+		status.Public = req.Public
+		status.ExposureMode = exposureMode(req.Public)
+		status.PublicPort = publicPortFor(req.Public, req.ServePort)
 	}
 	r.setStatus(status)
 	return status, nil
@@ -293,9 +307,11 @@ func (r *Runtime) Status() Status {
 		return out
 	}
 	if info.Online {
-		serving := r.serveLn != nil && r.activeBackend == r.backendAddr && r.activeServePort == r.servePort
-		if (!serving || r.activeBackend != r.backendAddr || r.activeServePort != r.servePort) && r.backendAddr != "" && r.servePort != 0 {
-			if err := r.startServingLocked(r.backendAddr, r.servePort); err == nil {
+		// Compare against the actual listen port (public Funnel may be 443 while
+		// servePort remains the local web backend port such as 10086).
+		serving := r.isServingLocked()
+		if !serving && r.backendAddr != "" && r.servePort != 0 {
+			if err := r.startServingLocked(r.backendAddr, r.servePort, r.public); err == nil {
 				serving = true
 			} else {
 				serving = false
@@ -318,12 +334,50 @@ func (r *Runtime) Status() Status {
 	return out
 }
 
-func (r *Runtime) rebindServingLocked(backendAddr string, servePort uint16) error {
-	return r.startServingLocked(backendAddr, servePort)
+func (r *Runtime) rebindServingLocked(backendAddr string, servePort uint16, public bool) error {
+	return r.startServingLocked(backendAddr, servePort, public)
 }
 
-func (r *Runtime) startServingLocked(backendAddr string, servePort uint16) error {
-	if r.serveLn != nil && r.activeBackend == backendAddr && r.activeServePort == servePort {
+func listenPortFor(public bool, servePort uint16) uint16 {
+	if public {
+		return normalizeFunnelPort(servePort)
+	}
+	return servePort
+}
+
+func (r *Runtime) isServingLocked() bool {
+	return r.serveLn != nil &&
+		r.activeBackend == r.backendAddr &&
+		r.activeServePort == listenPortFor(r.public, r.servePort) &&
+		r.activePublic == r.public
+}
+
+func normalizeFunnelPort(port uint16) uint16 {
+	switch port {
+	case 443, 8443, 10000:
+		return port
+	default:
+		return 443
+	}
+}
+
+func exposureMode(public bool) string {
+	if public {
+		return "public"
+	}
+	return "private"
+}
+
+func publicPortFor(public bool, servePort uint16) uint16 {
+	if !public {
+		return 0
+	}
+	return normalizeFunnelPort(servePort)
+}
+
+func (r *Runtime) startServingLocked(backendAddr string, servePort uint16, public bool) error {
+	listenPort := listenPortFor(public, servePort)
+	if r.serveLn != nil && r.activeBackend == backendAddr && r.activeServePort == listenPort && r.activePublic == public {
 		return nil
 	}
 	if r.serveLn != nil {
@@ -333,7 +387,7 @@ func (r *Runtime) startServingLocked(backendAddr string, servePort uint16) error
 		return fmt.Errorf("local web backend unavailable: %w", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	ln, err := r.node.Listen(ctx, "tcp", fmt.Sprintf(":%d", servePort))
+	ln, err := r.node.Listen(ctx, "tcp", fmt.Sprintf(":%d", listenPort), public)
 	if err != nil {
 		cancel()
 		return err
@@ -357,7 +411,10 @@ func (r *Runtime) startServingLocked(backendAddr string, servePort uint16) error
 	r.serveCancel = cancel
 	r.serveLn = ln
 	r.activeBackend = backendAddr
-	r.activeServePort = servePort
+	r.activeServePort = listenPort
+	r.activePublic = public
+	r.public = public
+	r.servePort = servePort
 	return nil
 }
 
@@ -372,6 +429,7 @@ func (r *Runtime) stopServingLocked() {
 	}
 	r.activeBackend = ""
 	r.activeServePort = 0
+	r.activePublic = false
 }
 
 func isLocalBackend(addr string) bool {

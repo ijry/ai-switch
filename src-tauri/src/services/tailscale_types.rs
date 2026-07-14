@@ -10,6 +10,12 @@ pub struct TailscaleStatus {
     pub login_url: Option<String>,
     pub access_urls: Vec<String>,
     pub serving: bool,
+    #[serde(default)]
+    pub public: bool,
+    #[serde(default)]
+    pub exposure_mode: Option<String>,
+    #[serde(default)]
+    pub public_port: Option<u16>,
     pub message: Option<String>,
 }
 
@@ -23,6 +29,9 @@ impl TailscaleStatus {
             login_url: None,
             access_urls: Vec::new(),
             serving: false,
+            public: false,
+            exposure_mode: Some("private".to_string()),
+            public_port: None,
             message: None,
         }
     }
@@ -36,6 +45,9 @@ impl TailscaleStatus {
             login_url: None,
             access_urls: Vec::new(),
             serving: false,
+            public: false,
+            exposure_mode: Some("private".to_string()),
+            public_port: None,
             message: Some(message.into()),
         }
     }
@@ -49,6 +61,9 @@ impl TailscaleStatus {
             login_url: None,
             access_urls: Vec::new(),
             serving: false,
+            public: false,
+            exposure_mode: Some("private".to_string()),
+            public_port: None,
             message: Some(message.into()),
         }
     }
@@ -62,6 +77,9 @@ impl TailscaleStatus {
             login_url: None,
             access_urls: Vec::new(),
             serving: false,
+            public: false,
+            exposure_mode: Some("private".to_string()),
+            public_port: None,
             message: Some(message.into()),
         }
     }
@@ -82,4 +100,6 @@ pub struct TailscaleStartRequest {
     pub auth_key: Option<String>,
     pub backend_addr: String,
     pub serve_port: u16,
+    #[serde(default)]
+    pub public: bool,
 }

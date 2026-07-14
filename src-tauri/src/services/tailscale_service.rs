@@ -343,6 +343,7 @@ impl TailscaleService {
             auth_key,
             backend_addr: format!("{backend_host}:{port}"),
             serve_port: port,
+            public: config.tailscale_exposure_mode.eq_ignore_ascii_case("public"),
         }
     }
 
@@ -360,12 +361,44 @@ impl TailscaleService {
                 let port = web_status
                     .and_then(|status| status.port)
                     .unwrap_or(config.port);
+                let public = config.tailscale_exposure_mode.eq_ignore_ascii_case("public")
+                    || status.public
+                    || status
+                        .exposure_mode
+                        .as_deref()
+                        .map(|mode| mode.eq_ignore_ascii_case("public"))
+                        .unwrap_or(false);
+                status.public = public;
+                status.exposure_mode = Some(if public {
+                    "public".to_string()
+                } else {
+                    "private".to_string()
+                });
                 let mut access_urls = Vec::new();
-                if let Some(ip) = status.tailnet_ip.as_deref() {
-                    access_urls.push(format!("http://{ip}:{port}"));
-                }
-                if let Some(name) = status.magic_dns_name.as_deref() {
-                    access_urls.push(format!("http://{name}:{port}"));
+                if public {
+                    let public_port = status
+                        .public_port
+                        .filter(|value| *value != 0)
+                        .unwrap_or_else(|| match port {
+                            443 | 8443 | 10000 => port,
+                            _ => 443,
+                        });
+                    status.public_port = Some(public_port);
+                    if let Some(name) = status.magic_dns_name.as_deref() {
+                        if public_port == 443 {
+                            access_urls.push(format!("https://{name}"));
+                        } else {
+                            access_urls.push(format!("https://{name}:{public_port}"));
+                        }
+                    }
+                } else {
+                    status.public_port = None;
+                    if let Some(ip) = status.tailnet_ip.as_deref() {
+                        access_urls.push(format!("http://{ip}:{port}"));
+                    }
+                    if let Some(name) = status.magic_dns_name.as_deref() {
+                        access_urls.push(format!("http://{name}:{port}"));
+                    }
                 }
                 status.access_urls = access_urls;
                 status.serving = !status.access_urls.is_empty();
@@ -494,6 +527,49 @@ mod tests {
         assert!(status.serving);
         assert!(config.tailscale_auth_key_present);
         assert!(paths.tailscale_dir.join("auth-key").exists());
+    }
+
+    #[tokio::test]
+    async fn public_mode_uses_https_funnel_url() {
+        let runtime = TailscaleRuntimeState::default();
+        let (_dir, paths) = test_paths();
+        paths.ensure().await.expect("ensure paths");
+        let mut config = WebServiceConfig {
+            tailscale_enabled: true,
+            port: 3090,
+            host: "127.0.0.1".to_string(),
+            tailscale_hostname: Some("ai-switch".to_string()),
+            tailscale_exposure_mode: "public".to_string(),
+            ..WebServiceConfig::default()
+        };
+        let web_status = WebServerStatus {
+            running: true,
+            host: "127.0.0.1".to_string(),
+            port: Some(3090),
+            base_url: Some("http://127.0.0.1:3090".to_string()),
+        };
+        let client = Arc::new(FakeSidecarControlClient::default()) as Arc<dyn SidecarControlClient>;
+        let client_for_factory = Arc::clone(&client);
+
+        let status = TailscaleService::start_with_auth_key_with_client(
+            &runtime,
+            &paths,
+            &mut config,
+            Some(&web_status),
+            "tskey-auth-test".to_string(),
+            move || Some(client_for_factory),
+        )
+        .await
+        .expect("auth key connect");
+
+        assert_eq!(status.state, "connected");
+        assert!(status.public);
+        assert_eq!(status.exposure_mode.as_deref(), Some("public"));
+        assert!(status
+            .access_urls
+            .iter()
+            .any(|url| url == "https://ai-switch.tailnet.ts.net"));
+        assert!(status.serving);
     }
 
     #[tokio::test]

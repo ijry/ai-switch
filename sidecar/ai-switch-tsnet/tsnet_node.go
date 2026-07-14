@@ -160,14 +160,22 @@ func (n *TsnetNode) Status(ctx context.Context) (NodeInfo, error) {
 	return nodeInfoFromIPN(hostname, st), nil
 }
 
-func (n *TsnetNode) Listen(ctx context.Context, network, addr string) (net.Listener, error) {
+func (n *TsnetNode) Listen(ctx context.Context, network, addr string, public bool) (net.Listener, error) {
 	n.mu.Lock()
 	srv := n.server
 	n.mu.Unlock()
 	if srv == nil {
 		return nil, errors.New("secure network is not started")
 	}
-	ln, err := srv.Listen(network, addr)
+	var (
+		ln  net.Listener
+		err error
+	)
+	if public {
+		ln, err = srv.ListenFunnel(network, addr)
+	} else {
+		ln, err = srv.Listen(network, addr)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -190,6 +190,8 @@ export type WebServiceConfig = {
   tailscaleEnabled: boolean;
   tailscaleHostname?: string | null;
   tailscaleAuthKeyPresent?: boolean;
+  /** private = tailnet only; public = Tailscale Funnel */
+  tailscaleExposureMode?: "private" | "public";
 };
 
 export type WebServerStatus = {
@@ -207,6 +209,9 @@ export type TailscaleStatus = {
   loginUrl?: string | null;
   accessUrls?: string[];
   serving?: boolean;
+  public?: boolean;
+  exposureMode?: string | null;
+  publicPort?: number | null;
   message?: string | null;
 };
 

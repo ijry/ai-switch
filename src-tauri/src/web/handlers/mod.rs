@@ -190,7 +190,22 @@ pub async fn dispatch_command(
         }
         "save_web_service_config" => {
             let config: WebServiceConfig = parse_arg(&args, "config")?;
-            to_value(WebService::save_config(&state.paths, &config).await.map_err(to_error)?)
+            let saved = WebService::save_config(&state.paths, &config)
+                .await
+                .map_err(to_error)?;
+            if saved.tailscale_enabled {
+                let web_status = WebService::status(&state.web_service, &saved).await;
+                if web_status.running {
+                    let _ = TailscaleService::ensure_started(
+                        &state.tailscale,
+                        &state.paths,
+                        &saved,
+                        Some(&web_status),
+                    )
+                    .await;
+                }
+            }
+            to_value(saved)
         }
         "get_web_server_status" => {
             let config = WebService::load_config(&state.paths)

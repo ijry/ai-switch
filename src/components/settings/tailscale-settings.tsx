@@ -11,6 +11,7 @@ import { useI18n } from "../../lib/i18n";
 
 type TailscaleSettingsProps = {
   enabled: boolean;
+  exposureMode?: "private" | "public";
 };
 
 const STATUS_LABEL_KEYS = {
@@ -29,7 +30,7 @@ function statusLabelKey(state: string | undefined): (typeof STATUS_LABEL_KEYS)[k
   return STATUS_LABEL_KEYS.notConnected;
 }
 
-export function TailscaleSettings({ enabled }: TailscaleSettingsProps) {
+export function TailscaleSettings({ enabled, exposureMode = "private" }: TailscaleSettingsProps) {
   const queryClient = useQueryClient();
   const { t } = useI18n();
   const [authKey, setAuthKey] = useState("");
@@ -88,7 +89,11 @@ export function TailscaleSettings({ enabled }: TailscaleSettingsProps) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-[13px] font-semibold text-stone-950">{t("settings.tailscale.title")}</h3>
-          <p className="text-[12px] text-stone-500">{t("settings.tailscale.subtitle")}</p>
+          <p className="text-[12px] text-stone-500">
+            {exposureMode === "public"
+              ? t("settings.tailscale.subtitlePublic")
+              : t("settings.tailscale.subtitle")}
+          </p>
         </div>
         <button
           className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 hover:border-stone-300"
@@ -122,6 +127,19 @@ export function TailscaleSettings({ enabled }: TailscaleSettingsProps) {
           {status?.serving ? (
             <span className="inline-flex rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-700">
               {t("settings.tailscale.serving")}
+            </span>
+          ) : null}
+          {enabled ? (
+            <span
+              className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                exposureMode === "public" || status?.public
+                  ? "bg-amber-50 text-amber-800"
+                  : "bg-stone-100 text-stone-700"
+              }`}
+            >
+              {exposureMode === "public" || status?.public
+                ? t("settings.tailscale.modePublic")
+                : t("settings.tailscale.modePrivate")}
             </span>
           ) : null}
         </div>

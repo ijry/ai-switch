@@ -23,6 +23,9 @@ pub struct WebServiceConfig {
     pub tailscale_hostname: Option<String>,
     #[serde(default)]
     pub tailscale_auth_key_present: bool,
+    /// private = tailnet only; public = Tailscale Funnel internet access
+    #[serde(default = "default_exposure_mode")]
+    pub tailscale_exposure_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,6 +47,17 @@ struct WebServiceRuntimeInner {
     status: Option<WebServerStatus>,
     shutdown: Option<oneshot::Sender<()>>,
     join_handle: Option<JoinHandle<()>>,
+}
+
+fn default_exposure_mode() -> String {
+    "private".to_string()
+}
+
+fn normalize_exposure_mode(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "public" => "public".to_string(),
+        _ => "private".to_string(),
+    }
 }
 
 pub struct WebService;
@@ -215,6 +229,7 @@ impl WebService {
             tailscale_enabled: config.tailscale_enabled,
             tailscale_hostname: hostname,
             tailscale_auth_key_present: config.tailscale_auth_key_present,
+            tailscale_exposure_mode: normalize_exposure_mode(&config.tailscale_exposure_mode),
         }
     }
 }
@@ -229,6 +244,7 @@ impl Default for WebServiceConfig {
             tailscale_enabled: false,
             tailscale_hostname: None,
             tailscale_auth_key_present: false,
+            tailscale_exposure_mode: default_exposure_mode(),
         }
     }
 }
