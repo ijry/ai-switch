@@ -367,92 +367,75 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
           </div>
         </div>
 
-        <button
-          className="mx-4 mt-3 flex w-[calc(100%-2rem)] cursor-pointer items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-gradient-to-r from-emerald-50 to-white px-3 py-2.5 text-left transition-colors hover:border-emerald-300 hover:from-emerald-100"
-          onClick={() => onOpenSessions?.(activePlatform)}
-          type="button"
-        >
-          <span className="flex min-w-0 items-center gap-2.5">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-emerald-600 text-white shadow-sm">
-              <MessageSquareText className="h-4 w-4" />
-            </span>
-            <span className="min-w-0">
-              <span className="block truncate text-[13px] font-semibold text-stone-950">
-                查看 {platformLabels[activePlatform]} 本机会话
+        <div className="mx-4 mt-3 rounded-2xl border border-emerald-200 bg-gradient-to-r from-emerald-50 to-white px-3 py-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-emerald-600 text-white shadow-sm">
+                <KeyRound className="h-4 w-4" />
               </span>
-              <span className="block truncate text-[12px] text-stone-500">
-                搜索历史对话、复制恢复命令并回到正确项目目录。
+              <span className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-emerald-200 bg-white/90 px-2.5 py-1.5 text-[12px] font-semibold text-emerald-900">
+                算力池
               </span>
-            </span>
-          </span>
-          <span className="shrink-0 text-[12px] font-semibold text-emerald-700">打开</span>
-        </button>
+              <span className="shrink-0 rounded-xl border border-emerald-100 bg-white/90 px-2.5 py-1.5 text-[12px] font-medium text-stone-600">
+                已加入 {draftPoolIds.size} 个账号
+              </span>
+              <span className="min-w-0 truncate rounded-xl border border-emerald-100 bg-white/90 px-2.5 py-1.5 text-[12px] font-medium text-stone-600">
+                本地代理：{routeProxyQuery.data?.running ? routeProxyQuery.data.base_url ?? "运行中" : "未启动"}
+              </span>
+              {lastRouteAccount && (
+                <span className="min-w-0 truncate rounded-xl border border-emerald-100 bg-white/90 px-2.5 py-1.5 text-[12px] font-medium text-stone-600">
+                  最近路由到：{lastRouteAccount}
+                </span>
+              )}
+            </div>
 
-        <div className="flex flex-col gap-3 px-4 py-3 xl:flex-row xl:items-center xl:justify-between">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-stone-50 px-2.5 py-1.5 text-[12px] font-semibold text-stone-700">
-              <KeyRound className="h-3.5 w-3.5 text-amber-600" />
-              算力池
-            </span>
-            <span className="rounded-xl border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-stone-600">
-              已加入 {draftPoolIds.size} 个账号
-            </span>
-            <span className="rounded-xl border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-stone-600">
-              本地代理：{routeProxyQuery.data?.running ? routeProxyQuery.data.base_url ?? "运行中" : "未启动"}
-            </span>
-            {lastRouteAccount && (
-              <span className="rounded-xl border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-stone-600">
-                最近路由到：{lastRouteAccount}
-              </span>
-            )}
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <button
-              aria-label={routeProxyQuery.data?.running ? "停止本地路由代理" : "启动本地路由代理"}
-              className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-stone-300 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 transition-colors hover:bg-stone-50 disabled:opacity-50"
-              disabled={startProxyMutation.isPending || stopProxyMutation.isPending}
-              onClick={() => {
-                if (routeProxyQuery.data?.running) {
-                  stopProxyMutation.mutate();
-                } else {
-                  startProxyMutation.mutate();
-                }
-              }}
-              type="button"
-            >
-              {routeProxyQuery.data?.running ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
-              {routeProxyQuery.data?.running ? "停止代理" : "启动代理"}
-            </button>
-            <button
-              aria-label="写入路由配置文件"
-              className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-stone-300 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 transition-colors hover:bg-stone-50 disabled:opacity-50"
-              disabled={!routeProxyQuery.data?.running || writeConfigsMutation.isPending}
-              onClick={() => writeConfigsMutation.mutate()}
-              type="button"
-            >
-              <FileCode2 className="h-3.5 w-3.5" />
-              写入配置
-            </button>
-            <button
-              aria-label="测试算力池路由"
-              className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-stone-800 disabled:opacity-50"
-              disabled={draftPoolIds.size === 0 || routeOnceMutation.isPending}
-              onClick={testRoute}
-              type="button"
-            >
-              <Play className="h-3.5 w-3.5" />
-              测试路由
-            </button>
-            <button
-              aria-label="查看算力池统计"
-              className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-stone-300 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 transition-colors hover:bg-stone-50"
-              onClick={() => setStatsOpen((open) => !open)}
-              type="button"
-            >
-              <BarChart3 className="h-3.5 w-3.5" />
-              统计
-            </button>
+            <div className="flex shrink-0 flex-nowrap items-center gap-2">
+              <button
+                aria-label={routeProxyQuery.data?.running ? "停止本地路由代理" : "启动本地路由代理"}
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 transition-colors hover:bg-emerald-50 disabled:opacity-50"
+                disabled={startProxyMutation.isPending || stopProxyMutation.isPending}
+                onClick={() => {
+                  if (routeProxyQuery.data?.running) {
+                    stopProxyMutation.mutate();
+                  } else {
+                    startProxyMutation.mutate();
+                  }
+                }}
+                type="button"
+              >
+                {routeProxyQuery.data?.running ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
+                {routeProxyQuery.data?.running ? "停止代理" : "启动代理"}
+              </button>
+              <button
+                aria-label="写入路由配置文件"
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 transition-colors hover:bg-emerald-50 disabled:opacity-50"
+                disabled={!routeProxyQuery.data?.running || writeConfigsMutation.isPending}
+                onClick={() => writeConfigsMutation.mutate()}
+                type="button"
+              >
+                <FileCode2 className="h-3.5 w-3.5" />
+                写入配置
+              </button>
+              <button
+                aria-label="测试算力池路由"
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-emerald-700 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-emerald-800 disabled:opacity-50"
+                disabled={draftPoolIds.size === 0 || routeOnceMutation.isPending}
+                onClick={testRoute}
+                type="button"
+              >
+                <Play className="h-3.5 w-3.5" />
+                测试路由
+              </button>
+              <button
+                aria-label="查看算力池统计"
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 transition-colors hover:bg-emerald-50"
+                onClick={() => setStatsOpen((open) => !open)}
+                type="button"
+              >
+                <BarChart3 className="h-3.5 w-3.5" />
+                统计
+              </button>
+            </div>
           </div>
         </div>
 
