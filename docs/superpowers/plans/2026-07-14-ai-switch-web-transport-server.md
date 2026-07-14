@@ -38,7 +38,7 @@
 - Consumes: `Transport.call()`, `Transport.subscribe()`, `isDesktop()`
 - Produces: `getTransport()`, `TauriTransport`, `WebTransport`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 import { describe, expect, it, vi } from "vitest";
@@ -52,13 +52,13 @@ describe("transport detection", () => {
 });
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `pnpm test:run tests/transport/transport.test.ts tests/terminal/XtermPane.test.tsx`
 
 Expected: fail because `src/lib/transport/*` does not exist yet and `XtermPane` still listens directly through Tauri.
 
-- [ ] **Step 3: Implement the transport layer**
+- [x] **Step 3: Implement the transport layer**
 
 ```ts
 export interface Transport {
@@ -71,13 +71,13 @@ export interface Transport {
 
 Implement `getTransport()` so desktop uses `invoke()` and browser uses `fetch('/api/:command')` plus WebSocket events. Replace direct `invoke()` calls in `src/lib/api/client.ts` with `getTransport().call(...)`, and replace direct `listen()` usage in `XtermPane` with `getTransport().subscribe(...)`.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `pnpm test:run tests/transport/transport.test.ts tests/terminal/XtermPane.test.tsx && pnpm typecheck`
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/transport src/lib/api/client.ts src/components/terminal/XtermPane.tsx tests/transport/transport.test.ts tests/terminal/XtermPane.test.tsx
@@ -104,7 +104,7 @@ git commit -m "feat: add web transport abstraction"
 - Consumes: `AppState`, `TerminalManager`, `EventEmitter`, `SqlitePool`
 - Produces: `get_settings_core()`, `save_settings_core()`, `list_sessions_core()`, `get_session_messages_core()`, `create_terminal_session_core()`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[test]
@@ -117,13 +117,13 @@ fn create_session_emits_through_shared_emitter() {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `cd src-tauri && cargo test --features test-utils terminal_manager::tests::list_sessions_starts_empty`
 
 Expected: fail because the new core entry points and emitter wiring are not implemented yet.
 
-- [ ] **Step 3: Extract the core functions**
+- [x] **Step 3: Extract the core functions**
 
 ```rust
 pub fn create_terminal_session_core(
@@ -135,13 +135,13 @@ pub fn create_terminal_session_core(
 
 Move business logic into the `core/*` modules. Keep the `#[tauri::command]` functions as thin wrappers that call the shared core functions. Change `TerminalManager` so it emits through `EventEmitter` instead of depending on `tauri::AppHandle` directly.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cd src-tauri && cargo test --features test-utils && cargo check`
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src-tauri/src/core src-tauri/src/web/event_bridge.rs src-tauri/src/app_state.rs src-tauri/src/terminal_manager.rs src-tauri/src/commands src-tauri/src/lib.rs
@@ -169,7 +169,7 @@ git commit -m "refactor: share rust core across runtimes"
 - Consumes: `Arc<AppState>`, `EventEmitter::Web`, `build_router()`, `AuthState`
 - Produces: `POST /api/:command`, `GET /ws/events`, `GET /health`, `POST /api/health`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[tokio::test]
@@ -180,13 +180,13 @@ async fn api_requires_token() {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `cd src-tauri && cargo test --no-default-features --bin ai-switch-server`
 
 Expected: fail because the server binary, router, auth, and WS handler do not exist yet.
 
-- [ ] **Step 3: Implement the server runtime**
+- [x] **Step 3: Implement the server runtime**
 
 ```rust
 pub fn build_router(
@@ -198,13 +198,13 @@ pub fn build_router(
 
 Add an `ai_switch_server` binary that loads paths, opens the database, initializes the shared core state, and serves both JSON APIs and WebSocket events. Use the same command names as Tauri so the frontend transport can switch without changing feature code.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cd src-tauri && cargo test --no-default-features --bin ai-switch-server && cargo check --no-default-features --bin ai-switch-server`
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src-tauri/src/bin/ai_switch_server.rs src-tauri/src/web src-tauri/Cargo.toml package.json src/lib/api/client.ts
@@ -228,7 +228,7 @@ git commit -m "feat: add standalone web server runtime"
 - Consumes: `get_web_service_config`, `save_web_service_config`, `get_tailscale_status`, `start_tailscale_login`, `disconnect_tailscale`
 - Produces: compact settings card, remote access state, OAuth login button
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```tsx
 it("shows the web service entry and Tailscale login button", async () => {
@@ -238,13 +238,13 @@ it("shows the web service entry and Tailscale login button", async () => {
 });
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `pnpm test:run tests/SettingsScreen.test.tsx`
 
 Expected: fail because the new settings section and Tailscale API are not implemented yet.
 
-- [ ] **Step 3: Implement the settings UI and Tailscale service facade**
+- [x] **Step 3: Implement the settings UI and Tailscale service facade**
 
 ```ts
 export type WebServiceConfig = {
@@ -258,13 +258,13 @@ export type WebServiceConfig = {
 
 Add a compact settings card that controls host, port, token, auto-start, and Tailscale access. The Tailscale backend should use a service facade so the implementation can start with CLI-sidecar integration and later swap to a different provider without changing the UI or command names.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `pnpm test:run tests/SettingsScreen.test.tsx && pnpm typecheck && cd src-tauri && cargo test --features test-utils`
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/components/settings/web-service-settings.tsx src/components/settings/tailscale-settings.tsx src/screens/SettingsScreen.tsx src/lib/i18n.tsx src/lib/api/types.ts src/lib/api/client.ts src-tauri/src/services/tailscale_service.rs src-tauri/src/commands/web_service_commands.rs src-tauri/src/commands/mod.rs
@@ -283,7 +283,7 @@ git commit -m "feat: add web service and tailscale settings"
 - Consumes: `pnpm tauri:build`, `pnpm build`, `pnpm test:run`, `cargo check --no-default-features --bin ai-switch-server`
 - Produces: desktop installer and server binary build path
 
-- [ ] **Step 1: Write the failing verification script**
+- [x] **Step 1: Write the failing verification script**
 
 ```powershell
 pnpm build
@@ -293,17 +293,17 @@ cd src-tauri
 cargo check --no-default-features --bin ai-switch-server
 ```
 
-- [ ] **Step 2: Run the script to see the current gaps**
+- [x] **Step 2: Run the script to see the current gaps**
 
 Run the four commands above.
 
 Expected: the new server path and settings/Tailscale work may still be incomplete until Tasks 1-4 are done.
 
-- [ ] **Step 3: Update packaging and docs**
+- [x] **Step 3: Update packaging and docs**
 
 Add the server build script, bundle the server binary path, and document how to start the standalone server, how to open the Web settings page, and how to complete Tailscale login.
 
-- [ ] **Step 4: Run the full verification matrix**
+- [x] **Step 4: Run the full verification matrix**
 
 Run:
 
@@ -321,7 +321,7 @@ cargo test --no-default-features --bin ai-switch-server
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add package.json src-tauri/tauri.conf.json README.md

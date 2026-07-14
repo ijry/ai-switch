@@ -4,10 +4,15 @@ version = "0.1.0"
 description = "AI provider and official account switcher"
 authors = ["xyito"]
 edition = "2021"
+default-run = "ai-switch"
 
 [lib]
 name = "ai_switch_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "ai-switch"
+path = "src/main.rs"
 
 [[bin]]
 name = "ai-switch-server"

@@ -14,6 +14,7 @@
     "rust:check": "cd src-tauri && cargo check",
     "rust:test": "cd src-tauri && cargo test",
     "server:build": "cd src-tauri && cargo build --bin ai-switch-server",
+    "server:build:release": "cd src-tauri && cargo build --release --bin ai-switch-server",
     "server:check": "cd src-tauri && cargo check --bin ai-switch-server",
     "tauri:build": "tauri build"
   },
