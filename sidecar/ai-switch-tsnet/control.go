@@ -176,7 +176,7 @@ func (r *Runtime) Start(req StartRequest) (Status, error) {
         r.backendAddr = req.BackendAddr
         r.servePort = req.ServePort
 
-        ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+        ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
         defer cancel()
 
         info, err := r.node.Start(ctx, req)
@@ -203,11 +203,17 @@ func (r *Runtime) LoginOAuth() (LoginResponse, error) {
         r.mu.Lock()
         defer r.mu.Unlock()
 
-        ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+        ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
         defer cancel()
 
         loginURL, err := r.node.LoginOAuth(ctx)
         if err != nil {
+                status := errorStatus(err.Error())
+                r.setStatus(status)
+                return LoginResponse{Message: err.Error()}, err
+        }
+        if strings.TrimSpace(loginURL) == "" {
+                err := errors.New("login URL is not ready yet; try again")
                 status := errorStatus(err.Error())
                 r.setStatus(status)
                 return LoginResponse{Message: err.Error()}, err

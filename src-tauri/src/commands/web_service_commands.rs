@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use tauri::State;
+use tauri_plugin_shell::ShellExt;
 
 use crate::app_state::AppState;
 use crate::error::{ApiError, AppError};
@@ -69,18 +70,35 @@ pub async fn get_tailscale_status(state: State<'_, AppState>) -> Result<Tailscal
 }
 
 #[tauri::command]
-pub async fn start_tailscale_login(state: State<'_, AppState>) -> Result<TailscaleLogin, ApiError> {
+pub async fn start_tailscale_login(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TailscaleLogin, ApiError> {
     let config = WebService::load_config(&state.paths)
         .await
         .map_err(ApiError::from)?;
     let web_status = WebService::status(&state.web_service, &config).await;
-    Ok(TailscaleService::start_login(
+    let mut login = TailscaleService::start_login(
         &state.tailscale,
         &state.paths,
         &config,
         Some(&web_status),
     )
-    .await)
+    .await;
+
+    if let Some(login_url) = login
+        .login_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        #[allow(deprecated)]
+        if let Err(error) = app.shell().open(login_url, None) {
+            login.message = format!("Sign-in page ready, but browser open failed: {error}");
+        }
+    }
+
+    Ok(login)
 }
 
 #[tauri::command]

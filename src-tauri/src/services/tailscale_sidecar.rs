@@ -183,7 +183,7 @@ pub struct HttpSidecarControlClient {
 impl HttpSidecarControlClient {
     pub fn new(binary: PathBuf) -> Result<Self, String> {
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(20))
+            .timeout(std::time::Duration::from_secs(90))
             .build()
             .map_err(|error| format!("Could not create secure network client: {error}"))?;
         Ok(Self {

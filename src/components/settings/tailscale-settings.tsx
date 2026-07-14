@@ -44,7 +44,12 @@ export function TailscaleSettings({ enabled }: TailscaleSettingsProps) {
     mutationFn: startTailscaleLogin,
     onSuccess: (result) => {
       void statusQuery.refetch();
-      if (result.loginUrl && typeof window !== "undefined") {
+      // Desktop opens the browser from Rust. Keep a web fallback only.
+      if (
+        result.loginUrl &&
+        typeof window !== "undefined" &&
+        !(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+      ) {
         window.open(result.loginUrl, "_blank", "noopener,noreferrer");
       }
     },
@@ -209,6 +214,17 @@ export function TailscaleSettings({ enabled }: TailscaleSettingsProps) {
 
       {loginMutation.data?.message ? (
         <p className="text-[12px] text-stone-500">{loginMutation.data.message}</p>
+      ) : null}
+      {loginMutation.data?.loginUrl ? (
+        <a
+          className="inline-flex items-center gap-1 text-[12px] font-semibold text-sky-700 hover:text-sky-800"
+          href={loginMutation.data.loginUrl}
+          rel="noreferrer"
+          target="_blank"
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
+          {loginMutation.data.loginUrl}
+        </a>
       ) : null}
       {loginMutation.isError ? <p className="text-[12px] text-red-700">{t("settings.tailscale.loginError")}</p> : null}
       {enabled && status?.state === "connected" && accessUrls.length === 0 ? (
