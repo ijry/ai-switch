@@ -18,6 +18,10 @@ pub struct WebServiceConfig {
     pub token: Option<String>,
     pub auto_start: bool,
     pub tailscale_enabled: bool,
+    #[serde(default)]
+    pub tailscale_hostname: Option<String>,
+    #[serde(default)]
+    pub tailscale_auth_key_present: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -169,6 +173,12 @@ impl WebService {
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned)
             .or(defaults.token);
+        let hostname = config
+            .tailscale_hostname
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
 
         WebServiceConfig {
             host: if host.is_empty() {
@@ -176,10 +186,16 @@ impl WebService {
             } else {
                 host.to_string()
             },
-            port: if config.port == 0 { defaults.port } else { config.port },
+            port: if config.port == 0 {
+                defaults.port
+            } else {
+                config.port
+            },
             token,
             auto_start: config.auto_start,
             tailscale_enabled: config.tailscale_enabled,
+            tailscale_hostname: hostname,
+            tailscale_auth_key_present: config.tailscale_auth_key_present,
         }
     }
 }
@@ -192,6 +208,8 @@ impl Default for WebServiceConfig {
             token: Some(Uuid::new_v4().to_string()),
             auto_start: false,
             tailscale_enabled: false,
+            tailscale_hostname: None,
+            tailscale_auth_key_present: false,
         }
     }
 }
@@ -201,5 +219,18 @@ fn advertised_host(addr: SocketAddr, configured_host: &str) -> String {
         "127.0.0.1".to_string()
     } else {
         addr.ip().to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WebServiceConfig;
+
+    #[test]
+    fn web_service_config_defaults_keep_auth_key_absent() {
+        let config = WebServiceConfig::default();
+        assert_eq!(config.tailscale_enabled, false);
+        assert_eq!(config.tailscale_auth_key_present, false);
+        assert!(config.tailscale_hostname.is_none());
     }
 }

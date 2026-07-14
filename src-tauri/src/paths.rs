@@ -11,6 +11,7 @@ pub struct AppPaths {
     pub backups_dir: PathBuf,
     pub imports_dir: PathBuf,
     pub logs_dir: PathBuf,
+    pub tailscale_dir: PathBuf,
 }
 
 impl AppPaths {
@@ -33,6 +34,7 @@ impl AppPaths {
             backups_dir: data_dir.join("backups"),
             imports_dir: data_dir.join("imports"),
             logs_dir: data_dir.join("logs"),
+            tailscale_dir: data_dir.join("tailscale"),
             data_dir,
         }
     }
@@ -42,6 +44,22 @@ impl AppPaths {
         tokio::fs::create_dir_all(&self.backups_dir).await?;
         tokio::fs::create_dir_all(&self.imports_dir).await?;
         tokio::fs::create_dir_all(&self.logs_dir).await?;
+        tokio::fs::create_dir_all(&self.tailscale_dir).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppPaths;
+    use std::path::PathBuf;
+
+    #[test]
+    fn app_paths_include_tailscale_dir() {
+        let paths = AppPaths::from_data_dir(PathBuf::from("C:/tmp/ai-switch-data"));
+        assert_eq!(
+            paths.tailscale_dir,
+            PathBuf::from("C:/tmp/ai-switch-data/tailscale")
+        );
     }
 }
