@@ -11,6 +11,7 @@ import {
   saveSettings,
   saveWebServiceConfig,
   startTailscaleLogin,
+  startTailscaleWithAuthKey,
   startWebServer,
   stopWebServer,
 } from "../src/lib/api/client";
@@ -29,6 +30,7 @@ vi.mock("../src/lib/api/client", () => ({
   stopWebServer: vi.fn(),
   getTailscaleStatus: vi.fn(),
   startTailscaleLogin: vi.fn(),
+  startTailscaleWithAuthKey: vi.fn(),
   disconnectTailscale: vi.fn(),
 }));
 
@@ -44,6 +46,7 @@ describe("SettingsScreen", () => {
     vi.mocked(stopWebServer).mockReset();
     vi.mocked(getTailscaleStatus).mockReset();
     vi.mocked(startTailscaleLogin).mockReset();
+    vi.mocked(startTailscaleWithAuthKey).mockReset();
     vi.mocked(disconnectTailscale).mockReset();
     vi.mocked(getWebServiceConfig).mockResolvedValue({
       host: "127.0.0.1",
@@ -81,6 +84,14 @@ describe("SettingsScreen", () => {
       loginUrl: null,
       message: "login started",
     });
+    vi.mocked(startTailscaleWithAuthKey).mockResolvedValue({
+      state: "connected",
+      deviceName: "ai-switch",
+      tailnetIp: "100.64.0.12",
+      accessUrls: ["http://100.64.0.12:3090"],
+      serving: true,
+      message: null,
+    });
     vi.mocked(disconnectTailscale).mockResolvedValue({
       state: "notConnected",
       deviceName: null,
@@ -115,7 +126,7 @@ describe("SettingsScreen", () => {
     expect(screen.queryByRole("button", { name: /导入/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /目标/ })).not.toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Web 服务" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /使用 Tailscale 登录/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /使用 OAuth 登录/ })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "切换主题值" }));
 
@@ -169,3 +180,4 @@ describe("SettingsScreen", () => {
     expect(onOpenFeature).toHaveBeenCalledWith("Sessions");
   });
 });
+

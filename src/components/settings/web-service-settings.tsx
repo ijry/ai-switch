@@ -27,6 +27,8 @@ function normalizeConfig(config: WebServiceConfig): WebServiceConfig {
     token: config.token?.trim() || "",
     autoStart: Boolean(config.autoStart),
     tailscaleEnabled: Boolean(config.tailscaleEnabled),
+    tailscaleHostname: config.tailscaleHostname?.trim() || null,
+    tailscaleAuthKeyPresent: Boolean(config.tailscaleAuthKeyPresent),
   };
 }
 
