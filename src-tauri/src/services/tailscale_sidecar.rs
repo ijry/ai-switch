@@ -76,6 +76,10 @@ impl SidecarControlClient for FakeSidecarControlClient {
                 serving: true,
                 message: None,
             };
+        } else if inner.status.state == "connected" {
+            // Rebind existing session to a new local backend without forcing re-login.
+            inner.status.serving = true;
+            inner.status.message = None;
         } else {
             inner.status = TailscaleStatus::needs_login("Sign in to connect secure network");
         }

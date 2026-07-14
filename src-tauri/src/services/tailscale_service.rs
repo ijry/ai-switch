@@ -101,7 +101,18 @@ impl TailscaleService {
         };
 
         match client.status().await {
-            Ok(status) => Self::finalize_status(status, config, web_status, paths),
+            Ok(status) => {
+                let web_running = web_status.map(|status| status.running).unwrap_or(false);
+                // Connected OAuth sessions may come online after login without a proxy listener.
+                // Rebind once so MagicDNS stops 502'ing on a dead upstream.
+                if status.state == "connected" && web_running && !status.serving {
+                    let request = Self::build_start_request(paths, config, web_status, None);
+                    if let Ok(rebound) = client.start(request).await {
+                        return Self::finalize_status(rebound, config, web_status, paths);
+                    }
+                }
+                Self::finalize_status(status, config, web_status, paths)
+            }
             Err(error) => TailscaleStatus::error(error),
         }
     }
@@ -209,19 +220,41 @@ impl TailscaleService {
             Err(error) => return TailscaleStatus::error(error),
         };
 
-        if auth_key.is_none() && !config.tailscale_auth_key_present {
-            return TailscaleStatus::stopped("Secure network is waiting for sign-in");
-        }
-
         let client = match Self::ensure_client(runtime, factory).await {
             Ok(client) => client,
             Err(status) => return status,
         };
 
-        let request = Self::build_start_request(paths, config, web_status, auth_key);
+        // Prefer rebinding an already-connected session so starting web after OAuth works.
+        if let Ok(existing) = client.status().await {
+            if existing.state == "connected" || auth_key.is_some() || config.tailscale_auth_key_present
+            {
+                let request = Self::build_start_request(paths, config, web_status, auth_key);
+                return match client.start(request).await {
+                    Ok(status) => Self::finalize_status(status, config, web_status, paths),
+                    Err(error) => TailscaleStatus::error(error),
+                };
+            }
+        } else if auth_key.is_some() || config.tailscale_auth_key_present {
+            let request = Self::build_start_request(paths, config, web_status, auth_key);
+            return match client.start(request).await {
+                Ok(status) => Self::finalize_status(status, config, web_status, paths),
+                Err(error) => TailscaleStatus::error(error),
+            };
+        }
+
+        // Also attempt start from persisted tsnet state (OAuth) so app restart can recover.
+        let request = Self::build_start_request(paths, config, web_status, None);
         match client.start(request).await {
-            Ok(status) => Self::finalize_status(status, config, web_status, paths),
-            Err(error) => TailscaleStatus::error(error),
+            Ok(status) => {
+                let finalized = Self::finalize_status(status, config, web_status, paths);
+                if finalized.state == "connected" {
+                    finalized
+                } else {
+                    TailscaleStatus::stopped("Secure network is waiting for sign-in")
+                }
+            }
+            Err(_) => TailscaleStatus::stopped("Secure network is waiting for sign-in"),
         }
     }
 
@@ -320,19 +353,33 @@ impl TailscaleService {
         _paths: &AppPaths,
     ) -> TailscaleStatus {
         if status.state == "connected" {
-            let port = web_status
-                .and_then(|status| status.port)
-                .unwrap_or(config.port);
-            let mut access_urls = Vec::new();
-            if let Some(ip) = status.tailnet_ip.as_deref() {
-                access_urls.push(format!("http://{ip}:{port}"));
+            let web_running = web_status.map(|status| status.running).unwrap_or(false);
+            // Remote URLs are only useful when both the local web backend and the sidecar
+            // reverse proxy are actually ready. Advertising earlier produces MagicDNS 502s.
+            if web_running && status.serving {
+                let port = web_status
+                    .and_then(|status| status.port)
+                    .unwrap_or(config.port);
+                let mut access_urls = Vec::new();
+                if let Some(ip) = status.tailnet_ip.as_deref() {
+                    access_urls.push(format!("http://{ip}:{port}"));
+                }
+                if let Some(name) = status.magic_dns_name.as_deref() {
+                    access_urls.push(format!("http://{name}:{port}"));
+                }
+                status.access_urls = access_urls;
+                status.serving = !status.access_urls.is_empty();
+            } else {
+                status.access_urls = Vec::new();
+                status.serving = false;
+                if status.message.as_deref().unwrap_or("").trim().is_empty() {
+                    status.message = Some(if web_running {
+                        "Secure network is connected but remote proxy is not ready".to_string()
+                    } else {
+                        "Start the web service to publish remote access".to_string()
+                    });
+                }
             }
-            if let Some(name) = status.magic_dns_name.as_deref() {
-                access_urls.push(format!("http://{name}:{port}"));
-            }
-            status.access_urls = access_urls;
-            status.serving = web_status.map(|status| status.running).unwrap_or(false)
-                && !status.access_urls.is_empty();
         }
         status
     }
@@ -463,6 +510,43 @@ mod tests {
         )
         .await;
         assert_eq!(status.state, "disabled");
+    }
+
+    #[tokio::test]
+    async fn connected_without_web_hides_access_urls() {
+        let runtime = TailscaleRuntimeState::default();
+        let (_dir, paths) = test_paths();
+        paths.ensure().await.expect("ensure paths");
+        let mut config = WebServiceConfig {
+            tailscale_enabled: true,
+            port: 10086,
+            host: "127.0.0.1".to_string(),
+            tailscale_hostname: Some("ai-switch".to_string()),
+            ..WebServiceConfig::default()
+        };
+        let client = Arc::new(FakeSidecarControlClient::default()) as Arc<dyn SidecarControlClient>;
+        let client_for_factory = Arc::clone(&client);
+
+        let status = TailscaleService::start_with_auth_key_with_client(
+            &runtime,
+            &paths,
+            &mut config,
+            None,
+            "tskey-auth-test".to_string(),
+            move || Some(client_for_factory),
+        )
+        .await
+        .expect("auth key connect");
+
+        assert_eq!(status.state, "connected");
+        assert!(!status.serving);
+        assert!(status.access_urls.is_empty());
+        assert!(status
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("web service"));
     }
 
     #[tokio::test]

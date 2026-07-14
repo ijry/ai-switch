@@ -8,6 +8,24 @@ use crate::error::{ApiError, AppError};
 use crate::services::tailscale_service::{TailscaleLogin, TailscaleService, TailscaleStatus};
 use crate::services::web_service::{WebServerStatus, WebService, WebServiceConfig};
 
+
+async fn ensure_web_running(
+    state: &AppState,
+) -> Result<(WebServiceConfig, WebServerStatus), ApiError> {
+    let config = WebService::load_config(&state.paths)
+        .await
+        .map_err(ApiError::from)?;
+    let status = WebService::status(&state.web_service, &config).await;
+    if status.running {
+        return Ok((config, status));
+    }
+    let app_state = Arc::new(state.clone());
+    let status = WebService::start(app_state, config.clone())
+        .await
+        .map_err(ApiError::from)?;
+    Ok((config, status))
+}
+
 #[tauri::command]
 pub async fn get_web_service_config(
     state: State<'_, AppState>,
@@ -74,10 +92,8 @@ pub async fn start_tailscale_login(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<TailscaleLogin, ApiError> {
-    let config = WebService::load_config(&state.paths)
-        .await
-        .map_err(ApiError::from)?;
-    let web_status = WebService::status(&state.web_service, &config).await;
+    // Remote proxy only works when the local web backend is listening.
+    let (config, web_status) = ensure_web_running(state.inner()).await?;
     let mut login = TailscaleService::start_login(
         &state.tailscale,
         &state.paths,
@@ -106,10 +122,7 @@ pub async fn start_tailscale_with_auth_key(
     state: State<'_, AppState>,
     auth_key: String,
 ) -> Result<TailscaleStatus, ApiError> {
-    let mut config = WebService::load_config(&state.paths)
-        .await
-        .map_err(ApiError::from)?;
-    let web_status = WebService::status(&state.web_service, &config).await;
+    let (mut config, web_status) = ensure_web_running(state.inner()).await?;
     TailscaleService::start_with_auth_key(
         &state.tailscale,
         &state.paths,

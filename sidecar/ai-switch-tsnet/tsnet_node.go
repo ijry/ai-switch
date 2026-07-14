@@ -68,12 +68,10 @@ func (n *TsnetNode) Start(ctx context.Context, req StartRequest) (NodeInfo, erro
 		return nodeInfoFromIPN(req.Hostname, status), nil
 	}
 
-	// Interactive OAuth path must not wait for Running; that never completes before browser login.
+	// Non-auth-key start must not force interactive login. Reuse stored credentials when present,
+	// otherwise return needsLogin so the UI can call LoginOAuth explicitly.
 	if err := srv.Start(); err != nil {
 		return NodeInfo{}, err
-	}
-	if lc, err := srv.LocalClient(); err == nil {
-		_ = lc.StartLoginInteractive(ctx)
 	}
 	if info, ok := n.waitForAuthOrOnline(ctx, req.Hostname, 8*time.Second); ok {
 		return info, nil

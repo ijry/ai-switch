@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -77,6 +79,24 @@ func (f *fakeNode) Listen(ctx context.Context, network, addr string) (net.Listen
 	return ln, nil
 }
 
+func startTestBackend(t *testing.T) (addr string, cleanup func()) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen backend: %v", err)
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	return ln.Addr().String(), func() { _ = ln.Close() }
+}
+
 func TestStatusDefaultsToNeedsLogin(t *testing.T) {
 	rt := NewRuntime(&fakeNode{})
 	srv := httptest.NewServer(rt.Handler())
@@ -100,12 +120,23 @@ func TestStatusDefaultsToNeedsLogin(t *testing.T) {
 }
 
 func TestStartWithAuthKeyMarksConnected(t *testing.T) {
+	backend, cleanup := startTestBackend(t)
+	defer cleanup()
+	host, portStr, err := net.SplitHostPort(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = host
 	node := &fakeNode{}
 	rt := NewRuntime(node)
 	srv := httptest.NewServer(rt.Handler())
 	defer srv.Close()
 
-	body := `{"stateDir":"C:/tmp/ts","hostname":"ai-switch","authKey":"tskey-auth-test","backendAddr":"127.0.0.1:3090","servePort":3090}`
+	body := fmt.Sprintf(`{"stateDir":"C:/tmp/ts","hostname":"ai-switch","authKey":"tskey-auth-test","backendAddr":"%s","servePort":%d}`, backend, port)
 	res, err := http.Post(srv.URL+"/control/start", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -174,4 +205,67 @@ func TestStopReturnsStopped(t *testing.T) {
 		t.Fatalf("state=%q", status.State)
 	}
 	time.Sleep(10 * time.Millisecond)
+}
+
+func TestRebindWithoutAuthKeyKeepsConnected(t *testing.T) {
+	backendA, cleanupA := startTestBackend(t)
+	defer cleanupA()
+	backendB, cleanupB := startTestBackend(t)
+	defer cleanupB()
+	_, portAStr, err := net.SplitHostPort(backendA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	portA, err := strconv.Atoi(portAStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, portBStr, err := net.SplitHostPort(backendB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	portB, err := strconv.Atoi(portBStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	node := &fakeNode{}
+	rt := NewRuntime(node)
+
+	auth := "tskey-auth-test"
+	first, err := rt.Start(StartRequest{
+		StateDir:    "C:/tmp/ts",
+		Hostname:    "ai-switch",
+		AuthKey:     &auth,
+		BackendAddr: backendA,
+		ServePort:   uint16(portA),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.State != "connected" || !first.Serving {
+		t.Fatalf("first start state=%q serving=%v", first.State, first.Serving)
+	}
+
+	rebound, err := rt.Start(StartRequest{
+		StateDir:    "C:/tmp/ts",
+		Hostname:    "ai-switch",
+		BackendAddr: backendB,
+		ServePort:   uint16(portB),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebound.State != "connected" {
+		t.Fatalf("rebind demoted state=%q", rebound.State)
+	}
+	if !rebound.Serving {
+		t.Fatalf("expected serving after rebind")
+	}
+	if rt.backendAddr != backendB || rt.servePort != uint16(portB) {
+		t.Fatalf("backend not updated: %s %d", rt.backendAddr, rt.servePort)
+	}
+	if rt.activeBackend != backendB || rt.activeServePort != uint16(portB) {
+		t.Fatalf("active backend not updated: %s %d", rt.activeBackend, rt.activeServePort)
+	}
 }

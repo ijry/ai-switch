@@ -144,9 +144,9 @@ impl WebService {
             inner.join_handle = Some(join_handle);
         }
 
-        // Auto-start built-in secure network only when credentials/state already exist.
-        // Never trigger OAuth automatically.
-        if config.tailscale_enabled && config.tailscale_auth_key_present {
+        // Rebind/start secure network with the live local backend.
+        // Never trigger OAuth automatically; start without auth key only reuses existing state.
+        if config.tailscale_enabled {
             let _ = TailscaleService::ensure_started(
                 &state.tailscale,
                 &state.paths,

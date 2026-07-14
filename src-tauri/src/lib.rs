@@ -48,9 +48,10 @@ use database::open_migrated_pool;
 use paths::AppPaths;
 use services::route_proxy_service::RouteProxyRuntimeState;
 use services::tailscale_service::TailscaleRuntimeState;
-use services::web_service::WebServiceRuntimeState;
+use services::web_service::{WebService, WebServiceRuntimeState};
 use terminal_manager::TerminalManager;
 use std::sync::Arc;
+use tauri::Manager;
 use web::event_bridge::WebEventBroadcaster;
 
 pub fn run() {
@@ -75,6 +76,19 @@ pub fn run() {
             tailscale: TailscaleRuntimeState::default(),
             terminals: TerminalManager::default(),
             event_broadcaster: Arc::new(WebEventBroadcaster::new()),
+        })
+        .setup(|app| {
+            let state = app.state::<AppState>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                let Ok(config) = WebService::load_config(&state.paths).await else {
+                    return;
+                };
+                if !config.auto_start {
+                    return;
+                }
+                let _ = WebService::start(Arc::new(state), config).await;
+            });
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
