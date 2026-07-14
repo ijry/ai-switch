@@ -15,10 +15,14 @@ import type {
   RoutePoolRouteRequest,
   RoutePoolState,
   RouteProxyStatus,
+  TailscaleLogin,
+  TailscaleStatus,
   SessionMessage,
   SessionMeta,
   TargetApp,
   TerminalSession,
+  WebServerStatus,
+  WebServiceConfig,
   UpdateOfficialAccount,
   UpdateRouteCredentialInput,
 } from "./types";
@@ -182,4 +186,36 @@ export function killTerminalSession(sessionId: string): Promise<void> {
 
 export function listTerminalSessions(): Promise<TerminalSession[]> {
   return invoke("list_terminal_sessions");
+}
+
+export function getWebServiceConfig(): Promise<WebServiceConfig> {
+  return invoke("get_web_service_config");
+}
+
+export function saveWebServiceConfig(config: WebServiceConfig): Promise<WebServiceConfig> {
+  return invoke("save_web_service_config", { config });
+}
+
+export function getWebServerStatus(): Promise<WebServerStatus> {
+  return invoke("get_web_server_status");
+}
+
+export function startWebServer(): Promise<WebServerStatus> {
+  return invoke("start_web_server");
+}
+
+export function stopWebServer(): Promise<WebServerStatus> {
+  return invoke("stop_web_server");
+}
+
+export function getTailscaleStatus(): Promise<TailscaleStatus> {
+  return invoke("get_tailscale_status");
+}
+
+export function startTailscaleLogin(): Promise<TailscaleLogin> {
+  return invoke("start_tailscale_login");
+}
+
+export function disconnectTailscale(): Promise<TailscaleStatus> {
+  return invoke("disconnect_tailscale");
 }

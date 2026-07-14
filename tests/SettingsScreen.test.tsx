@@ -2,7 +2,18 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getSettings, saveSettings } from "../src/lib/api/client";
+import {
+  disconnectTailscale,
+  getSettings,
+  getTailscaleStatus,
+  getWebServerStatus,
+  getWebServiceConfig,
+  saveSettings,
+  saveWebServiceConfig,
+  startTailscaleLogin,
+  startWebServer,
+  stopWebServer,
+} from "../src/lib/api/client";
 import { I18nProvider } from "../src/lib/i18n";
 import { createQueryClient } from "../src/lib/query/queryClient";
 import { SettingsScreen } from "../src/screens/SettingsScreen";
@@ -11,6 +22,14 @@ import { settingsFixture } from "../src/test/fixtures";
 vi.mock("../src/lib/api/client", () => ({
   getSettings: vi.fn(),
   saveSettings: vi.fn(),
+  getWebServiceConfig: vi.fn(),
+  saveWebServiceConfig: vi.fn(),
+  getWebServerStatus: vi.fn(),
+  startWebServer: vi.fn(),
+  stopWebServer: vi.fn(),
+  getTailscaleStatus: vi.fn(),
+  startTailscaleLogin: vi.fn(),
+  disconnectTailscale: vi.fn(),
 }));
 
 describe("SettingsScreen", () => {
@@ -18,6 +37,56 @@ describe("SettingsScreen", () => {
     window.localStorage.clear();
     vi.mocked(getSettings).mockReset();
     vi.mocked(saveSettings).mockReset();
+    vi.mocked(getWebServiceConfig).mockReset();
+    vi.mocked(saveWebServiceConfig).mockReset();
+    vi.mocked(getWebServerStatus).mockReset();
+    vi.mocked(startWebServer).mockReset();
+    vi.mocked(stopWebServer).mockReset();
+    vi.mocked(getTailscaleStatus).mockReset();
+    vi.mocked(startTailscaleLogin).mockReset();
+    vi.mocked(disconnectTailscale).mockReset();
+    vi.mocked(getWebServiceConfig).mockResolvedValue({
+      host: "127.0.0.1",
+      port: 3090,
+      token: "secret",
+      autoStart: false,
+      tailscaleEnabled: true,
+    });
+    vi.mocked(getWebServerStatus).mockResolvedValue({
+      running: false,
+      host: "127.0.0.1",
+      port: null,
+      baseUrl: null,
+    });
+    vi.mocked(saveWebServiceConfig).mockImplementation(async (config) => config);
+    vi.mocked(startWebServer).mockResolvedValue({
+      running: true,
+      host: "127.0.0.1",
+      port: 3090,
+      baseUrl: "http://127.0.0.1:3090",
+    });
+    vi.mocked(stopWebServer).mockResolvedValue({
+      running: false,
+      host: "127.0.0.1",
+      port: null,
+      baseUrl: null,
+    });
+    vi.mocked(getTailscaleStatus).mockResolvedValue({
+      state: "notConnected",
+      deviceName: null,
+      tailnetIp: null,
+      message: null,
+    });
+    vi.mocked(startTailscaleLogin).mockResolvedValue({
+      loginUrl: null,
+      message: "login started",
+    });
+    vi.mocked(disconnectTailscale).mockResolvedValue({
+      state: "notConnected",
+      deviceName: null,
+      tailnetIp: null,
+      message: null,
+    });
   });
 
   it("loads settings and saves a toggled theme value", async () => {
@@ -37,6 +106,7 @@ describe("SettingsScreen", () => {
     expect(screen.getByRole("button", { name: /会话/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /更新/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /日志/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Web 服务/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /MCP/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /批量/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /实例/ })).not.toBeInTheDocument();
@@ -44,6 +114,8 @@ describe("SettingsScreen", () => {
     expect(screen.queryByRole("button", { name: /AI 模型/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /导入/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /目标/ })).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Web 服务" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /使用 Tailscale 登录/ })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "切换主题值" }));
 

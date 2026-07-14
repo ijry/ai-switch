@@ -182,6 +182,33 @@ export type RouteProxyStatus = {
   base_url?: string | null;
 };
 
+export type WebServiceConfig = {
+  host: string;
+  port: number;
+  token?: string | null;
+  autoStart: boolean;
+  tailscaleEnabled: boolean;
+};
+
+export type WebServerStatus = {
+  running: boolean;
+  host: string;
+  port?: number | null;
+  baseUrl?: string | null;
+};
+
+export type TailscaleStatus = {
+  state: string;
+  deviceName?: string | null;
+  tailnetIp?: string | null;
+  message?: string | null;
+};
+
+export type TailscaleLogin = {
+  loginUrl?: string | null;
+  message: string;
+};
+
 export type RouteConfigWriteOutcome = {
   target_key: string;
   path: string;

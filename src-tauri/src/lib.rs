@@ -39,9 +39,14 @@ use commands::terminal_commands::{
     create_terminal_session, kill_terminal_session, list_terminal_sessions, resize_terminal,
     write_terminal_input,
 };
+use commands::web_service_commands::{
+    disconnect_tailscale, get_tailscale_status, get_web_server_status, get_web_service_config,
+    save_web_service_config, start_tailscale_login, start_web_server, stop_web_server,
+};
 use database::open_migrated_pool;
 use paths::AppPaths;
 use services::route_proxy_service::RouteProxyRuntimeState;
+use services::web_service::WebServiceRuntimeState;
 use terminal_manager::TerminalManager;
 use std::sync::Arc;
 use web::event_bridge::WebEventBroadcaster;
@@ -64,6 +69,7 @@ pub fn run() {
             paths,
             pool,
             route_proxy: RouteProxyRuntimeState::default(),
+            web_service: WebServiceRuntimeState::default(),
             terminals: TerminalManager::default(),
             event_broadcaster: Arc::new(WebEventBroadcaster::new()),
         })
@@ -98,7 +104,15 @@ pub fn run() {
             write_terminal_input,
             resize_terminal,
             kill_terminal_session,
-            list_terminal_sessions
+            list_terminal_sessions,
+            get_web_service_config,
+            save_web_service_config,
+            get_web_server_status,
+            start_web_server,
+            stop_web_server,
+            get_tailscale_status,
+            start_tailscale_login,
+            disconnect_tailscale
         ])
         .run(tauri::generate_context!())
         .expect("failed to run AI Switch");

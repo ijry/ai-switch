@@ -8,3 +8,5 @@ pub mod route_preview_service;
 pub mod route_proxy_service;
 pub mod settings_service;
 pub mod target_service;
+pub mod tailscale_service;
+pub mod web_service;

@@ -7,6 +7,7 @@ pub struct AppPaths {
     pub data_dir: PathBuf,
     pub database_file: PathBuf,
     pub settings_file: PathBuf,
+    pub web_service_file: PathBuf,
     pub backups_dir: PathBuf,
     pub imports_dir: PathBuf,
     pub logs_dir: PathBuf,
@@ -28,6 +29,7 @@ impl AppPaths {
         Self {
             database_file: data_dir.join("ai-switch.db"),
             settings_file: data_dir.join("settings.json"),
+            web_service_file: data_dir.join("web-service.json"),
             backups_dir: data_dir.join("backups"),
             imports_dir: data_dir.join("imports"),
             logs_dir: data_dir.join("logs"),

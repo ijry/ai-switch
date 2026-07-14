@@ -2,16 +2,24 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Layers3,
   Network,
+  Server,
   Settings2,
 } from "lucide-react";
 import type { ComponentType } from "react";
 import { getSettings, saveSettings } from "../lib/api/client";
 import { normalizeLanguage, supportedLanguages, useI18n, type Language } from "../lib/i18n";
+import { WebServiceSettings } from "../components/settings/web-service-settings";
+import { useState } from "react";
 
 type FeatureEntry = {
-  screen: string;
-  titleKey: "nav.sessions" | "nav.updates" | "nav.log";
-  descriptionKey: "settings.feature.sessions" | "settings.feature.updates" | "settings.feature.log";
+  screen?: string;
+  section?: "webService";
+  titleKey: "nav.sessions" | "nav.updates" | "nav.log" | "nav.webService";
+  descriptionKey:
+    | "settings.feature.sessions"
+    | "settings.feature.updates"
+    | "settings.feature.log"
+    | "settings.feature.webService";
   icon: ComponentType<{ className?: string }>;
 };
 
@@ -35,6 +43,12 @@ const featureEntries: FeatureEntry[] = [
     descriptionKey: "settings.feature.log",
     icon: Layers3,
   },
+  {
+    section: "webService",
+    titleKey: "nav.webService",
+    descriptionKey: "settings.feature.webService",
+    icon: Server,
+  },
 ];
 
 type SettingsScreenProps = {
@@ -44,6 +58,7 @@ type SettingsScreenProps = {
 export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
   const queryClient = useQueryClient();
   const { language, setLanguage, t } = useI18n();
+  const [activeSection, setActiveSection] = useState<"webService">("webService");
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const saveMutation = useMutation({
     mutationFn: saveSettings,
@@ -88,8 +103,16 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
             return (
               <button
                 className="rounded-xl border border-stone-200 bg-stone-50/70 px-3 py-2.5 text-left transition-colors hover:border-stone-300 hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
-                key={entry.screen}
-                onClick={() => onOpenFeature?.(entry.screen)}
+                key={entry.screen ?? entry.section}
+                onClick={() => {
+                  if (entry.screen) {
+                    onOpenFeature?.(entry.screen);
+                    return;
+                  }
+                  if (entry.section) {
+                    setActiveSection(entry.section);
+                  }
+                }}
                 type="button"
               >
                 <div className="flex items-center gap-2.5">
@@ -106,6 +129,8 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
           })}
         </div>
       </div>
+
+      {activeSection === "webService" && <WebServiceSettings />}
 
       <div className="space-y-3 rounded-2xl border border-stone-200 bg-white/82 p-4 shadow-sm">
         <h2 className="text-[15px] font-semibold text-stone-950">{t("settings.app.title")}</h2>

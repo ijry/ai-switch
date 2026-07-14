@@ -11,6 +11,8 @@ use crate::core::terminals::{
     resize_terminal_core, write_terminal_input_core,
 };
 use crate::models::settings::AppSettings;
+use crate::services::tailscale_service::TailscaleService;
+use crate::services::web_service::{WebService, WebServiceConfig};
 use crate::terminal_manager::CreateTerminalSessionInput;
 use crate::web::event_bridge::EventEmitter;
 
@@ -62,6 +64,42 @@ pub async fn dispatch_command(
             to_value(())
         }
         "list_terminal_sessions" => to_value(list_terminal_sessions_core(&state.terminals)),
+        "get_web_service_config" => {
+            to_value(WebService::load_config(&state.paths).await.map_err(|error| error.to_string())?)
+        }
+        "save_web_service_config" => {
+            let config: WebServiceConfig = parse_arg(&args, "config")?;
+            to_value(
+                WebService::save_config(&state.paths, &config)
+                    .await
+                    .map_err(|error| error.to_string())?,
+            )
+        }
+        "get_web_server_status" => {
+            let config = WebService::load_config(&state.paths)
+                .await
+                .map_err(|error| error.to_string())?;
+            to_value(WebService::status(&state.web_service, &config).await)
+        }
+        "start_web_server" => {
+            let config = WebService::load_config(&state.paths)
+                .await
+                .map_err(|error| error.to_string())?;
+            to_value(
+                WebService::start(Arc::clone(&state), config)
+                    .await
+                    .map_err(|error| error.to_string())?,
+            )
+        }
+        "stop_web_server" => {
+            let config = WebService::load_config(&state.paths)
+                .await
+                .map_err(|error| error.to_string())?;
+            to_value(WebService::stop(&state.web_service, &config).await)
+        }
+        "get_tailscale_status" => to_value(TailscaleService::status().await),
+        "start_tailscale_login" => to_value(TailscaleService::start_login().await),
+        "disconnect_tailscale" => to_value(TailscaleService::disconnect().await),
         other => Err(format!("Unknown command: {other}")),
     }
 }

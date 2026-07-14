@@ -6,6 +6,7 @@ use crate::app_state::AppState;
 use crate::database::open_migrated_pool;
 use crate::paths::AppPaths;
 use crate::services::route_proxy_service::RouteProxyRuntimeState;
+use crate::services::web_service::WebServiceRuntimeState;
 use crate::terminal_manager::TerminalManager;
 use crate::web::event_bridge::WebEventBroadcaster;
 use crate::web::router::build_router;
@@ -30,6 +31,7 @@ pub async fn run_from_env() -> Result<(), String> {
         paths,
         pool,
         route_proxy: RouteProxyRuntimeState::default(),
+        web_service: WebServiceRuntimeState::default(),
         terminals: TerminalManager::default(),
         event_broadcaster: Arc::new(WebEventBroadcaster::new()),
     });
