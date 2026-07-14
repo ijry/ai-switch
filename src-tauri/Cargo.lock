@@ -22,6 +22,7 @@ name = "ai-switch"
 version = "0.1.0"
 dependencies = [
  "assert_fs",
+ "async-trait",
  "axum",
  "chrono",
  "directories",
