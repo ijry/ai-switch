@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { __resetTransportForTests, getTransport, isDesktop, WebTransport } from "../../src/lib/transport";
+import {
+  __resetTransportForTests,
+  getTransport,
+  isDesktop,
+  setWebAccessToken,
+  WebTransport,
+} from "../../src/lib/transport";
 
 type TauriWindow = Window & {
   __TAURI_INTERNALS__?: unknown;
@@ -19,7 +25,7 @@ describe("transport", () => {
   });
 
   it("posts command calls to the web api with the saved token", async () => {
-    window.localStorage.setItem("ai-switch.webToken", "secret-token");
+    setWebAccessToken("secret-token");
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
         headers: { "Content-Type": "application/json" },

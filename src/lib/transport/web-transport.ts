@@ -5,14 +5,45 @@ type WebEvent = {
   payload: unknown;
 };
 
-const TOKEN_STORAGE_KEY = "ai-switch.webToken";
+export const WEB_TOKEN_STORAGE_KEY = "ai-switch.webToken";
 
-function getToken() {
+export function getWebAccessToken() {
   if (typeof window === "undefined") {
     return "";
   }
 
-  return window.localStorage.getItem(TOKEN_STORAGE_KEY) ?? "";
+  return window.localStorage.getItem(WEB_TOKEN_STORAGE_KEY) ?? "";
+}
+
+export function setWebAccessToken(token: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const value = token.trim();
+  if (!value) {
+    window.localStorage.removeItem(WEB_TOKEN_STORAGE_KEY);
+    return;
+  }
+
+  window.localStorage.setItem(WEB_TOKEN_STORAGE_KEY, value);
+}
+
+export function clearWebAccessToken() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.removeItem(WEB_TOKEN_STORAGE_KEY);
+}
+
+export function isUnauthorizedTransportError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.trim().toLowerCase();
+  return message === "unauthorized" || message.includes("http 401");
 }
 
 function websocketUrl(baseUrl: string) {
@@ -29,7 +60,7 @@ export class WebTransport implements Transport {
   }
 
   async call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-    const token = getToken();
+    const token = getWebAccessToken();
     const response = await fetch(`${this.baseUrl}/api/${command}`, {
       method: "POST",
       headers: {
@@ -78,7 +109,7 @@ export class WebTransport implements Transport {
       return;
     }
 
-    const token = getToken();
+    const token = getWebAccessToken();
     const url = new URL(websocketUrl(this.baseUrl));
     if (token) {
       url.searchParams.set("token", token);

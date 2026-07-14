@@ -1,11 +1,13 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   AppLayout,
   platformByAgentScreen,
 } from "./components/layout/AppLayout";
+import { WebAuthGate } from "./components/auth/WebAuthGate";
 import { I18nProvider } from "./lib/i18n";
 import { createQueryClient } from "./lib/query/queryClient";
+import { isDesktop } from "./lib/transport";
 import { AccountsScreen } from "./screens/AccountsScreen";
 import { BatchesScreen } from "./screens/BatchesScreen";
 import { DashboardScreen } from "./screens/DashboardScreen";
@@ -46,7 +48,17 @@ const implementedScreens = new Set([
 export function App() {
   const [screen, setScreen] = useState("Codex");
   const [sessionPlatform, setSessionPlatform] = useState<string | null>(null);
+  const [webReady, setWebReady] = useState(() => isDesktop());
   const agentPlatform = platformByAgentScreen[screen];
+
+  useEffect(() => {
+    setWebReady(isDesktop());
+  }, []);
+
+  const handleWebAuthenticated = useCallback(() => {
+    queryClient.clear();
+    setWebReady(true);
+  }, []);
 
   const navigate = (nextScreen: string) => {
     if (nextScreen === "Sessions") {
@@ -63,7 +75,9 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <I18nProvider>
-        {screen === "Vibe" ? (
+        {!webReady ? (
+          <WebAuthGate onAuthenticated={handleWebAuthenticated} />
+        ) : screen === "Vibe" ? (
           <VibeScreen onExitVibe={() => setScreen("Codex")} />
         ) : (
           <AppLayout activeScreen={screen} onNavigate={navigate} onOpenVibe={() => setScreen("Vibe")}>

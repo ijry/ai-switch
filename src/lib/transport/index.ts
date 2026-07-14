@@ -1,9 +1,21 @@
-import { isTauriRuntime } from "./detect";
-import { TauriTransport } from "./tauri-transport";
-import { WebTransport } from "./web-transport";
 import type { Transport, Unsubscribe } from "./types";
 
 export type { Transport, Unsubscribe };
+
+export {
+  WEB_TOKEN_STORAGE_KEY,
+  clearWebAccessToken,
+  getWebAccessToken,
+  isUnauthorizedTransportError,
+  setWebAccessToken,
+  WebTransport,
+} from "./web-transport";
+export { TauriTransport } from "./tauri-transport";
+export { isTauriRuntime } from "./detect";
+
+import { isTauriRuntime } from "./detect";
+import { TauriTransport } from "./tauri-transport";
+import { WebTransport } from "./web-transport";
 
 let transport: Transport | null = null;
 
@@ -32,6 +44,3 @@ export function __resetTransportForTests() {
   transport?.destroy?.();
   transport = null;
 }
-
-export { TauriTransport } from "./tauri-transport";
-export { WebTransport } from "./web-transport";
