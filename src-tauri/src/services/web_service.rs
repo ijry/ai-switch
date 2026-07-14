@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
 use crate::error::AppError;
 use crate::paths::AppPaths;
+use crate::services::tailscale_service::TailscaleService;
 use crate::web::router::build_router;
 use crate::web::static_assets::resolve_static_dir;
 use serde::{Deserialize, Serialize};
@@ -130,22 +131,37 @@ impl WebService {
             port: Some(port),
             base_url: Some(base_url),
         };
-        let mut inner = state.web_service.inner.lock().await;
-        if let Some(existing) = &inner.status {
-            if existing.running {
-                let _ = shutdown_tx.send(());
-                return Ok(existing.clone());
+        {
+            let mut inner = state.web_service.inner.lock().await;
+            if let Some(existing) = &inner.status {
+                if existing.running {
+                    let _ = shutdown_tx.send(());
+                    return Ok(existing.clone());
+                }
             }
+            inner.status = Some(status.clone());
+            inner.shutdown = Some(shutdown_tx);
+            inner.join_handle = Some(join_handle);
         }
-        inner.status = Some(status.clone());
-        inner.shutdown = Some(shutdown_tx);
-        inner.join_handle = Some(join_handle);
+
+        // Auto-start built-in secure network only when credentials/state already exist.
+        // Never trigger OAuth automatically.
+        if config.tailscale_enabled && config.tailscale_auth_key_present {
+            let _ = TailscaleService::ensure_started(
+                &state.tailscale,
+                &state.paths,
+                &config,
+                Some(&status),
+            )
+            .await;
+        }
+
         Ok(status)
     }
 
-    pub async fn stop(runtime: &WebServiceRuntimeState, config: &WebServiceConfig) -> WebServerStatus {
+    pub async fn stop(state: &AppState, config: &WebServiceConfig) -> WebServerStatus {
         let (shutdown, join_handle) = {
-            let mut inner = runtime.inner.lock().await;
+            let mut inner = state.web_service.inner.lock().await;
             inner.status = None;
             (inner.shutdown.take(), inner.join_handle.take())
         };
@@ -155,6 +171,9 @@ impl WebService {
         if let Some(handle) = join_handle {
             let _ = handle.await;
         }
+
+        let _ = TailscaleService::disconnect(&state.tailscale, &state.paths, config).await;
+
         WebServerStatus {
             running: false,
             host: config.host.clone(),

@@ -212,7 +212,7 @@ pub async fn dispatch_command(
             let config = WebService::load_config(&state.paths)
                 .await
                 .map_err(to_error)?;
-            to_value(WebService::stop(&state.web_service, &config).await)
+            to_value(WebService::stop(state.as_ref(), &config).await)
         }
         "get_tailscale_status" => {
             let config = WebService::load_config(&state.paths).await.map_err(to_error)?;

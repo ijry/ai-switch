@@ -71,6 +71,16 @@ impl TailscaleService {
         Self::disconnect_with_client(runtime, paths, config, resolve_live_client).await
     }
 
+    pub async fn ensure_started(
+        runtime: &TailscaleRuntimeState,
+        paths: &AppPaths,
+        config: &WebServiceConfig,
+        web_status: Option<&WebServerStatus>,
+    ) -> TailscaleStatus {
+        Self::ensure_started_with_client(runtime, paths, config, web_status, resolve_live_client)
+            .await
+    }
+
     pub async fn status_with_client<F>(
         runtime: &TailscaleRuntimeState,
         paths: &AppPaths,
@@ -178,6 +188,41 @@ impl TailscaleService {
         let request = Self::build_start_request(paths, config, web_status, Some(auth_key));
         let status = client.start(request).await?;
         Ok(Self::finalize_status(status, config, web_status, paths))
+    }
+
+    pub async fn ensure_started_with_client<F>(
+        runtime: &TailscaleRuntimeState,
+        paths: &AppPaths,
+        config: &WebServiceConfig,
+        web_status: Option<&WebServerStatus>,
+        factory: F,
+    ) -> TailscaleStatus
+    where
+        F: FnOnce() -> Option<Arc<dyn SidecarControlClient>>,
+    {
+        if !config.tailscale_enabled {
+            return TailscaleStatus::disabled();
+        }
+
+        let auth_key = match Self::load_auth_key(paths).await {
+            Ok(value) => value,
+            Err(error) => return TailscaleStatus::error(error),
+        };
+
+        if auth_key.is_none() && !config.tailscale_auth_key_present {
+            return TailscaleStatus::stopped("Secure network is waiting for sign-in");
+        }
+
+        let client = match Self::ensure_client(runtime, factory).await {
+            Ok(client) => client,
+            Err(status) => return status,
+        };
+
+        let request = Self::build_start_request(paths, config, web_status, auth_key);
+        match client.start(request).await {
+            Ok(status) => Self::finalize_status(status, config, web_status, paths),
+            Err(error) => TailscaleStatus::error(error),
+        }
     }
 
     pub async fn disconnect_with_client<F>(
@@ -299,6 +344,22 @@ impl TailscaleService {
             .await
             .map_err(|error| format!("Could not save auth key: {error}"))
     }
+
+    async fn load_auth_key(paths: &AppPaths) -> Result<Option<String>, String> {
+        let path = paths.tailscale_dir.join(AUTH_KEY_FILE);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let value = tokio::fs::read_to_string(path)
+            .await
+            .map_err(|error| format!("Could not read auth key: {error}"))?;
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(trimmed))
+        }
+    }
 }
 
 fn resolve_live_client() -> Option<Arc<dyn SidecarControlClient>> {
@@ -401,5 +462,71 @@ mod tests {
         )
         .await;
         assert_eq!(status.state, "disabled");
+    }
+
+    #[tokio::test]
+    async fn starting_web_with_saved_auth_starts_sidecar() {
+        let runtime = TailscaleRuntimeState::default();
+        let (_dir, paths) = test_paths();
+        paths.ensure().await.expect("ensure paths");
+        tokio::fs::write(paths.tailscale_dir.join("auth-key"), "tskey-auth-saved")
+            .await
+            .expect("write auth key");
+        let config = WebServiceConfig {
+            tailscale_enabled: true,
+            tailscale_auth_key_present: true,
+            port: 3090,
+            host: "127.0.0.1".to_string(),
+            tailscale_hostname: Some("ai-switch".to_string()),
+            ..WebServiceConfig::default()
+        };
+        let web_status = WebServerStatus {
+            running: true,
+            host: "127.0.0.1".to_string(),
+            port: Some(3090),
+            base_url: Some("http://127.0.0.1:3090".to_string()),
+        };
+        let client = Arc::new(FakeSidecarControlClient::default());
+        let client_for_factory = Arc::clone(&client) as Arc<dyn SidecarControlClient>;
+        let status = TailscaleService::ensure_started_with_client(
+            &runtime,
+            &paths,
+            &config,
+            Some(&web_status),
+            move || Some(client_for_factory),
+        )
+        .await;
+        assert_eq!(status.state, "connected");
+        assert!(status.serving);
+        let last = client.last_start().expect("start called");
+        assert_eq!(last.auth_key.as_deref(), Some("tskey-auth-saved"));
+        assert_eq!(last.backend_addr, "127.0.0.1:3090");
+    }
+
+    #[tokio::test]
+    async fn stopping_web_service_stops_sidecar() {
+        let runtime = TailscaleRuntimeState::default();
+        let (_dir, paths) = test_paths();
+        paths.ensure().await.expect("ensure paths");
+        let mut config = WebServiceConfig {
+            tailscale_enabled: true,
+            ..WebServiceConfig::default()
+        };
+        let client = Arc::new(FakeSidecarControlClient::default()) as Arc<dyn SidecarControlClient>;
+        let client_for_factory = Arc::clone(&client);
+        let _ = TailscaleService::start_with_auth_key_with_client(
+            &runtime,
+            &paths,
+            &mut config,
+            None,
+            "tskey-auth-test".to_string(),
+            move || Some(client_for_factory),
+        )
+        .await
+        .expect("connect");
+
+        let status =
+            TailscaleService::disconnect_with_client(&runtime, &paths, &config, || None).await;
+        assert_eq!(status.state, "stopped");
     }
 }

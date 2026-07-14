@@ -50,7 +50,7 @@ pub async fn stop_web_server(state: State<'_, AppState>) -> Result<WebServerStat
     let config = WebService::load_config(&state.paths)
         .await
         .map_err(ApiError::from)?;
-    Ok(WebService::stop(&state.web_service, &config).await)
+    Ok(WebService::stop(state.inner(), &config).await)
 }
 
 #[tauri::command]
