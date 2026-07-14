@@ -34,3 +34,13 @@ go build -o ai-switch-tsnet.exe .
 ## Runtime flags
 
 - `--control-addr` default `127.0.0.1:0`
+
+## Packaging
+
+Windows desktop packaging expects:
+
+`	ext
+src-tauri/binaries/ai-switch-tsnet-x86_64-pc-windows-msvc.exe
+`
+
+Build into that path, then run pnpm tauri:build.

@@ -30,7 +30,10 @@
     ],
     "resources": {
       "../dist": "web/"
-    }
+    },
+    "externalBin": [
+      "binaries/ai-switch-tsnet"
+    ]
   },
   "plugins": {
     "updater": {
