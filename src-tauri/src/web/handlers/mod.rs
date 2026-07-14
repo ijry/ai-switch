@@ -240,6 +240,22 @@ pub async fn dispatch_command(
                 .await,
             )
         }
+        "start_tailscale_with_auth_key" => {
+            let auth_key = required_string_arg(&args, "authKey")?;
+            let mut config = WebService::load_config(&state.paths).await.map_err(to_error)?;
+            let web_status = WebService::status(&state.web_service, &config).await;
+            to_value(
+                TailscaleService::start_with_auth_key(
+                    &state.tailscale,
+                    &state.paths,
+                    &mut config,
+                    Some(&web_status),
+                    auth_key,
+                )
+                .await
+                .map_err(|message| message)?,
+            )
+        }
         "disconnect_tailscale" => {
             let config = WebService::load_config(&state.paths).await.map_err(to_error)?;
             to_value(

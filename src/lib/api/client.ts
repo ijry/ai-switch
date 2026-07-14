@@ -216,6 +216,10 @@ export function startTailscaleLogin(): Promise<TailscaleLogin> {
   return invoke("start_tailscale_login");
 }
 
+export function startTailscaleWithAuthKey(authKey: string): Promise<TailscaleStatus> {
+  return invoke("start_tailscale_with_auth_key", { authKey });
+}
+
 export function disconnectTailscale(): Promise<TailscaleStatus> {
   return invoke("disconnect_tailscale");
 }

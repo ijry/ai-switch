@@ -188,6 +188,8 @@ export type WebServiceConfig = {
   token?: string | null;
   autoStart: boolean;
   tailscaleEnabled: boolean;
+  tailscaleHostname?: string | null;
+  tailscaleAuthKeyPresent?: boolean;
 };
 
 export type WebServerStatus = {
@@ -201,6 +203,10 @@ export type TailscaleStatus = {
   state: string;
   deviceName?: string | null;
   tailnetIp?: string | null;
+  magicDnsName?: string | null;
+  loginUrl?: string | null;
+  accessUrls?: string[];
+  serving?: boolean;
   message?: string | null;
 };
 

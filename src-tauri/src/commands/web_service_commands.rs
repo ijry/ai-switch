@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::app_state::AppState;
-use crate::error::ApiError;
+use crate::error::{ApiError, AppError};
 use crate::services::tailscale_service::{TailscaleLogin, TailscaleService, TailscaleStatus};
 use crate::services::web_service::{WebServerStatus, WebService, WebServiceConfig};
 
@@ -81,6 +81,33 @@ pub async fn start_tailscale_login(state: State<'_, AppState>) -> Result<Tailsca
         Some(&web_status),
     )
     .await)
+}
+
+#[tauri::command]
+pub async fn start_tailscale_with_auth_key(
+    state: State<'_, AppState>,
+    auth_key: String,
+) -> Result<TailscaleStatus, ApiError> {
+    let mut config = WebService::load_config(&state.paths)
+        .await
+        .map_err(ApiError::from)?;
+    let web_status = WebService::status(&state.web_service, &config).await;
+    TailscaleService::start_with_auth_key(
+        &state.tailscale,
+        &state.paths,
+        &mut config,
+        Some(&web_status),
+        auth_key,
+    )
+    .await
+    .map_err(|message| {
+        ApiError::from(AppError::Validation {
+            code: "tailscale.auth_key",
+            message,
+            details: None,
+            recoverable: true,
+        })
+    })
 }
 
 #[tauri::command]

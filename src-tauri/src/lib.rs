@@ -41,7 +41,8 @@ use commands::terminal_commands::{
 };
 use commands::web_service_commands::{
     disconnect_tailscale, get_tailscale_status, get_web_server_status, get_web_service_config,
-    save_web_service_config, start_tailscale_login, start_web_server, stop_web_server,
+    save_web_service_config, start_tailscale_login, start_tailscale_with_auth_key, start_web_server,
+    stop_web_server,
 };
 use database::open_migrated_pool;
 use paths::AppPaths;
@@ -114,6 +115,7 @@ pub fn run() {
             stop_web_server,
             get_tailscale_status,
             start_tailscale_login,
+            start_tailscale_with_auth_key,
             disconnect_tailscale
         ])
         .run(tauri::generate_context!())
