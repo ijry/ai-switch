@@ -214,9 +214,38 @@ pub async fn dispatch_command(
                 .map_err(to_error)?;
             to_value(WebService::stop(&state.web_service, &config).await)
         }
-        "get_tailscale_status" => to_value(TailscaleService::status().await),
-        "start_tailscale_login" => to_value(TailscaleService::start_login().await),
-        "disconnect_tailscale" => to_value(TailscaleService::disconnect().await),
+        "get_tailscale_status" => {
+            let config = WebService::load_config(&state.paths).await.map_err(to_error)?;
+            let web_status = WebService::status(&state.web_service, &config).await;
+            to_value(
+                TailscaleService::status(
+                    &state.tailscale,
+                    &state.paths,
+                    &config,
+                    Some(&web_status),
+                )
+                .await,
+            )
+        }
+        "start_tailscale_login" => {
+            let config = WebService::load_config(&state.paths).await.map_err(to_error)?;
+            let web_status = WebService::status(&state.web_service, &config).await;
+            to_value(
+                TailscaleService::start_login(
+                    &state.tailscale,
+                    &state.paths,
+                    &config,
+                    Some(&web_status),
+                )
+                .await,
+            )
+        }
+        "disconnect_tailscale" => {
+            let config = WebService::load_config(&state.paths).await.map_err(to_error)?;
+            to_value(
+                TailscaleService::disconnect(&state.tailscale, &state.paths, &config).await,
+            )
+        }
         other => Err(format!("Unknown command: {other}")),
     }
 }

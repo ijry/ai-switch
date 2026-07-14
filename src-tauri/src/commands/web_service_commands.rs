@@ -54,16 +54,39 @@ pub async fn stop_web_server(state: State<'_, AppState>) -> Result<WebServerStat
 }
 
 #[tauri::command]
-pub async fn get_tailscale_status() -> Result<TailscaleStatus, ApiError> {
-    Ok(TailscaleService::status().await)
+pub async fn get_tailscale_status(state: State<'_, AppState>) -> Result<TailscaleStatus, ApiError> {
+    let config = WebService::load_config(&state.paths)
+        .await
+        .map_err(ApiError::from)?;
+    let web_status = WebService::status(&state.web_service, &config).await;
+    Ok(TailscaleService::status(
+        &state.tailscale,
+        &state.paths,
+        &config,
+        Some(&web_status),
+    )
+    .await)
 }
 
 #[tauri::command]
-pub async fn start_tailscale_login() -> Result<TailscaleLogin, ApiError> {
-    Ok(TailscaleService::start_login().await)
+pub async fn start_tailscale_login(state: State<'_, AppState>) -> Result<TailscaleLogin, ApiError> {
+    let config = WebService::load_config(&state.paths)
+        .await
+        .map_err(ApiError::from)?;
+    let web_status = WebService::status(&state.web_service, &config).await;
+    Ok(TailscaleService::start_login(
+        &state.tailscale,
+        &state.paths,
+        &config,
+        Some(&web_status),
+    )
+    .await)
 }
 
 #[tauri::command]
-pub async fn disconnect_tailscale() -> Result<TailscaleStatus, ApiError> {
-    Ok(TailscaleService::disconnect().await)
+pub async fn disconnect_tailscale(state: State<'_, AppState>) -> Result<TailscaleStatus, ApiError> {
+    let config = WebService::load_config(&state.paths)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(TailscaleService::disconnect(&state.tailscale, &state.paths, &config).await)
 }

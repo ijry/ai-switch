@@ -1,133 +1,405 @@
-use serde::Serialize;
-use std::process::Command;
+use crate::paths::AppPaths;
+use crate::services::tailscale_sidecar::{
+    resolve_sidecar_path, FakeSidecarControlClient, SidecarControlClient,
+};
+use crate::services::tailscale_types::TailscaleStartRequest;
+use crate::services::web_service::{WebServerStatus, WebService, WebServiceConfig};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TailscaleStatus {
-    pub state: String,
-    pub device_name: Option<String>,
-    pub tailnet_ip: Option<String>,
-    pub message: Option<String>,
+pub use crate::services::tailscale_types::{TailscaleLogin, TailscaleStatus};
+
+const AUTH_KEY_FILE: &str = "auth-key";
+const MISSING_COMPONENT_MESSAGE: &str =
+    "Built-in network component is missing. Reinstall AI Switch to restore remote access.";
+
+#[derive(Clone, Default)]
+pub struct TailscaleRuntimeState {
+    inner: Arc<Mutex<TailscaleRuntimeInner>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TailscaleLogin {
-    pub login_url: Option<String>,
-    pub message: String,
+#[derive(Default)]
+struct TailscaleRuntimeInner {
+    client: Option<Arc<dyn SidecarControlClient>>,
+    last_status: Option<TailscaleStatus>,
 }
 
 pub struct TailscaleService;
 
 impl TailscaleService {
-    pub async fn status() -> TailscaleStatus {
-        tokio::task::spawn_blocking(status_blocking)
-            .await
-            .unwrap_or_else(|error| TailscaleStatus {
-                state: "error".to_string(),
-                device_name: None,
-                tailnet_ip: None,
-                message: Some(format!("Could not check Tailscale: {error}")),
-            })
+    pub async fn status(
+        runtime: &TailscaleRuntimeState,
+        paths: &AppPaths,
+        config: &WebServiceConfig,
+        web_status: Option<&WebServerStatus>,
+    ) -> TailscaleStatus {
+        Self::status_with_client(runtime, paths, config, web_status, resolve_live_client).await
     }
 
-    pub async fn start_login() -> TailscaleLogin {
-        tokio::task::spawn_blocking(login_blocking)
-            .await
-            .unwrap_or_else(|error| TailscaleLogin {
-                login_url: None,
-                message: format!("Could not start Tailscale login: {error}"),
-            })
+    pub async fn start_login(
+        runtime: &TailscaleRuntimeState,
+        paths: &AppPaths,
+        config: &WebServiceConfig,
+        web_status: Option<&WebServerStatus>,
+    ) -> TailscaleLogin {
+        Self::start_login_with_client(runtime, paths, config, web_status, resolve_live_client).await
     }
 
-    pub async fn disconnect() -> TailscaleStatus {
-        tokio::task::spawn_blocking(|| {
-            let _ = Command::new("tailscale").arg("down").output();
-            status_blocking()
-        })
+    pub async fn start_with_auth_key(
+        runtime: &TailscaleRuntimeState,
+        paths: &AppPaths,
+        config: &mut WebServiceConfig,
+        web_status: Option<&WebServerStatus>,
+        auth_key: String,
+    ) -> Result<TailscaleStatus, String> {
+        Self::start_with_auth_key_with_client(
+            runtime,
+            paths,
+            config,
+            web_status,
+            auth_key,
+            resolve_live_client,
+        )
         .await
-        .unwrap_or_else(|error| TailscaleStatus {
-            state: "error".to_string(),
-            device_name: None,
-            tailnet_ip: None,
-            message: Some(format!("Could not disconnect Tailscale: {error}")),
-        })
     }
-}
 
-fn status_blocking() -> TailscaleStatus {
-    let output = match Command::new("tailscale").arg("status").output() {
-        Ok(output) => output,
-        Err(error) => {
-            return TailscaleStatus {
-                state: "notInstalled".to_string(),
-                device_name: None,
-                tailnet_ip: None,
-                message: Some(format!("Tailscale CLI was not found: {error}")),
-            };
+    pub async fn disconnect(
+        runtime: &TailscaleRuntimeState,
+        paths: &AppPaths,
+        config: &WebServiceConfig,
+    ) -> TailscaleStatus {
+        Self::disconnect_with_client(runtime, paths, config, resolve_live_client).await
+    }
+
+    pub async fn status_with_client<F>(
+        runtime: &TailscaleRuntimeState,
+        paths: &AppPaths,
+        config: &WebServiceConfig,
+        web_status: Option<&WebServerStatus>,
+        factory: F,
+    ) -> TailscaleStatus
+    where
+        F: FnOnce() -> Option<Arc<dyn SidecarControlClient>>,
+    {
+        if !config.tailscale_enabled {
+            return TailscaleStatus::disabled();
         }
-    };
 
-    if !output.status.success() {
-        return TailscaleStatus {
-            state: "needsLogin".to_string(),
-            device_name: None,
-            tailnet_ip: None,
-            message: Some(String::from_utf8_lossy(&output.stderr).trim().to_string()),
+        let client = match Self::ensure_client(runtime, factory).await {
+            Ok(client) => client,
+            Err(status) => return status,
         };
+
+        match client.status().await {
+            Ok(status) => Self::finalize_status(status, config, web_status, paths),
+            Err(error) => TailscaleStatus::error(error),
+        }
     }
 
-    let text = String::from_utf8_lossy(&output.stdout);
-    let first = text.lines().find(|line| !line.trim().is_empty());
-    let mut parts = first.unwrap_or_default().split_whitespace();
-    let tailnet_ip = parts.next().map(ToOwned::to_owned);
-    let device_name = parts.next().map(ToOwned::to_owned);
-
-    TailscaleStatus {
-        state: "connected".to_string(),
-        device_name,
-        tailnet_ip,
-        message: None,
-    }
-}
-
-fn login_blocking() -> TailscaleLogin {
-    let output = match Command::new("tailscale").args(["up", "--qr=false"]).output() {
-        Ok(output) => output,
-        Err(error) => {
+    pub async fn start_login_with_client<F>(
+        runtime: &TailscaleRuntimeState,
+        paths: &AppPaths,
+        config: &WebServiceConfig,
+        web_status: Option<&WebServerStatus>,
+        factory: F,
+    ) -> TailscaleLogin
+    where
+        F: FnOnce() -> Option<Arc<dyn SidecarControlClient>>,
+    {
+        if !config.tailscale_enabled {
             return TailscaleLogin {
                 login_url: None,
-                message: format!("Tailscale CLI was not found: {error}"),
+                message: "Enable secure network first".to_string(),
             };
         }
-    };
 
-    let combined = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    TailscaleLogin {
-        login_url: extract_url(&combined),
-        message: combined.trim().to_string(),
+        let client = match Self::ensure_client(runtime, factory).await {
+            Ok(client) => client,
+            Err(status) => {
+                return TailscaleLogin {
+                    login_url: None,
+                    message: status
+                        .message
+                        .unwrap_or_else(|| MISSING_COMPONENT_MESSAGE.to_string()),
+                };
+            }
+        };
+
+        let request = Self::build_start_request(paths, config, web_status, None);
+        if let Err(error) = client.start(request).await {
+            return TailscaleLogin {
+                login_url: None,
+                message: error,
+            };
+        }
+
+        match client.login_oauth().await {
+            Ok(login) => login,
+            Err(error) => TailscaleLogin {
+                login_url: None,
+                message: error,
+            },
+        }
+    }
+
+    pub async fn start_with_auth_key_with_client<F>(
+        runtime: &TailscaleRuntimeState,
+        paths: &AppPaths,
+        config: &mut WebServiceConfig,
+        web_status: Option<&WebServerStatus>,
+        auth_key: String,
+        factory: F,
+    ) -> Result<TailscaleStatus, String>
+    where
+        F: FnOnce() -> Option<Arc<dyn SidecarControlClient>>,
+    {
+        if !config.tailscale_enabled {
+            return Ok(TailscaleStatus::disabled());
+        }
+
+        let auth_key = auth_key.trim().to_string();
+        if auth_key.is_empty() {
+            return Err("Auth key is required".to_string());
+        }
+
+        let client = match Self::ensure_client(runtime, factory).await {
+            Ok(client) => client,
+            Err(status) => {
+                return Ok(status);
+            }
+        };
+
+        Self::persist_auth_key(paths, &auth_key).await?;
+        config.tailscale_auth_key_present = true;
+        WebService::save_config(paths, config)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let request = Self::build_start_request(paths, config, web_status, Some(auth_key));
+        let status = client.start(request).await?;
+        Ok(Self::finalize_status(status, config, web_status, paths))
+    }
+
+    pub async fn disconnect_with_client<F>(
+        runtime: &TailscaleRuntimeState,
+        _paths: &AppPaths,
+        config: &WebServiceConfig,
+        factory: F,
+    ) -> TailscaleStatus
+    where
+        F: FnOnce() -> Option<Arc<dyn SidecarControlClient>>,
+    {
+        let client = {
+            let inner = runtime.inner.lock().await;
+            if let Some(client) = inner.client.clone() {
+                Some(client)
+            } else {
+                drop(inner);
+                factory()
+            }
+        };
+
+        let Some(client) = client else {
+            return if config.tailscale_enabled {
+                TailscaleStatus::stopped("Secure network stopped")
+            } else {
+                TailscaleStatus::disabled()
+            };
+        };
+
+        let status = match client.stop().await {
+            Ok(status) => status,
+            Err(error) => TailscaleStatus::error(error),
+        };
+
+        let mut inner = runtime.inner.lock().await;
+        inner.client = None;
+        inner.last_status = Some(status.clone());
+        status
+    }
+
+    async fn ensure_client<F>(
+        runtime: &TailscaleRuntimeState,
+        factory: F,
+    ) -> Result<Arc<dyn SidecarControlClient>, TailscaleStatus>
+    where
+        F: FnOnce() -> Option<Arc<dyn SidecarControlClient>>,
+    {
+        let mut inner = runtime.inner.lock().await;
+        if let Some(client) = inner.client.clone() {
+            return Ok(client);
+        }
+
+        match factory() {
+            Some(client) => {
+                inner.client = Some(Arc::clone(&client));
+                Ok(client)
+            }
+            None => Err(TailscaleStatus::error(MISSING_COMPONENT_MESSAGE)),
+        }
+    }
+
+    fn build_start_request(
+        paths: &AppPaths,
+        config: &WebServiceConfig,
+        web_status: Option<&WebServerStatus>,
+        auth_key: Option<String>,
+    ) -> TailscaleStartRequest {
+        let hostname = config
+            .tailscale_hostname
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "ai-switch".to_string());
+        let port = web_status
+            .and_then(|status| status.port)
+            .unwrap_or(config.port);
+        let backend_host = if config.host == "0.0.0.0" {
+            "127.0.0.1".to_string()
+        } else {
+            config.host.clone()
+        };
+
+        TailscaleStartRequest {
+            state_dir: paths.tailscale_dir.to_string_lossy().to_string(),
+            hostname,
+            auth_key,
+            backend_addr: format!("{backend_host}:{port}"),
+            serve_port: port,
+        }
+    }
+
+    fn finalize_status(
+        mut status: TailscaleStatus,
+        config: &WebServiceConfig,
+        web_status: Option<&WebServerStatus>,
+        _paths: &AppPaths,
+    ) -> TailscaleStatus {
+        if status.state == "connected" {
+            let port = web_status
+                .and_then(|status| status.port)
+                .unwrap_or(config.port);
+            let mut access_urls = Vec::new();
+            if let Some(ip) = status.tailnet_ip.as_deref() {
+                access_urls.push(format!("http://{ip}:{port}"));
+            }
+            if let Some(name) = status.magic_dns_name.as_deref() {
+                access_urls.push(format!("http://{name}:{port}"));
+            }
+            status.access_urls = access_urls;
+            status.serving = web_status.map(|status| status.running).unwrap_or(false)
+                && !status.access_urls.is_empty();
+        }
+        status
+    }
+
+    async fn persist_auth_key(paths: &AppPaths, auth_key: &str) -> Result<(), String> {
+        paths.ensure().await.map_err(|error| error.to_string())?;
+        let path = paths.tailscale_dir.join(AUTH_KEY_FILE);
+        tokio::fs::write(path, auth_key)
+            .await
+            .map_err(|error| format!("Could not save auth key: {error}"))
     }
 }
 
-fn extract_url(text: &str) -> Option<String> {
-    text.split_whitespace()
-        .find(|part| part.starts_with("https://") || part.starts_with("http://"))
-        .map(|part| part.trim_end_matches('.').to_string())
+fn resolve_live_client() -> Option<Arc<dyn SidecarControlClient>> {
+    // Real process client lands in Task 8. Until then only discovery exists.
+    resolve_sidecar_path().map(|_| {
+        Arc::new(FakeSidecarControlClient::default()) as Arc<dyn SidecarControlClient>
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::extract_url;
+    use super::{TailscaleRuntimeState, TailscaleService};
+    use crate::paths::AppPaths;
+    use crate::services::tailscale_sidecar::{FakeSidecarControlClient, SidecarControlClient};
+    use crate::services::web_service::{WebServerStatus, WebServiceConfig};
+    use std::sync::Arc;
+    use tempfile::tempdir;
 
-    #[test]
-    fn extracts_login_url() {
-        assert_eq!(
-            extract_url("To authenticate, visit https://login.tailscale.com/a/abc."),
-            Some("https://login.tailscale.com/a/abc".to_string())
+    fn test_paths() -> (tempfile::TempDir, AppPaths) {
+        let dir = tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(dir.path().to_path_buf());
+        (dir, paths)
+    }
+
+    #[tokio::test]
+    async fn status_is_error_when_sidecar_binary_missing() {
+        let runtime = TailscaleRuntimeState::default();
+        let (_dir, paths) = test_paths();
+        let config = WebServiceConfig {
+            tailscale_enabled: true,
+            ..WebServiceConfig::default()
+        };
+        let status =
+            TailscaleService::status_with_client(&runtime, &paths, &config, None, || None).await;
+        assert_eq!(status.state, "error");
+        let message = status.message.unwrap().to_lowercase();
+        assert!(
+            message.contains("built-in network component"),
+            "unexpected message: {message}"
         );
+    }
+
+    #[tokio::test]
+    async fn auth_key_connect_sets_connected_and_access_urls() {
+        let runtime = TailscaleRuntimeState::default();
+        let (_dir, paths) = test_paths();
+        paths.ensure().await.expect("ensure paths");
+        let mut config = WebServiceConfig {
+            tailscale_enabled: true,
+            port: 3090,
+            host: "127.0.0.1".to_string(),
+            tailscale_hostname: Some("ai-switch".to_string()),
+            ..WebServiceConfig::default()
+        };
+        let web_status = WebServerStatus {
+            running: true,
+            host: "127.0.0.1".to_string(),
+            port: Some(3090),
+            base_url: Some("http://127.0.0.1:3090".to_string()),
+        };
+        let client = Arc::new(FakeSidecarControlClient::default()) as Arc<dyn SidecarControlClient>;
+        let client_for_factory = Arc::clone(&client);
+
+        let status = TailscaleService::start_with_auth_key_with_client(
+            &runtime,
+            &paths,
+            &mut config,
+            Some(&web_status),
+            "tskey-auth-test".to_string(),
+            move || Some(client_for_factory),
+        )
+        .await
+        .expect("auth key connect");
+
+        assert_eq!(status.state, "connected");
+        assert!(status
+            .access_urls
+            .iter()
+            .any(|url| url == "http://100.64.0.12:3090"));
+        assert!(status
+            .access_urls
+            .iter()
+            .any(|url| url == "http://ai-switch.tailnet.ts.net:3090"));
+        assert!(status.serving);
+        assert!(config.tailscale_auth_key_present);
+        assert!(paths.tailscale_dir.join("auth-key").exists());
+    }
+
+    #[tokio::test]
+    async fn disabled_config_returns_disabled_status() {
+        let runtime = TailscaleRuntimeState::default();
+        let (_dir, paths) = test_paths();
+        let config = WebServiceConfig::default();
+        let status = TailscaleService::status_with_client(
+            &runtime,
+            &paths,
+            &config,
+            None,
+            || panic!("factory should not run when disabled"),
+        )
+        .await;
+        assert_eq!(status.state, "disabled");
     }
 }

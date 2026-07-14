@@ -46,6 +46,7 @@ use commands::web_service_commands::{
 use database::open_migrated_pool;
 use paths::AppPaths;
 use services::route_proxy_service::RouteProxyRuntimeState;
+use services::tailscale_service::TailscaleRuntimeState;
 use services::web_service::WebServiceRuntimeState;
 use terminal_manager::TerminalManager;
 use std::sync::Arc;
@@ -70,6 +71,7 @@ pub fn run() {
             pool,
             route_proxy: RouteProxyRuntimeState::default(),
             web_service: WebServiceRuntimeState::default(),
+            tailscale: TailscaleRuntimeState::default(),
             terminals: TerminalManager::default(),
             event_broadcaster: Arc::new(WebEventBroadcaster::new()),
         })
