@@ -1,6 +1,6 @@
 use crate::paths::AppPaths;
 use crate::services::tailscale_sidecar::{
-    resolve_sidecar_path, FakeSidecarControlClient, SidecarControlClient,
+    resolve_sidecar_path, HttpSidecarControlClient, SidecarControlClient,
 };
 use crate::services::tailscale_types::TailscaleStartRequest;
 use crate::services::web_service::{WebServerStatus, WebService, WebServiceConfig};
@@ -363,10 +363,11 @@ impl TailscaleService {
 }
 
 fn resolve_live_client() -> Option<Arc<dyn SidecarControlClient>> {
-    // Real process client lands in Task 8. Until then only discovery exists.
-    resolve_sidecar_path().map(|_| {
-        Arc::new(FakeSidecarControlClient::default()) as Arc<dyn SidecarControlClient>
-    })
+    let path = resolve_sidecar_path()?;
+    match HttpSidecarControlClient::new(path) {
+        Ok(client) => Some(Arc::new(client) as Arc<dyn SidecarControlClient>),
+        Err(_) => None,
+    }
 }
 
 #[cfg(test)]

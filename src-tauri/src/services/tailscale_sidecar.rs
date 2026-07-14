@@ -3,7 +3,8 @@ use crate::services::tailscale_types::{
 };
 use async_trait::async_trait;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use tokio::io::AsyncBufReadExt;
 
 #[async_trait]
 pub trait SidecarControlClient: Send + Sync {
@@ -131,6 +132,224 @@ impl SidecarControlClient for FakeSidecarControlClient {
     }
 }
 
+
+#[derive(Debug)]
+pub struct SidecarProcess {
+    child: Mutex<Option<tokio::process::Child>>,
+    control_base: Mutex<Option<String>>,
+}
+
+impl Default for SidecarProcess {
+    fn default() -> Self {
+        Self {
+            child: Mutex::new(None),
+            control_base: Mutex::new(None),
+        }
+    }
+}
+
+impl Drop for SidecarProcess {
+    fn drop(&mut self) {
+        if let Ok(mut child_slot) = self.child.lock() {
+            if let Some(mut child) = child_slot.take() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct HttpSidecarControlClient {
+    process: Arc<SidecarProcess>,
+    binary: PathBuf,
+    http: reqwest::Client,
+}
+
+impl HttpSidecarControlClient {
+    pub fn new(binary: PathBuf) -> Result<Self, String> {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .map_err(|error| format!("Could not create secure network client: {error}"))?;
+        Ok(Self {
+            process: Arc::new(SidecarProcess::default()),
+            binary,
+            http,
+        })
+    }
+
+    async fn ensure_control_base(&self) -> Result<String, String> {
+        {
+            let base = self
+                .process
+                .control_base
+                .lock()
+                .map_err(|_| "secure network process lock poisoned".to_string())?;
+            if let Some(value) = base.clone() {
+                return Ok(value);
+            }
+        }
+
+        let mut child = tokio::process::Command::new(&self.binary)
+            .arg("--control-addr")
+            .arg("127.0.0.1:0")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| format!("Could not start secure network component: {error}"))?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "secure network component produced no output".to_string())?;
+        let mut reader = tokio::io::BufReader::new(stdout).lines();
+
+        let control_addr = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            while let Some(line) = reader
+                .next_line()
+                .await
+                .map_err(|error| format!("Could not read secure network startup output: {error}"))?
+            {
+                if let Some(addr) = parse_control_addr_line(&line) {
+                    return Ok(addr);
+                }
+            }
+            Err("Secure network component did not publish a control address".to_string())
+        })
+        .await
+        .map_err(|_| "Secure network component startup timed out".to_string())??;
+
+        {
+            let mut child_slot = self
+                .process
+                .child
+                .lock()
+                .map_err(|_| "secure network process lock poisoned".to_string())?;
+            *child_slot = Some(child);
+        }
+        {
+            let mut base = self
+                .process
+                .control_base
+                .lock()
+                .map_err(|_| "secure network process lock poisoned".to_string())?;
+            *base = Some(format!("http://{control_addr}"));
+        }
+
+        Ok(format!("http://{control_addr}"))
+    }
+
+    async fn post_json<T: serde::de::DeserializeOwned, B: serde::Serialize>(
+        &self,
+        path: &str,
+        body: Option<&B>,
+    ) -> Result<T, String> {
+        let base = self.ensure_control_base().await?;
+        let url = format!("{base}{path}");
+        let request = if let Some(payload) = body {
+            self.http.post(url).json(payload)
+        } else {
+            self.http.post(url)
+        };
+        let response = request
+            .send()
+            .await
+            .map_err(|error| format!("Secure network control request failed: {error}"))?;
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .map_err(|error| format!("Secure network control response failed: {error}"))?;
+        if !status.is_success() {
+            return Err(format!("Secure network control error ({status}): {text}"));
+        }
+        serde_json::from_str(&text).map_err(|error| {
+            format!("Secure network control parse failed: {error}; payload={text}")
+        })
+    }
+
+    async fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, String> {
+        let base = self.ensure_control_base().await?;
+        let url = format!("{base}{path}");
+        let response = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| format!("Secure network control request failed: {error}"))?;
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .map_err(|error| format!("Secure network control response failed: {error}"))?;
+        if !status.is_success() {
+            return Err(format!("Secure network control error ({status}): {text}"));
+        }
+        serde_json::from_str(&text).map_err(|error| {
+            format!("Secure network control parse failed: {error}; payload={text}")
+        })
+    }
+
+    async fn kill_process(&self) {
+        let child = {
+            let mut child_slot = match self.process.child.lock() {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
+            child_slot.take()
+        };
+        if let Some(mut child) = child {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+        }
+        if let Ok(mut base) = self.process.control_base.lock() {
+            *base = None;
+        }
+    }
+}
+
+#[async_trait]
+impl SidecarControlClient for HttpSidecarControlClient {
+    async fn start(&self, request: TailscaleStartRequest) -> Result<TailscaleStatus, String> {
+        self.post_json("/control/start", Some(&request)).await
+    }
+
+    async fn login_oauth(&self) -> Result<TailscaleLogin, String> {
+        self.post_json::<TailscaleLogin, serde_json::Value>(
+            "/control/login-oauth",
+            None::<&serde_json::Value>,
+        )
+        .await
+    }
+
+    async fn stop(&self) -> Result<TailscaleStatus, String> {
+        let result = self
+            .post_json::<TailscaleStatus, serde_json::Value>(
+                "/control/stop",
+                None::<&serde_json::Value>,
+            )
+            .await;
+        self.kill_process().await;
+        result.or_else(|_| Ok(TailscaleStatus::stopped("Secure network stopped")))
+    }
+
+    async fn logout(&self) -> Result<TailscaleStatus, String> {
+        let result = self
+            .post_json::<TailscaleStatus, serde_json::Value>(
+                "/control/logout",
+                None::<&serde_json::Value>,
+            )
+            .await;
+        self.kill_process().await;
+        result.or_else(|_| Ok(TailscaleStatus::needs_login("Signed out of secure network")))
+    }
+
+    async fn status(&self) -> Result<TailscaleStatus, String> {
+        self.get_json("/control/status").await
+    }
+}
+
 pub fn resolve_sidecar_path() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("AI_SWITCH_TSNET_PATH") {
         let candidate = PathBuf::from(path);
@@ -162,9 +381,10 @@ pub fn parse_control_addr_line(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_control_addr_line, resolve_sidecar_path, FakeSidecarControlClient, SidecarControlClient,
+        parse_control_addr_line, resolve_sidecar_path, FakeSidecarControlClient, HttpSidecarControlClient, SidecarControlClient,
     };
     use crate::services::tailscale_types::{TailscaleStartRequest, TailscaleStatus};
+    use std::path::PathBuf;
 
     #[tokio::test]
     async fn fake_sidecar_reports_needs_login_until_oauth_completes() {
@@ -210,5 +430,15 @@ mod tests {
     fn resolve_sidecar_path_prefers_env_override_when_present() {
         // When env path is unset or missing, this should not panic.
         let _ = resolve_sidecar_path();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires AI_SWITCH_TSNET_PATH binary"]
+    async fn sidecar_process_starts_and_reports_status() {
+        let path = std::env::var("AI_SWITCH_TSNET_PATH").expect("AI_SWITCH_TSNET_PATH");
+        let client = HttpSidecarControlClient::new(PathBuf::from(path)).expect("client");
+        let status = client.status().await.expect("status");
+        assert_eq!(status.state, "needsLogin");
+        let _ = client.stop().await;
     }
 }
