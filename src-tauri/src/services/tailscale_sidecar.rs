@@ -137,6 +137,7 @@ impl SidecarControlClient for FakeSidecarControlClient {
 pub struct SidecarProcess {
     child: Mutex<Option<tokio::process::Child>>,
     control_base: Mutex<Option<String>>,
+    start_lock: tokio::sync::Mutex<()>,
 }
 
 impl Default for SidecarProcess {
@@ -144,7 +145,21 @@ impl Default for SidecarProcess {
         Self {
             child: Mutex::new(None),
             control_base: Mutex::new(None),
+            start_lock: tokio::sync::Mutex::new(()),
         }
+    }
+}
+
+#[cfg(test)]
+impl SidecarProcess {
+    fn set_control_base_for_test(&self, value: Option<String>) {
+        if let Ok(mut base) = self.control_base.lock() {
+            *base = value;
+        }
+    }
+
+    fn control_base_for_test(&self) -> Option<String> {
+        self.control_base.lock().ok().and_then(|base| base.clone())
     }
 }
 
@@ -178,17 +193,30 @@ impl HttpSidecarControlClient {
         })
     }
 
+    fn cached_control_base(&self) -> Result<Option<String>, String> {
+        self.process
+            .control_base
+            .lock()
+            .map_err(|_| "secure network process lock poisoned".to_string())
+            .map(|base| base.clone())
+    }
+
     async fn ensure_control_base(&self) -> Result<String, String> {
-        {
-            let base = self
-                .process
-                .control_base
-                .lock()
-                .map_err(|_| "secure network process lock poisoned".to_string())?;
-            if let Some(value) = base.clone() {
-                return Ok(value);
-            }
+        if let Some(value) = self.cached_control_base()? {
+            return Ok(value);
         }
+
+        let _guard = self.process.start_lock.lock().await;
+        if let Some(value) = self.cached_control_base()? {
+            return Ok(value);
+        }
+
+        self.spawn_control_process().await
+    }
+
+    async fn spawn_control_process(&self) -> Result<String, String> {
+        // Replace any leftover process before spawning a fresh control plane.
+        self.kill_process().await;
 
         let mut child = tokio::process::Command::new(&self.binary)
             .arg("--control-addr")
@@ -228,16 +256,21 @@ impl HttpSidecarControlClient {
                 .map_err(|_| "secure network process lock poisoned".to_string())?;
             *child_slot = Some(child);
         }
+        let base = format!("http://{control_addr}");
         {
-            let mut base = self
+            let mut slot = self
                 .process
                 .control_base
                 .lock()
                 .map_err(|_| "secure network process lock poisoned".to_string())?;
-            *base = Some(format!("http://{control_addr}"));
+            *slot = Some(base.clone());
         }
 
-        Ok(format!("http://{control_addr}"))
+        Ok(base)
+    }
+
+    async fn invalidate_control_base(&self) {
+        self.kill_process().await;
     }
 
     async fn post_json<T: serde::de::DeserializeOwned, B: serde::Serialize>(
@@ -245,50 +278,61 @@ impl HttpSidecarControlClient {
         path: &str,
         body: Option<&B>,
     ) -> Result<T, String> {
-        let base = self.ensure_control_base().await?;
-        let url = format!("{base}{path}");
-        let request = if let Some(payload) = body {
-            self.http.post(url).json(payload)
-        } else {
-            self.http.post(url)
-        };
-        let response = request
-            .send()
-            .await
-            .map_err(|error| format!("Secure network control request failed: {error}"))?;
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|error| format!("Secure network control response failed: {error}"))?;
-        if !status.is_success() {
-            return Err(format!("Secure network control error ({status}): {text}"));
-        }
-        serde_json::from_str(&text).map_err(|error| {
-            format!("Secure network control parse failed: {error}; payload={text}")
+        self.with_control_retry(|base| {
+            let url = format!("{base}{path}");
+            let request = if let Some(payload) = body {
+                self.http.post(url).json(payload)
+            } else {
+                self.http.post(url)
+            };
+            async move { request.send().await }
         })
+        .await
     }
 
     async fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, String> {
-        let base = self.ensure_control_base().await?;
-        let url = format!("{base}{path}");
-        let response = self
-            .http
-            .get(url)
-            .send()
-            .await
-            .map_err(|error| format!("Secure network control request failed: {error}"))?;
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|error| format!("Secure network control response failed: {error}"))?;
-        if !status.is_success() {
-            return Err(format!("Secure network control error ({status}): {text}"));
-        }
-        serde_json::from_str(&text).map_err(|error| {
-            format!("Secure network control parse failed: {error}; payload={text}")
+        self.with_control_retry(|base| {
+            let url = format!("{base}{path}");
+            let request = self.http.get(url);
+            async move { request.send().await }
         })
+        .await
+    }
+
+    async fn with_control_retry<T, F, Fut>(&self, build: F) -> Result<T, String>
+    where
+        T: serde::de::DeserializeOwned,
+        F: Fn(String) -> Fut,
+        Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
+    {
+        let mut last_error = None;
+        for attempt in 0..2 {
+            let base = self.ensure_control_base().await?;
+            match build(base).await {
+                Ok(response) => {
+                    let status = response.status();
+                    let text = response
+                        .text()
+                        .await
+                        .map_err(|error| format!("Secure network control response failed: {error}"))?;
+                    if !status.is_success() {
+                        return Err(format!("Secure network control error ({status}): {text}"));
+                    }
+                    return serde_json::from_str(&text).map_err(|error| {
+                        format!("Secure network control parse failed: {error}; payload={text}")
+                    });
+                }
+                Err(error) => {
+                    last_error = Some(format!("Secure network control request failed: {error}"));
+                    // Transport failure usually means the cached control plane died.
+                    self.invalidate_control_base().await;
+                    if attempt == 0 {
+                        continue;
+                    }
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| "Secure network control request failed".to_string()))
     }
 
     async fn kill_process(&self) {
@@ -439,6 +483,36 @@ mod tests {
         let client = HttpSidecarControlClient::new(PathBuf::from(path)).expect("client");
         let status = client.status().await.expect("status");
         assert_eq!(status.state, "needsLogin");
+        let _ = client.stop().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires AI_SWITCH_TSNET_PATH binary"]
+    async fn status_recovers_when_cached_control_base_is_stale() {
+        let path = std::env::var("AI_SWITCH_TSNET_PATH").expect("AI_SWITCH_TSNET_PATH");
+        let client = HttpSidecarControlClient::new(PathBuf::from(path)).expect("client");
+
+        let first = client.status().await.expect("initial status");
+        assert_eq!(first.state, "needsLogin");
+        let previous = client
+            .process
+            .control_base_for_test()
+            .expect("control base after first status");
+
+        client
+            .process
+            .set_control_base_for_test(Some("http://127.0.0.1:1".to_string()));
+
+        let recovered = client.status().await.expect("status after stale base");
+        assert_eq!(recovered.state, "needsLogin");
+
+        let current = client
+            .process
+            .control_base_for_test()
+            .expect("control base after recovery");
+        assert_ne!(current, "http://127.0.0.1:1".to_string());
+        assert_ne!(current, previous);
+
         let _ = client.stop().await;
     }
 }
