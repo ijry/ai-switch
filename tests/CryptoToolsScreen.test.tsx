@@ -13,11 +13,11 @@ function renderScreen() {
 }
 
 describe("CryptoToolsScreen", () => {
-  it("encodes UTF-8 text as Base64", async () => {
+  it("decodes Base64 text by default", async () => {
     renderScreen();
 
-    await userEvent.type(screen.getByLabelText("输入文本"), "hello 世界");
-    expect(screen.getByLabelText("输出文本")).toHaveValue("aGVsbG8g5LiW55WM");
+    await userEvent.type(screen.getByLabelText("输入文本"), "aGVsbG8g5LiW55WM");
+    expect(screen.getByLabelText("输出文本")).toHaveValue("hello 世界");
   });
 
   it("shows a validation error for invalid hex input", async () => {

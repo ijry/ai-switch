@@ -22,7 +22,7 @@ const errorKeys = {
 export function CryptoToolsScreen() {
   const { t } = useI18n();
   const [input, setInput] = useState("");
-  const [operation, setOperation] = useState<CryptoOperation>("base64-encode");
+  const [operation, setOperation] = useState<CryptoOperation>("base64-decode");
   const [copied, setCopied] = useState(false);
   const result = useMemo(() => transformCryptoText(input, operation), [input, operation]);
 
