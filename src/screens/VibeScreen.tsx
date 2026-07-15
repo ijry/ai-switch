@@ -64,6 +64,38 @@ function sessionKey(session: SessionMeta) {
   return `${session.providerId}:${session.sessionId}:${session.sourcePath}`;
 }
 
+
+function shortTabTitle(title: string) {
+  const cleaned = title.trim();
+  if (!cleaned) {
+    return "Terminal";
+  }
+
+  const parts = cleaned.split(/[\\/]/).filter(Boolean);
+  if (parts.length === 0) {
+    return cleaned;
+  }
+
+  const leaf = parts[parts.length - 1] ?? cleaned;
+  if (cleaned.includes(" - ") && parts.length > 1) {
+    const agent = cleaned.split(" - ")[0]?.trim();
+    if (agent) {
+      return `${agent} · ${leaf}`;
+    }
+  }
+  return leaf;
+}
+
+function statusDotClass(status: TerminalStatus, isActive: boolean, isDark: boolean) {
+  if (status === "running") {
+    return isActive ? "bg-emerald-500" : isDark ? "bg-[#859900]" : "bg-emerald-400";
+  }
+  if (status === "error") {
+    return isActive ? "bg-red-500" : isDark ? "bg-[#dc322f]" : "bg-red-400";
+  }
+  return isActive ? "bg-stone-400" : isDark ? "bg-[#586e75]" : "bg-stone-500";
+}
+
 function statusLabel(status: TerminalStatus, t: (key: "vibe.status.running" | "vibe.status.exited" | "vibe.status.error") => string) {
   return t(`vibe.status.${status}` as "vibe.status.running" | "vibe.status.exited" | "vibe.status.error");
 }
@@ -373,58 +405,69 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
           <div
             className={
               isDark
-                ? "flex min-h-14 shrink-0 items-center gap-2 overflow-x-auto border-b border-[#073642] bg-[#073642]/90 px-3"
-                : "flex min-h-14 shrink-0 items-center gap-2 overflow-x-auto border-b border-zinc-800 bg-zinc-950 px-3"
+                ? "flex h-10 shrink-0 items-stretch gap-0 overflow-x-auto border-b border-[#073642] bg-[#00212b] px-1 [scrollbar-width:thin]"
+                : "flex h-10 shrink-0 items-stretch gap-0 overflow-x-auto border-b border-zinc-800 bg-[#0b0b0a] px-1 [scrollbar-width:thin]"
             }
           >
             {tabs.length === 0 && (
-              <p className={isDark ? "text-[13px] text-[#93a1a1]" : "text-[13px] text-zinc-500"}>
+              <p className={isDark ? "flex items-center px-3 text-[12px] text-[#93a1a1]" : "flex items-center px-3 text-[12px] text-zinc-500"}>
                 {t("vibe.noTabs")}
               </p>
             )}
             {tabs.map((tab) => (
               <div
-                className={`inline-flex max-w-[280px] items-center gap-1 rounded-xl border p-1 ${
+                className={`group relative inline-flex h-full max-w-[220px] min-w-[132px] shrink-0 items-center border-r ${
                   activeId === tab.id
                     ? isDark
-                      ? "border-[#b58900] bg-[#b58900] text-[#002b36]"
-                      : "border-amber-400 bg-amber-400 text-zinc-950"
+                      ? "border-[#073642] bg-[#002b36] text-[#fdf6e3]"
+                      : "border-zinc-800 bg-[#151513] text-zinc-100"
                     : isDark
-                      ? "border-[#073642] bg-[#002b36] text-[#93a1a1]"
-                      : "border-zinc-800 bg-zinc-900 text-zinc-300"
+                      ? "border-[#073642] bg-transparent text-[#93a1a1] hover:bg-[#073642]/55 hover:text-[#eee8d5]"
+                      : "border-zinc-800 bg-transparent text-zinc-400 hover:bg-zinc-900/70 hover:text-zinc-200"
                 }`}
                 key={tab.id}
+                title={`${tab.title} · ${statusLabel(tab.status, t)}`}
               >
+                {activeId === tab.id && (
+                  <span
+                    className={
+                      isDark
+                        ? "absolute inset-x-0 bottom-0 h-[2px] bg-[#b58900]"
+                        : "absolute inset-x-0 bottom-0 h-[2px] bg-amber-400"
+                    }
+                  />
+                )}
                 <button
-                  className="inline-flex min-w-0 items-center gap-2 px-2 py-1 text-[12px] font-semibold"
+                  className="inline-flex h-full min-w-0 flex-1 items-center gap-2 px-3 pr-1 text-[12px] font-medium"
                   onClick={() => setActiveId(tab.id)}
                   type="button"
                 >
-                  <TerminalSquare className="h-3.5 w-3.5 shrink-0" />
-                  <span className="truncate">{tab.title}</span>
-                  <span className="rounded-full bg-black/20 px-1.5 py-0.5 text-[10px]">
-                    {statusLabel(tab.status, t)}
-                  </span>
+                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDotClass(tab.status, activeId === tab.id, isDark)}`} />
+                  <span className="truncate">{shortTabTitle(tab.title)}</span>
                 </button>
                 <button
                   aria-label={t("vibe.closeTabAria", { title: tab.title })}
-                  className="rounded-lg p-1 transition hover:bg-black/10"
+                  className={
+                    isDark
+                      ? "mr-1.5 grid h-5 w-5 shrink-0 place-items-center rounded-md text-[#93a1a1] opacity-70 transition hover:bg-[#073642] hover:text-[#fdf6e3] group-hover:opacity-100"
+                      : "mr-1.5 grid h-5 w-5 shrink-0 place-items-center rounded-md text-zinc-400 opacity-70 transition hover:bg-zinc-800 hover:text-zinc-100 group-hover:opacity-100"
+                  }
                   onClick={() => void closeTab(tab)}
                   type="button"
                 >
-                  <X className="h-3.5 w-3.5" />
+                  <X className="h-3 w-3" />
                 </button>
               </div>
             ))}
           </div>
 
-          <div className="min-h-0 flex-1 overflow-hidden p-3">
+          <div className="min-h-0 flex-1 overflow-hidden">
             {!activeTab && (
               <div
                 className={
                   isDark
-                    ? "grid h-full place-items-center rounded-2xl border border-dashed border-[#073642] text-center"
-                    : "grid h-full place-items-center rounded-2xl border border-dashed border-zinc-800 text-center"
+                    ? "grid h-full place-items-center text-center"
+                    : "grid h-full place-items-center text-center"
                 }
               >
                 <div>
