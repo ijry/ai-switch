@@ -15,6 +15,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createTerminalSession, killTerminalSession, listSessions } from "../lib/api/client";
 import { useI18n } from "../lib/i18n";
+import { AiSwitchLogo } from "../components/brand/AiSwitchLogo";
 import type {
   CreateTerminalSessionInput,
   SessionMeta,
@@ -291,15 +292,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
               }
             >
               <div className="flex min-w-0 items-center gap-2">
-                <div
-                  className={
-                    isDark
-                      ? "grid h-9 w-9 place-items-center rounded-2xl bg-[#0f4c5c] text-[12px] font-black text-[#fdf6e3] shadow-sm"
-                      : "grid h-9 w-9 place-items-center rounded-2xl bg-stone-950 text-[12px] font-black text-white shadow-sm"
-                  }
-                >
-                  AS
-                </div>
+                <AiSwitchLogo className="h-9 w-9 shrink-0 rounded-2xl shadow-sm" />
                 <div className="min-w-0">
                   <h1 className={isDark ? "truncate text-[13px] font-semibold text-[#fdf6e3]" : "truncate text-[13px] font-semibold text-stone-950"}>
                     {t("vibe.title")} · {t("vibe.kicker")}
