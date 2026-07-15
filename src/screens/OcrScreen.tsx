@@ -1,13 +1,15 @@
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type ClipboardEvent } from "react";
 import { ScanText } from "lucide-react";
+import { extractClipboardImage } from "../lib/ocr/clipboardImage";
 import { recognizeImageText } from "../lib/ocr/recognizeText";
 import { useI18n } from "../lib/i18n";
 
-type OcrError = "no-file" | "invalid-file" | "failed" | null;
+type OcrError = "no-file" | "invalid-file" | "clipboard-no-image" | "failed" | null;
 
 const errorKeys = {
   "no-file": "ocr.error.noFile",
   "invalid-file": "ocr.error.invalidFile",
+  "clipboard-no-image": "ocr.error.clipboardNoImage",
   failed: "ocr.error.failed",
 } as const;
 
@@ -28,28 +30,46 @@ export function OcrScreen() {
     };
   }, [previewUrl]);
 
+  const setImagePreview = (file: Blob, displayName: string) => {
+    const nextUrl = URL.createObjectURL(file);
+    setPreviewUrl((current) => {
+      if (current && typeof URL.revokeObjectURL === "function") {
+        URL.revokeObjectURL(current);
+      }
+      return nextUrl;
+    });
+    setFileName(displayName);
+    setResult("");
+    setError(null);
+  };
+
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    setResult("");
     if (!file) {
+      setResult("");
       setFileName(null);
       setPreviewUrl(null);
       setError(null);
       return;
     }
+    setResult("");
     if (!file.type.startsWith("image/")) {
       setFileName(null);
       setPreviewUrl(null);
       setError("invalid-file");
       return;
     }
-    const nextUrl = URL.createObjectURL(file);
-    if (previewUrl && typeof URL.revokeObjectURL === "function") {
-      URL.revokeObjectURL(previewUrl);
+    setImagePreview(file, file.name);
+  };
+
+  const handlePaste = (event: ClipboardEvent<HTMLElement>) => {
+    event.preventDefault();
+    const pastedImage = extractClipboardImage(event.clipboardData);
+    if (!pastedImage) {
+      setError("clipboard-no-image");
+      return;
     }
-    setFileName(file.name);
-    setPreviewUrl(nextUrl);
-    setError(null);
+    setImagePreview(pastedImage, t("ocr.pastedImage"));
   };
 
   const runRecognition = async () => {
@@ -69,7 +89,7 @@ export function OcrScreen() {
   };
 
   return (
-    <section className="space-y-3">
+    <section className="space-y-3" onPaste={handlePaste} tabIndex={0}>
       <div className="rounded-2xl border border-stone-200 bg-white/82 p-4 shadow-sm">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">{t("ocr.kicker")}</p>
         <h1 className="mt-0.5 text-lg font-semibold tracking-tight text-stone-950">{t("ocr.title")}</h1>
@@ -92,6 +112,7 @@ export function OcrScreen() {
             />
           </label>
           <p className="mt-2 text-[12px] text-stone-500">{t("ocr.fileHint")}</p>
+          <p className="mt-1 text-[12px] text-stone-500">{t("ocr.pasteHint")}</p>
           <p className="mt-3 text-[13px] font-medium text-stone-700">{fileName ?? t("ocr.noFile")}</p>
           {error && (
             <p className="mt-2 text-[13px] font-medium text-red-700">
