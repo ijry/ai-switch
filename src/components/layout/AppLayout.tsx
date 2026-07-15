@@ -42,8 +42,6 @@ export const settingsFeatureScreens = [
   "Sessions",
   "Updates",
   "Log",
-  "CryptoTools",
-  "OCR",
 ] as const;
 
 type AppLayoutProps = {

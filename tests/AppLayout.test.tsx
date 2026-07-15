@@ -22,4 +22,17 @@ describe("AppLayout", () => {
     expect(onNavigate).toHaveBeenCalledWith("CryptoTools");
     expect(onNavigate).toHaveBeenCalledWith("OCR");
   });
+
+  it("only highlights the active system utility entry", () => {
+    render(
+      <I18nProvider initialLanguage="zh-CN">
+        <AppLayout activeScreen="OCR" onNavigate={vi.fn()}>
+          <div>content</div>
+        </AppLayout>
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole("button", { name: /OCR识别/ })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: /设置/ })).not.toHaveAttribute("aria-current");
+  });
 });
