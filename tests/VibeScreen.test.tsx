@@ -10,6 +10,7 @@ import {
 } from "../src/lib/api/client";
 import type { SessionMeta, TerminalSession } from "../src/lib/api/types";
 import { createQueryClient } from "../src/lib/query/queryClient";
+import { __resetTransportForTests } from "../src/lib/transport";
 import { VibeScreen } from "../src/screens/VibeScreen";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -63,9 +64,15 @@ function renderScreen() {
   );
 }
 
+async function expandProjectDirectory() {
+  await userEvent.click(await screen.findByRole("button", { name: "Expand folder D:/repo/app" }));
+}
+
 describe("VibeScreen", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    __resetTransportForTests();
     vi.mocked(createTerminalSession).mockReset();
     vi.mocked(killTerminalSession).mockReset();
     vi.mocked(listSessions).mockReset();
@@ -86,6 +93,11 @@ describe("VibeScreen", () => {
     renderScreen();
 
     expect(await screen.findByText("D:/repo/app")).toBeInTheDocument();
+    expect(screen.queryByText("Fix terminal bug")).not.toBeInTheDocument();
+    expect(screen.queryByText("Missing resume")).not.toBeInTheDocument();
+
+    await expandProjectDirectory();
+
     expect(screen.getByText("Fix terminal bug")).toBeInTheDocument();
     expect(screen.getByText("Missing resume")).toBeInTheDocument();
   });
@@ -93,6 +105,7 @@ describe("VibeScreen", () => {
   it("launches a resume terminal from a complete session", async () => {
     renderScreen();
 
+    await expandProjectDirectory();
     await userEvent.click(await screen.findByRole("button", { name: /Resume Fix terminal bug/ }));
 
     await waitFor(() =>
@@ -112,6 +125,7 @@ describe("VibeScreen", () => {
   it("does not launch a session without resume metadata", async () => {
     renderScreen();
 
+    await expandProjectDirectory();
     const disabled = await screen.findByRole("button", {
       name: /Cannot resume Missing resume/,
     });
@@ -139,6 +153,9 @@ describe("VibeScreen", () => {
     await userEvent.click(themeButton);
 
     expect(screen.getByText("Light")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand folder D:/repo/app" })).toHaveClass("text-stone-800");
+    expect(screen.getByText("No terminal tabs yet.").parentElement).toHaveClass("bg-white/85");
+    expect(screen.getByText("Start or resume a session")).toHaveClass("text-stone-900");
   });
 
   it("creates a new agent session through the modal", async () => {

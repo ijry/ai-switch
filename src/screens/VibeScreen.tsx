@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  ChevronDown,
+  ChevronRight,
   FolderOpen,
   MoonStar,
   PanelLeftClose,
@@ -10,7 +12,7 @@ import {
   TerminalSquare,
   X,
 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createTerminalSession, killTerminalSession, listSessions } from "../lib/api/client";
 import { useI18n } from "../lib/i18n";
 import type {
@@ -64,7 +66,6 @@ function sessionKey(session: SessionMeta) {
   return `${session.providerId}:${session.sessionId}:${session.sourcePath}`;
 }
 
-
 function shortTabTitle(title: string) {
   const cleaned = title.trim();
   if (!cleaned) {
@@ -109,6 +110,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const [createPlatform, setCreatePlatform] = useState<(typeof agentOptions)[number]["platform"]>("codex");
   const [themeMode, setThemeMode] = useState<VibeTheme>("dark");
   const [error, setError] = useState<string | null>(null);
+  const [sessionListScrolling, setSessionListScrolling] = useState(false);
+  const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(() => new Set());
+  const sessionListScrollTimeout = useRef<number | null>(null);
 
   const sessionsQuery = useQuery({
     queryKey: ["sessions"],
@@ -220,6 +224,38 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     );
   }, []);
 
+  const toggleDirectory = useCallback((directory: string) => {
+    setExpandedDirectories((current) => {
+      const next = new Set(current);
+      if (next.has(directory)) {
+        next.delete(directory);
+      } else {
+        next.add(directory);
+      }
+      return next;
+    });
+  }, []);
+
+  const markSessionListScrolling = useCallback(() => {
+    if (sessionListScrollTimeout.current !== null) {
+      window.clearTimeout(sessionListScrollTimeout.current);
+    }
+
+    setSessionListScrolling(true);
+    sessionListScrollTimeout.current = window.setTimeout(() => {
+      setSessionListScrolling(false);
+      sessionListScrollTimeout.current = null;
+    }, 800);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (sessionListScrollTimeout.current !== null) {
+        window.clearTimeout(sessionListScrollTimeout.current);
+      }
+    };
+  }, []);
+
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? null;
   const isDark = themeMode === "dark";
 
@@ -327,7 +363,12 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
               )}
             </div>
 
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+            <div
+              className={`vibe-scrollbar ${isDark ? "vibe-scrollbar-dark" : "vibe-scrollbar-light"} ${
+                sessionListScrolling ? "vibe-scrollbar-active" : ""
+              } min-h-0 flex-1 space-y-3 overflow-y-auto p-3`}
+              onScroll={markSessionListScrolling}
+            >
               {sessionsQuery.isLoading && (
                 <p className={isDark ? "text-sm text-[#93a1a1]" : "text-sm text-zinc-400"}>
                   {t("vibe.loadingSessions")}
@@ -338,59 +379,80 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                   className={
                     isDark
                       ? "rounded-2xl border border-[#073642] bg-[#073642]/55 p-3 text-sm text-[#93a1a1]"
-                      : "rounded-2xl border border-zinc-800 bg-zinc-900/70 p-3 text-sm text-zinc-400"
+                      : "rounded-2xl border border-stone-200 bg-white/70 p-3 text-sm text-stone-500 shadow-sm"
                   }
                 >
                   {t("vibe.noSessions")}
                 </p>
               )}
-              {groupedSessions.map((group) => (
-                <div
-                  className={
-                    isDark
-                      ? "rounded-2xl border border-[#073642] bg-[#073642]/55 p-2"
-                      : "rounded-2xl border border-zinc-800 bg-zinc-900/70 p-2"
-                  }
-                  key={group.directory}
-                >
-                  <div className={isDark ? "mb-2 flex items-center gap-2 px-1 text-[12px] font-semibold text-[#fdf6e3]" : "mb-2 flex items-center gap-2 px-1 text-[12px] font-semibold text-zinc-300"}>
-                    <FolderOpen className={isDark ? "h-4 w-4 text-[#b58900]" : "h-4 w-4 text-amber-300"} />
-                    <span className="truncate">{group.directory}</span>
+              {groupedSessions.map((group) => {
+                const expanded = expandedDirectories.has(group.directory);
+                const ToggleIcon = expanded ? ChevronDown : ChevronRight;
+                return (
+                  <div
+                    className={
+                      isDark
+                        ? "rounded-2xl border border-[#073642] bg-[#073642]/55 p-2"
+                        : "rounded-2xl border border-stone-200 bg-white/70 p-2 shadow-sm"
+                    }
+                    key={group.directory}
+                  >
+                    <button
+                      aria-expanded={expanded}
+                      aria-label={
+                        expanded
+                          ? t("vibe.collapseDirectoryAria", { directory: group.directory })
+                          : t("vibe.expandDirectoryAria", { directory: group.directory })
+                      }
+                      className={
+                        isDark
+                          ? "flex w-full items-center gap-2 rounded-xl px-1 py-1 text-left text-[12px] font-semibold text-[#fdf6e3] transition hover:bg-[#002b36]/55"
+                          : "flex w-full items-center gap-2 rounded-xl px-1 py-1 text-left text-[12px] font-semibold text-stone-800 transition hover:bg-stone-100/80"
+                      }
+                      onClick={() => toggleDirectory(group.directory)}
+                      type="button"
+                    >
+                      <ToggleIcon className={isDark ? "h-3.5 w-3.5 shrink-0 text-[#93a1a1]" : "h-3.5 w-3.5 shrink-0 text-stone-400"} />
+                      <FolderOpen className={isDark ? "h-4 w-4 shrink-0 text-[#b58900]" : "h-4 w-4 shrink-0 text-amber-600"} />
+                      <span className="truncate">{group.directory}</span>
+                    </button>
+                    {expanded && (
+                      <div className="mt-2 space-y-1.5">
+                        {group.items.map((session) => {
+                          const canResume = Boolean(session.projectDir && session.resumeCommand);
+                          const title = titleForSession(session);
+                          return (
+                            <button
+                              aria-label={
+                                canResume
+                                  ? t("vibe.resumeAria", { title })
+                                  : t("vibe.cannotResumeAria", { title })
+                              }
+                              className={
+                                isDark
+                                  ? "w-full rounded-xl border border-[#073642] bg-[#002b36]/70 px-3 py-2 text-left text-[13px] text-[#fdf6e3] transition hover:border-[#b58900]/70 disabled:cursor-not-allowed disabled:opacity-45"
+                                  : "w-full rounded-xl border border-stone-200 bg-stone-50/80 px-3 py-2 text-left text-[13px] text-stone-800 transition hover:border-amber-500/50 hover:bg-white disabled:cursor-not-allowed disabled:opacity-45"
+                              }
+                              disabled={!canResume}
+                              key={sessionKey(session)}
+                              onClick={() => resumeSession(session)}
+                              type="button"
+                            >
+                              <span className="flex items-center justify-between gap-2">
+                                <span className="truncate font-semibold">{title}</span>
+                                <Play className={isDark ? "h-3.5 w-3.5 shrink-0 text-[#b58900]" : "h-3.5 w-3.5 shrink-0 text-amber-600"} />
+                              </span>
+                              <span className={isDark ? "mt-0.5 block truncate text-[11px] text-[#93a1a1]" : "mt-0.5 block truncate text-[11px] text-stone-500"}>
+                                {session.providerId} · {session.resumeCommand ?? t("vibe.missingResumeCommand")}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
-                  <div className="space-y-1.5">
-                    {group.items.map((session) => {
-                      const canResume = Boolean(session.projectDir && session.resumeCommand);
-                      const title = titleForSession(session);
-                      return (
-                        <button
-                          aria-label={
-                            canResume
-                              ? t("vibe.resumeAria", { title })
-                              : t("vibe.cannotResumeAria", { title })
-                          }
-                          className={
-                            isDark
-                              ? "w-full rounded-xl border border-[#073642] bg-[#002b36]/70 px-3 py-2 text-left text-[13px] text-[#fdf6e3] transition hover:border-[#b58900]/70 disabled:cursor-not-allowed disabled:opacity-45"
-                              : "w-full rounded-xl border border-zinc-800 bg-zinc-950/70 px-3 py-2 text-left text-[13px] text-zinc-200 transition hover:border-amber-400/60 disabled:cursor-not-allowed disabled:opacity-45"
-                          }
-                          disabled={!canResume}
-                          key={sessionKey(session)}
-                          onClick={() => resumeSession(session)}
-                          type="button"
-                        >
-                          <span className="flex items-center justify-between gap-2">
-                            <span className="truncate font-semibold">{title}</span>
-                            <Play className={isDark ? "h-3.5 w-3.5 shrink-0 text-[#b58900]" : "h-3.5 w-3.5 shrink-0 text-amber-300"} />
-                          </span>
-                          <span className={isDark ? "mt-0.5 block truncate text-[11px] text-[#93a1a1]" : "mt-0.5 block truncate text-[11px] text-zinc-500"}>
-                            {session.providerId} · {session.resumeCommand ?? t("vibe.missingResumeCommand")}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </aside>
@@ -399,18 +461,18 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
           className={
             isDark
               ? "flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[#002b36] shadow-xl shadow-black/20"
-              : "flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[#10100f] shadow-xl"
+              : "flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-50 shadow-xl shadow-stone-900/5"
           }
         >
           <div
             className={
               isDark
-                ? "flex h-10 shrink-0 items-stretch gap-0 overflow-x-auto border-b border-[#073642] bg-[#00212b] px-1 [scrollbar-width:thin]"
-                : "flex h-10 shrink-0 items-stretch gap-0 overflow-x-auto border-b border-zinc-800 bg-[#0b0b0a] px-1 [scrollbar-width:thin]"
+                ? "vibe-scrollbar vibe-scrollbar-dark vibe-scrollbar-horizontal flex h-10 shrink-0 items-stretch gap-0 overflow-x-auto border-b border-[#073642] bg-[#00212b] px-1"
+                : "vibe-scrollbar vibe-scrollbar-light vibe-scrollbar-horizontal flex h-10 shrink-0 items-stretch gap-0 overflow-x-auto border-b border-stone-200 bg-white/85 px-1"
             }
           >
             {tabs.length === 0 && (
-              <p className={isDark ? "flex items-center px-3 text-[12px] text-[#93a1a1]" : "flex items-center px-3 text-[12px] text-zinc-500"}>
+              <p className={isDark ? "flex items-center px-3 text-[12px] text-[#93a1a1]" : "flex items-center px-3 text-[12px] text-stone-500"}>
                 {t("vibe.noTabs")}
               </p>
             )}
@@ -420,10 +482,10 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                   activeId === tab.id
                     ? isDark
                       ? "border-[#073642] bg-[#002b36] text-[#fdf6e3]"
-                      : "border-zinc-800 bg-[#151513] text-zinc-100"
+                      : "border-stone-200 bg-slate-50 text-stone-950"
                     : isDark
                       ? "border-[#073642] bg-transparent text-[#93a1a1] hover:bg-[#073642]/55 hover:text-[#eee8d5]"
-                      : "border-zinc-800 bg-transparent text-zinc-400 hover:bg-zinc-900/70 hover:text-zinc-200"
+                      : "border-stone-200 bg-transparent text-stone-500 hover:bg-stone-100/80 hover:text-stone-900"
                 }`}
                 key={tab.id}
                 title={`${tab.title} · ${statusLabel(tab.status, t)}`}
@@ -450,7 +512,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                   className={
                     isDark
                       ? "mr-1.5 grid h-5 w-5 shrink-0 place-items-center rounded-md text-[#93a1a1] opacity-70 transition hover:bg-[#073642] hover:text-[#fdf6e3] group-hover:opacity-100"
-                      : "mr-1.5 grid h-5 w-5 shrink-0 place-items-center rounded-md text-zinc-400 opacity-70 transition hover:bg-zinc-800 hover:text-zinc-100 group-hover:opacity-100"
+                      : "mr-1.5 grid h-5 w-5 shrink-0 place-items-center rounded-md text-stone-400 opacity-70 transition hover:bg-stone-200 hover:text-stone-700 group-hover:opacity-100"
                   }
                   onClick={() => void closeTab(tab)}
                   type="button"
@@ -471,11 +533,11 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 }
               >
                 <div>
-                  <TerminalSquare className={isDark ? "mx-auto h-8 w-8 text-[#586e75]" : "mx-auto h-8 w-8 text-zinc-700"} />
-                  <p className={isDark ? "mt-2 text-sm font-semibold text-[#fdf6e3]" : "mt-2 text-sm font-semibold text-zinc-300"}>
+                  <TerminalSquare className={isDark ? "mx-auto h-8 w-8 text-[#586e75]" : "mx-auto h-8 w-8 text-stone-400"} />
+                  <p className={isDark ? "mt-2 text-sm font-semibold text-[#fdf6e3]" : "mt-2 text-sm font-semibold text-stone-900"}>
                     {t("vibe.emptyTitle")}
                   </p>
-                  <p className={isDark ? "mt-1 text-[13px] text-[#93a1a1]" : "mt-1 text-[13px] text-zinc-500"}>
+                  <p className={isDark ? "mt-1 text-[13px] text-[#93a1a1]" : "mt-1 text-[13px] text-stone-500"}>
                     {t("vibe.emptyBody")}
                   </p>
                 </div>
