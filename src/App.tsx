@@ -13,6 +13,8 @@ import { BatchesScreen } from "./screens/BatchesScreen";
 import { DashboardScreen } from "./screens/DashboardScreen";
 import { ImportsScreen } from "./screens/ImportsScreen";
 import { OperationLogScreen } from "./screens/OperationLogScreen";
+import { CryptoToolsScreen } from "./screens/CryptoToolsScreen";
+import { OcrScreen } from "./screens/OcrScreen";
 import { ProvidersScreen } from "./screens/ProvidersScreen";
 import { SessionsScreen } from "./screens/SessionsScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
@@ -38,6 +40,8 @@ const implementedScreens = new Set([
   "Providers",
   "Imports",
   "Targets",
+  "CryptoTools",
+  "OCR",
   "Settings",
   "Sessions",
   "Updates",
@@ -87,6 +91,8 @@ export function App() {
             {screen === "Providers" && <ProvidersScreen />}
             {screen === "Imports" && <ImportsScreen />}
             {screen === "Targets" && <TargetsScreen />}
+            {screen === "CryptoTools" && <CryptoToolsScreen />}
+            {screen === "OCR" && <OcrScreen />}
             {screen === "Sessions" && <SessionsScreen initialPlatform={sessionPlatform} />}
             {screen === "Updates" && <UpdatesScreen />}
             {screen === "Settings" && <SettingsScreen onOpenFeature={navigate} />}

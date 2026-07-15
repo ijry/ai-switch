@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { TerminalSquare } from "lucide-react";
+import { AiSwitchLogo } from "../brand/AiSwitchLogo";
 import { supportedLanguages, useI18n, type Language } from "../../lib/i18n";
 
 export type AgentPlatform =
@@ -41,6 +42,8 @@ export const settingsFeatureScreens = [
   "Sessions",
   "Updates",
   "Log",
+  "CryptoTools",
+  "OCR",
 ] as const;
 
 type AppLayoutProps = {
@@ -149,9 +152,7 @@ export function AppLayout({
           <div className="relative flex min-h-0 flex-1 flex-col">
             <div className="mb-5 flex items-start justify-between gap-3 rounded-2xl border border-white/80 bg-white/56 p-3 shadow-sm backdrop-blur-xl">
               <div className="flex min-w-0 items-center gap-2">
-                <div className="grid h-9 w-9 place-items-center rounded-2xl bg-stone-950 text-[12px] font-black text-white shadow-sm">
-                  AS
-                </div>
+                <AiSwitchLogo className="h-9 w-9 shrink-0 rounded-2xl shadow-sm" />
                 <div className="min-w-0">
                   <p className="truncate text-[13px] font-semibold text-stone-950">AI Switch</p>
                   <p className="truncate text-[11px] text-stone-500">{t("layout.brandBadge")}</p>
@@ -206,6 +207,16 @@ export function AppLayout({
                 <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-stone-400">
                   {t("layout.system")}
                 </p>
+                <NavButton
+                  active={activeScreen === "CryptoTools"}
+                  label={t("nav.cryptoTools")}
+                  onClick={() => onNavigate("CryptoTools")}
+                />
+                <NavButton
+                  active={activeScreen === "OCR"}
+                  label={t("nav.ocr")}
+                  onClick={() => onNavigate("OCR")}
+                />
                 <NavButton
                   active={settingsActive}
                   label={t("nav.settings")}
