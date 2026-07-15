@@ -1,6 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
+  ArrowRight,
   BarChart3,
+  ChevronDown,
   Edit3,
   FileCode2,
   KeyRound,
@@ -14,6 +17,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
+  createBatch,
   createApiRouteCredential,
   deleteRouteCredential,
   getRoutePool,
@@ -31,12 +35,13 @@ import {
 import type {
   AccountStatus,
   InterfaceFormat,
+  ModelMapping,
   RouteConfigWriteOutcome,
   RouteCredential,
 } from "../lib/api/types";
 
 type PlatformKey = "codex" | "claude" | "gemini" | "opencode" | "openclaw" | "hermes";
-type CreateMode = "official-single" | "official-bulk" | "api";
+type CreateMode = "api" | "official";
 
 type AccountsScreenProps = {
   platform?: PlatformKey;
@@ -58,6 +63,15 @@ const interfaceFormats: InterfaceFormat[] = [
   "anthropic",
   "anthropic-messages",
   "gemini",
+];
+
+const claudeModelSources = [
+  { value: "claude-opus", label: "Claude Opus" },
+  { value: "claude-sonnet", label: "Claude Sonnet" },
+  { value: "claude-haiku", label: "Claude Haiku" },
+  { value: "claude-opus-4-20250514", label: "Claude Opus 4" },
+  { value: "claude-sonnet-4-20250514", label: "Claude Sonnet 4" },
+  { value: "claude-3-5-haiku-20241022", label: "Claude 3.5 Haiku" },
 ];
 
 function defaultOfficialJson(platform: PlatformKey) {
@@ -97,22 +111,194 @@ function decodeBase64Text(value: string) {
   return new TextDecoder().decode(bytes);
 }
 
+function apiKeyLines(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function defaultModelMappings(platform: PlatformKey): ModelMapping[] {
+  if (platform === "claude") {
+    return [];
+  }
+  return [{ from: "gpt-5", to: "upstream-model" }];
+}
+
+function parseModelMappingsFromConfig(configJson: string): ModelMapping[] {
+  try {
+    const parsed = JSON.parse(configJson) as { model_mappings?: unknown };
+    if (!Array.isArray(parsed.model_mappings)) {
+      return [];
+    }
+    return parsed.model_mappings
+      .filter((item): item is ModelMapping => {
+        if (!item || typeof item !== "object") {
+          return false;
+        }
+        const candidate = item as Partial<ModelMapping>;
+        return typeof candidate.from === "string" && typeof candidate.to === "string";
+      })
+      .map((item) => ({
+        from: item.from,
+        to: item.to,
+        label: item.label ?? null,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function normalizeModelMappings(mappings: ModelMapping[]) {
+  const normalized: ModelMapping[] = [];
+  for (const mapping of mappings) {
+    const from = mapping.from.trim();
+    const to = mapping.to.trim();
+    if (!from && !to) {
+      continue;
+    }
+    if (!from || !to) {
+      return {
+        error: "模型映射需要同时填写请求模型和上游模型。",
+        mappings: [],
+      };
+    }
+    normalized.push({ from, to });
+  }
+
+  return { error: null, mappings: normalized };
+}
+
+function configJsonWithModelMappings(configJson: string, mappings: ModelMapping[]) {
+  const parsed = JSON.parse(configJson || "{}") as Record<string, unknown>;
+  parsed.model_mappings = mappings;
+  return JSON.stringify(parsed, null, 2);
+}
+
+type ModelMappingsEditorProps = {
+  error?: string | null;
+  label: string;
+  onChange: (mappings: ModelMapping[]) => void;
+  platform: PlatformKey;
+  value: ModelMapping[];
+};
+
+function ModelMappingsEditor({ error, label, onChange, platform, value }: ModelMappingsEditorProps) {
+  const rows = value.length > 0 ? value : [{ from: "", to: "" }];
+  const sourceOptions =
+    platform === "claude"
+      ? [
+          ...claudeModelSources,
+          ...value
+            .filter(
+              (mapping) =>
+                mapping.from.trim() &&
+                !claudeModelSources.some((option) => option.value === mapping.from.trim()),
+            )
+            .map((mapping) => ({
+              value: mapping.from.trim(),
+              label: `${mapping.from.trim()}（已有）`,
+            })),
+        ]
+      : [];
+
+  const updateRow = (index: number, patch: Partial<ModelMapping>) => {
+    const next = rows.map((mapping, rowIndex) =>
+      rowIndex === index ? { ...mapping, ...patch } : mapping,
+    );
+    onChange(next);
+  };
+
+  const removeRow = (index: number) => {
+    const next = rows.filter((_, rowIndex) => rowIndex !== index);
+    onChange(next.length > 0 ? next : []);
+  };
+
+  return (
+    <div className="grid gap-2">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-[12px] font-semibold text-stone-600">{label}</p>
+        <button
+          className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50"
+          onClick={() => onChange([...rows, { from: "", to: "" }])}
+          type="button"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          新增映射
+        </button>
+      </div>
+
+      <div className="space-y-2 rounded-xl border border-stone-200 bg-stone-50/70 p-2">
+        {rows.map((mapping, index) => (
+          <div
+            className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto] sm:items-center"
+            key={index}
+          >
+            {platform === "claude" ? (
+              <select
+                aria-label={`请求模型 ${index + 1}`}
+                className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                onChange={(event) => updateRow(index, { from: event.target.value })}
+                value={mapping.from}
+              >
+                <option value="">选择请求模型</option>
+                {sourceOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                aria-label={`请求模型 ${index + 1}`}
+                className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                onChange={(event) => updateRow(index, { from: event.target.value })}
+                placeholder="gpt-5"
+                value={mapping.from}
+              />
+            )}
+            <ArrowRight className="hidden h-4 w-4 text-stone-400 sm:block" />
+            <input
+              aria-label={`上游模型 ${index + 1}`}
+              className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+              onChange={(event) => updateRow(index, { to: event.target.value })}
+              placeholder="upstream-model"
+              value={mapping.to}
+            />
+            <button
+              aria-label={`删除模型映射 ${index + 1}`}
+              className="grid h-9 w-9 place-items-center rounded-xl border border-stone-200 bg-white text-stone-500 transition-colors hover:bg-red-50 hover:text-red-700"
+              onClick={() => removeRow(index)}
+              type="button"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {error && <p className="text-[12px] font-semibold text-red-700">{error}</p>}
+    </div>
+  );
+}
+
 export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsScreenProps) {
   const queryClient = useQueryClient();
   const activePlatform = platform;
   const [draftPoolIds, setDraftPoolIds] = useState<Set<string>>(() => new Set());
   const [statsOpen, setStatsOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
-  const [createMode, setCreateMode] = useState<CreateMode>("official-single");
+  const [createMode, setCreateMode] = useState<CreateMode>("api");
   const [officialText, setOfficialText] = useState(() => defaultOfficialJson(activePlatform));
   const [officialBatchName, setOfficialBatchName] = useState("");
-  const [bulkFilePaths, setBulkFilePaths] = useState("");
+  const [officialFilePaths, setOfficialFilePaths] = useState<string[]>([]);
   const [apiName, setApiName] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [apiKeyDecodeError, setApiKeyDecodeError] = useState<string | null>(null);
   const [apiBaseUrl, setApiBaseUrl] = useState("https://api.example.com/v1");
   const [apiInterfaceFormat, setApiInterfaceFormat] = useState<InterfaceFormat>("openai");
-  const [apiMappings, setApiMappings] = useState('[{"from":"gpt-5","to":"upstream-model"}]');
+  const [apiMappings, setApiMappings] = useState<ModelMapping[]>(() => defaultModelMappings(activePlatform));
+  const [apiMappingsError, setApiMappingsError] = useState<string | null>(null);
   const [apiPreviewJson, setApiPreviewJson] = useState("");
   const [editingCredential, setEditingCredential] = useState<RouteCredential | null>(null);
   const [editName, setEditName] = useState("");
@@ -120,6 +306,8 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const [editStatus, setEditStatus] = useState<AccountStatus>("ok");
   const [editSecretJson, setEditSecretJson] = useState("{}");
   const [editConfigJson, setEditConfigJson] = useState("{}");
+  const [editModelMappings, setEditModelMappings] = useState<ModelMapping[]>([]);
+  const [editModelMappingsError, setEditModelMappingsError] = useState<string | null>(null);
   const [editPreviewJson, setEditPreviewJson] = useState("{}");
   const [lastRouteAccount, setLastRouteAccount] = useState<string | null>(null);
   const [configWriteOutcomes, setConfigWriteOutcomes] = useState<RouteConfigWriteOutcome[]>([]);
@@ -145,6 +333,9 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
 
   useEffect(() => {
     setOfficialText(defaultOfficialJson(activePlatform));
+    setOfficialFilePaths([]);
+    setApiMappings(defaultModelMappings(activePlatform));
+    setApiMappingsError(null);
   }, [activePlatform]);
 
   useEffect(() => {
@@ -156,6 +347,8 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     setEditStatus(editingCredential.status);
     setEditSecretJson(parseJsonPreview(editingCredential.secret_payload_json, editingCredential.secret_payload_json));
     setEditConfigJson(parseJsonPreview(editingCredential.config_json, editingCredential.config_json));
+    setEditModelMappings(parseModelMappingsFromConfig(editingCredential.config_json));
+    setEditModelMappingsError(null);
     setEditPreviewJson(parseJsonPreview(editingCredential.preview_json, editingCredential.preview_json));
   }, [editingCredential]);
 
@@ -181,7 +374,17 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      if (createMode === "official-single") {
+      if (createMode === "official") {
+        if (officialFilePaths.length > 0) {
+          return importOfficialRouteCredentialsFromFiles({
+            platform: activePlatform,
+            file_paths: officialFilePaths,
+            batch_name: officialBatchName.trim() || null,
+          });
+        }
+        if (!officialText.trim()) {
+          throw new Error("请粘贴账号 JSON，或选择 JSON 文件导入。");
+        }
         return importOfficialRouteCredentialsFromText({
           platform: activePlatform,
           text: officialText,
@@ -189,35 +392,43 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
         });
       }
 
-      if (createMode === "official-bulk") {
-        const file_paths = bulkFilePaths
-          .split(/\r?\n/)
-          .map((line) => line.trim())
-          .filter(Boolean);
-        if (file_paths.length === 0) {
-          throw new Error("至少需要一个文件路径");
-        }
-        return importOfficialRouteCredentialsFromFiles({
-          platform: activePlatform,
-          file_paths,
-          batch_name: officialBatchName.trim() || null,
-        });
-      }
-
       if (!apiName.trim()) {
         throw new Error("API 账号名称不能为空");
       }
-      await createApiRouteCredential({
-        platform: activePlatform,
-        display_name: apiName.trim(),
-        api_key: apiKey,
-        base_url: apiBaseUrl,
-        interface_format: apiInterfaceFormat,
-        model_mappings_json: apiMappings,
-        preview_json: apiPreviewJson.trim() || null,
-        batch_id: null,
-      });
-      return { imported: [], failed: [] };
+      const apiKeys = apiKeyLines(apiKey);
+      if (apiKeys.length === 0) {
+        throw new Error("至少需要一个 API Key");
+      }
+      const normalizedMappings = normalizeModelMappings(apiMappings);
+      if (normalizedMappings.error) {
+        setApiMappingsError(normalizedMappings.error);
+        throw new Error(normalizedMappings.error);
+      }
+      setApiMappingsError(null);
+      const batch =
+        apiKeys.length > 1
+          ? await createBatch({
+              name: `${apiName.trim()} 批量`,
+              source: "api_route_credentials",
+              notes: null,
+            })
+          : null;
+      const imported = [];
+      for (const [index, key] of apiKeys.entries()) {
+        imported.push(
+          await createApiRouteCredential({
+            platform: activePlatform,
+            display_name: apiKeys.length > 1 ? `${apiName.trim()} ${index + 1}` : apiName.trim(),
+            api_key: key,
+            base_url: apiBaseUrl,
+            interface_format: apiInterfaceFormat,
+            model_mappings_json: JSON.stringify(normalizedMappings.mappings),
+            preview_json: apiPreviewJson.trim() || null,
+            batch_id: batch?.id ?? null,
+          }),
+        );
+      }
+      return { imported, failed: [] };
     },
     onSuccess: async () => {
       setCreateOpen(false);
@@ -274,12 +485,21 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       if (!editingCredential) {
         throw new Error("缺少账号");
       }
+      const normalizedMappings = normalizeModelMappings(editModelMappings);
+      if (editingCredential.kind === "api" && normalizedMappings.error) {
+        setEditModelMappingsError(normalizedMappings.error);
+        throw new Error(normalizedMappings.error);
+      }
+      setEditModelMappingsError(null);
       return updateRouteCredential(editingCredential.id, {
         display_name: editName.trim(),
         email: editEmail.trim() || null,
         status: editStatus,
         secret_payload_json: editSecretJson.trim() || "{}",
-        config_json: editConfigJson.trim() || "{}",
+        config_json:
+          editingCredential.kind === "api"
+            ? configJsonWithModelMappings(editConfigJson.trim() || "{}", normalizedMappings.mappings)
+            : editConfigJson.trim() || "{}",
         preview_json: editPreviewJson.trim() || "{}",
       });
     },
@@ -321,10 +541,34 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
 
   const decodeApiKey = () => {
     try {
-      setApiKey(decodeBase64Text(apiKey));
+      setApiKey(
+        apiKey
+          .split(/\r?\n/)
+          .map((line) => {
+            const trimmed = line.trim();
+            return trimmed ? decodeBase64Text(trimmed) : "";
+          })
+          .join("\n"),
+      );
       setApiKeyDecodeError(null);
     } catch {
       setApiKeyDecodeError("API Key 不是有效的 Base64 字符串。");
+    }
+  };
+
+  const chooseOfficialFiles = async () => {
+    const selected = await open({
+      multiple: true,
+      title: "选择账号 JSON 文件",
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+
+    if (Array.isArray(selected)) {
+      setOfficialFilePaths(selected);
+      return;
+    }
+    if (typeof selected === "string") {
+      setOfficialFilePaths([selected]);
     }
   };
 
@@ -560,11 +804,10 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
               </button>
             </div>
 
-            <div className="mt-4 grid gap-1 rounded-xl bg-stone-100 p-1 sm:grid-cols-3">
+            <div className="mt-4 grid gap-1 rounded-xl bg-stone-100 p-1 sm:grid-cols-2">
               {[
-                ["official-single", "官方单个"],
-                ["official-bulk", "官方批量"],
                 ["api", "API 账号"],
+                ["official", "官方导入"],
               ].map(([mode, label]) => (
                 <button
                   className={`rounded-lg px-3 py-1.5 text-[13px] font-semibold transition-colors ${
@@ -578,53 +821,6 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                 </button>
               ))}
             </div>
-
-            {createMode === "official-single" && (
-              <div className="mt-4 grid gap-3">
-                <label className={labelClass}>
-                  批量名称（可选）
-                  <input
-                    aria-label="导入批量名称"
-                    className={fieldClass}
-                    onChange={(event) => setOfficialBatchName(event.target.value)}
-                    value={officialBatchName}
-                  />
-                </label>
-                <label className={labelClass}>
-                  CPA JSON
-                  <textarea
-                    aria-label="CPA JSON"
-                    className={`${monoFieldClass} min-h-44`}
-                    onChange={(event) => setOfficialText(event.target.value)}
-                    value={officialText}
-                  />
-                </label>
-              </div>
-            )}
-
-            {createMode === "official-bulk" && (
-              <div className="mt-4 grid gap-3">
-                <label className={labelClass}>
-                  批量名称（可选）
-                  <input
-                    aria-label="批量导入名称"
-                    className={fieldClass}
-                    onChange={(event) => setOfficialBatchName(event.target.value)}
-                    value={officialBatchName}
-                  />
-                </label>
-                <label className={labelClass}>
-                  文件路径（每行一个 JSON 文件）
-                  <textarea
-                    aria-label="批量文件路径"
-                    className={`${monoFieldClass} min-h-32`}
-                    onChange={(event) => setBulkFilePaths(event.target.value)}
-                    placeholder="C:\\Users\\me\\codex-account.json"
-                    value={bulkFilePaths}
-                  />
-                </label>
-              </div>
-            )}
 
             {createMode === "api" && (
               <div className="mt-4 grid gap-3">
@@ -640,13 +836,14 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                 <label className={labelClass}>
                   API Key
                   <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-                    <input
+                    <textarea
                       aria-label="API Key"
-                      className={monoFieldClass}
+                      className={`${monoFieldClass} min-h-24`}
                       onChange={(event) => {
                         setApiKey(event.target.value);
                         setApiKeyDecodeError(null);
                       }}
+                      placeholder={"每行一个 API Key；多行会自动创建为同一批量。\nsk-...\nsk-..."}
                       value={apiKey}
                     />
                     <button
@@ -684,15 +881,16 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                     ))}
                   </select>
                 </label>
-                <label className={labelClass}>
-                  模型映射 JSON
-                  <textarea
-                    aria-label="模型映射 JSON"
-                    className={`${monoFieldClass} min-h-20`}
-                    onChange={(event) => setApiMappings(event.target.value)}
-                    value={apiMappings}
-                  />
-                </label>
+                <ModelMappingsEditor
+                  error={apiMappingsError}
+                  label="模型映射"
+                  onChange={(next) => {
+                    setApiMappings(next);
+                    setApiMappingsError(null);
+                  }}
+                  platform={activePlatform}
+                  value={apiMappings}
+                />
                 <label className={labelClass}>
                   预览 JSON（可选）
                   <textarea
@@ -702,6 +900,107 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                     value={apiPreviewJson}
                   />
                 </label>
+              </div>
+            )}
+
+            {createMode === "official" && (
+              <div className="mt-4 grid gap-3">
+                <p className="text-[13px] leading-5 text-stone-600">
+                  粘贴 session JSON、auth.json、账号 JSON、Sub2API JSON、accessToken 或 refresh_token。
+                </p>
+                <details className="overflow-hidden rounded-xl border border-stone-200 bg-white">
+                  <summary className="flex cursor-pointer list-none items-center gap-2 border-b border-stone-100 px-3 py-2 text-[12px] font-semibold text-stone-700">
+                    <ChevronDown className="h-3.5 w-3.5" />
+                    必填字段与示例（点击展开）
+                  </summary>
+                  <div className="space-y-3 p-3 text-[12px] text-stone-600">
+                    <p>支持 session JSON、完整 tokens（id_token + access_token）、Sub2API 导出 JSON、仅 accessToken 或仅 refresh_token。</p>
+                    <div>
+                      <p className="mb-1 font-semibold text-stone-500">完整 tokens 示例</p>
+                      <pre className="overflow-auto rounded-xl border border-stone-200 bg-slate-100 p-3 font-mono text-[12px] leading-5 text-slate-900">{`{
+  "tokens": {
+    "id_token": "eyJ...",
+    "access_token": "eyJ...",
+    "refresh_token": "rt_..."
+  }
+}`}</pre>
+                    </div>
+                    <div>
+                      <p className="mb-1 font-semibold text-stone-500">session / accessToken / refresh_token 示例</p>
+                      <pre className="overflow-auto rounded-xl border border-stone-200 bg-slate-100 p-3 font-mono text-[12px] leading-5 text-slate-900">{`{
+  "user": {
+    "email": "user@example.com"
+  },
+  "account": {
+    "id": "account-id"
+  },
+  "accessToken": "eyJ...",
+  "authProvider": "openai"
+}
+
+{
+  "refresh_token": "rt_..."
+}`}</pre>
+                    </div>
+                    <div>
+                      <p className="mb-1 font-semibold text-stone-500">批量示例</p>
+                      <pre className="overflow-auto rounded-xl border border-stone-200 bg-slate-100 p-3 font-mono text-[12px] leading-5 text-slate-900">{`[
+  {
+    "id": "codex_demo_1",
+    "email": "user@example.com",
+    "tokens": {
+      "id_token": "eyJ...",
+      "access_token": "eyJ...",
+      "refresh_token": "rt_..."
+    },
+    "created_at": 1730000000,
+    "last_used": 1730000000
+  }
+]`}</pre>
+                    </div>
+                  </div>
+                </details>
+
+                <label className={labelClass}>
+                  批量名称（可选）
+                  <input
+                    aria-label="导入批量名称"
+                    className={fieldClass}
+                    onChange={(event) => setOfficialBatchName(event.target.value)}
+                    value={officialBatchName}
+                  />
+                </label>
+                <label className={labelClass}>
+                  账号 JSON
+                  <textarea
+                    aria-label="账号 JSON"
+                    className={`${monoFieldClass} min-h-32`}
+                    onChange={(event) => {
+                      setOfficialText(event.target.value);
+                      if (event.target.value.trim()) {
+                        setOfficialFilePaths([]);
+                      }
+                    }}
+                    placeholder={'示例：直接粘贴 session JSON、accessToken、Sub2API 导出 JSON，或 {"accessToken":"eyJ..."}'}
+                    value={officialText}
+                  />
+                </label>
+                <div className="grid gap-2">
+                  <button
+                    aria-label="导入 JSON 文件"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] font-semibold text-blue-900 transition-colors hover:bg-blue-100"
+                    onClick={() => void chooseOfficialFiles()}
+                    type="button"
+                  >
+                    <FileCode2 className="h-3.5 w-3.5" />
+                    导入 JSON 文件
+                  </button>
+                  {officialFilePaths.length > 0 && (
+                    <div className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] text-stone-600">
+                      已选择 {officialFilePaths.length} 个文件
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -794,12 +1093,28 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                   value={editSecretJson}
                 />
               </label>
+              {editingCredential.kind === "api" && (
+                <ModelMappingsEditor
+                  error={editModelMappingsError}
+                  label="模型映射"
+                  onChange={(next) => {
+                    setEditModelMappings(next);
+                    setEditModelMappingsError(null);
+                  }}
+                  platform={activePlatform}
+                  value={editModelMappings}
+                />
+              )}
               <label className={labelClass}>
                 Config JSON
                 <textarea
                   aria-label="编辑 Config JSON"
                   className={`${monoFieldClass} min-h-24`}
-                  onChange={(event) => setEditConfigJson(event.target.value)}
+                  onChange={(event) => {
+                    setEditConfigJson(event.target.value);
+                    setEditModelMappings(parseModelMappingsFromConfig(event.target.value));
+                    setEditModelMappingsError(null);
+                  }}
                   value={editConfigJson}
                 />
               </label>

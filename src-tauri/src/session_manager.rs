@@ -181,8 +181,7 @@ fn session_from_file(provider_id: &str, path: &Path) -> Option<SessionMeta> {
         .map(|duration| duration.as_secs() as i64);
 
     let messages = preview_messages(path, 80);
-    let first_message = messages.first();
-    let title = first_message.map(|message| title_from_content(&message.content));
+    let title = title_from_messages(&messages);
     let created_at = messages
         .first()
         .and_then(|message| message.ts)
@@ -357,6 +356,38 @@ fn title_from_content(content: &str) -> String {
     }
 }
 
+fn title_from_messages(messages: &[SessionMessage]) -> Option<String> {
+    messages
+        .iter()
+        .find(|message| is_title_candidate(message))
+        .map(|message| title_from_content(&message.content))
+}
+
+fn is_title_candidate(message: &SessionMessage) -> bool {
+    if matches!(
+        message.role.as_str(),
+        "assistant" | "developer" | "system" | "tool"
+    ) {
+        return false;
+    }
+
+    let trimmed = message.content.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    !is_context_blob(trimmed)
+}
+
+fn is_context_blob(content: &str) -> bool {
+    let lower = content.to_lowercase();
+    lower.starts_with("<permissions instructions>")
+        || lower.starts_with("<skills_instructions>")
+        || lower.starts_with("<environment_context>")
+        || lower.starts_with("# agents.md instructions")
+        || lower.starts_with("<instructions>")
+}
+
 fn resume_command(provider_id: &str, session_id: &str) -> Option<String> {
     let command = match provider_id {
         "codex" => format!("codex resume {session_id}"),
@@ -368,4 +399,53 @@ fn resume_command(provider_id: &str, session_id: &str) -> Option<String> {
         _ => return None,
     };
     Some(command)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(role: &str, content: &str) -> SessionMessage {
+        SessionMessage {
+            role: role.to_string(),
+            content: content.to_string(),
+            ts: None,
+        }
+    }
+
+    #[test]
+    fn title_skips_codex_context_messages() {
+        let messages = vec![
+            message(
+                "developer",
+                "<permissions instructions>Filesystem sandboxing",
+            ),
+            message(
+                "user",
+                "<environment_context><cwd>D:/repo/app</cwd></environment_context>",
+            ),
+            message("user", "Fix Vibe page dark mode tabs"),
+        ];
+
+        assert_eq!(
+            title_from_messages(&messages),
+            Some("Fix Vibe page dark mode tabs".to_string())
+        );
+    }
+
+    #[test]
+    fn title_skips_agents_md_context() {
+        let messages = vec![
+            message(
+                "user",
+                "# AGENTS.md instructions for D:/repo/app\n\n<INSTRUCTIONS>Work on main.</INSTRUCTIONS>",
+            ),
+            message("user", "vibe page issues"),
+        ];
+
+        assert_eq!(
+            title_from_messages(&messages),
+            Some("vibe page issues".to_string())
+        );
+    }
 }

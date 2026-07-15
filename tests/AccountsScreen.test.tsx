@@ -1,8 +1,10 @@
 import { QueryClientProvider } from "@tanstack/react-query";
+import { open } from "@tauri-apps/plugin-dialog";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  createBatch,
   createApiRouteCredential,
   deleteRouteCredential,
   getRoutePool,
@@ -21,7 +23,12 @@ import { createQueryClient } from "../src/lib/query/queryClient";
 import { AccountsScreen } from "../src/screens/AccountsScreen";
 import type { RouteCredential } from "../src/lib/api/types";
 
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn(),
+}));
+
 vi.mock("../src/lib/api/client", () => ({
+  createBatch: vi.fn(),
   createApiRouteCredential: vi.fn(),
   deleteRouteCredential: vi.fn(),
   getRoutePool: vi.fn(),
@@ -63,23 +70,25 @@ const credentialsFixture: RouteCredential[] = [
     sort_order: 1,
     batch_id: null,
     secret_payload_json: "{\"api_key\":\"sk-test\"}",
-    config_json: "{\"base_url\":\"https://api.example.com/v1\",\"interface_format\":\"openai\"}",
+    config_json: "{\"base_url\":\"https://api.example.com/v1\",\"interface_format\":\"openai\",\"model_mappings\":[{\"from\":\"gpt-5\",\"to\":\"old-upstream\"}]}",
     preview_json: "{\"config_toml\":\"\"}",
     created_at: "2026-07-13T00:00:00Z",
     updated_at: "2026-07-13T00:00:00Z",
   },
 ];
 
-function renderScreen() {
+function renderScreen(platform: "codex" | "claude" = "codex") {
   return render(
     <QueryClientProvider client={createQueryClient()}>
-      <AccountsScreen platform="codex" />
+      <AccountsScreen platform={platform} />
     </QueryClientProvider>,
   );
 }
 
 describe("AccountsScreen", () => {
   beforeEach(() => {
+    vi.mocked(open).mockReset();
+    vi.mocked(createBatch).mockReset();
     vi.mocked(createApiRouteCredential).mockReset();
     vi.mocked(deleteRouteCredential).mockReset();
     vi.mocked(getRoutePool).mockReset();
@@ -94,6 +103,16 @@ describe("AccountsScreen", () => {
     vi.mocked(updateRouteCredential).mockReset();
     vi.mocked(writeRouteProxyConfigs).mockReset();
 
+    vi.mocked(open).mockResolvedValue(null);
+    vi.mocked(createBatch).mockResolvedValue({
+      id: "batch-api-1",
+      name: "Upstream API 批量",
+      source: "api_route_credentials",
+      notes: null,
+      sort_order: 0,
+      created_at: "2026-07-13T00:00:00Z",
+      updated_at: "2026-07-13T00:00:00Z",
+    });
     vi.mocked(listRouteCredentials).mockResolvedValue(credentialsFixture);
     vi.mocked(getRoutePool).mockResolvedValue({
       platform: "codex",
@@ -192,7 +211,8 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
-    fireEvent.change(screen.getByLabelText("CPA JSON"), {
+    await userEvent.click(screen.getByRole("button", { name: "官方导入" }));
+    fireEvent.change(screen.getByLabelText("账号 JSON"), {
       target: {
         value: "{\"type\":\"codex\",\"email\":\"new@example.com\",\"access_token\":\"at\"}",
       },
@@ -213,10 +233,9 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
-    await userEvent.click(screen.getByRole("button", { name: "官方批量" }));
-    fireEvent.change(screen.getByLabelText("批量文件路径"), {
-      target: { value: "C:\\one.json\nC:\\two.json" },
-    });
+    await userEvent.click(screen.getByRole("button", { name: "官方导入" }));
+    vi.mocked(open).mockResolvedValue(["C:\\one.json", "C:\\two.json"]);
+    await userEvent.click(screen.getByRole("button", { name: "导入 JSON 文件" }));
     await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
 
     await waitFor(() =>
@@ -239,8 +258,8 @@ describe("AccountsScreen", () => {
     await userEvent.clear(screen.getByLabelText("Base URL"));
     await userEvent.type(screen.getByLabelText("Base URL"), "https://api.upstream.test/v1");
     await userEvent.selectOptions(screen.getByLabelText("接口格式"), "openai-responses");
-    fireEvent.change(screen.getByLabelText("模型映射 JSON"), {
-      target: { value: "[{\"from\":\"gpt-5\",\"to\":\"up-gpt\"}]" },
+    fireEvent.change(screen.getByLabelText("上游模型 1"), {
+      target: { value: "up-gpt" },
     });
     await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
 
@@ -256,6 +275,87 @@ describe("AccountsScreen", () => {
         batch_id: null,
       }),
     );
+  });
+
+  it("creates multiple API keys as one batch", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Upstream API");
+    fireEvent.change(screen.getByLabelText("API Key"), {
+      target: { value: "sk-one\nsk-two" },
+    });
+    await userEvent.clear(screen.getByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://api.upstream.test/v1");
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() =>
+      expect(createBatch).toHaveBeenCalledWith({
+        name: "Upstream API 批量",
+        source: "api_route_credentials",
+        notes: null,
+      }),
+    );
+    expect(createApiRouteCredential).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        display_name: "Upstream API 1",
+        api_key: "sk-one",
+        batch_id: "batch-api-1",
+      }),
+    );
+    expect(createApiRouteCredential).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        display_name: "Upstream API 2",
+        api_key: "sk-two",
+        batch_id: "batch-api-1",
+      }),
+    );
+  });
+
+  it("uses fixed source model options for Claude model mappings", async () => {
+    renderScreen("claude");
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Claude API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-claude");
+    await userEvent.clear(screen.getByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://api.anthropic.test");
+    await userEvent.selectOptions(screen.getByLabelText("接口格式"), "anthropic");
+    await userEvent.selectOptions(screen.getByLabelText("请求模型 1"), "claude-sonnet");
+    await userEvent.type(screen.getByLabelText("上游模型 1"), "provider-sonnet");
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() =>
+      expect(createApiRouteCredential).toHaveBeenCalledWith({
+        platform: "claude",
+        display_name: "Claude API",
+        api_key: "sk-claude",
+        base_url: "https://api.anthropic.test",
+        interface_format: "anthropic",
+        model_mappings_json: "[{\"from\":\"claude-sonnet\",\"to\":\"provider-sonnet\"}]",
+        preview_json: null,
+        batch_id: null,
+      }),
+    );
+  });
+
+  it("edits API credential model mappings through the visual editor", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    fireEvent.change(screen.getByLabelText("上游模型 1"), {
+      target: { value: "new-upstream" },
+    });
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const updateInput = vi.mocked(updateRouteCredential).mock.calls[0][1];
+    expect(JSON.parse(updateInput.config_json).model_mappings).toEqual([
+      { from: "gpt-5", to: "new-upstream" },
+    ]);
   });
 
   it("edits route credential details from the right-side drawer", async () => {
