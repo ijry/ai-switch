@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "test:run": "vitest run",
+    "release:manifest:test": "node --test scripts/create-updater-manifest.test.mjs",
     "rust:check": "cd src-tauri && cargo check",
     "rust:test": "cd src-tauri && cargo test",
     "server:build": "cd src-tauri && cargo build --bin ai-switch-server",
