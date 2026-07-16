@@ -7,3 +7,4 @@ src-tauri/target/
 .env
 .env.*
 !.env.example
+.tauri/
