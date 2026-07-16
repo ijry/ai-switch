@@ -19,6 +19,7 @@ import {
   updateRouteCredential,
   writeRouteProxyConfigs,
 } from "../src/lib/api/client";
+import { recognizeApiKeysFromImageBlob } from "../src/lib/ocr/apiKeyOcr";
 import { createQueryClient } from "../src/lib/query/queryClient";
 import { AccountsScreen } from "../src/screens/AccountsScreen";
 import type { RouteCredential } from "../src/lib/api/types";
@@ -43,6 +44,14 @@ vi.mock("../src/lib/api/client", () => ({
   updateRouteCredential: vi.fn(),
   writeRouteProxyConfigs: vi.fn(),
 }));
+
+vi.mock("../src/lib/ocr/apiKeyOcr", async () => {
+  const actual = await vi.importActual<typeof import("../src/lib/ocr/apiKeyOcr")>("../src/lib/ocr/apiKeyOcr");
+  return {
+    ...actual,
+    recognizeApiKeysFromImageBlob: vi.fn(),
+  };
+});
 
 const credentialsFixture: RouteCredential[] = [
   {
@@ -102,6 +111,12 @@ describe("AccountsScreen", () => {
     vi.mocked(stopRouteProxy).mockReset();
     vi.mocked(updateRouteCredential).mockReset();
     vi.mocked(writeRouteProxyConfigs).mockReset();
+    vi.mocked(recognizeApiKeysFromImageBlob).mockReset();
+
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: undefined,
+    });
 
     vi.mocked(open).mockResolvedValue(null);
     vi.mocked(createBatch).mockResolvedValue({
@@ -312,6 +327,48 @@ describe("AccountsScreen", () => {
         batch_id: "batch-api-1",
       }),
     );
+  });
+
+  it("recognizes an API key from a clipboard image and replaces the current input", async () => {
+    const imageBlob = new Blob(["fake"], { type: "image/png" });
+    const clipboardItem = {
+      getType: vi.fn().mockResolvedValue(imageBlob),
+      types: ["image/png"],
+    };
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        read: vi.fn().mockResolvedValue([clipboardItem]),
+      },
+    });
+    vi.mocked(recognizeApiKeysFromImageBlob).mockResolvedValue("sk-from-clipboard-123456");
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-old");
+    await userEvent.click(screen.getByRole("button", { name: "OCR识别 API Key" }));
+
+    await waitFor(() => expect(recognizeApiKeysFromImageBlob).toHaveBeenCalledWith(imageBlob));
+    expect(screen.getByLabelText("API Key")).toHaveValue("sk-from-clipboard-123456");
+  });
+
+  it("falls back to a selected image file when the clipboard has no image", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        read: vi.fn().mockResolvedValue([]),
+      },
+    });
+    vi.mocked(recognizeApiKeysFromImageBlob).mockResolvedValue("sk-from-file-123456");
+    const imageFile = new File(["fake"], "apikey.png", { type: "image/png" });
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "OCR识别 API Key" }));
+    await userEvent.upload(screen.getByLabelText("选择图片识别 API Key"), imageFile);
+
+    await waitFor(() => expect(recognizeApiKeysFromImageBlob).toHaveBeenCalledWith(imageFile));
+    expect(screen.getByLabelText("API Key")).toHaveValue("sk-from-file-123456");
   });
 
   it("uses fixed source model options for Claude model mappings", async () => {

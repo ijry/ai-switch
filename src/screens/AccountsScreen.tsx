@@ -12,10 +12,11 @@ import {
   Plus,
   Power,
   PowerOff,
+  ScanText,
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import {
   createBatch,
   createApiRouteCredential,
@@ -39,6 +40,11 @@ import type {
   RouteConfigWriteOutcome,
   RouteCredential,
 } from "../lib/api/types";
+import {
+  ClipboardImageReadError,
+  readClipboardImageBlob,
+  recognizeApiKeysFromImageBlob,
+} from "../lib/ocr/apiKeyOcr";
 
 type PlatformKey = "codex" | "claude" | "gemini" | "opencode" | "openclaw" | "hermes";
 type CreateMode = "api" | "official";
@@ -295,6 +301,9 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const [apiName, setApiName] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [apiKeyDecodeError, setApiKeyDecodeError] = useState<string | null>(null);
+  const [apiKeyOcrError, setApiKeyOcrError] = useState<string | null>(null);
+  const [apiKeyOcrRecognizing, setApiKeyOcrRecognizing] = useState(false);
+  const apiKeyOcrFileInputRef = useRef<HTMLInputElement | null>(null);
   const [apiBaseUrl, setApiBaseUrl] = useState("https://api.example.com/v1");
   const [apiInterfaceFormat, setApiInterfaceFormat] = useState<InterfaceFormat>("openai");
   const [apiMappings, setApiMappings] = useState<ModelMapping[]>(() => defaultModelMappings(activePlatform));
@@ -551,9 +560,60 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
           .join("\n"),
       );
       setApiKeyDecodeError(null);
+      setApiKeyOcrError(null);
     } catch {
       setApiKeyDecodeError("API Key 不是有效的 Base64 字符串。");
     }
+  };
+
+  const recognizeApiKeyImage = async (blob: Blob) => {
+    setApiKeyOcrRecognizing(true);
+    setApiKeyDecodeError(null);
+    setApiKeyOcrError(null);
+    try {
+      const recognized = await recognizeApiKeysFromImageBlob(blob);
+      if (!recognized) {
+        setApiKeyOcrError("未识别到 API Key。");
+        return;
+      }
+      setApiKey(recognized);
+    } catch {
+      setApiKeyOcrError("OCR 识别失败，请换一张更清晰的图片。");
+    } finally {
+      setApiKeyOcrRecognizing(false);
+    }
+  };
+
+  const chooseApiKeyOcrFile = () => {
+    apiKeyOcrFileInputRef.current?.click();
+  };
+
+  const runApiKeyOcr = async () => {
+    setApiKeyDecodeError(null);
+    setApiKeyOcrError(null);
+    try {
+      await recognizeApiKeyImage(await readClipboardImageBlob());
+    } catch (error) {
+      setApiKeyOcrError(
+        error instanceof ClipboardImageReadError && error.code === "no-image"
+          ? "剪切板中没有图片，请选择图片文件。"
+          : "无法读取剪切板图片，请选择图片文件。",
+      );
+      chooseApiKeyOcrFile();
+    }
+  };
+
+  const handleApiKeyOcrFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+    if (!file.type.startsWith("image/")) {
+      setApiKeyOcrError("请选择图片文件。");
+      return;
+    }
+    await recognizeApiKeyImage(file);
   };
 
   const chooseOfficialFiles = async () => {
@@ -842,20 +902,42 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                       onChange={(event) => {
                         setApiKey(event.target.value);
                         setApiKeyDecodeError(null);
+                        setApiKeyOcrError(null);
                       }}
                       placeholder={"每行一个 API Key；多行会自动创建为同一批量。\nsk-...\nsk-..."}
                       value={apiKey}
                     />
-                    <button
-                      aria-label="Base64 解码 API Key"
-                      className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:bg-white"
-                      onClick={decodeApiKey}
-                      type="button"
-                    >
-                      Base64 解码
-                    </button>
+                    <div className="flex flex-col gap-2 sm:w-28">
+                      <button
+                        aria-label="Base64 解码 API Key"
+                        className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:bg-white"
+                        onClick={decodeApiKey}
+                        type="button"
+                      >
+                        Base64 解码
+                      </button>
+                      <button
+                        aria-label="OCR识别 API Key"
+                        className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] font-semibold text-blue-700 transition-colors hover:bg-white disabled:opacity-50"
+                        disabled={apiKeyOcrRecognizing}
+                        onClick={runApiKeyOcr}
+                        type="button"
+                      >
+                        <ScanText className="h-3.5 w-3.5" />
+                        {apiKeyOcrRecognizing ? "识别中..." : "OCR识别"}
+                      </button>
+                      <input
+                        accept="image/*"
+                        aria-label="选择图片识别 API Key"
+                        className="sr-only"
+                        onChange={handleApiKeyOcrFileChange}
+                        ref={apiKeyOcrFileInputRef}
+                        type="file"
+                      />
+                    </div>
                   </div>
                   {apiKeyDecodeError && <span className="text-[12px] font-semibold text-red-700">{apiKeyDecodeError}</span>}
+                  {apiKeyOcrError && <span className="text-[12px] font-semibold text-red-700">{apiKeyOcrError}</span>}
                 </label>
                 <label className={labelClass}>
                   Base URL
