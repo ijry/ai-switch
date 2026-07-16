@@ -50,6 +50,27 @@ pnpm build
 pnpm tauri:build
 ```
 
+## Release Automation
+
+GitHub Actions can build cross-platform release assets manually from the **Release** workflow.
+
+Required repository secret:
+
+- `TAURI_SIGNING_PRIVATE_KEY`
+
+Optional repository secret:
+
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+
+Run the workflow from GitHub Actions with:
+
+- `tag`: release tag such as `v0.1.0`
+- `release_name`: optional display name
+- `draft`: keep `true` for review before publishing
+- `prerelease`: set `true` for prerelease builds
+
+The workflow builds signed Tauri desktop bundles, `ai-switch-server`, `ai-switch-tsnet`, and `latest.json` updater metadata for GitHub Releases.
+
 ## Web Service And Server Mode
 
 Desktop and browser share one React UI. Desktop uses Tauri IPC. Browser mode uses:
