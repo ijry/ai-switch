@@ -22,6 +22,7 @@ import {
   BUILT_IN_VIBE_SKINS,
   clearStoredVibeSkin,
   importVibeSkinPackage,
+  VIBE_SKIN_REGION_KEYS,
   readStoredVibeSkin,
   skinToCssVariables,
   writeStoredVibeSkin,
@@ -339,6 +340,14 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     : isDark
       ? "vibe-scrollbar-dark"
       : "vibe-scrollbar-light";
+  const skinShowcase = activeSkin.showcase;
+  const showSkinShowcase = Boolean(isSkin && skinShowcase && skinShowcase.enabled !== false);
+  const skinBodyGridClass = showSkinShowcase
+    ? "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)_236px]"
+    : "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)]";
+  const activeSkinRegionKeys = isSkin
+    ? VIBE_SKIN_REGION_KEYS.filter((region) => Boolean(activeSkin.regions?.[region]))
+    : [];
 
   return (
     <main
@@ -351,13 +360,23 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       }
       style={skinStyle}
     >
-      <div
-        className={
-          isDark
-            ? "grid h-full min-h-0 grid-cols-1 lg:grid-cols-[356px_minmax(0,1fr)]"
-            : "grid h-full min-h-0 grid-cols-1 lg:grid-cols-[356px_minmax(0,1fr)]"
-        }
-      >
+      <div className={isSkin ? "vibe-skin-frame flex h-full min-h-0 flex-col" : "grid h-full min-h-0 grid-cols-1 lg:grid-cols-[356px_minmax(0,1fr)]"}>
+        {isSkin && (
+          <div className="vibe-skin-titlebar flex h-10 shrink-0 items-center justify-between gap-3 border-b px-4 text-[11px] font-semibold uppercase tracking-[0.22em]">
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="inline-flex h-4 w-4 shrink-0 rounded-full border border-[rgba(255,255,255,0.55)] bg-[var(--vibe-accent)] shadow-[inset_0_1px_0_rgba(255,255,255,0.58)]" />
+              <div className="min-w-0">
+                <p className="truncate">{t("vibe.title")}</p>
+                <p className="truncate text-[10px] tracking-[0.18em] opacity-80">{activeSkin.name}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 text-[10px] tracking-[0.18em] opacity-90">
+              <span className="rounded-full border border-[rgba(255,255,255,0.45)] px-2 py-1">{themeLabel}</span>
+              <span className="rounded-full border border-[rgba(255,255,255,0.45)] px-2 py-1">{activeSkin.author ?? "AI Switch"}</span>
+            </div>
+          </div>
+        )}
+        <div className={isSkin ? skinBodyGridClass : "contents"}>
         <aside
           className={
             isSkin
@@ -380,7 +399,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
             <div
               className={
                 isSkin
-                  ? "vibe-skin-panel-strong mb-4 flex items-start justify-between gap-3 rounded-2xl border p-3 shadow-sm backdrop-blur-xl"
+                  ? "vibe-skin-sidebar-header mb-4 flex items-start justify-between gap-3 rounded-2xl border p-3 shadow-sm"
                   : isDark
                   ? "mb-4 flex items-start justify-between gap-3 rounded-2xl border border-[#073642] bg-[#073642]/65 p-3 shadow-sm backdrop-blur-xl"
                   : "mb-4 flex items-start justify-between gap-3 rounded-2xl border border-white/80 bg-white/56 p-3 shadow-sm backdrop-blur-xl"
@@ -416,7 +435,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
             <div
               className={
                 isSkin
-                  ? "vibe-skin-panel mb-2 flex flex-wrap items-center gap-2 rounded-2xl border p-3 shadow-sm backdrop-blur-xl"
+                  ? "vibe-skin-control-panel mb-2 flex flex-wrap items-center gap-2 rounded-2xl border p-3 shadow-sm backdrop-blur-xl"
                   : isDark
                     ? "mb-2 flex items-center gap-2 rounded-2xl border border-[#073642] bg-[#073642]/55 p-3"
                     : "mb-2 flex items-center gap-2 rounded-2xl border border-white/80 bg-white/56 p-3 shadow-sm backdrop-blur-xl"
@@ -525,7 +544,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
             <div
               className={`vibe-scrollbar ${scrollbarThemeClass} ${
                 sessionListScrolling ? "vibe-scrollbar-active" : ""
-              } min-h-0 flex-1 space-y-3 overflow-y-auto p-3`}
+              } ${isSkin ? "vibe-skin-session-list" : ""} min-h-0 flex-1 space-y-3 overflow-y-auto p-3`}
               onScroll={markSessionListScrolling}
             >
               {sessionsQuery.isLoading && (
@@ -553,7 +572,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                   <div
                     className={
                       isSkin
-                        ? "vibe-skin-panel rounded-2xl border p-2"
+                        ? "vibe-skin-group-panel rounded-2xl border p-2"
                         : isDark
                         ? "rounded-2xl border border-[#073642] bg-[#073642]/55 p-2"
                         : "rounded-2xl border border-stone-200 bg-white/70 p-2 shadow-sm"
@@ -702,12 +721,18 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
             ))}
           </div>
 
-          <div className="min-h-0 flex-1 overflow-hidden">
+          <div
+            className={
+              isSkin
+                ? "vibe-skin-terminal-shell m-2 min-h-0 flex-1 overflow-hidden border"
+                : "min-h-0 flex-1 overflow-hidden"
+            }
+          >
             {!activeTab && (
               <div
                 className={
                   isSkin
-                    ? "grid h-full place-items-center text-center"
+                    ? "vibe-skin-empty-state grid h-full place-items-center text-center"
                     : isDark
                     ? "grid h-full place-items-center text-center"
                     : "grid h-full place-items-center text-center"
@@ -736,6 +761,73 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
             ))}
           </div>
         </div>
+
+        {showSkinShowcase && (
+          <aside className="vibe-skin-right-rail hidden min-h-0 flex-col overflow-hidden border-l p-3 lg:flex">
+            <div className="vibe-skin-right-card flex min-h-0 flex-1 flex-col rounded-3xl border p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--vibe-muted-text)]">
+                    {skinShowcase?.badge ?? t("vibe.themeSkin")}
+                  </p>
+                  <h2 className="mt-1 truncate text-lg font-semibold text-[var(--vibe-text)]">
+                    {skinShowcase?.title ?? activeSkin.name}
+                  </h2>
+                  <p className="mt-1 text-[12px] text-[var(--vibe-muted-text)]">
+                    {skinShowcase?.subtitle ?? activeSkin.author ?? t("vibe.subtitle")}
+                  </p>
+                </div>
+                {skinShowcase?.image ? (
+                  <img
+                    alt=""
+                    className="h-20 w-20 shrink-0 rounded-2xl border object-cover"
+                    src={skinShowcase.image}
+                  />
+                ) : (
+                  <div className="vibe-skin-showcase-orb grid h-20 w-20 shrink-0 place-items-center rounded-2xl border">
+                    <AiSwitchLogo className="h-10 w-10 rounded-xl" />
+                  </div>
+                )}
+              </div>
+              <p className="mt-4 text-[13px] leading-6 text-[var(--vibe-text)] opacity-90">
+                {skinShowcase?.body ?? t("vibe.emptyBody")}
+              </p>
+              <div className="mt-auto pt-4">
+                <div className="rounded-2xl border px-3 py-2 text-[11px] text-[var(--vibe-muted-text)]">
+                  {skinShowcase?.footer ?? activeSkin.id}
+                </div>
+              </div>
+            </div>
+            <div className="vibe-skin-right-card mt-3 rounded-2xl border p-3">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--vibe-muted-text)]">
+                Regions
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {activeSkinRegionKeys.length > 0 ? (
+                  activeSkinRegionKeys.slice(0, 8).map((region) => (
+                    <span key={region} className="rounded-full border px-2 py-1 text-[11px]">
+                      {region}
+                    </span>
+                  ))
+                ) : (
+                  <span className="rounded-full border px-2 py-1 text-[11px]">ui</span>
+                )}
+              </div>
+            </div>
+          </aside>
+        )}
+        </div>
+
+        {isSkin && (
+          <div className="vibe-skin-status-bar flex h-9 shrink-0 items-center justify-between gap-3 border-t px-4 text-[11px] font-medium">
+            <span className="truncate">{activeSkin.name}</span>
+            <span className="flex items-center gap-3">
+              <span>{activeSkin.author ?? "AI Switch"}</span>
+              <span>{tabs.length}</span>
+              <span>{themeLabel}</span>
+            </span>
+          </div>
+        )}
       </div>
 
       {createDialogOpen && (
@@ -743,7 +835,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
           <div
             className={
               isSkin
-                ? "vibe-skin-panel-strong w-full max-w-lg rounded-3xl border p-4 shadow-2xl"
+                ? "vibe-skin-modal vibe-skin-panel-strong w-full max-w-lg rounded-3xl border p-4 shadow-2xl"
                 : isDark
                 ? "w-full max-w-lg rounded-3xl border border-[#073642] bg-[#002b36] p-4 text-[#fdf6e3] shadow-2xl shadow-black/40"
                 : "w-full max-w-lg rounded-3xl border border-stone-200 bg-white p-4 text-stone-950 shadow-2xl shadow-stone-950/15"

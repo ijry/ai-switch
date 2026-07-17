@@ -162,9 +162,54 @@ describe("VibeScreen", () => {
 
     await userEvent.click(themeButton);
 
-    expect(screen.getByText("Skin")).toBeInTheDocument();
+    expect(themeButton).toHaveTextContent("Skin");
     expect(screen.getByLabelText("Vibe skin")).toHaveValue("codex-2007-blue");
     expect(screen.getByText("No terminal tabs yet.").parentElement).toHaveClass("vibe-skin-tabbar");
+  });
+
+  it("renders custom skin showcase regions", async () => {
+    window.localStorage.setItem(
+      VIBE_SKIN_STORAGE_KEY,
+      JSON.stringify({
+        id: "showcase-skin",
+        name: "Showcase Skin",
+        ui: {
+          accent: "#00ffee",
+          background: "#001018",
+          panel: "rgba(2,28,40,0.78)",
+          panelStrong: "rgba(4,42,58,0.92)",
+          panelSubtle: "rgba(0,255,238,0.12)",
+          border: "rgba(0,255,238,0.35)",
+          text: "#f4fbff",
+          mutedText: "#9be7ff",
+          button: "#00ffee",
+          buttonText: "#001018",
+          buttonHover: "#54fff5",
+        },
+        regions: {
+          rightRail: { background: "#123456" },
+          terminalShell: { background: "#010203" },
+        },
+        showcase: {
+          enabled: true,
+          title: "Right Rail Demo",
+          badge: "Custom Rail",
+          footer: "region keys",
+        },
+      }),
+    );
+    renderScreen();
+
+    const themeButton = await screen.findByRole("button", { name: "Switch Vibe theme" });
+    await userEvent.click(themeButton);
+    await userEvent.click(themeButton);
+
+    expect(screen.getByLabelText("Vibe skin")).toHaveValue("showcase-skin");
+    expect(screen.getByText("Right Rail Demo")).toBeInTheDocument();
+    expect(screen.getByText("Custom Rail")).toBeInTheDocument();
+    expect(screen.getByText("terminalShell")).toBeInTheDocument();
+    expect(screen.getByText("rightRail")).toBeInTheDocument();
+    expect(screen.getByText("region keys")).toBeInTheDocument();
   });
 
   it("imports a custom Vibe skin package and applies its terminal theme", async () => {
@@ -200,8 +245,8 @@ describe("VibeScreen", () => {
 
     await userEvent.upload(screen.getByLabelText("Choose Vibe skin package"), skinFile);
 
-    expect(await screen.findByText("Skin")).toBeInTheDocument();
-    expect(screen.getByLabelText("Vibe skin")).toHaveValue("custom-neon");
+    await waitFor(() => expect(screen.getByLabelText("Vibe skin")).toHaveValue("custom-neon"));
+    expect(screen.getByRole("button", { name: "Switch Vibe theme" })).toHaveTextContent("Skin");
     expect(window.localStorage.getItem(VIBE_SKIN_STORAGE_KEY)).toContain("Custom Neon");
 
     await expandProjectDirectory();

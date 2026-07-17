@@ -29,9 +29,22 @@ describe("vibeSkin", () => {
           background: "#f4fbff",
           foreground: "#12375f",
         },
+        regions: {
+          terminalShell: {
+            backgroundImage: "assets/shell.png",
+            backgroundPosition: "center top",
+            borderRadius: "18px",
+          },
+        },
+        showcase: {
+          enabled: true,
+          image: "assets/showcase.png",
+        },
       }),
     );
     zip.file("assets/background.png", new Uint8Array([137, 80, 78, 71]));
+    zip.file("assets/shell.png", new Uint8Array([137, 80, 78, 71]));
+    zip.file("assets/showcase.png", new Uint8Array([137, 80, 78, 71]));
 
     const blob = await zip.generateAsync({ type: "blob" });
     const skin = await importVibeSkinPackage(
@@ -43,6 +56,10 @@ describe("vibeSkin", () => {
     expect(skin.ui.accent).toBe("#1278d8");
     expect(skin.ui.backgroundImage).toMatch(/^data:image\/png;base64,/);
     expect(skin.terminal?.background).toBe("#f4fbff");
+    expect(skin.regions?.terminalShell?.backgroundImage).toMatch(/^data:image\/png;base64,/);
+    expect(skin.regions?.terminalShell?.backgroundPosition).toBe("center top");
+    expect(skin.regions?.terminalShell?.borderRadius).toBe("18px");
+    expect(skin.showcase?.image).toMatch(/^data:image\/png;base64,/);
   });
 
   it("imports plain JSON aiskin manifests", async () => {
@@ -94,15 +111,34 @@ describe("vibeSkin", () => {
         tabHover: "rgba(0, 255, 238, 0.18)",
         focus: "#00ffee",
       },
+      regions: {
+        controlPanel: {
+          background: "linear-gradient(#102030, #405060)",
+          shadow: "0 0 20px rgba(0,255,238,0.4)",
+        },
+        terminalShell: {
+          background: "#010203",
+          borderRadius: "20px",
+        },
+      },
+      showcase: {
+        enabled: true,
+        title: "Stored Showcase",
+      },
     });
 
     const skin = readStoredVibeSkin();
+    const variables = skin ? (skinToCssVariables(skin) as Record<string, unknown>) : {};
 
     expect(window.localStorage.getItem(VIBE_SKIN_STORAGE_KEY)).toContain("Stored Skin");
     expect(skin?.name).toBe("Stored Skin");
-    expect(skin ? (skinToCssVariables(skin) as Record<string, unknown>)["--vibe-accent"] : undefined).toBe(
-      "#00ffee",
+    expect(variables["--vibe-accent"]).toBe("#00ffee");
+    expect(variables["--vibe-control-panel-background-layer"]).toBe(
+      "linear-gradient(#102030, #405060)",
     );
+    expect(variables["--vibe-control-panel-shadow"]).toBe("0 0 20px rgba(0,255,238,0.4)");
+    expect(variables["--vibe-terminal-shell-border-radius"]).toBe("20px");
+    expect(skin?.showcase?.title).toBe("Stored Showcase");
 
     clearStoredVibeSkin();
 
