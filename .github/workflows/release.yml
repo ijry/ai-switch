@@ -128,11 +128,6 @@ jobs:
           pnpm test:run
           pnpm release:manifest:test
 
-      - name: Run Rust checks
-        run: |
-          pnpm rust:check
-          pnpm rust:test
-
       - name: Run sidecar tests
         working-directory: sidecar/ai-switch-tsnet
         run: go test ./...
@@ -147,6 +142,11 @@ jobs:
           if (-not (Test-Path $env:SIDECAR_BIN)) {
             throw "Missing sidecar binary: $env:SIDECAR_BIN"
           }
+
+      - name: Run Rust checks
+        run: |
+          pnpm rust:check
+          pnpm rust:test
 
       - name: Build standalone server
         run: pnpm server:build:release
