@@ -10,15 +10,17 @@ import type {
   TerminalStatus,
 } from "../../lib/api/types";
 import { getTransport } from "../../lib/transport";
+import type { VibeTerminalTheme } from "../../lib/vibeSkin";
 
 type XtermPaneProps = {
   session: TerminalSession;
   active?: boolean;
   themeMode?: "dark" | "light";
+  themeOverride?: VibeTerminalTheme;
   onStatusChange?: (sessionId: string, status: TerminalStatus) => void;
 };
 
-function createTheme(themeMode: "dark" | "light") {
+function createTheme(themeMode: "dark" | "light", themeOverride?: VibeTerminalTheme) {
   if (themeMode === "light") {
     return {
       background: "#f8fafc",
@@ -39,6 +41,7 @@ function createTheme(themeMode: "dark" | "light") {
       red: "#b91c1c",
       white: "#475569",
       yellow: "#a16207",
+      ...themeOverride,
     };
   }
 
@@ -61,6 +64,7 @@ function createTheme(themeMode: "dark" | "light") {
     red: "#dc322f",
     white: "#93a1a1",
     yellow: "#b58900",
+    ...themeOverride,
   };
 }
 
@@ -68,12 +72,13 @@ export function XtermPane({
   session,
   active = true,
   themeMode = "dark",
+  themeOverride,
   onStatusChange,
 }: XtermPaneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const theme = useMemo(() => createTheme(themeMode), [themeMode]);
+  const theme = useMemo(() => createTheme(themeMode, themeOverride), [themeMode, themeOverride]);
 
   useEffect(() => {
     const host = hostRef.current;

@@ -5,16 +5,28 @@ import {
   ChevronRight,
   FolderOpen,
   MoonStar,
+  Palette,
   PanelLeftClose,
   Play,
   Plus,
   SunMedium,
   TerminalSquare,
+  Upload,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ChangeEvent } from "react";
 import { createTerminalSession, killTerminalSession, listSessions } from "../lib/api/client";
 import { useI18n } from "../lib/i18n";
+import {
+  BUILT_IN_VIBE_SKINS,
+  clearStoredVibeSkin,
+  importVibeSkinPackage,
+  readStoredVibeSkin,
+  skinToCssVariables,
+  writeStoredVibeSkin,
+} from "../lib/vibeSkin";
+import type { VibeSkinDefinition } from "../lib/vibeSkin";
 import { AiSwitchLogo } from "../components/brand/AiSwitchLogo";
 import type {
   CreateTerminalSessionInput,
@@ -33,7 +45,7 @@ const agentOptions = [
   { platform: "hermes", label: "Hermes" },
 ] as const;
 
-type VibeTheme = "dark" | "light";
+type VibeTheme = "dark" | "light" | "skin";
 
 type VibeScreenProps = {
   onExitVibe?: () => void;
@@ -102,6 +114,16 @@ function statusLabel(status: TerminalStatus, t: (key: "vibe.status.running" | "v
   return t(`vibe.status.${status}` as "vibe.status.running" | "vibe.status.exited" | "vibe.status.error");
 }
 
+function nextVibeTheme(current: VibeTheme): VibeTheme {
+  if (current === "dark") {
+    return "light";
+  }
+  if (current === "light") {
+    return "skin";
+  }
+  return "dark";
+}
+
 export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const { t } = useI18n();
   const [tabs, setTabs] = useState<TerminalSession[]>([]);
@@ -110,9 +132,14 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const [createProjectDir, setCreateProjectDir] = useState("");
   const [createPlatform, setCreatePlatform] = useState<(typeof agentOptions)[number]["platform"]>("codex");
   const [themeMode, setThemeMode] = useState<VibeTheme>("dark");
+  const [customSkin, setCustomSkin] = useState<VibeSkinDefinition | null>(() => readStoredVibeSkin());
+  const [activeSkinId, setActiveSkinId] = useState<string>(
+    () => readStoredVibeSkin()?.id ?? BUILT_IN_VIBE_SKINS[0].id,
+  );
   const [error, setError] = useState<string | null>(null);
   const [sessionListScrolling, setSessionListScrolling] = useState(false);
   const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(() => new Set());
+  const skinFileInputRef = useRef<HTMLInputElement | null>(null);
   const sessionListScrollTimeout = useRef<number | null>(null);
 
   const sessionsQuery = useQuery({
@@ -134,6 +161,14 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     }
     return Array.from(directories);
   }, [sessionsQuery.data]);
+  const availableSkins = useMemo(
+    () => [...BUILT_IN_VIBE_SKINS, ...(customSkin ? [customSkin] : [])],
+    [customSkin],
+  );
+  const activeSkin = useMemo(
+    () => availableSkins.find((skin) => skin.id === activeSkinId) ?? BUILT_IN_VIBE_SKINS[0],
+    [activeSkinId, availableSkins],
+  );
 
   const openTerminal = useCallback(async (input: CreateTerminalSessionInput) => {
     setError(null);
@@ -177,6 +212,34 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     if (typeof selected === "string") {
       setCreateProjectDir(selected);
     }
+  };
+
+  const importSkin = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+
+    setError(null);
+    try {
+      const skin = await importVibeSkinPackage(file);
+      writeStoredVibeSkin(skin);
+      setCustomSkin(skin);
+      setActiveSkinId(skin.id);
+      setThemeMode("skin");
+    } catch (caught) {
+      setError(formatError(caught));
+    }
+  };
+
+  const clearCustomSkin = () => {
+    clearStoredVibeSkin();
+    setCustomSkin(null);
+    if (activeSkinId === customSkin?.id) {
+      setActiveSkinId(BUILT_IN_VIBE_SKINS[0].id);
+    }
+    setThemeMode("skin");
   };
 
   const launchNewAgent = () => {
@@ -259,9 +322,35 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
 
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? null;
   const isDark = themeMode === "dark";
+  const isSkin = themeMode === "skin";
+  const skinStyle = useMemo(
+    () => (isSkin ? skinToCssVariables(activeSkin) : undefined),
+    [activeSkin, isSkin],
+  );
+  const terminalThemeMode = isDark ? "dark" : "light";
+  const themeLabel =
+    themeMode === "dark"
+      ? t("vibe.themeDark")
+      : themeMode === "light"
+        ? t("vibe.themeLight")
+        : t("vibe.themeSkin");
+  const scrollbarThemeClass = isSkin
+    ? "vibe-scrollbar-skin"
+    : isDark
+      ? "vibe-scrollbar-dark"
+      : "vibe-scrollbar-light";
 
   return (
-    <main className={isDark ? "h-screen max-h-[100dvh] overflow-hidden bg-[#002b36] text-[#d8e2dc]" : "h-screen max-h-[100dvh] overflow-hidden text-stone-950"}>
+    <main
+      className={
+        isSkin
+          ? "vibe-skin h-screen max-h-[100dvh] overflow-hidden text-[var(--vibe-text)]"
+          : isDark
+            ? "h-screen max-h-[100dvh] overflow-hidden bg-[#002b36] text-[#d8e2dc]"
+            : "h-screen max-h-[100dvh] overflow-hidden text-stone-950"
+      }
+      style={skinStyle}
+    >
       <div
         className={
           isDark
@@ -271,14 +360,18 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       >
         <aside
           className={
-            isDark
+            isSkin
+              ? "vibe-skin-sidebar relative flex h-full min-h-0 flex-col overflow-hidden border-b p-3 shadow-2xl lg:border-b-0 lg:border-r"
+              : isDark
               ? "relative flex h-full min-h-0 flex-col overflow-hidden border-b border-[#073642] bg-[#002b36] p-3 shadow-2xl shadow-black/25 lg:border-b-0 lg:border-r lg:border-[#073642]"
               : "relative flex h-full min-h-0 flex-col overflow-hidden border-b border-white/70 bg-gradient-to-br from-slate-50/92 via-emerald-50/74 to-amber-50/70 p-3 shadow-xl shadow-stone-900/5 backdrop-blur-2xl lg:border-b-0 lg:border-r lg:border-white/80"
           }
         >
           <div
             className={
-              isDark
+              isSkin
+                ? "vibe-skin-backdrop pointer-events-none absolute inset-0"
+                : isDark
                 ? "pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_12%,rgba(38,139,210,0.18),transparent_30%),radial-gradient(circle_at_90%_10%,rgba(181,137,0,0.18),transparent_28%),linear-gradient(180deg,rgba(7,54,66,0.78),rgba(0,43,54,0.92))]"
                 : "pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_15%,rgba(16,185,129,0.18),transparent_34%),radial-gradient(circle_at_88%_8%,rgba(245,158,11,0.16),transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.72),rgba(255,255,255,0.38))]"
             }
@@ -286,7 +379,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
           <div className="relative flex min-h-0 flex-1 flex-col">
             <div
               className={
-                isDark
+                isSkin
+                  ? "vibe-skin-panel-strong mb-4 flex items-start justify-between gap-3 rounded-2xl border p-3 shadow-sm backdrop-blur-xl"
+                  : isDark
                   ? "mb-4 flex items-start justify-between gap-3 rounded-2xl border border-[#073642] bg-[#073642]/65 p-3 shadow-sm backdrop-blur-xl"
                   : "mb-4 flex items-start justify-between gap-3 rounded-2xl border border-white/80 bg-white/56 p-3 shadow-sm backdrop-blur-xl"
               }
@@ -294,10 +389,10 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
               <div className="flex min-w-0 items-center gap-2">
                 <AiSwitchLogo className="h-9 w-9 shrink-0 rounded-2xl shadow-sm" />
                 <div className="min-w-0">
-                  <h1 className={isDark ? "truncate text-[13px] font-semibold text-[#fdf6e3]" : "truncate text-[13px] font-semibold text-stone-950"}>
+                  <h1 className={isSkin ? "truncate text-[13px] font-semibold text-[var(--vibe-text)]" : isDark ? "truncate text-[13px] font-semibold text-[#fdf6e3]" : "truncate text-[13px] font-semibold text-stone-950"}>
                     {t("vibe.title")} · {t("vibe.kicker")}
                   </h1>
-                  <p className={isDark ? "truncate text-[11px] text-[#93a1a1]" : "truncate text-[11px] text-stone-500"}>
+                  <p className={isSkin ? "truncate text-[11px] text-[var(--vibe-muted-text)]" : isDark ? "truncate text-[11px] text-[#93a1a1]" : "truncate text-[11px] text-stone-500"}>
                     {t("vibe.subtitle")}
                   </p>
                 </div>
@@ -305,7 +400,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
               <button
                 aria-label={t("layout.switchToAgent")}
                 className={
-                  isDark
+                  isSkin
+                    ? "vibe-skin-ghost grid h-8 w-8 shrink-0 place-items-center rounded-xl border shadow-sm transition-colors focus:outline-none focus-visible:ring-2"
+                    : isDark
                     ? "grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-[#586e75] bg-[#073642] text-[#93a1a1] shadow-sm transition-colors hover:border-[#839496] hover:text-[#fdf6e3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#268bd2]"
                     : "grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-stone-200 bg-white/70 text-stone-600 shadow-sm transition-colors hover:border-stone-300 hover:bg-white hover:text-stone-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
                 }
@@ -318,14 +415,18 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
 
             <div
               className={
-                isDark
-                  ? "mb-2 flex items-center gap-2 rounded-2xl border border-[#073642] bg-[#073642]/55 p-3"
-                  : "mb-2 flex items-center gap-2 rounded-2xl border border-white/80 bg-white/56 p-3 shadow-sm backdrop-blur-xl"
+                isSkin
+                  ? "vibe-skin-panel mb-2 flex flex-wrap items-center gap-2 rounded-2xl border p-3 shadow-sm backdrop-blur-xl"
+                  : isDark
+                    ? "mb-2 flex items-center gap-2 rounded-2xl border border-[#073642] bg-[#073642]/55 p-3"
+                    : "mb-2 flex items-center gap-2 rounded-2xl border border-white/80 bg-white/56 p-3 shadow-sm backdrop-blur-xl"
               }
             >
               <button
                 className={
-                  isDark
+                  isSkin
+                    ? "vibe-skin-primary inline-flex flex-1 items-center justify-center gap-2 rounded-xl border px-3 py-2 text-[13px] font-semibold transition"
+                    : isDark
                     ? "inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-[#b58900] bg-[#b58900] px-3 py-2 text-[13px] font-semibold text-[#002b36] transition hover:bg-[#cb4b16] hover:text-white"
                     : "inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-stone-950 px-3 py-2 text-[13px] font-semibold text-white transition hover:bg-stone-800"
                 }
@@ -338,39 +439,106 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
               <button
                 aria-label={t("vibe.switchTheme")}
                 className={
-                  isDark
+                  isSkin
+                    ? "vibe-skin-ghost inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border px-2 text-[12px] font-semibold transition-colors"
+                    : isDark
                     ? "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-[#586e75] bg-[#002b36] px-2 text-[12px] font-semibold text-[#fdf6e3] transition-colors hover:border-[#839496] hover:bg-[#073642]"
                     : "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-2 text-[12px] font-semibold text-stone-700 transition-colors hover:border-stone-300 hover:bg-stone-50"
                 }
-                onClick={() => setThemeMode((current) => (current === "dark" ? "light" : "dark"))}
+                onClick={() => setThemeMode((current) => nextVibeTheme(current))}
                 type="button"
               >
-                {isDark ? <SunMedium className="h-4 w-4" /> : <MoonStar className="h-4 w-4" />}
-                <span>{isDark ? t("vibe.themeDark") : t("vibe.themeLight")}</span>
+                {isDark ? (
+                  <SunMedium className="h-4 w-4" />
+                ) : isSkin ? (
+                  <Palette className="h-4 w-4" />
+                ) : (
+                  <MoonStar className="h-4 w-4" />
+                )}
+                <span>{themeLabel}</span>
+              </button>
+              <input
+                ref={skinFileInputRef}
+                aria-label={t("vibe.skinFileInput")}
+                className="sr-only"
+                type="file"
+                accept=".aiskin,.json,.zip,application/json,application/zip"
+                onChange={(event) => void importSkin(event)}
+              />
+              <button
+                aria-label={t("vibe.importSkin")}
+                className={
+                  isSkin
+                    ? "vibe-skin-ghost inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border px-2 text-[12px] font-semibold transition-colors"
+                    : isDark
+                      ? "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-[#586e75] bg-[#002b36] px-2 text-[12px] font-semibold text-[#fdf6e3] transition-colors hover:border-[#839496] hover:bg-[#073642]"
+                      : "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-2 text-[12px] font-semibold text-stone-700 transition-colors hover:border-stone-300 hover:bg-stone-50"
+                }
+                onClick={() => skinFileInputRef.current?.click()}
+                type="button"
+              >
+                <Upload className="h-4 w-4" />
+                <span>{t("vibe.importSkinShort")}</span>
               </button>
 
-              {error && (
-                <p className="absolute left-3 right-3 top-[8.75rem] rounded-xl border border-red-400/40 bg-red-950/90 p-2 text-[12px] text-red-100 shadow-lg">
-                  {error}
-                </p>
+              {isSkin && (
+                <div className="flex w-full items-center gap-2">
+                  <select
+                    aria-label={t("vibe.skinSelect")}
+                    className="vibe-skin-select min-w-0 flex-1 rounded-xl border px-3 py-2 text-[12px] font-semibold outline-none transition"
+                    onChange={(event) => setActiveSkinId(event.target.value)}
+                    value={activeSkin.id}
+                  >
+                    {availableSkins.map((skin) => (
+                      <option key={skin.id} value={skin.id}>
+                        {skin.name}
+                      </option>
+                    ))}
+                  </select>
+                  {customSkin && (
+                    <button
+                      aria-label={t("vibe.clearSkin")}
+                      className="vibe-skin-ghost inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border px-2 text-[12px] font-semibold transition-colors"
+                      onClick={clearCustomSkin}
+                      type="button"
+                    >
+                      <X className="h-4 w-4" />
+                      <span>{t("vibe.clearSkinShort")}</span>
+                    </button>
+                  )}
+                </div>
               )}
             </div>
 
+            {error && (
+              <p
+                className={
+                  isSkin
+                    ? "vibe-skin-danger mb-2 rounded-xl border p-2 text-[12px] shadow-lg"
+                    : "mb-2 rounded-xl border border-red-400/40 bg-red-950/90 p-2 text-[12px] text-red-100 shadow-lg"
+                }
+              >
+                {error}
+              </p>
+            )}
+
             <div
-              className={`vibe-scrollbar ${isDark ? "vibe-scrollbar-dark" : "vibe-scrollbar-light"} ${
+              className={`vibe-scrollbar ${scrollbarThemeClass} ${
                 sessionListScrolling ? "vibe-scrollbar-active" : ""
               } min-h-0 flex-1 space-y-3 overflow-y-auto p-3`}
               onScroll={markSessionListScrolling}
             >
               {sessionsQuery.isLoading && (
-                <p className={isDark ? "text-sm text-[#93a1a1]" : "text-sm text-zinc-400"}>
+                <p className={isSkin ? "text-sm text-[var(--vibe-muted-text)]" : isDark ? "text-sm text-[#93a1a1]" : "text-sm text-zinc-400"}>
                   {t("vibe.loadingSessions")}
                 </p>
               )}
               {!sessionsQuery.isLoading && groupedSessions.length === 0 && (
                 <p
                   className={
-                    isDark
+                    isSkin
+                      ? "vibe-skin-panel rounded-2xl border p-3 text-sm"
+                      : isDark
                       ? "rounded-2xl border border-[#073642] bg-[#073642]/55 p-3 text-sm text-[#93a1a1]"
                       : "rounded-2xl border border-stone-200 bg-white/70 p-3 text-sm text-stone-500 shadow-sm"
                   }
@@ -384,7 +552,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 return (
                   <div
                     className={
-                      isDark
+                      isSkin
+                        ? "vibe-skin-panel rounded-2xl border p-2"
+                        : isDark
                         ? "rounded-2xl border border-[#073642] bg-[#073642]/55 p-2"
                         : "rounded-2xl border border-stone-200 bg-white/70 p-2 shadow-sm"
                     }
@@ -398,15 +568,17 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                           : t("vibe.expandDirectoryAria", { directory: group.directory })
                       }
                       className={
-                        isDark
+                        isSkin
+                          ? "vibe-skin-list-trigger flex w-full items-center gap-2 rounded-xl px-1 py-1 text-left text-[12px] font-semibold transition"
+                          : isDark
                           ? "flex w-full items-center gap-2 rounded-xl px-1 py-1 text-left text-[12px] font-semibold text-[#fdf6e3] transition hover:bg-[#002b36]/55"
                           : "flex w-full items-center gap-2 rounded-xl px-1 py-1 text-left text-[12px] font-semibold text-stone-800 transition hover:bg-stone-100/80"
                       }
                       onClick={() => toggleDirectory(group.directory)}
                       type="button"
                     >
-                      <ToggleIcon className={isDark ? "h-3.5 w-3.5 shrink-0 text-[#93a1a1]" : "h-3.5 w-3.5 shrink-0 text-stone-400"} />
-                      <FolderOpen className={isDark ? "h-4 w-4 shrink-0 text-[#b58900]" : "h-4 w-4 shrink-0 text-amber-600"} />
+                      <ToggleIcon className={isSkin ? "h-3.5 w-3.5 shrink-0 text-[var(--vibe-muted-text)]" : isDark ? "h-3.5 w-3.5 shrink-0 text-[#93a1a1]" : "h-3.5 w-3.5 shrink-0 text-stone-400"} />
+                      <FolderOpen className={isSkin ? "h-4 w-4 shrink-0 text-[var(--vibe-accent)]" : isDark ? "h-4 w-4 shrink-0 text-[#b58900]" : "h-4 w-4 shrink-0 text-amber-600"} />
                       <span className="truncate">{group.directory}</span>
                     </button>
                     {expanded && (
@@ -422,7 +594,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                                   : t("vibe.cannotResumeAria", { title })
                               }
                               className={
-                                isDark
+                                isSkin
+                                  ? "vibe-skin-session w-full rounded-xl border px-3 py-2 text-left text-[13px] transition disabled:cursor-not-allowed disabled:opacity-45"
+                                  : isDark
                                   ? "w-full rounded-xl border border-[#073642] bg-[#002b36]/70 px-3 py-2 text-left text-[13px] text-[#fdf6e3] transition hover:border-[#b58900]/70 disabled:cursor-not-allowed disabled:opacity-45"
                                   : "w-full rounded-xl border border-stone-200 bg-stone-50/80 px-3 py-2 text-left text-[13px] text-stone-800 transition hover:border-amber-500/50 hover:bg-white disabled:cursor-not-allowed disabled:opacity-45"
                               }
@@ -433,9 +607,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                             >
                               <span className="flex items-center justify-between gap-2">
                                 <span className="truncate font-semibold">{title}</span>
-                                <Play className={isDark ? "h-3.5 w-3.5 shrink-0 text-[#b58900]" : "h-3.5 w-3.5 shrink-0 text-amber-600"} />
+                                <Play className={isSkin ? "h-3.5 w-3.5 shrink-0 text-[var(--vibe-accent)]" : isDark ? "h-3.5 w-3.5 shrink-0 text-[#b58900]" : "h-3.5 w-3.5 shrink-0 text-amber-600"} />
                               </span>
-                              <span className={isDark ? "mt-0.5 block truncate text-[11px] text-[#93a1a1]" : "mt-0.5 block truncate text-[11px] text-stone-500"}>
+                              <span className={isSkin ? "mt-0.5 block truncate text-[11px] text-[var(--vibe-muted-text)]" : isDark ? "mt-0.5 block truncate text-[11px] text-[#93a1a1]" : "mt-0.5 block truncate text-[11px] text-stone-500"}>
                                 {session.providerId} · {session.resumeCommand ?? t("vibe.missingResumeCommand")}
                               </span>
                             </button>
@@ -452,20 +626,24 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
 
         <div
           className={
-            isDark
+            isSkin
+              ? "vibe-skin-workspace flex h-full min-h-0 min-w-0 flex-col overflow-hidden shadow-xl"
+              : isDark
               ? "flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[#002b36] shadow-xl shadow-black/20"
               : "flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-50 shadow-xl shadow-stone-900/5"
           }
         >
           <div
             className={
-              isDark
+              isSkin
+                ? `vibe-scrollbar ${scrollbarThemeClass} vibe-scrollbar-horizontal vibe-skin-tabbar flex h-10 shrink-0 items-stretch gap-0 overflow-x-auto border-b px-1`
+                : isDark
                 ? "vibe-scrollbar vibe-scrollbar-dark vibe-scrollbar-horizontal flex h-10 shrink-0 items-stretch gap-0 overflow-x-auto border-b border-[#073642] bg-[#00212b] px-1"
                 : "vibe-scrollbar vibe-scrollbar-light vibe-scrollbar-horizontal flex h-10 shrink-0 items-stretch gap-0 overflow-x-auto border-b border-stone-200 bg-white/85 px-1"
             }
           >
             {tabs.length === 0 && (
-              <p className={isDark ? "flex items-center px-3 text-[12px] text-[#93a1a1]" : "flex items-center px-3 text-[12px] text-stone-500"}>
+              <p className={isSkin ? "flex items-center px-3 text-[12px] text-[var(--vibe-muted-text)]" : isDark ? "flex items-center px-3 text-[12px] text-[#93a1a1]" : "flex items-center px-3 text-[12px] text-stone-500"}>
                 {t("vibe.noTabs")}
               </p>
             )}
@@ -473,10 +651,14 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
               <div
                 className={`group relative inline-flex h-full max-w-[220px] min-w-[132px] shrink-0 items-center border-r ${
                   activeId === tab.id
-                    ? isDark
+                    ? isSkin
+                      ? "vibe-skin-tab-active text-[var(--vibe-text)]"
+                      : isDark
                       ? "border-[#073642] bg-[#002b36] text-[#fdf6e3]"
                       : "border-stone-200 bg-slate-50 text-stone-950"
-                    : isDark
+                    : isSkin
+                      ? "vibe-skin-tab text-[var(--vibe-muted-text)]"
+                      : isDark
                       ? "border-[#073642] bg-transparent text-[#93a1a1] hover:bg-[#073642]/55 hover:text-[#eee8d5]"
                       : "border-stone-200 bg-transparent text-stone-500 hover:bg-stone-100/80 hover:text-stone-900"
                 }`}
@@ -486,7 +668,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 {activeId === tab.id && (
                   <span
                     className={
-                      isDark
+                      isSkin
+                        ? "absolute inset-x-0 bottom-0 h-[2px] bg-[var(--vibe-accent)]"
+                        : isDark
                         ? "absolute inset-x-0 bottom-0 h-[2px] bg-[#b58900]"
                         : "absolute inset-x-0 bottom-0 h-[2px] bg-amber-400"
                     }
@@ -503,7 +687,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 <button
                   aria-label={t("vibe.closeTabAria", { title: tab.title })}
                   className={
-                    isDark
+                    isSkin
+                      ? "vibe-skin-tab-close mr-1.5 grid h-5 w-5 shrink-0 place-items-center rounded-md opacity-70 transition group-hover:opacity-100"
+                      : isDark
                       ? "mr-1.5 grid h-5 w-5 shrink-0 place-items-center rounded-md text-[#93a1a1] opacity-70 transition hover:bg-[#073642] hover:text-[#fdf6e3] group-hover:opacity-100"
                       : "mr-1.5 grid h-5 w-5 shrink-0 place-items-center rounded-md text-stone-400 opacity-70 transition hover:bg-stone-200 hover:text-stone-700 group-hover:opacity-100"
                   }
@@ -520,17 +706,19 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
             {!activeTab && (
               <div
                 className={
-                  isDark
+                  isSkin
+                    ? "grid h-full place-items-center text-center"
+                    : isDark
                     ? "grid h-full place-items-center text-center"
                     : "grid h-full place-items-center text-center"
                 }
               >
                 <div>
-                  <TerminalSquare className={isDark ? "mx-auto h-8 w-8 text-[#586e75]" : "mx-auto h-8 w-8 text-stone-400"} />
-                  <p className={isDark ? "mt-2 text-sm font-semibold text-[#fdf6e3]" : "mt-2 text-sm font-semibold text-stone-900"}>
+                  <TerminalSquare className={isSkin ? "mx-auto h-8 w-8 text-[var(--vibe-accent)]" : isDark ? "mx-auto h-8 w-8 text-[#586e75]" : "mx-auto h-8 w-8 text-stone-400"} />
+                  <p className={isSkin ? "mt-2 text-sm font-semibold text-[var(--vibe-text)]" : isDark ? "mt-2 text-sm font-semibold text-[#fdf6e3]" : "mt-2 text-sm font-semibold text-stone-900"}>
                     {t("vibe.emptyTitle")}
                   </p>
-                  <p className={isDark ? "mt-1 text-[13px] text-[#93a1a1]" : "mt-1 text-[13px] text-stone-500"}>
+                  <p className={isSkin ? "mt-1 text-[13px] text-[var(--vibe-muted-text)]" : isDark ? "mt-1 text-[13px] text-[#93a1a1]" : "mt-1 text-[13px] text-stone-500"}>
                     {t("vibe.emptyBody")}
                   </p>
                 </div>
@@ -542,7 +730,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 key={tab.id}
                 onStatusChange={updateStatus}
                 session={tab}
-                themeMode={themeMode}
+                themeMode={terminalThemeMode}
+                themeOverride={isSkin ? activeSkin.terminal : undefined}
               />
             ))}
           </div>
@@ -553,7 +742,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-4">
           <div
             className={
-              isDark
+              isSkin
+                ? "vibe-skin-panel-strong w-full max-w-lg rounded-3xl border p-4 shadow-2xl"
+                : isDark
                 ? "w-full max-w-lg rounded-3xl border border-[#073642] bg-[#002b36] p-4 text-[#fdf6e3] shadow-2xl shadow-black/40"
                 : "w-full max-w-lg rounded-3xl border border-stone-200 bg-white p-4 text-stone-950 shadow-2xl shadow-stone-950/15"
             }
@@ -566,14 +757,16 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 <h2 id="vibe-create-title" className="text-base font-semibold">
                   {t("vibe.createTitle")}
                 </h2>
-                <p className={isDark ? "mt-1 text-[12px] text-[#93a1a1]" : "mt-1 text-[12px] text-stone-500"}>
+                <p className={isSkin ? "mt-1 text-[12px] text-[var(--vibe-muted-text)]" : isDark ? "mt-1 text-[12px] text-[#93a1a1]" : "mt-1 text-[12px] text-stone-500"}>
                   {t("vibe.createSubtitle")}
                 </p>
               </div>
               <button
                 aria-label={t("vibe.cancel")}
                 className={
-                  isDark
+                  isSkin
+                    ? "vibe-skin-ghost grid h-8 w-8 place-items-center rounded-xl border transition"
+                    : isDark
                     ? "grid h-8 w-8 place-items-center rounded-xl border border-[#586e75] text-[#93a1a1] transition hover:text-[#fdf6e3]"
                     : "grid h-8 w-8 place-items-center rounded-xl border border-stone-200 text-stone-500 transition hover:text-stone-950"
                 }
@@ -585,11 +778,13 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
             </div>
 
             <div className="space-y-3">
-              <label className={isDark ? "block text-[12px] font-semibold text-[#93a1a1]" : "block text-[12px] font-semibold text-stone-600"}>
+              <label className={isSkin ? "block text-[12px] font-semibold text-[var(--vibe-muted-text)]" : isDark ? "block text-[12px] font-semibold text-[#93a1a1]" : "block text-[12px] font-semibold text-stone-600"}>
                 {t("vibe.agent")}
                 <select
                   className={
-                    isDark
+                    isSkin
+                      ? "vibe-skin-field mt-1 w-full rounded-xl border px-3 py-2 text-[13px] outline-none transition"
+                      : isDark
                       ? "mt-1 w-full rounded-xl border border-[#586e75] bg-[#073642] px-3 py-2 text-[13px] text-[#fdf6e3] outline-none focus:border-[#268bd2]"
                       : "mt-1 w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] text-stone-950 outline-none focus:border-blue-400"
                   }
@@ -607,11 +802,13 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
               </label>
 
               {projectDirectories.length > 0 && (
-                <label className={isDark ? "block text-[12px] font-semibold text-[#93a1a1]" : "block text-[12px] font-semibold text-stone-600"}>
+                <label className={isSkin ? "block text-[12px] font-semibold text-[var(--vibe-muted-text)]" : isDark ? "block text-[12px] font-semibold text-[#93a1a1]" : "block text-[12px] font-semibold text-stone-600"}>
                   {t("vibe.existingFolder")}
                   <select
                     className={
-                      isDark
+                      isSkin
+                        ? "vibe-skin-field mt-1 w-full rounded-xl border px-3 py-2 text-[13px] outline-none transition"
+                        : isDark
                         ? "mt-1 w-full rounded-xl border border-[#586e75] bg-[#073642] px-3 py-2 text-[13px] text-[#fdf6e3] outline-none focus:border-[#268bd2]"
                         : "mt-1 w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] text-stone-950 outline-none focus:border-blue-400"
                     }
@@ -628,12 +825,14 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 </label>
               )}
 
-              <label className={isDark ? "block text-[12px] font-semibold text-[#93a1a1]" : "block text-[12px] font-semibold text-stone-600"}>
+              <label className={isSkin ? "block text-[12px] font-semibold text-[var(--vibe-muted-text)]" : isDark ? "block text-[12px] font-semibold text-[#93a1a1]" : "block text-[12px] font-semibold text-stone-600"}>
                 {t("vibe.projectDirectory")}
                 <div className="mt-1 flex gap-2">
                   <input
                     className={
-                      isDark
+                      isSkin
+                        ? "vibe-skin-field min-w-0 flex-1 rounded-xl border px-3 py-2 text-[13px] outline-none transition"
+                        : isDark
                         ? "min-w-0 flex-1 rounded-xl border border-[#586e75] bg-[#073642] px-3 py-2 text-[13px] text-[#fdf6e3] outline-none placeholder:text-[#586e75] focus:border-[#268bd2]"
                         : "min-w-0 flex-1 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] text-stone-950 outline-none focus:border-blue-400"
                     }
@@ -643,7 +842,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                   />
                   <button
                     className={
-                      isDark
+                      isSkin
+                        ? "vibe-skin-ghost shrink-0 rounded-xl border px-3 py-2 text-[13px] font-semibold transition"
+                        : isDark
                         ? "shrink-0 rounded-xl border border-[#586e75] bg-[#073642] px-3 py-2 text-[13px] font-semibold text-[#fdf6e3] transition hover:border-[#839496]"
                         : "shrink-0 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 transition hover:border-stone-300"
                     }
@@ -659,7 +860,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
             <div className="mt-5 flex justify-end gap-2">
               <button
                 className={
-                  isDark
+                  isSkin
+                    ? "vibe-skin-ghost rounded-xl border px-3 py-2 text-[13px] font-semibold transition"
+                    : isDark
                     ? "rounded-xl border border-[#586e75] px-3 py-2 text-[13px] font-semibold text-[#93a1a1] transition hover:text-[#fdf6e3]"
                     : "rounded-xl border border-stone-200 px-3 py-2 text-[13px] font-semibold text-stone-600 transition hover:text-stone-950"
                 }
@@ -670,7 +873,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
               </button>
               <button
                 className={
-                  isDark
+                  isSkin
+                    ? "vibe-skin-primary rounded-xl border px-3 py-2 text-[13px] font-semibold transition"
+                    : isDark
                     ? "rounded-xl bg-[#b58900] px-3 py-2 text-[13px] font-semibold text-[#002b36] transition hover:bg-[#cb4b16] hover:text-white"
                     : "rounded-xl bg-stone-950 px-3 py-2 text-[13px] font-semibold text-white transition hover:bg-stone-800"
                 }

@@ -85,3 +85,144 @@ button:disabled {
 .vibe-scrollbar-horizontal::-webkit-scrollbar {
   height: 8px;
 }
+
+.vibe-skin {
+  background: var(--vibe-background-layer);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
+
+.vibe-skin-sidebar,
+.vibe-skin-workspace {
+  background: var(--vibe-panel-subtle);
+  border-color: var(--vibe-border);
+  color: var(--vibe-text);
+}
+
+.vibe-skin-backdrop {
+  background: var(--vibe-background-layer);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
+
+.vibe-skin-panel,
+.vibe-skin-panel-strong,
+.vibe-skin-panel-subtle {
+  border-color: var(--vibe-border);
+  color: var(--vibe-text);
+  backdrop-filter: blur(18px);
+}
+
+.vibe-skin-panel {
+  background: var(--vibe-panel);
+  box-shadow: 0 18px 40px rgba(17, 87, 164, 0.14);
+}
+
+.vibe-skin-panel-strong {
+  background: var(--vibe-panel-strong);
+  box-shadow: 0 20px 55px rgba(17, 87, 164, 0.2);
+}
+
+.vibe-skin-panel-subtle {
+  background: var(--vibe-panel-subtle);
+}
+
+.vibe-skin-primary {
+  background: var(--vibe-button);
+  border-color: var(--vibe-border);
+  color: var(--vibe-button-text);
+  box-shadow: 0 10px 22px rgba(17, 87, 164, 0.22);
+}
+
+.vibe-skin-primary:hover {
+  background: var(--vibe-button-hover);
+}
+
+.vibe-skin-ghost,
+.vibe-skin-field,
+.vibe-skin-select {
+  background: var(--vibe-panel-subtle);
+  border-color: var(--vibe-border);
+  color: var(--vibe-text);
+}
+
+.vibe-skin-ghost:hover,
+.vibe-skin-list-trigger:hover,
+.vibe-skin-session:hover,
+.vibe-skin-tab-close:hover {
+  background: var(--vibe-tab-hover);
+  color: var(--vibe-text);
+}
+
+.vibe-skin-field,
+.vibe-skin-select {
+  background: var(--vibe-panel-strong);
+}
+
+.vibe-skin-field::placeholder {
+  color: var(--vibe-muted-text);
+  opacity: 0.75;
+}
+
+.vibe-skin-primary:focus-visible,
+.vibe-skin-ghost:focus-visible,
+.vibe-skin-field:focus,
+.vibe-skin-select:focus,
+.vibe-skin-list-trigger:focus-visible,
+.vibe-skin-session:focus-visible {
+  box-shadow: 0 0 0 2px var(--vibe-focus);
+  outline: none;
+}
+
+.vibe-skin-list-trigger,
+.vibe-skin-session {
+  color: var(--vibe-text);
+}
+
+.vibe-skin-session {
+  background: var(--vibe-panel-strong);
+  border-color: var(--vibe-border);
+}
+
+.vibe-skin-tabbar {
+  background: var(--vibe-tab-bar);
+  border-color: var(--vibe-border);
+  backdrop-filter: blur(18px);
+}
+
+.vibe-skin-tab,
+.vibe-skin-tab-active {
+  border-color: var(--vibe-border);
+}
+
+.vibe-skin-tab {
+  background: var(--vibe-tab-inactive);
+}
+
+.vibe-skin-tab:hover {
+  background: var(--vibe-tab-hover);
+}
+
+.vibe-skin-tab-active {
+  background: var(--vibe-tab-active);
+}
+
+.vibe-skin-tab-close {
+  color: var(--vibe-muted-text);
+}
+
+.vibe-skin-danger {
+  background: var(--vibe-danger-background);
+  border-color: var(--vibe-border);
+  color: var(--vibe-danger-text);
+}
+
+.vibe-scrollbar-skin.vibe-scrollbar-active {
+  scrollbar-color: color-mix(in srgb, var(--vibe-accent) 52%, transparent) transparent;
+}
+
+.vibe-scrollbar-skin.vibe-scrollbar-active::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--vibe-accent) 52%, transparent);
+}

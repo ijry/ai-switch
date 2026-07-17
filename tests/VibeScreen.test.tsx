@@ -11,6 +11,7 @@ import {
 import type { SessionMeta, TerminalSession } from "../src/lib/api/types";
 import { createQueryClient } from "../src/lib/query/queryClient";
 import { __resetTransportForTests } from "../src/lib/transport";
+import { VIBE_SKIN_STORAGE_KEY } from "../src/lib/vibeSkin";
 import { VibeScreen } from "../src/screens/VibeScreen";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -18,8 +19,10 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }));
 
 vi.mock("../src/components/terminal/XtermPane", () => ({
-  XtermPane: ({ session }: { session: TerminalSession }) => (
-    <div data-testid={`terminal-pane-${session.id}`}>{session.title}</div>
+  XtermPane: ({ session, themeOverride }: { session: TerminalSession; themeOverride?: unknown }) => (
+    <div data-testid={`terminal-pane-${session.id}`} data-theme-override={themeOverride ? "yes" : "no"}>
+      {session.title}
+    </div>
   ),
 }));
 
@@ -144,7 +147,7 @@ describe("VibeScreen", () => {
     expect(screen.queryByText("Agent accounts placeholder")).not.toBeInTheDocument();
   });
 
-  it("toggles Vibe between Solarized Dark and light themes", async () => {
+  it("cycles Vibe through dark, light, and skin themes", async () => {
     renderScreen();
 
     const themeButton = await screen.findByRole("button", { name: "Switch Vibe theme" });
@@ -156,6 +159,58 @@ describe("VibeScreen", () => {
     expect(screen.getByRole("button", { name: "Expand folder D:/repo/app" })).toHaveClass("text-stone-800");
     expect(screen.getByText("No terminal tabs yet.").parentElement).toHaveClass("bg-white/85");
     expect(screen.getByText("Start or resume a session")).toHaveClass("text-stone-900");
+
+    await userEvent.click(themeButton);
+
+    expect(screen.getByText("Skin")).toBeInTheDocument();
+    expect(screen.getByLabelText("Vibe skin")).toHaveValue("codex-2007-blue");
+    expect(screen.getByText("No terminal tabs yet.").parentElement).toHaveClass("vibe-skin-tabbar");
+  });
+
+  it("imports a custom Vibe skin package and applies its terminal theme", async () => {
+    renderScreen();
+
+    const skinFile = new File(
+      [
+        JSON.stringify({
+          id: "custom-neon",
+          name: "Custom Neon",
+          ui: {
+            accent: "#00ffee",
+            text: "#f4fbff",
+            mutedText: "#9be7ff",
+            background: "linear-gradient(135deg, #001018, #06405a)",
+            panel: "rgba(2, 28, 40, 0.78)",
+            panelStrong: "rgba(4, 42, 58, 0.92)",
+            panelSubtle: "rgba(0, 255, 238, 0.12)",
+            border: "rgba(0, 255, 238, 0.35)",
+            button: "linear-gradient(180deg, #00ffee, #0088ff)",
+            buttonHover: "linear-gradient(180deg, #54fff5, #2da4ff)",
+            tabActive: "rgba(0, 255, 238, 0.22)",
+          },
+          terminal: {
+            background: "#010203",
+            foreground: "#eafcff",
+          },
+        }),
+      ],
+      "custom.aiskin",
+      { type: "application/json" },
+    );
+
+    await userEvent.upload(screen.getByLabelText("Choose Vibe skin package"), skinFile);
+
+    expect(await screen.findByText("Skin")).toBeInTheDocument();
+    expect(screen.getByLabelText("Vibe skin")).toHaveValue("custom-neon");
+    expect(window.localStorage.getItem(VIBE_SKIN_STORAGE_KEY)).toContain("Custom Neon");
+
+    await expandProjectDirectory();
+    await userEvent.click(await screen.findByRole("button", { name: /Resume Fix terminal bug/ }));
+
+    expect(await screen.findByTestId("terminal-pane-term-1")).toHaveAttribute(
+      "data-theme-override",
+      "yes",
+    );
   });
 
   it("creates a new agent session through the modal", async () => {
