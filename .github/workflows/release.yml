@@ -169,7 +169,7 @@ jobs:
 
           $bundleFiles = Get-ChildItem src-tauri/target/release/bundle -Recurse -File |
             Where-Object {
-              $_.Name -match '\.(exe|msi|dmg|deb|AppImage|sig)$'
+              $_.Name -match '\.(exe|msi|dmg|deb|AppImage|zip|tar\.gz|sig)$'
             }
 
           if (-not $bundleFiles) {
