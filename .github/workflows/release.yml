@@ -236,4 +236,4 @@ jobs:
           allowUpdates: true
           replacesArtifacts: true
           artifactErrorsFailBuild: true
-          artifacts: "release-assets/**/*"
+          artifacts: "release-assets/**/*.*"
