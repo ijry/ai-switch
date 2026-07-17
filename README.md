@@ -132,4 +132,4 @@ Installed desktop builds ship web assets next to the executable under web/. Stan
 
 ## Clean-Room Boundary
 
-This project may study public behavior, public documentation, and public file formats from related tools. It must not copy or translate non-commercial source code from `cockpit-tools`.
+This project may study public behavior, public documentation, and public file formats from related tools.
