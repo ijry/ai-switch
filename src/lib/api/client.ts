@@ -74,8 +74,8 @@ export function listTargetApps(): Promise<TargetApp[]> {
   return invoke("list_target_apps");
 }
 
-export function getRoutePool(platform: string): Promise<RoutePoolState> {
-  return invoke("get_route_pool", { platform });
+export function getRoutePool(platform: string, since?: string | null): Promise<RoutePoolState> {
+  return invoke("get_route_pool", { platform, since: since ?? null });
 }
 
 export function setRoutePoolMembers(input: {

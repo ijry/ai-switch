@@ -22,7 +22,7 @@ import {
 import { recognizeApiKeysFromImageBlob } from "../src/lib/ocr/apiKeyOcr";
 import { createQueryClient } from "../src/lib/query/queryClient";
 import { AccountsScreen } from "../src/screens/AccountsScreen";
-import type { RouteCredential } from "../src/lib/api/types";
+import type { RouteCredential, RoutePoolStats } from "../src/lib/api/types";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(),
@@ -86,6 +86,18 @@ const credentialsFixture: RouteCredential[] = [
   },
 ];
 
+function statsFixture(overrides: Partial<RoutePoolStats> = {}): RoutePoolStats {
+  return {
+    member_count: 0,
+    request_count: 0,
+    token_count: 0,
+    cost_micros: 0,
+    recent_logs: [],
+    requests: [],
+    ...overrides,
+  };
+}
+
 function renderScreen(platform: "codex" | "claude" = "codex") {
   return render(
     <QueryClientProvider client={createQueryClient()}>
@@ -136,13 +148,7 @@ describe("AccountsScreen", () => {
     vi.mocked(getRoutePool).mockResolvedValue({
       platform: "codex",
       account_ids: [],
-      stats: {
-        member_count: 0,
-        request_count: 0,
-        token_count: 0,
-        cost_micros: 0,
-        recent_logs: [],
-      },
+      stats: statsFixture(),
     });
     vi.mocked(getRouteProxyStatus).mockResolvedValue({
       running: false,
@@ -153,25 +159,23 @@ describe("AccountsScreen", () => {
     vi.mocked(setRoutePoolMembers).mockImplementation(async (input) => ({
       platform: input.platform,
       account_ids: input.account_ids,
-      stats: {
+      stats: statsFixture({
         member_count: input.account_ids.length,
         request_count: 1,
         token_count: 4096,
         cost_micros: 2500,
-        recent_logs: [],
-      },
+      }),
     }));
     vi.mocked(routePoolRouteOnce).mockResolvedValue({
       platform: "codex",
       selected_account_id: "cred-official-1",
       selected_account_name: "Team Account",
-      stats: {
+      stats: statsFixture({
         member_count: 1,
         request_count: 2,
         token_count: 5120,
         cost_micros: 3700,
-        recent_logs: [],
-      },
+      }),
     });
     vi.mocked(startRouteProxy).mockResolvedValue({
       running: true,

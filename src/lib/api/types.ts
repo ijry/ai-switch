@@ -140,6 +140,7 @@ export type RoutePoolUsageLog = {
   id: string;
   account_id?: string | null;
   account_name?: string | null;
+  source_label: string;
   metric_type: string;
   amount: number;
   unit: string;
@@ -153,6 +154,7 @@ export type RoutePoolStats = {
   token_count: number;
   cost_micros: number;
   recent_logs: RoutePoolUsageLog[];
+  requests: RoutePoolUsageLog[];
 };
 
 export type RoutePoolState = {
