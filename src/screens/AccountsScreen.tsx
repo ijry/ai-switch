@@ -49,6 +49,63 @@ import {
 type PlatformKey = "codex" | "claude" | "gemini" | "opencode" | "openclaw" | "hermes";
 type CreateMode = "api" | "official";
 
+const routeStatsPeriods = [
+  { key: "today", label: "当日" },
+  { key: "week", label: "本周" },
+  { key: "month", label: "本月" },
+  { key: "all", label: "累计" },
+] as const;
+
+type RouteStatsPeriod = (typeof routeStatsPeriods)[number]["key"];
+
+function routeStatsSince(period: RouteStatsPeriod, now = new Date()) {
+  if (period === "all") {
+    return null;
+  }
+
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+
+  if (period === "week") {
+    const day = start.getDay();
+    const daysSinceMonday = day === 0 ? 6 : day - 1;
+    start.setDate(start.getDate() - daysSinceMonday);
+  }
+
+  if (period === "month") {
+    start.setDate(1);
+  }
+
+  return start.toISOString();
+}
+
+function formatUsageTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString();
+}
+
+function parseUsageMetadata(metadataJson: string) {
+  try {
+    const value = JSON.parse(metadataJson) as unknown;
+    if (!value || typeof value !== "object") {
+      return { path: "-", status: "-" };
+    }
+    const record = value as Record<string, unknown>;
+    return {
+      path: typeof record.path === "string" && record.path.trim() ? record.path : "-",
+      status:
+        typeof record.status === "number" || typeof record.status === "string"
+          ? String(record.status)
+          : "-",
+    };
+  } catch {
+    return { path: "-", status: "-" };
+  }
+}
+
 type AccountsScreenProps = {
   platform?: PlatformKey;
   onOpenSessions?: (platform: PlatformKey) => void;
@@ -293,6 +350,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const activePlatform = platform;
   const [draftPoolIds, setDraftPoolIds] = useState<Set<string>>(() => new Set());
   const [statsOpen, setStatsOpen] = useState(false);
+  const [statsPeriod, setStatsPeriod] = useState<RouteStatsPeriod>("today");
   const [createOpen, setCreateOpen] = useState(false);
   const [createMode, setCreateMode] = useState<CreateMode>("api");
   const [officialText, setOfficialText] = useState(() => defaultOfficialJson(activePlatform));
@@ -320,14 +378,15 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const [editPreviewJson, setEditPreviewJson] = useState("{}");
   const [lastRouteAccount, setLastRouteAccount] = useState<string | null>(null);
   const [configWriteOutcomes, setConfigWriteOutcomes] = useState<RouteConfigWriteOutcome[]>([]);
+  const statsSince = useMemo(() => routeStatsSince(statsPeriod), [statsPeriod]);
 
   const credentialsQuery = useQuery({
     queryKey: ["route-credentials", activePlatform],
     queryFn: () => listRouteCredentials(activePlatform),
   });
   const routePoolQuery = useQuery({
-    queryKey: ["route-pool", activePlatform],
-    queryFn: () => getRoutePool(activePlatform),
+    queryKey: ["route-pool", activePlatform, statsSince],
+    queryFn: () => getRoutePool(activePlatform, statsSince),
   });
   const routeProxyQuery = useQuery({
     queryKey: ["route-proxy-status"],
@@ -460,8 +519,8 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const routePoolMutation = useMutation({
     mutationFn: (input: { platform: string; account_ids: string[] }) => setRoutePoolMembers(input),
     onSuccess: (state) => {
-      queryClient.setQueryData(["route-pool", activePlatform], state);
       setDraftPoolIds(new Set(state.account_ids));
+      void queryClient.invalidateQueries({ queryKey: ["route-pool", activePlatform] });
     },
     onError: () => {
       if (routePoolQuery.data) {
@@ -477,11 +536,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       metadata_json?: string | null;
     }) => routePoolRouteOnce(request),
     onSuccess: (outcome) => {
-      queryClient.setQueryData(["route-pool", activePlatform], {
-        platform: outcome.platform,
-        account_ids: routePoolQuery.data?.account_ids ?? Array.from(draftPoolIds),
-        stats: outcome.stats,
-      });
+      void queryClient.invalidateQueries({ queryKey: ["route-pool", activePlatform] });
       setStatsOpen(true);
       setLastRouteAccount(outcome.selected_account_name);
     },
@@ -766,20 +821,77 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
           </div>
         )}
         {statsOpen && (
-          <div className="grid gap-2 border-t border-stone-200 px-4 py-3 sm:grid-cols-3">
-            <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
-              <p className="text-[11px] font-medium text-stone-500">请求</p>
-              <p className="mt-1 text-lg font-semibold text-stone-950">{routeStats?.request_count ?? 0}</p>
+          <div className="space-y-3 border-t border-stone-200 px-4 py-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-[13px] font-semibold text-stone-950">请求统计</p>
+                <p className="text-[12px] text-stone-500">仅统计当前 {platformLabels[activePlatform]} 算力池账号</p>
+              </div>
+              <div className="grid grid-cols-4 gap-1 rounded-xl bg-stone-100 p-1">
+                {routeStatsPeriods.map((period) => (
+                  <button
+                    className={`rounded-lg px-2.5 py-1.5 text-[12px] font-semibold transition-colors ${
+                      statsPeriod === period.key
+                        ? "bg-white text-stone-950 shadow-sm"
+                        : "text-stone-500 hover:text-stone-900"
+                    }`}
+                    key={period.key}
+                    onClick={() => setStatsPeriod(period.key)}
+                    type="button"
+                  >
+                    {period.label}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
-              <p className="text-[11px] font-medium text-stone-500">Token</p>
-              <p className="mt-1 text-lg font-semibold text-stone-950">
-                {(routeStats?.token_count ?? 0).toLocaleString()}
-              </p>
+
+            <div className="grid gap-2 sm:grid-cols-3">
+              <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
+                <p className="text-[11px] font-medium text-stone-500">请求</p>
+                <p className="mt-1 text-lg font-semibold text-stone-950">{routeStats?.request_count ?? 0}</p>
+              </div>
+              <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
+                <p className="text-[11px] font-medium text-stone-500">Token</p>
+                <p className="mt-1 text-lg font-semibold text-stone-950">
+                  {(routeStats?.token_count ?? 0).toLocaleString()}
+                </p>
+              </div>
+              <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
+                <p className="text-[11px] font-medium text-stone-500">费用</p>
+                <p className="mt-1 text-lg font-semibold text-stone-950">${costTotal.toFixed(2)}</p>
+              </div>
             </div>
-            <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
-              <p className="text-[11px] font-medium text-stone-500">费用</p>
-              <p className="mt-1 text-lg font-semibold text-stone-950">${costTotal.toFixed(2)}</p>
+
+            <div className="overflow-hidden rounded-xl border border-stone-200 bg-white">
+              <div className="flex items-center justify-between border-b border-stone-100 bg-stone-50 px-3 py-2">
+                <p className="text-[12px] font-semibold text-stone-700">请求列表</p>
+                <p className="text-[11px] font-medium text-stone-500">
+                  {(routeStats?.requests ?? []).length} 条
+                </p>
+              </div>
+              {(routeStats?.requests ?? []).length === 0 ? (
+                <p className="px-3 py-4 text-[12px] text-stone-500">当前筛选范围内暂无请求。</p>
+              ) : (
+                <div className="divide-y divide-stone-100">
+                  {(routeStats?.requests ?? []).map((request) => {
+                    const metadata = parseUsageMetadata(request.metadata_json);
+                    return (
+                      <div
+                        className="grid gap-2 px-3 py-2.5 text-[12px] text-stone-600 lg:grid-cols-[1.2fr_1fr_0.5fr_1.4fr_0.8fr] lg:items-center"
+                        key={request.id}
+                      >
+                        <span className="font-medium text-stone-800">{formatUsageTime(request.created_at)}</span>
+                        <span className="truncate">{request.account_name ?? request.account_id ?? "-"}</span>
+                        <span className="rounded-lg bg-stone-100 px-2 py-1 text-center font-semibold text-stone-700">
+                          {metadata.status}
+                        </span>
+                        <span className="truncate font-mono text-[11px]">{metadata.path}</span>
+                        <span className="truncate">{request.source_label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         )}
