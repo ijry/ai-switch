@@ -10,8 +10,9 @@ use tauri::State;
 pub async fn get_route_pool(
     state: State<'_, AppState>,
     platform: String,
+    since: Option<String>,
 ) -> Result<RoutePoolState, ApiError> {
-    RoutePoolService::get(&state.pool, platform)
+    RoutePoolService::get(&state.pool, platform, since)
         .await
         .map_err(ApiError::from)
 }

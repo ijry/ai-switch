@@ -195,67 +195,119 @@ impl RoutePoolRepository {
         Ok(())
     }
 
-    pub async fn stats(pool: &SqlitePool, platform: &str) -> Result<RoutePoolStats, AppError> {
-        let row = sqlx::query(
+    pub async fn stats(
+        pool: &SqlitePool,
+        platform: &str,
+        since: Option<&str>,
+    ) -> Result<RoutePoolStats, AppError> {
+        let join_since_clause = if since.is_some() {
+            " AND ue.created_at >= ?"
+        } else {
+            ""
+        };
+        let summary_sql = format!(
             "SELECT
                COUNT(DISTINCT rpm.route_credential_id) AS member_count,
                COALESCE(SUM(CASE WHEN ue.metric_type = 'request' THEN CASE WHEN ue.amount > 0 THEN ue.amount ELSE 1 END ELSE 0 END), 0) AS request_count,
                COALESCE(SUM(CASE WHEN ue.metric_type = 'token' OR ue.unit = 'token' THEN ue.amount ELSE 0 END), 0) AS token_count,
                COALESCE(SUM(CASE WHEN ue.metric_type = 'cost' AND ue.unit = 'usd_micros' THEN ue.amount ELSE 0 END), 0) AS cost_micros
              FROM route_pool_members rpm
-             LEFT JOIN usage_events ue ON ue.route_credential_id = rpm.route_credential_id
-             WHERE rpm.platform = ? AND rpm.enabled = 1",
-        )
-        .bind(platform)
-        .fetch_one(pool)
-        .await
-        .map_err(|err| AppError::Database {
-            code: "database.route_pool_stats",
-            message: "Could not load route pool statistics".to_string(),
-            details: Some(err.to_string()),
-            recoverable: true,
-        })?;
+             LEFT JOIN usage_events ue ON ue.route_credential_id = rpm.route_credential_id{join_since_clause}
+             WHERE rpm.platform = ? AND rpm.enabled = 1"
+        );
+        let mut summary_query = sqlx::query(&summary_sql);
+        if let Some(since) = since {
+            summary_query = summary_query.bind(since);
+        }
+        let row = summary_query
+            .bind(platform)
+            .fetch_one(pool)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.route_pool_stats",
+                message: "Could not load route pool statistics".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })?;
 
-        let log_rows = sqlx::query(
+        let log_since_clause = if since.is_some() {
+            " AND ue.created_at >= ?"
+        } else {
+            ""
+        };
+        let log_sql = format!(
             "SELECT ue.id, ue.route_credential_id, a.display_name AS account_name,
-                    ue.metric_type, ue.amount, ue.unit, ue.metadata_json, ue.created_at
+                    ue.source_label, ue.metric_type, ue.amount, ue.unit, ue.metadata_json, ue.created_at
              FROM usage_events ue
              INNER JOIN route_pool_members rpm
                ON rpm.route_credential_id = ue.route_credential_id
               AND rpm.platform = ?
               AND rpm.enabled = 1
              LEFT JOIN route_credentials a ON a.id = ue.route_credential_id
+             WHERE 1 = 1{log_since_clause}
              ORDER BY ue.created_at DESC
-             LIMIT 10",
-        )
-        .bind(platform)
-        .fetch_all(pool)
-        .await
-        .map_err(|err| AppError::Database {
-            code: "database.route_pool_logs",
-            message: "Could not load route pool logs".to_string(),
-            details: Some(err.to_string()),
-            recoverable: true,
-        })?;
+             LIMIT 10"
+        );
+        let mut log_query = sqlx::query(&log_sql).bind(platform);
+        if let Some(since) = since {
+            log_query = log_query.bind(since);
+        }
+        let log_rows = log_query
+            .fetch_all(pool)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.route_pool_logs",
+                message: "Could not load route pool logs".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })?;
+
+        let request_sql = format!(
+            "SELECT ue.id, ue.route_credential_id, a.display_name AS account_name,
+                    ue.source_label, ue.metric_type, ue.amount, ue.unit, ue.metadata_json, ue.created_at
+             FROM usage_events ue
+             INNER JOIN route_pool_members rpm
+               ON rpm.route_credential_id = ue.route_credential_id
+              AND rpm.platform = ?
+              AND rpm.enabled = 1
+             LEFT JOIN route_credentials a ON a.id = ue.route_credential_id
+             WHERE ue.metric_type = 'request'{log_since_clause}
+             ORDER BY ue.created_at DESC
+             LIMIT 50"
+        );
+        let mut request_query = sqlx::query(&request_sql).bind(platform);
+        if let Some(since) = since {
+            request_query = request_query.bind(since);
+        }
+        let request_rows = request_query
+            .fetch_all(pool)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.route_pool_requests",
+                message: "Could not load route pool requests".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })?;
+
+        let map_usage_log = |row: sqlx::sqlite::SqliteRow| RoutePoolUsageLog {
+            id: row.get("id"),
+            account_id: row.get("route_credential_id"),
+            account_name: row.get("account_name"),
+            source_label: row.get("source_label"),
+            metric_type: row.get("metric_type"),
+            amount: row.get("amount"),
+            unit: row.get("unit"),
+            metadata_json: row.get("metadata_json"),
+            created_at: row.get("created_at"),
+        };
 
         Ok(RoutePoolStats {
             member_count: row.get("member_count"),
             request_count: row.get("request_count"),
             token_count: row.get("token_count"),
             cost_micros: row.get("cost_micros"),
-            recent_logs: log_rows
-                .into_iter()
-                .map(|row| RoutePoolUsageLog {
-                    id: row.get("id"),
-                    account_id: row.get("route_credential_id"),
-                    account_name: row.get("account_name"),
-                    metric_type: row.get("metric_type"),
-                    amount: row.get("amount"),
-                    unit: row.get("unit"),
-                    metadata_json: row.get("metadata_json"),
-                    created_at: row.get("created_at"),
-                })
-                .collect(),
+            recent_logs: log_rows.into_iter().map(map_usage_log).collect(),
+            requests: request_rows.into_iter().map(map_usage_log).collect(),
         })
     }
 }

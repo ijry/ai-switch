@@ -132,8 +132,9 @@ pub async fn dispatch_command(
         }
         "get_route_pool" => {
             let platform = required_string_arg(&args, "platform")?;
+            let since = optional_string_arg(&args, "since");
             to_value(
-                RoutePoolService::get(&state.pool, platform)
+                RoutePoolService::get(&state.pool, platform, since)
                     .await
                     .map_err(to_error)?,
             )

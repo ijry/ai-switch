@@ -8,6 +8,7 @@ pub struct RoutePoolUsageLog {
     pub id: String,
     pub account_id: Option<String>,
     pub account_name: Option<String>,
+    pub source_label: String,
     pub metric_type: String,
     pub amount: i64,
     pub unit: String,
@@ -22,6 +23,7 @@ pub struct RoutePoolStats {
     pub token_count: i64,
     pub cost_micros: i64,
     pub recent_logs: Vec<RoutePoolUsageLog>,
+    pub requests: Vec<RoutePoolUsageLog>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

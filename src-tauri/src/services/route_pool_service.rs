@@ -4,15 +4,21 @@ use crate::error::AppError;
 use crate::models::route_pool::{
     RoutePoolRouteOutcome, RoutePoolRouteRequest, RoutePoolState, SetRoutePoolMembersInput,
 };
+use chrono::DateTime;
 use sqlx::SqlitePool;
 use std::collections::HashSet;
 
 pub struct RoutePoolService;
 
 impl RoutePoolService {
-    pub async fn get(pool: &SqlitePool, platform: String) -> Result<RoutePoolState, AppError> {
+    pub async fn get(
+        pool: &SqlitePool,
+        platform: String,
+        since: Option<String>,
+    ) -> Result<RoutePoolState, AppError> {
         let platform = normalize_platform(&platform)?;
-        Self::state(pool, &platform).await
+        let since = normalize_since(since)?;
+        Self::state(pool, &platform, since.as_deref()).await
     }
 
     pub async fn set_members(
@@ -52,7 +58,7 @@ impl RoutePoolService {
         }
 
         RoutePoolRepository::replace_members(pool, &platform, &account_ids).await?;
-        Self::state(pool, &platform).await
+        Self::state(pool, &platform, None).await
     }
 
     pub async fn route_once(
@@ -120,15 +126,19 @@ impl RoutePoolService {
             platform: platform.clone(),
             selected_account_id: selected.id,
             selected_account_name: selected.display_name,
-            stats: RoutePoolRepository::stats(pool, &platform).await?,
+            stats: RoutePoolRepository::stats(pool, &platform, None).await?,
         })
     }
 
-    async fn state(pool: &SqlitePool, platform: &str) -> Result<RoutePoolState, AppError> {
+    async fn state(
+        pool: &SqlitePool,
+        platform: &str,
+        since: Option<&str>,
+    ) -> Result<RoutePoolState, AppError> {
         Ok(RoutePoolState {
             platform: platform.to_string(),
             account_ids: RoutePoolRepository::list_member_ids(pool, platform).await?,
-            stats: RoutePoolRepository::stats(pool, platform).await?,
+            stats: RoutePoolRepository::stats(pool, platform, since).await?,
         })
     }
 }
@@ -158,6 +168,24 @@ fn normalize_metadata_json(metadata_json: Option<String>) -> Result<String, AppE
     }
 
     Ok(value.to_string())
+}
+
+fn normalize_since(since: Option<String>) -> Result<Option<String>, AppError> {
+    let Some(value) = since
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    DateTime::parse_from_rfc3339(&value).map_err(|err| AppError::Validation {
+        code: "validation.route_pool_since",
+        message: "Route pool stats start time is invalid".to_string(),
+        details: Some(err.to_string()),
+        recoverable: true,
+    })?;
+
+    Ok(Some(value))
 }
 
 fn non_negative(value: i64, field: &'static str) -> Result<i64, AppError> {
@@ -228,6 +256,34 @@ mod tests {
         .id
     }
 
+    async fn usage_event_at(
+        pool: &SqlitePool,
+        account_id: &str,
+        source_label: &str,
+        metric_type: &str,
+        amount: i64,
+        unit: &str,
+        metadata_json: &str,
+        created_at: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO usage_events
+             (id, route_credential_id, source_label, metric_type, amount, unit, metadata_json, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(account_id)
+        .bind(source_label)
+        .bind(metric_type)
+        .bind(amount)
+        .bind(unit)
+        .bind(metadata_json)
+        .bind(created_at)
+        .execute(pool)
+        .await
+        .expect("usage event");
+    }
+
     #[tokio::test]
     async fn set_members_persists_account_ids_and_stats() {
         let pool = create_memory_pool().await.expect("pool");
@@ -273,6 +329,122 @@ mod tests {
         assert_eq!(state.stats.token_count, 4096);
         assert_eq!(state.stats.cost_micros, 2500);
         assert_eq!(state.stats.recent_logs.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn get_filters_stats_by_since_and_returns_request_rows() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let account_id = account(&pool, "codex", "CodexOne").await;
+
+        RoutePoolService::set_members(
+            &pool,
+            SetRoutePoolMembersInput {
+                platform: "codex".to_string(),
+                account_ids: vec![account_id.clone()],
+            },
+        )
+        .await
+        .expect("members");
+
+        let old_time = "2026-07-01T00:00:00Z";
+        let since = "2026-07-17T00:00:00Z";
+        let new_time = "2026-07-17T08:00:00Z";
+
+        usage_event_at(
+            &pool,
+            &account_id,
+            "route_proxy",
+            "request",
+            1,
+            "count",
+            r#"{"path":"/v1/old","status":200}"#,
+            old_time,
+        )
+        .await;
+        usage_event_at(
+            &pool,
+            &account_id,
+            "route_proxy",
+            "token",
+            100,
+            "token",
+            r#"{"path":"/v1/old","status":200}"#,
+            old_time,
+        )
+        .await;
+        usage_event_at(
+            &pool,
+            &account_id,
+            "route_proxy",
+            "request",
+            1,
+            "count",
+            r#"{"path":"/v1/responses","status":201}"#,
+            new_time,
+        )
+        .await;
+        usage_event_at(
+            &pool,
+            &account_id,
+            "route_proxy",
+            "token",
+            200,
+            "token",
+            r#"{"path":"/v1/responses","status":201}"#,
+            new_time,
+        )
+        .await;
+        usage_event_at(
+            &pool,
+            &account_id,
+            "route_proxy",
+            "cost",
+            300,
+            "usd_micros",
+            r#"{"path":"/v1/responses","status":201}"#,
+            new_time,
+        )
+        .await;
+
+        let state =
+            RoutePoolService::get(&pool, "codex".to_string(), Some(since.to_string()))
+                .await
+                .expect("filtered state");
+
+        assert_eq!(state.stats.member_count, 1);
+        assert_eq!(state.stats.request_count, 1);
+        assert_eq!(state.stats.token_count, 200);
+        assert_eq!(state.stats.cost_micros, 300);
+        assert_eq!(state.stats.recent_logs.len(), 3);
+        assert_eq!(state.stats.requests.len(), 1);
+        assert_eq!(state.stats.requests[0].metric_type, "request");
+        assert_eq!(state.stats.requests[0].source_label, "route_proxy");
+        assert_eq!(
+            state.stats.requests[0].account_name.as_deref(),
+            Some("CodexOne")
+        );
+        assert!(state.stats.requests[0]
+            .metadata_json
+            .contains("/v1/responses"));
+    }
+
+    #[tokio::test]
+    async fn get_rejects_invalid_since_timestamp() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+
+        let error =
+            RoutePoolService::get(&pool, "codex".to_string(), Some("not-a-date".to_string()))
+                .await
+                .expect_err("invalid since");
+
+        match error {
+            AppError::Validation { code, .. } => {
+                assert_eq!(code, "validation.route_pool_since");
+            }
+            _ => panic!("expected validation error"),
+        }
     }
 
     #[tokio::test]
