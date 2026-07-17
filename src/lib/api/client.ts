@@ -109,8 +109,11 @@ export function getRouteProxyStatus(): Promise<RouteProxyStatus> {
   return invoke("get_route_proxy_status");
 }
 
-export function writeRouteProxyConfigs(baseUrl?: string | null): Promise<RouteConfigWriteOutcome[]> {
-  return invoke("write_route_proxy_configs", { baseUrl: baseUrl ?? null });
+export function writeRouteProxyConfigs(
+  baseUrl: string | null | undefined,
+  platform: string,
+): Promise<RouteConfigWriteOutcome[]> {
+  return invoke("write_route_proxy_configs", { baseUrl: baseUrl ?? null, platform });
 }
 
 export function listRouteCredentials(platform: string): Promise<RouteCredential[]> {

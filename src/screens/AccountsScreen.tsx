@@ -361,6 +361,18 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     setEditPreviewJson(parseJsonPreview(editingCredential.preview_json, editingCredential.preview_json));
   }, [editingCredential]);
 
+  useEffect(() => {
+    if (configWriteOutcomes.length === 0) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setConfigWriteOutcomes([]);
+    }, 3000);
+
+    return () => window.clearTimeout(timeout);
+  }, [configWriteOutcomes]);
+
   const credentials = credentialsQuery.data ?? [];
   const groupedCredentials = useMemo(() => {
     const groups = new Map<string, RouteCredential[]>();
@@ -486,7 +498,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     },
   });
   const writeConfigsMutation = useMutation({
-    mutationFn: () => writeRouteProxyConfigs(routeProxyQuery.data?.base_url ?? null),
+    mutationFn: () => writeRouteProxyConfigs(routeProxyQuery.data?.base_url ?? null, activePlatform),
     onSuccess: setConfigWriteOutcomes,
   });
   const updateMutation = useMutation({
@@ -748,7 +760,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
             <p className="font-semibold text-stone-950">配置写入结果</p>
             {configWriteOutcomes.map((outcome) => (
               <p key={`${outcome.target_key}:${outcome.path}`}>
-                {outcome.target_key}: {outcome.path} ({outcome.status})
+                {outcome.target_key}: {outcome.path} ({outcome.status}) · {outcome.route_proxy_key}
               </p>
             ))}
           </div>

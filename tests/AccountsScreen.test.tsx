@@ -1,8 +1,8 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createBatch,
   createApiRouteCredential,
@@ -95,6 +95,10 @@ function renderScreen(platform: "codex" | "claude" = "codex") {
 }
 
 describe("AccountsScreen", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     vi.mocked(open).mockReset();
     vi.mocked(createBatch).mockReset();
@@ -186,6 +190,7 @@ describe("AccountsScreen", () => {
         target_key: "codex",
         path: "C:\\Users\\test\\.codex\\config.toml",
         status: "written",
+        route_proxy_key: "sk-ai-switch-test",
       },
     ]);
     vi.mocked(importOfficialRouteCredentialsFromText).mockResolvedValue({
@@ -446,7 +451,7 @@ describe("AccountsScreen", () => {
 
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
     await waitFor(() =>
-      expect(writeRouteProxyConfigs).toHaveBeenCalledWith("http://127.0.0.1:43111"),
+      expect(writeRouteProxyConfigs).toHaveBeenCalledWith("http://127.0.0.1:43111", "codex"),
     );
     expect(screen.getByText("配置写入结果")).toBeInTheDocument();
 
@@ -461,5 +466,30 @@ describe("AccountsScreen", () => {
       }),
     );
     expect(screen.getByText("最近路由到：Team Account")).toBeInTheDocument();
+  });
+
+  it("clears route config write results after a short delay", async () => {
+    renderScreen();
+
+    await screen.findByText("本地代理：未启动");
+    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
+    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByLabelText("写入路由配置文件"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText("配置写入结果")).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(2999);
+    });
+    expect(screen.getByText("配置写入结果")).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.queryByText("配置写入结果")).not.toBeInTheDocument();
   });
 });

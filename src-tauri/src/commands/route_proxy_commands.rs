@@ -29,6 +29,7 @@ pub async fn get_route_proxy_status(
 pub async fn write_route_proxy_configs(
     state: State<'_, AppState>,
     base_url: Option<String>,
+    platform: String,
 ) -> Result<Vec<RouteConfigWriteOutcome>, ApiError> {
     let status = RouteProxyService::status(&state.route_proxy).await;
     let resolved = base_url
@@ -50,7 +51,7 @@ pub async fn write_route_proxy_configs(
             })
         })?;
 
-    RouteConfigService::write_configs(&state.paths, &resolved)
+    RouteConfigService::write_configs(&state.paths, &resolved, &platform)
         .await
         .map_err(ApiError::from)
 }

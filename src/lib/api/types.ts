@@ -224,6 +224,7 @@ export type RouteConfigWriteOutcome = {
   target_key: string;
   path: string;
   status: string;
+  route_proxy_key: string;
 };
 
 export type ImportJob = {

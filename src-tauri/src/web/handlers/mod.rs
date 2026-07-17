@@ -167,6 +167,14 @@ pub async fn dispatch_command(
         "get_route_proxy_status" => to_value(RouteProxyService::status(&state.route_proxy).await),
         "write_route_proxy_configs" => {
             let base_url = optional_string_arg(&args, "baseUrl");
+            let platform = optional_string_arg(&args, "platform").ok_or_else(|| {
+                to_error(AppError::Validation {
+                    code: "validation.route_config_platform_required",
+                    message: "Route config platform is required".to_string(),
+                    details: None,
+                    recoverable: true,
+                })
+            })?;
             let status = RouteProxyService::status(&state.route_proxy).await;
             let resolved = base_url
                 .filter(|value| !value.is_empty())
@@ -180,7 +188,7 @@ pub async fn dispatch_command(
                     })
                 })?;
             to_value(
-                RouteConfigService::write_configs(&state.paths, &resolved)
+                RouteConfigService::write_configs(&state.paths, &resolved, &platform)
                     .await
                     .map_err(to_error)?,
             )
