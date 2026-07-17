@@ -38,7 +38,7 @@ jobs:
             bundles: nsis
           - label: macOS
             os: macos-latest
-            bundles: dmg
+            bundles: "app dmg"
           - label: Linux
             os: ubuntu-latest
             bundles: "deb appimage"

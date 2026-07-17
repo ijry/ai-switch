@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 const updaterAssetPreference = new Map([
   ["windows-x86_64", [/\.exe$/i, /\.msi$/i]],
   ["windows-aarch64", [/\.exe$/i, /\.msi$/i]],
-  ["darwin-x86_64", [/\.dmg$/i]],
-  ["darwin-aarch64", [/\.dmg$/i]],
+  ["darwin-x86_64", [/\.tar\.gz$/i, /\.dmg$/i]],
+  ["darwin-aarch64", [/\.tar\.gz$/i, /\.dmg$/i]],
   ["linux-x86_64", [/\.AppImage$/i, /\.deb$/i]],
   ["linux-aarch64", [/\.AppImage$/i, /\.deb$/i]],
 ]);

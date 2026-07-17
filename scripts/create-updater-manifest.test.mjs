@@ -68,3 +68,35 @@ test("fails when a platform directory has no signed updater asset", async () => 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("prefers macOS updater archive over signed installer image", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ai-switch-release-"));
+
+  try {
+    const macDir = path.join(root, "darwin-aarch64");
+    await mkdir(macDir, { recursive: true });
+
+    await writeFile(path.join(macDir, "AI Switch.app.tar.gz"), "archive");
+    await writeFile(path.join(macDir, "AI Switch.app.tar.gz.sig"), "archive-signature\n");
+    await writeFile(path.join(macDir, "AI Switch.dmg"), "dmg");
+    await writeFile(path.join(macDir, "AI Switch.dmg.sig"), "dmg-signature\n");
+
+    const output = path.join(root, "latest.json");
+    await createManifest({
+      assetsDir: root,
+      tag: "v0.1.0",
+      repo: "ijry/ai-switch",
+      output,
+      pubDate: "2026-07-17T00:00:00.000Z",
+    });
+
+    const manifest = JSON.parse(await readFile(output, "utf8"));
+    assert.equal(manifest.platforms["darwin-aarch64"].signature, "archive-signature");
+    assert.equal(
+      manifest.platforms["darwin-aarch64"].url,
+      "https://github.com/ijry/ai-switch/releases/download/v0.1.0/AI%20Switch.app.tar.gz",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
