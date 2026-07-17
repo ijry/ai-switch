@@ -1,6 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -443,6 +443,76 @@ describe("AccountsScreen", () => {
         preview_json: "{\n  \"auth_json\": {}\n}",
       }),
     );
+  });
+
+  it("renders filtered route request statistics and request rows", async () => {
+    const expectedMonthStart = new Date();
+    expectedMonthStart.setHours(0, 0, 0, 0);
+    expectedMonthStart.setDate(1);
+
+    vi.mocked(getRoutePool).mockImplementation(async (platform, since) => ({
+      platform,
+      account_ids: ["cred-official-1"],
+      stats: statsFixture({
+        member_count: 1,
+        request_count: 1,
+        token_count: 2048,
+        cost_micros: 1500,
+        requests: [
+          {
+            id: `request-${since ?? "all"}`,
+            account_id: "cred-official-1",
+            account_name: "Team Account",
+            source_label: "route_proxy",
+            metric_type: "request",
+            amount: 1,
+            unit: "count",
+            metadata_json: "{\"path\":\"/v1/responses\",\"status\":201}",
+            created_at: "2026-07-17T08:00:00Z",
+          },
+          {
+            id: "request-invalid-metadata",
+            account_id: "cred-api-1",
+            account_name: "Broken Metadata Account",
+            source_label: "route_proxy",
+            metric_type: "request",
+            amount: 1,
+            unit: "count",
+            metadata_json: "{bad json",
+            created_at: "2026-07-17T08:01:00Z",
+          },
+        ],
+      }),
+    }));
+
+    renderScreen();
+
+    await userEvent.click(await screen.findByLabelText("查看算力池统计"));
+
+    expect(await screen.findByText("请求统计")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "当日" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "本周" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "本月" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "累计" })).toBeInTheDocument();
+    expect(screen.getByText("/v1/responses")).toBeInTheDocument();
+    expect(screen.getByText("201")).toBeInTheDocument();
+    expect(screen.getAllByText("route_proxy")).toHaveLength(2);
+    const invalidMetadataRow = screen.getByText("Broken Metadata Account").closest("div");
+    expect(invalidMetadataRow).not.toBeNull();
+    expect(within(invalidMetadataRow as HTMLElement).getAllByText("-")).toHaveLength(2);
+
+    await userEvent.click(screen.getByRole("button", { name: "本月" }));
+
+    await waitFor(() =>
+      expect(getRoutePool).toHaveBeenLastCalledWith(
+        "codex",
+        expectedMonthStart.toISOString(),
+      ),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "累计" }));
+
+    await waitFor(() => expect(getRoutePool).toHaveBeenLastCalledWith("codex", null));
   });
 
   it("starts proxy, writes configs, and tests the credential pool route", async () => {
