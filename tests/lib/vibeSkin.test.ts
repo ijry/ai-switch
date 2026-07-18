@@ -208,6 +208,72 @@ describe("vibeSkin", () => {
     expect(JSON.stringify(skin.decorations)).not.toContain("nativeCloseWindow");
   });
 
+  it("keeps whitelisted cockpit decoration templates from uploaded skins", async () => {
+    const skin = await importVibeSkinPackage(
+      new File(
+        [
+          JSON.stringify({
+            id: "uploaded-starship",
+            name: "上传星舰",
+            ui: {
+              accent: "#2ee8ff",
+              accentText: "#001018",
+              background: "#020617",
+              backgroundOverlay: "transparent",
+              panel: "rgba(2, 16, 32, 0.7)",
+              panelStrong: "rgba(5, 24, 45, 0.9)",
+              panelSubtle: "rgba(17, 44, 70, 0.72)",
+              border: "rgba(46, 232, 255, 0.36)",
+              text: "#e6fbff",
+              mutedText: "#8ac9d8",
+              button: "#2ee8ff",
+              buttonText: "#001018",
+              buttonHover: "#7cf6ff",
+              dangerBackground: "#f97373",
+              dangerText: "#1b0303",
+              tabBar: "rgba(2, 16, 32, 0.72)",
+              tabActive: "rgba(46, 232, 255, 0.18)",
+              tabInactive: "rgba(7, 24, 46, 0.72)",
+              tabHover: "rgba(46, 232, 255, 0.12)",
+              focus: "#f8c76a",
+            },
+            terminal: {
+              background: "transparent",
+              foreground: "#d8fbff",
+            },
+            decorations: {
+              variant: "starship-cockpit",
+              avatarTemplate: "space-ai-core",
+              showcaseTemplate: "space-ship",
+              rightCards: [
+                { title: "雷达阵列", template: "space-radar" },
+                { title: "舰体模拟", template: "space-ship" },
+                {
+                  title: "遥测输出",
+                  template: "space-telemetry",
+                  items: [{ label: "跃迁核心", badge: "稳定" }],
+                },
+                { title: "航线星图", template: "space-starmap" },
+              ],
+            },
+          }),
+        ],
+        "uploaded-starship.aiskin",
+        { type: "application/json" },
+      ),
+    );
+
+    expect(skin.decorations?.variant).toBe("starship-cockpit");
+    expect(skin.decorations?.avatarTemplate).toBe("space-ai-core");
+    expect(skin.decorations?.showcaseTemplate).toBe("space-ship");
+    expect(skin.decorations?.rightCards?.map((card) => card.template)).toEqual([
+      "space-radar",
+      "space-ship",
+      "space-telemetry",
+      "space-starmap",
+    ]);
+  });
+
   it("imports plain JSON aiskin manifests", async () => {
     const skin = await importVibeSkinPackage(
       new File(
@@ -246,6 +312,32 @@ describe("vibeSkin", () => {
       expect(skin.blocks?.titlebar?.title).toBe(builtInSkin.blocks?.titlebar?.title);
       expect(skin.decorations).toEqual(builtInSkin.decorations);
     }
+  });
+
+  it("includes the starship cockpit skin as a standard importable skin package", async () => {
+    const builtInSkin = BUILT_IN_VIBE_SKINS.find((skin) => skin.id === "starship-cockpit");
+
+    expect(builtInSkin).toBeTruthy();
+    expect(builtInSkin?.name).toBe("星舰驾驶舱");
+    expect(builtInSkin?.terminal?.background).toBe("transparent");
+    expect(builtInSkin?.decorations?.variant).toBe("starship-cockpit");
+    expect(builtInSkin?.decorations?.avatarTemplate).toBe("space-ai-core");
+    expect(builtInSkin?.decorations?.showcaseTemplate).toBe("space-ship");
+    expect(builtInSkin?.decorations?.rightCards?.map((card) => card.template)).toEqual([
+      "space-radar",
+      "space-ship",
+      "space-telemetry",
+      "space-starmap",
+    ]);
+
+    const imported = await importVibeSkinPackage(
+      new File([JSON.stringify(builtInSkin)], "starship-cockpit.aiskin", {
+        type: "application/json",
+      }),
+    );
+
+    expect(imported.id).toBe("starship-cockpit");
+    expect(imported.decorations).toEqual(builtInSkin?.decorations);
   });
 
   it("persists custom skins and exposes CSS variables", () => {

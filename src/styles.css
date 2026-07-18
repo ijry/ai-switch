@@ -1598,3 +1598,623 @@ button:disabled {
 .vibe-scrollbar-skin.vibe-scrollbar-active::-webkit-scrollbar-thumb {
   background-color: color-mix(in srgb, var(--vibe-accent) 52%, transparent);
 }
+
+/* Starship cockpit skin: CSS-only HUD visuals selected by safe manifest templates. */
+.vibe-skin--starship-cockpit.vibe-skin {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  font-family: "Cascadia Mono", "Fira Code", Consolas, monospace;
+  text-shadow: 0 0 10px rgba(46, 232, 255, 0.16);
+}
+
+.vibe-skin--starship-cockpit.vibe-skin::before,
+.vibe-skin--starship-cockpit.vibe-skin::after {
+  position: absolute;
+  inset: -12%;
+  z-index: 0;
+  pointer-events: none;
+  content: "";
+}
+
+.vibe-skin--starship-cockpit.vibe-skin::before {
+  background:
+    radial-gradient(circle at 18% 22%, rgba(255, 255, 255, 0.95) 0 1px, transparent 2px),
+    radial-gradient(circle at 72% 14%, rgba(163, 251, 255, 0.86) 0 1px, transparent 2px),
+    radial-gradient(circle at 46% 62%, rgba(248, 199, 106, 0.78) 0 1px, transparent 2px),
+    radial-gradient(circle at 86% 76%, rgba(255, 255, 255, 0.82) 0 1px, transparent 2px),
+    repeating-linear-gradient(112deg, transparent 0 18px, rgba(163, 251, 255, 0.13) 19px, transparent 22px);
+  background-size:
+    320px 320px,
+    420px 420px,
+    360px 360px,
+    520px 520px,
+    100% 100%;
+  opacity: 0.52;
+  transform: perspective(900px) rotateX(58deg) scale(1.2);
+  animation: vibe-space-starflow 8s linear infinite;
+}
+
+.vibe-skin--starship-cockpit.vibe-skin::after {
+  background:
+    radial-gradient(ellipse at 50% -8%, rgba(46, 232, 255, 0.24), transparent 36%),
+    radial-gradient(ellipse at 50% 112%, rgba(248, 199, 106, 0.13), transparent 36%),
+    linear-gradient(115deg, transparent 0 18%, rgba(46, 232, 255, 0.1) 18.5% 19.5%, transparent 20.5% 79.5%, rgba(46, 232, 255, 0.1) 80.5% 81.5%, transparent 82%),
+    linear-gradient(90deg, rgba(46, 232, 255, 0.18), transparent 10% 90%, rgba(46, 232, 255, 0.18));
+  opacity: 0.78;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-frame {
+  position: relative;
+  z-index: 1;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-frame::before {
+  position: absolute;
+  inset: 3.25rem 0.75rem 3.05rem;
+  z-index: 0;
+  border: 1px solid rgba(46, 232, 255, 0.16);
+  border-top-color: rgba(163, 251, 255, 0.34);
+  border-radius: 2.2rem 2.2rem 1.2rem 1.2rem;
+  background:
+    linear-gradient(100deg, rgba(46, 232, 255, 0.08), transparent 18% 82%, rgba(46, 232, 255, 0.08)),
+    radial-gradient(ellipse at 50% 0%, rgba(163, 251, 255, 0.16), transparent 32%);
+  clip-path: polygon(7% 0, 93% 0, 100% 42%, 98% 100%, 2% 100%, 0 42%);
+  pointer-events: none;
+  content: "";
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-titlebar,
+.vibe-skin--starship-cockpit .vibe-skin-body,
+.vibe-skin--starship-cockpit .vibe-skin-taskbar,
+.vibe-skin--starship-cockpit .vibe-skin-status-bar {
+  position: relative;
+  z-index: 1;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-titlebar {
+  clip-path: polygon(0 0, 100% 0, 98.5% 100%, 1.5% 100%);
+  text-transform: uppercase;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-titlebar::before,
+.vibe-skin--starship-cockpit .vibe-skin-right-card::before,
+.vibe-skin--starship-cockpit .vibe-skin-terminal-shell::before,
+.vibe-skin--starship-cockpit .vibe-skin-taskbar::before {
+  position: absolute;
+  right: 0.85rem;
+  left: 0.85rem;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(163, 251, 255, 0.52), transparent);
+  pointer-events: none;
+  content: "";
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-titlebar::before,
+.vibe-skin--starship-cockpit .vibe-skin-right-card::before,
+.vibe-skin--starship-cockpit .vibe-skin-terminal-shell::before {
+  top: 0.45rem;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-taskbar::before {
+  top: 0;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-titlebar-controls {
+  border-width: 1px;
+  border-radius: 999px;
+  padding: 0.18rem 0.25rem;
+  background: rgba(1, 10, 19, 0.42);
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-window-button {
+  border-radius: 999px;
+  color: rgba(230, 251, 255, 0.94);
+  text-shadow: 0 0 8px currentColor;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-sidebar,
+.vibe-skin--starship-cockpit .vibe-skin-workspace,
+.vibe-skin--starship-cockpit .vibe-skin-right-rail {
+  backdrop-filter: blur(16px) saturate(1.2);
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-sidebar-header,
+.vibe-skin--starship-cockpit .vibe-skin-control-panel,
+.vibe-skin--starship-cockpit .vibe-skin-group-panel,
+.vibe-skin--starship-cockpit .vibe-skin-right-card,
+.vibe-skin--starship-cockpit .vibe-skin-showcase-stage,
+.vibe-skin--starship-cockpit .vibe-skin-terminal-shell {
+  position: relative;
+  overflow: hidden;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-sidebar-header::after,
+.vibe-skin--starship-cockpit .vibe-skin-control-panel::after,
+.vibe-skin--starship-cockpit .vibe-skin-group-panel::after,
+.vibe-skin--starship-cockpit .vibe-skin-right-card::after,
+.vibe-skin--starship-cockpit .vibe-skin-showcase-stage::after,
+.vibe-skin--starship-cockpit .vibe-skin-terminal-shell::after {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background:
+    linear-gradient(135deg, rgba(163, 251, 255, 0.12), transparent 28% 70%, rgba(248, 199, 106, 0.08)),
+    repeating-linear-gradient(0deg, transparent 0 13px, rgba(46, 232, 255, 0.035) 14px, transparent 15px);
+  pointer-events: none;
+  content: "";
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-avatar {
+  border-radius: 1rem;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-avatar::after {
+  position: absolute;
+  right: 0.45rem;
+  bottom: 0.45rem;
+  width: 0.48rem;
+  height: 0.48rem;
+  border-radius: 999px;
+  background: #70ffb5;
+  box-shadow: 0 0 12px rgba(112, 255, 181, 0.84);
+  content: "";
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-session-list {
+  border: 1px solid rgba(46, 232, 255, 0.18);
+  border-radius: 1.35rem;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(46, 232, 255, 0.12), transparent 9rem),
+    linear-gradient(180deg, rgba(1, 12, 24, 0.34), rgba(1, 8, 17, 0.2));
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-list-trigger {
+  border: 1px solid rgba(46, 232, 255, 0.16);
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-list-trigger:hover,
+.vibe-skin--starship-cockpit .vibe-skin-session:hover,
+.vibe-skin--starship-cockpit .vibe-skin-taskbar-menu-item:hover:not(:disabled) {
+  border-color: rgba(46, 232, 255, 0.46);
+  box-shadow: inset 0 0 16px rgba(46, 232, 255, 0.08);
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-tabbar {
+  padding-top: 0.28rem;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-tab,
+.vibe-skin--starship-cockpit .vibe-skin-tab-active {
+  align-self: flex-end;
+  height: calc(100% - 0.28rem);
+  border: 1px solid var(--vibe-tab-border, var(--vibe-border));
+  border-bottom: 0;
+  border-radius: 0.95rem 0.95rem 0 0;
+  clip-path: polygon(0.55rem 0, calc(100% - 0.35rem) 0, 100% 100%, 0 100%);
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-tab:hover {
+  border-color: rgba(46, 232, 255, 0.38);
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-tab-close {
+  border-radius: 999px;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-tab-close:hover {
+  color: #a3fbff;
+  filter: drop-shadow(0 0 8px rgba(46, 232, 255, 0.78));
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-terminal-shell {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(46, 232, 255, 0.1), transparent 14rem),
+    linear-gradient(180deg, rgba(1, 9, 18, 0.18), rgba(1, 6, 12, 0.04)) !important;
+  backdrop-filter: blur(3px);
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-terminal-shell .xterm-pane,
+.vibe-skin--starship-cockpit .vibe-skin-terminal-shell .xterm,
+.vibe-skin--starship-cockpit .vibe-skin-terminal-shell .xterm-viewport,
+.vibe-skin--starship-cockpit .vibe-skin-terminal-shell .xterm-screen,
+.vibe-skin--starship-cockpit .vibe-skin-terminal-shell .xterm-screen canvas,
+.vibe-skin--starship-cockpit .vibe-skin-terminal-shell canvas {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-taskbar {
+  backdrop-filter: blur(16px) saturate(1.2);
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-taskbar-start-button {
+  border-radius: 0.9rem;
+  text-transform: uppercase;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 0 20px rgba(46, 232, 255, 0.26);
+}
+
+.vibe-skin-space-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.vibe-skin-space-led {
+  border-color: rgba(46, 232, 255, 0.32);
+  background: rgba(46, 232, 255, 0.1);
+  color: #a3fbff;
+  box-shadow: inset 0 0 12px rgba(46, 232, 255, 0.08);
+}
+
+.vibe-skin-space-ai-core,
+.vibe-skin-space-ship,
+.vibe-skin-space-radar,
+.vibe-skin-space-starmap {
+  position: relative;
+  display: block;
+  width: 8.75rem;
+  height: 8.75rem;
+  overflow: hidden;
+  border: 1px solid rgba(46, 232, 255, 0.34);
+  border-radius: 2rem;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(46, 232, 255, 0.24), transparent 3.2rem),
+    linear-gradient(180deg, rgba(3, 25, 46, 0.86), rgba(1, 7, 14, 0.72));
+  box-shadow:
+    inset 0 0 24px rgba(46, 232, 255, 0.1),
+    0 16px 30px rgba(0, 0, 0, 0.25);
+}
+
+.vibe-skin-space-ai-core::before,
+.vibe-skin-space-ship::before,
+.vibe-skin-space-radar::before,
+.vibe-skin-space-starmap::before {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 18% 22%, rgba(255, 255, 255, 0.72) 0 1px, transparent 2px),
+    radial-gradient(circle at 74% 66%, rgba(163, 251, 255, 0.66) 0 1px, transparent 2px),
+    repeating-linear-gradient(90deg, transparent 0 12px, rgba(46, 232, 255, 0.04) 13px, transparent 14px);
+  pointer-events: none;
+  content: "";
+}
+
+.vibe-skin-space-ai-core {
+  width: 100%;
+  height: 100%;
+  min-height: 3.5rem;
+  border-radius: 1rem;
+}
+
+.vibe-skin-space-ai-core-ring,
+.vibe-skin-space-ai-core-eye,
+.vibe-skin-space-ai-core-pulse {
+  position: absolute;
+  border-radius: 999px;
+}
+
+.vibe-skin-space-ai-core-ring {
+  inset: 18%;
+  border: 2px solid rgba(46, 232, 255, 0.72);
+  box-shadow:
+    0 0 18px rgba(46, 232, 255, 0.45),
+    inset 0 0 18px rgba(46, 232, 255, 0.25);
+}
+
+.vibe-skin-space-ai-core-eye {
+  inset: 34%;
+  background: radial-gradient(circle, #ffffff 0 16%, #a3fbff 17% 40%, rgba(46, 232, 255, 0.16) 41% 100%);
+  box-shadow: 0 0 18px rgba(163, 251, 255, 0.72);
+}
+
+.vibe-skin-space-ai-core-pulse {
+  inset: 8%;
+  border: 1px dashed rgba(248, 199, 106, 0.48);
+  animation: vibe-space-radar-spin 8s linear infinite;
+}
+
+.vibe-skin-space-ship {
+  perspective: 680px;
+}
+
+.vibe-skin-space-ship-halo,
+.vibe-skin-space-ship-model,
+.vibe-skin-space-ship-body,
+.vibe-skin-space-ship-wing,
+.vibe-skin-space-ship-core,
+.vibe-skin-space-ship-thruster {
+  position: absolute;
+}
+
+.vibe-skin-space-ship-halo {
+  top: 18%;
+  left: 50%;
+  width: 6rem;
+  height: 6rem;
+  border: 1px solid rgba(46, 232, 255, 0.28);
+  border-radius: 999px;
+  box-shadow: inset 0 0 22px rgba(46, 232, 255, 0.08);
+  transform: translateX(-50%) rotateX(68deg);
+}
+
+.vibe-skin-space-ship-model {
+  inset: 0;
+  transform-style: preserve-3d;
+  transform-origin: 50% 52%;
+  animation: vibe-space-ship-orbit 15s ease-in-out infinite;
+}
+
+.vibe-skin-space-ship-body,
+.vibe-skin-space-ship-wing,
+.vibe-skin-space-ship-core,
+.vibe-skin-space-ship-thruster {
+  left: 50%;
+  transform-style: preserve-3d;
+}
+
+.vibe-skin-space-ship-body {
+  top: 28%;
+  width: 1.45rem;
+  height: 4.7rem;
+  border-radius: 1.2rem 1.2rem 0.45rem 0.45rem;
+  background:
+    linear-gradient(90deg, #09243a, #d9fbff 44%, #2ee8ff 52%, #0a5b75),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82), transparent 28%);
+  box-shadow: 0 0 22px rgba(46, 232, 255, 0.34);
+  transform: translateX(-50%) rotateX(62deg) rotateZ(45deg);
+}
+
+.vibe-skin-space-ship-wing {
+  top: 52%;
+  width: 3.15rem;
+  height: 1.05rem;
+  border-radius: 0.2rem 1.05rem 1.05rem 0.2rem;
+  background: linear-gradient(90deg, rgba(46, 232, 255, 0.82), rgba(216, 251, 255, 0.96));
+  box-shadow: 0 0 14px rgba(46, 232, 255, 0.28);
+  transform-origin: center left;
+}
+
+.vibe-skin-space-ship-wing-left {
+  margin-left: -3.35rem;
+  transform: rotateZ(-18deg) skewX(-18deg);
+}
+
+.vibe-skin-space-ship-wing-right {
+  margin-left: 0.25rem;
+  transform: rotateZ(198deg) skewX(-18deg);
+}
+
+.vibe-skin-space-ship-core {
+  top: 48%;
+  width: 0.82rem;
+  height: 0.82rem;
+  border-radius: 999px;
+  background: #f8c76a;
+  box-shadow: 0 0 18px rgba(248, 199, 106, 0.82);
+  transform: translateX(-50%);
+}
+
+.vibe-skin-space-ship-thruster {
+  top: 68%;
+  width: 0.58rem;
+  height: 2.35rem;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(46, 232, 255, 0.95), rgba(248, 199, 106, 0.42), transparent);
+  filter: blur(0.5px);
+  transform: translateX(-50%);
+  animation: vibe-space-thruster 1.8s ease-in-out infinite;
+}
+
+.vibe-skin-space-radar-grid,
+.vibe-skin-space-radar-sweep,
+.vibe-skin-space-radar-blip,
+.vibe-skin-space-starmap-orbit,
+.vibe-skin-space-starmap-node,
+.vibe-skin-space-starmap-route {
+  position: absolute;
+}
+
+.vibe-skin-space-radar-grid {
+  inset: 12%;
+  border: 1px solid rgba(46, 232, 255, 0.45);
+  border-radius: 999px;
+  background:
+    linear-gradient(rgba(46, 232, 255, 0.18), rgba(46, 232, 255, 0.18)) 50% 0 / 1px 100% no-repeat,
+    linear-gradient(90deg, rgba(46, 232, 255, 0.18), rgba(46, 232, 255, 0.18)) 0 50% / 100% 1px no-repeat,
+    radial-gradient(circle, transparent 0 34%, rgba(46, 232, 255, 0.2) 35% 36%, transparent 37% 67%, rgba(46, 232, 255, 0.2) 68% 69%, transparent 70%);
+}
+
+.vibe-skin-space-radar-sweep {
+  inset: 12%;
+  border-radius: 999px;
+  background: conic-gradient(from 0deg, rgba(46, 232, 255, 0.58), rgba(46, 232, 255, 0.2) 28deg, transparent 82deg);
+  mix-blend-mode: screen;
+  animation: vibe-space-radar-spin 4s linear infinite;
+}
+
+.vibe-skin-space-radar-blip {
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 999px;
+  background: #f8c76a;
+  box-shadow: 0 0 12px rgba(248, 199, 106, 0.82);
+}
+
+.vibe-skin-space-radar-blip-a {
+  top: 32%;
+  left: 58%;
+}
+
+.vibe-skin-space-radar-blip-b {
+  top: 62%;
+  left: 36%;
+}
+
+.vibe-skin-space-radar-blip-c {
+  top: 48%;
+  left: 72%;
+}
+
+.vibe-skin-space-telemetry-lines {
+  background: rgba(1, 9, 18, 0.48);
+  border-color: rgba(46, 232, 255, 0.2);
+  box-shadow: inset 0 0 18px rgba(46, 232, 255, 0.06);
+}
+
+.vibe-skin-space-telemetry-line {
+  display: flex;
+  gap: 0.45rem;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--vibe-text);
+  font-size: 0.72rem;
+  line-height: 1.55;
+}
+
+.vibe-skin-space-telemetry-line:last-child::after {
+  width: 0.45rem;
+  margin-left: 0.15rem;
+  color: var(--vibe-accent);
+  content: "_";
+  animation: vibe-space-cursor 1s steps(2, end) infinite;
+}
+
+.vibe-skin-space-starmap-orbit {
+  border: 1px solid rgba(46, 232, 255, 0.28);
+  border-radius: 999px;
+}
+
+.vibe-skin-space-starmap-orbit-a {
+  inset: 20% 10%;
+  transform: rotate(-18deg);
+}
+
+.vibe-skin-space-starmap-orbit-b {
+  inset: 28% 18%;
+  transform: rotate(24deg);
+}
+
+.vibe-skin-space-starmap-node {
+  width: 0.58rem;
+  height: 0.58rem;
+  border-radius: 999px;
+  background: #a3fbff;
+  box-shadow: 0 0 12px rgba(46, 232, 255, 0.75);
+}
+
+.vibe-skin-space-starmap-node-a {
+  top: 34%;
+  left: 22%;
+}
+
+.vibe-skin-space-starmap-node-b {
+  top: 52%;
+  left: 48%;
+  background: #f8c76a;
+  box-shadow: 0 0 14px rgba(248, 199, 106, 0.78);
+}
+
+.vibe-skin-space-starmap-node-c {
+  top: 28%;
+  left: 74%;
+}
+
+.vibe-skin-space-starmap-route {
+  top: 40%;
+  left: 24%;
+  width: 4.9rem;
+  height: 2.7rem;
+  border-top: 1px dashed rgba(248, 199, 106, 0.72);
+  border-right: 1px dashed rgba(248, 199, 106, 0.72);
+  border-radius: 0 2rem 0 0;
+  transform: rotate(-8deg);
+  animation: vibe-space-route 2.6s linear infinite;
+}
+
+@keyframes vibe-space-starflow {
+  from {
+    background-position:
+      0 0,
+      0 0,
+      0 0,
+      0 0,
+      0 0;
+  }
+  to {
+    background-position:
+      180px 360px,
+      -220px 260px,
+      120px 300px,
+      -160px 380px,
+      0 320px;
+  }
+}
+
+@keyframes vibe-space-radar-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes vibe-space-ship-orbit {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 12px rgba(46, 232, 255, 0.34));
+    transform: rotateX(62deg) rotateY(-28deg) rotateZ(-8deg) translateY(0);
+  }
+  50% {
+    filter: drop-shadow(0 0 24px rgba(248, 199, 106, 0.32));
+    transform: rotateX(58deg) rotateY(32deg) rotateZ(8deg) translateY(-0.25rem);
+  }
+}
+
+@keyframes vibe-space-thruster {
+  0%,
+  100% {
+    opacity: 0.68;
+    transform: translateX(-50%) scaleY(0.86);
+  }
+  50% {
+    opacity: 1;
+    transform: translateX(-50%) scaleY(1.08);
+  }
+}
+
+@keyframes vibe-space-route {
+  50% {
+    opacity: 0.42;
+  }
+}
+
+@keyframes vibe-space-cursor {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (max-width: 1023px) {
+  .vibe-skin--starship-cockpit .vibe-skin-frame::before {
+    inset: 3.25rem 0.35rem 3.05rem;
+    border-radius: 1.4rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vibe-skin--starship-cockpit.vibe-skin::before,
+  .vibe-skin-space-ai-core-pulse,
+  .vibe-skin-space-radar-sweep,
+  .vibe-skin-space-ship-model,
+  .vibe-skin-space-ship-thruster,
+  .vibe-skin-space-starmap-route,
+  .vibe-skin-space-telemetry-line:last-child::after {
+    animation-duration: 60s;
+    animation-iteration-count: 1;
+  }
+}

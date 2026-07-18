@@ -391,6 +391,38 @@ describe("VibeScreen", () => {
     expect(screen.queryByText("皮肤区域")).not.toBeInTheDocument();
   });
 
+  it("renders the built-in starship cockpit skin with Chinese HUD blocks", async () => {
+    renderScreen();
+
+    await switchToSkinTheme();
+    await openAppearanceDialog();
+    await userEvent.selectOptions(screen.getByLabelText("Vibe skin"), "starship-cockpit");
+
+    expect(screen.getByLabelText("Vibe skin")).toHaveValue("starship-cockpit");
+    expect(screen.getByText("星舰驾驶舱 - Vibe 终端")).toBeInTheDocument();
+    expect(screen.getByText("深空跃迁 / 指令甲板")).toBeInTheDocument();
+    expect(screen.getByText("舰桥 AI 核心")).toBeInTheDocument();
+    expect(screen.getByText("量子链路在线")).toBeInTheDocument();
+    expect(screen.getByText("星舰主视窗")).toBeInTheDocument();
+    expect(screen.getByText("舰体姿态、雷达扫描与遥测输出已同步到 Vibe 工作区。")).toBeInTheDocument();
+    expect(screen.getByText("雷达扫描")).toBeInTheDocument();
+    expect(screen.getByText("舰体模拟")).toBeInTheDocument();
+    expect(screen.getByText("遥测输出")).toBeInTheDocument();
+    expect(screen.getByText("航线星图")).toBeInTheDocument();
+    expect(screen.getByText("舰桥链路已建立")).toBeInTheDocument();
+    expect(screen.getByText("深空航行模式")).toBeInTheDocument();
+    expect(screen.getByText("舰桥")).toBeInTheDocument();
+    expect(screen.getByTestId("vibe-skin-space-ai-core")).toBeInTheDocument();
+    expect(screen.getAllByTestId("vibe-skin-space-ship").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByTestId("vibe-skin-space-radar")).toBeInTheDocument();
+    expect(screen.getByTestId("vibe-skin-space-telemetry")).toBeInTheDocument();
+    expect(screen.getByTestId("vibe-skin-space-starmap")).toBeInTheDocument();
+    expect(document.querySelector(".vibe-skin--starship-cockpit")).toBeTruthy();
+    expect(document.querySelector(".vibe-skin-space-card")).toBeTruthy();
+    expect(document.querySelector(".vibe-skin-space-telemetry-card")).toBeTruthy();
+    expect(screen.queryByText("皮肤区域")).not.toBeInTheDocument();
+  });
+
   it("renders custom rescue-style decorations from a stored skin package manifest", async () => {
     window.localStorage.setItem(
       VIBE_SKIN_STORAGE_KEY,

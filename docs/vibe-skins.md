@@ -10,10 +10,13 @@ Zip packages can include image assets. When `ui.backgroundImage`, `regions.*.bac
 
 The built-in `Codex 2007 Blue` skin is QQ2007-inspired chrome: glossy title bar, left rail, tab strip, terminal shell, right display rail, and taskbar. It does not directly use the reference image as a full-screen background.
 
+The built-in `星舰驾驶舱` skin is a cinematic cockpit package: deep-space starflow, cockpit HUD chrome, a radar card, rotating CSS spacecraft, telemetry output, starmap, transparent terminal shell, and bottom ship console taskbar.
+
 Built-in skins are stored as ordinary package manifests under `src/skins/`:
 
 - `src/skins/codex-2007-blue/skin.json`
 - `src/skins/rescue-pups-adventure-bay/skin.json`
+- `src/skins/starship-cockpit/skin.json`
 
 To make a derivative skin, copy one of those folders, edit `skin.json` with a new `id`, `name`, colors, regions, blocks, decorations, and optional `assets/` paths, then zip the folder or rename the JSON manifest to `.aiskin`.
 
@@ -198,15 +201,15 @@ The taskbar start menu supports only a fixed allowlist of app actions. Unknown a
 
 Supported fields:
 
-- `decorations.variant`: optional visual variant class. Supported values are `codex-2007` and `rescue-pups`.
+- `decorations.variant`: optional visual variant class. Supported values are `codex-2007`, `rescue-pups`, and `starship-cockpit`.
 - `decorations.titlebarMark`: short text shown in the titlebar badge. It is truncated to four characters.
-- `decorations.avatarTemplate`: app-rendered template for the left profile avatar. Supported values include `qq-person` and `rescue-rider`.
-- `decorations.showcaseTemplate`: app-rendered template for the right showcase stage. Supported values include `qq-mascot` and `rescue-hq`.
+- `decorations.avatarTemplate`: app-rendered template for the left profile avatar. Supported values include `qq-person`, `rescue-rider`, and `space-ai-core`.
+- `decorations.showcaseTemplate`: app-rendered template for the right showcase stage. Supported values include `qq-mascot`, `rescue-hq`, and `space-ship`.
 - `decorations.rightCards`: extra right-rail cards declared by the skin package.
-- `decorations.rightCards[].template`: card layout template. Supported values include `qq-person`, `rescue-dog-team`, and `rescue-civic`.
+- `decorations.rightCards[].template`: card layout template. Supported values include `qq-person`, `rescue-dog-team`, `rescue-civic`, `space-radar`, `space-ship`, `space-telemetry`, and `space-starmap`.
 - `decorations.rightCards[].figure`: card image path or data URL.
 - `decorations.rightCards[].items[]`: card items with `label`, optional `badge`, optional `template`, optional `tone`, and optional `image`.
-- `decorations.rightCards[].items[].template`: item template. Supported values include `qq-person`, `rescue-mayor`, and `rescue-chicken`.
+- `decorations.rightCards[].items[].template`: item template. Supported values include `qq-person`, `rescue-mayor`, `rescue-chicken`, and the cockpit templates `space-ai-core`, `space-ship`, `space-radar`, `space-telemetry`, and `space-starmap`.
 - `decorations.rightCards[].items[].tone`: rescue dog color. Supported values are `red`, `blue`, `yellow`, `green`, `pink`, `orange`, and `neutral`.
 - `decorations.rightCards[].items[].image`: item image path or data URL.
 

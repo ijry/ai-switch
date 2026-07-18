@@ -3,6 +3,7 @@ import type { CSSProperties } from "react";
 
 import codex2007BlueSkinManifest from "../skins/codex-2007-blue/skin.json";
 import rescuePupsAdventureBaySkinManifest from "../skins/rescue-pups-adventure-bay/skin.json";
+import starshipCockpitSkinManifest from "../skins/starship-cockpit/skin.json";
 
 export const VIBE_SKIN_STORAGE_KEY = "ai-switch.vibe.custom-skin";
 
@@ -207,7 +208,11 @@ export type VibeSkinTaskbarBlock = {
   clockFormat?: "HH:mm";
 };
 
-export const VIBE_SKIN_DECORATION_VARIANTS = ["codex-2007", "rescue-pups"] as const;
+export const VIBE_SKIN_DECORATION_VARIANTS = [
+  "codex-2007",
+  "rescue-pups",
+  "starship-cockpit",
+] as const;
 
 export type VibeSkinDecorationVariant = (typeof VIBE_SKIN_DECORATION_VARIANTS)[number];
 
@@ -220,6 +225,11 @@ export const VIBE_SKIN_DECORATION_TEMPLATES = [
   "rescue-civic",
   "rescue-mayor",
   "rescue-chicken",
+  "space-ai-core",
+  "space-ship",
+  "space-radar",
+  "space-telemetry",
+  "space-starmap",
 ] as const;
 
 export type VibeSkinDecorationTemplate = (typeof VIBE_SKIN_DECORATION_TEMPLATES)[number];
@@ -360,6 +370,7 @@ function asBuiltInVibeSkin(skin: unknown): VibeSkinDefinition {
 export const BUILT_IN_VIBE_SKINS: VibeSkinDefinition[] = [
   asBuiltInVibeSkin(codex2007BlueSkinManifest),
   asBuiltInVibeSkin(rescuePupsAdventureBaySkinManifest),
+  asBuiltInVibeSkin(starshipCockpitSkinManifest),
 ];
 
 const FALLBACK_UI = BUILT_IN_VIBE_SKINS[0].ui;

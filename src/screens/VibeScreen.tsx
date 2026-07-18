@@ -401,6 +401,76 @@ function renderSkinTemplateFigure(
     );
   }
 
+  if (template === "space-ai-core") {
+    return (
+      <div
+        aria-label={label}
+        className={`vibe-skin-space-ai-core ${className}`}
+        data-testid="vibe-skin-space-ai-core"
+        role="img"
+      >
+        <span className="vibe-skin-space-ai-core-ring" />
+        <span className="vibe-skin-space-ai-core-eye" />
+        <span className="vibe-skin-space-ai-core-pulse" />
+      </div>
+    );
+  }
+
+  if (template === "space-ship") {
+    return (
+      <div
+        aria-label={label}
+        className={`vibe-skin-showcase-figure vibe-skin-space-ship ${className}`}
+        data-testid="vibe-skin-space-ship"
+        role="img"
+      >
+        <span className="vibe-skin-space-ship-halo" />
+        <span className="vibe-skin-space-ship-model">
+          <span className="vibe-skin-space-ship-body" />
+          <span className="vibe-skin-space-ship-wing vibe-skin-space-ship-wing-left" />
+          <span className="vibe-skin-space-ship-wing vibe-skin-space-ship-wing-right" />
+          <span className="vibe-skin-space-ship-core" />
+          <span className="vibe-skin-space-ship-thruster" />
+        </span>
+      </div>
+    );
+  }
+
+  if (template === "space-radar") {
+    return (
+      <div
+        aria-label={label}
+        className={`vibe-skin-space-radar ${className}`}
+        data-testid="vibe-skin-space-radar"
+        role="img"
+      >
+        <span className="vibe-skin-space-radar-grid" />
+        <span className="vibe-skin-space-radar-sweep" />
+        <span className="vibe-skin-space-radar-blip vibe-skin-space-radar-blip-a" />
+        <span className="vibe-skin-space-radar-blip vibe-skin-space-radar-blip-b" />
+        <span className="vibe-skin-space-radar-blip vibe-skin-space-radar-blip-c" />
+      </div>
+    );
+  }
+
+  if (template === "space-starmap") {
+    return (
+      <div
+        aria-label={label}
+        className={`vibe-skin-space-starmap ${className}`}
+        data-testid="vibe-skin-space-starmap"
+        role="img"
+      >
+        <span className="vibe-skin-space-starmap-orbit vibe-skin-space-starmap-orbit-a" />
+        <span className="vibe-skin-space-starmap-orbit vibe-skin-space-starmap-orbit-b" />
+        <span className="vibe-skin-space-starmap-route" />
+        <span className="vibe-skin-space-starmap-node vibe-skin-space-starmap-node-a" />
+        <span className="vibe-skin-space-starmap-node vibe-skin-space-starmap-node-b" />
+        <span className="vibe-skin-space-starmap-node vibe-skin-space-starmap-node-c" />
+      </div>
+    );
+  }
+
   return null;
 }
 
@@ -507,6 +577,104 @@ function SkinDecorationCard({
             </div>
           ))}
         </div>
+      </div>
+    );
+  }
+
+  if (
+    card.template === "space-radar" ||
+    card.template === "space-ship" ||
+    card.template === "space-starmap"
+  ) {
+    const templateFigure = renderSkinTemplateFigure(
+      card.template,
+      card.title ?? card.badge ?? "星舰展示",
+      "mx-auto",
+    );
+
+    return (
+      <div className="vibe-skin-right-card vibe-skin-space-card mt-3 rounded-2xl border p-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold tracking-[0.18em] text-[var(--vibe-muted-text)]">
+              {card.badge ?? "HUD"}
+            </p>
+            {card.title && (
+              <h3 className="mt-1 truncate text-[13px] font-semibold text-[var(--vibe-text)]">
+                {card.title}
+              </h3>
+            )}
+            {card.subtitle && (
+              <p className="mt-1 text-[11px] text-[var(--vibe-muted-text)]">{card.subtitle}</p>
+            )}
+          </div>
+          <span className="vibe-skin-space-led shrink-0 rounded-full border px-2 py-0.5 text-[10px]">
+            在线
+          </span>
+        </div>
+        <div className="mt-3 grid place-items-center">{templateFigure}</div>
+        {card.items && card.items.length > 0 && (
+          <div className="mt-3 grid gap-1.5">
+            {card.items.slice(0, 4).map((item) => (
+              <p
+                className="flex items-center justify-between gap-2 rounded-full border px-2 py-1 text-[11px]"
+                key={item.label}
+              >
+                <span>{item.label}</span>
+                {item.badge && <span className="text-[var(--vibe-accent)]">{item.badge}</span>}
+              </p>
+            ))}
+          </div>
+        )}
+        {card.footer && (
+          <p className="mt-3 text-[11px] text-[var(--vibe-muted-text)]">{card.footer}</p>
+        )}
+      </div>
+    );
+  }
+
+  if (card.template === "space-telemetry") {
+    const telemetryItems = card.items?.length
+      ? card.items
+      : [
+          { label: "跃迁核心", badge: "稳定" },
+          { label: "护盾矩阵", badge: "97%" },
+          { label: "导航星图", badge: "同步" },
+        ];
+
+    return (
+      <div
+        className="vibe-skin-right-card vibe-skin-space-card vibe-skin-space-telemetry-card mt-3 rounded-2xl border p-3"
+        data-testid="vibe-skin-space-telemetry"
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold tracking-[0.18em] text-[var(--vibe-muted-text)]">
+              {card.badge ?? "LIVE"}
+            </p>
+            <h3 className="mt-1 truncate text-[13px] font-semibold text-[var(--vibe-text)]">
+              {card.title ?? "遥测输出"}
+            </h3>
+          </div>
+          <span className="vibe-skin-space-led shrink-0 rounded-full border px-2 py-0.5 text-[10px]">
+            检测
+          </span>
+        </div>
+        {card.subtitle && (
+          <p className="mt-1 text-[11px] text-[var(--vibe-muted-text)]">{card.subtitle}</p>
+        )}
+        <div className="vibe-skin-space-telemetry-lines mt-3 rounded-xl border p-2">
+          {telemetryItems.slice(0, 6).map((item, index) => (
+            <p className="vibe-skin-space-telemetry-line" key={`${item.label}-${index}`}>
+              <span className="text-[var(--vibe-muted-text)]">&gt;</span>
+              <span>{item.label}</span>
+              <span className="ml-auto text-[var(--vibe-accent)]">{item.badge ?? "OK"}</span>
+            </p>
+          ))}
+        </div>
+        {card.footer && (
+          <p className="mt-2 text-[11px] text-[var(--vibe-muted-text)]">{card.footer}</p>
+        )}
       </div>
     );
   }

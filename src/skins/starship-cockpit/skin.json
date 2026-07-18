@@ -1,0 +1,402 @@
+{
+  "id": "starship-cockpit",
+  "name": "星舰驾驶舱",
+  "author": "AI Switch",
+  "version": "1.0.0",
+  "ui": {
+    "accent": "#2ee8ff",
+    "accentText": "#021019",
+    "background": "radial-gradient(circle at 18% 12%, rgba(46,232,255,0.2), transparent 18rem), radial-gradient(circle at 78% 20%, rgba(248,199,106,0.13), transparent 17rem), linear-gradient(135deg, #020617 0%, #061425 48%, #01030a 100%)",
+    "backgroundOverlay": "linear-gradient(105deg, rgba(46,232,255,0.08), transparent 28%, rgba(248,199,106,0.06) 62%, transparent), repeating-linear-gradient(90deg, rgba(255,255,255,0.035) 0 1px, transparent 1px 96px)",
+    "panel": "rgba(2, 16, 32, 0.62)",
+    "panelStrong": "rgba(4, 23, 43, 0.86)",
+    "panelSubtle": "rgba(8, 35, 61, 0.64)",
+    "border": "rgba(46, 232, 255, 0.32)",
+    "text": "#e6fbff",
+    "mutedText": "#8bc9d8",
+    "button": "linear-gradient(180deg, #7cf6ff 0%, #2ee8ff 45%, #087d9a 100%)",
+    "buttonText": "#001018",
+    "buttonHover": "linear-gradient(180deg, #b7fbff 0%, #52f1ff 45%, #0aa8c9 100%)",
+    "dangerBackground": "linear-gradient(180deg, #ff9b7a, #f45454)",
+    "dangerText": "#190607",
+    "tabBar": "linear-gradient(180deg, rgba(1,12,24,0.82), rgba(4,25,45,0.7))",
+    "tabActive": "linear-gradient(180deg, rgba(46,232,255,0.24), rgba(9,63,92,0.72))",
+    "tabInactive": "linear-gradient(180deg, rgba(6,28,52,0.62), rgba(2,14,28,0.68))",
+    "tabHover": "rgba(46, 232, 255, 0.12)",
+    "focus": "#f8c76a"
+  },
+  "terminal": {
+    "background": "transparent",
+    "foreground": "#d8fbff",
+    "black": "#06111d",
+    "red": "#ff6f7d",
+    "green": "#70ffb5",
+    "yellow": "#f8c76a",
+    "blue": "#4fb4ff",
+    "magenta": "#b98cff",
+    "cyan": "#2ee8ff",
+    "white": "#d8fbff",
+    "brightBlack": "#557083",
+    "brightRed": "#ff95a0",
+    "brightGreen": "#a7ffd3",
+    "brightYellow": "#ffe4a6",
+    "brightBlue": "#87ceff",
+    "brightMagenta": "#d4b8ff",
+    "brightCyan": "#a3fbff",
+    "brightWhite": "#ffffff"
+  },
+  "regions": {
+    "app": {
+      "background": "radial-gradient(circle at 18% 10%, rgba(46,232,255,0.17), transparent 18rem), radial-gradient(circle at 82% 18%, rgba(248,199,106,0.12), transparent 16rem), linear-gradient(135deg, #020617 0%, #061425 44%, #01030a 100%)",
+      "backgroundOverlay": "linear-gradient(105deg, rgba(46,232,255,0.08), transparent 26%, rgba(248,199,106,0.06) 64%, transparent), repeating-linear-gradient(90deg, rgba(255,255,255,0.035) 0 1px, transparent 1px 96px)",
+      "border": "rgba(46,232,255,0.38)",
+      "color": "#e6fbff"
+    },
+    "body": {
+      "background": "linear-gradient(90deg, rgba(46,232,255,0.08), transparent 28%, rgba(248,199,106,0.05) 72%, rgba(46,232,255,0.08))"
+    },
+    "titlebar": {
+      "background": "linear-gradient(180deg, rgba(12,45,75,0.88), rgba(2,15,29,0.82))",
+      "backgroundOverlay": "linear-gradient(90deg, rgba(46,232,255,0.25), transparent 30%, rgba(248,199,106,0.14) 70%, transparent)",
+      "border": "rgba(46,232,255,0.34)",
+      "color": "#e6fbff",
+      "shadow": "inset 0 1px 0 rgba(163,251,255,0.26), 0 12px 28px rgba(0,0,0,0.28)",
+      "letterSpacing": "0.08em"
+    },
+    "titlebarControls": {
+      "color": "#d8fbff"
+    },
+    "windowButton": {
+      "background": "linear-gradient(180deg, rgba(163,251,255,0.22), rgba(46,232,255,0.08))",
+      "border": "rgba(163,251,255,0.44)",
+      "shadow": "0 0 10px rgba(46,232,255,0.18), inset 0 1px 0 rgba(255,255,255,0.18)"
+    },
+    "windowButtonMinimize": {
+      "background": "linear-gradient(180deg, rgba(248,199,106,0.34), rgba(248,199,106,0.08))"
+    },
+    "windowButtonMaximize": {
+      "background": "linear-gradient(180deg, rgba(112,255,181,0.28), rgba(112,255,181,0.08))"
+    },
+    "windowButtonClose": {
+      "background": "linear-gradient(180deg, rgba(255,111,125,0.36), rgba(255,111,125,0.12))"
+    },
+    "sidebar": {
+      "background": "linear-gradient(180deg, rgba(2,16,32,0.72), rgba(3,28,51,0.58))",
+      "backgroundOverlay": "radial-gradient(circle at 20% 10%, rgba(46,232,255,0.12), transparent 9rem), linear-gradient(90deg, rgba(46,232,255,0.08), transparent)",
+      "border": "rgba(46,232,255,0.28)",
+      "shadow": "inset -1px 0 0 rgba(163,251,255,0.12)"
+    },
+    "sidebarHeader": {
+      "background": "linear-gradient(180deg, rgba(7,38,67,0.78), rgba(2,16,32,0.66))",
+      "border": "rgba(46,232,255,0.32)",
+      "shadow": "0 14px 28px rgba(0,0,0,0.2), inset 0 1px 0 rgba(163,251,255,0.2)"
+    },
+    "sidebarProfile": {
+      "padding": "0"
+    },
+    "avatar": {
+      "background": "radial-gradient(circle at 50% 48%, rgba(46,232,255,0.22), transparent 2.8rem), linear-gradient(180deg, rgba(4,27,49,0.9), rgba(1,9,18,0.72))",
+      "border": "rgba(46,232,255,0.44)",
+      "shadow": "0 0 22px rgba(46,232,255,0.22), inset 0 1px 0 rgba(163,251,255,0.16)"
+    },
+    "onlineBadge": {
+      "background": "linear-gradient(180deg, #a7ffd3, #29d884)",
+      "border": "#061425",
+      "shadow": "0 0 10px rgba(112,255,181,0.72)"
+    },
+    "profileBadge": {
+      "background": "rgba(46,232,255,0.12)",
+      "border": "rgba(46,232,255,0.36)",
+      "color": "#a3fbff"
+    },
+    "controlPanel": {
+      "background": "linear-gradient(180deg, rgba(5,29,52,0.7), rgba(2,16,32,0.58))",
+      "border": "rgba(46,232,255,0.24)",
+      "shadow": "0 12px 24px rgba(0,0,0,0.18)"
+    },
+    "listTrigger": {
+      "background": "linear-gradient(180deg, rgba(9,43,72,0.72), rgba(3,21,40,0.58))",
+      "border": "rgba(46,232,255,0.2)",
+      "color": "#d8fbff"
+    },
+    "groupPanel": {
+      "background": "linear-gradient(180deg, rgba(5,27,50,0.62), rgba(1,11,22,0.48))",
+      "border": "rgba(46,232,255,0.22)",
+      "shadow": "inset 0 1px 0 rgba(163,251,255,0.12)"
+    },
+    "sessionRow": {
+      "background": "linear-gradient(180deg, rgba(7,36,64,0.6), rgba(1,12,24,0.5))",
+      "border": "rgba(46,232,255,0.18)",
+      "color": "#e6fbff"
+    },
+    "workspace": {
+      "background": "linear-gradient(180deg, rgba(2,14,28,0.34), rgba(2,10,20,0.16))",
+      "backgroundOverlay": "radial-gradient(circle at 60% 8%, rgba(46,232,255,0.1), transparent 16rem), linear-gradient(90deg, rgba(46,232,255,0.05), transparent 34%)",
+      "border": "rgba(46,232,255,0.22)",
+      "shadow": "inset 1px 0 0 rgba(163,251,255,0.1)"
+    },
+    "tabBar": {
+      "background": "linear-gradient(180deg, rgba(1,12,24,0.82), rgba(4,25,45,0.7))",
+      "border": "rgba(46,232,255,0.24)"
+    },
+    "tab": {
+      "background": "linear-gradient(180deg, rgba(6,28,52,0.62), rgba(2,14,28,0.68))",
+      "border": "rgba(46,232,255,0.18)",
+      "color": "#8bc9d8"
+    },
+    "tabActive": {
+      "background": "linear-gradient(180deg, rgba(46,232,255,0.24), rgba(9,63,92,0.72))",
+      "border": "rgba(46,232,255,0.38)",
+      "color": "#e6fbff",
+      "shadow": "0 0 24px rgba(46,232,255,0.14), inset 0 1px 0 rgba(163,251,255,0.25)"
+    },
+    "tabClose": {
+      "color": "#8bc9d8"
+    },
+    "terminalShell": {
+      "background": "linear-gradient(180deg, rgba(1,9,18,0.22), rgba(1,6,12,0.08))",
+      "border": "rgba(46,232,255,0.22)",
+      "shadow": "inset 0 1px 0 rgba(163,251,255,0.12), 0 20px 40px rgba(0,0,0,0.2)",
+      "borderRadius": "20px"
+    },
+    "emptyState": {
+      "background": "radial-gradient(circle at 50% 42%, rgba(46,232,255,0.15), rgba(2,16,32,0.18) 44%, transparent 72%)",
+      "color": "#d8fbff"
+    },
+    "rightRail": {
+      "background": "linear-gradient(180deg, rgba(2,16,32,0.68), rgba(1,9,18,0.58))",
+      "backgroundOverlay": "radial-gradient(circle at 62% 10%, rgba(46,232,255,0.13), transparent 9rem)",
+      "border": "rgba(46,232,255,0.28)",
+      "shadow": "inset 1px 0 0 rgba(163,251,255,0.12)"
+    },
+    "rightCard": {
+      "background": "linear-gradient(180deg, rgba(5,28,51,0.72), rgba(1,11,22,0.58))",
+      "border": "rgba(46,232,255,0.26)",
+      "shadow": "0 18px 30px rgba(0,0,0,0.2), inset 0 1px 0 rgba(163,251,255,0.14)"
+    },
+    "showcaseStage": {
+      "background": "radial-gradient(circle at 50% 22%, rgba(46,232,255,0.18), transparent 8rem), linear-gradient(180deg, rgba(5,29,52,0.5), rgba(1,8,17,0.4))",
+      "border": "rgba(46,232,255,0.25)"
+    },
+    "showcaseFigure": {
+      "border": "rgba(46,232,255,0.28)",
+      "shadow": "0 20px 42px rgba(0,0,0,0.22)"
+    },
+    "showcaseFooter": {
+      "background": "rgba(2,16,32,0.48)",
+      "border": "rgba(46,232,255,0.2)",
+      "color": "#8bc9d8"
+    },
+    "statusBar": {
+      "background": "linear-gradient(180deg, rgba(7,38,67,0.72), rgba(2,14,28,0.7))",
+      "border": "rgba(46,232,255,0.24)",
+      "color": "#a3fbff"
+    },
+    "field": {
+      "background": "rgba(1,10,19,0.56)",
+      "border": "rgba(46,232,255,0.22)",
+      "color": "#e6fbff"
+    },
+    "select": {
+      "background": "rgba(1,10,19,0.74)",
+      "border": "rgba(46,232,255,0.28)",
+      "color": "#e6fbff"
+    },
+    "taskbar": {
+      "background": "linear-gradient(180deg, rgba(7,38,67,0.86), rgba(2,14,28,0.86))",
+      "border": "rgba(46,232,255,0.28)",
+      "color": "#e6fbff",
+      "shadow": "inset 0 1px 0 rgba(163,251,255,0.18), 0 -12px 28px rgba(0,0,0,0.24)"
+    },
+    "taskbarStartButton": {
+      "background": "linear-gradient(180deg, #7cf6ff 0%, #2ee8ff 45%, #087d9a 100%)",
+      "border": "rgba(163,251,255,0.62)",
+      "color": "#001018"
+    },
+    "taskbarStartMenu": {
+      "background": "linear-gradient(180deg, rgba(4,23,43,0.96), rgba(1,10,19,0.96))",
+      "border": "rgba(46,232,255,0.3)",
+      "color": "#e6fbff"
+    },
+    "taskbarMenuItem": {
+      "color": "#d8fbff"
+    },
+    "taskbarItem": {
+      "background": "rgba(46,232,255,0.08)",
+      "border": "rgba(46,232,255,0.22)",
+      "color": "#c6f7ff"
+    },
+    "taskbarItemActive": {
+      "background": "rgba(46,232,255,0.18)",
+      "border": "rgba(46,232,255,0.38)",
+      "color": "#ffffff"
+    },
+    "taskbarTray": {
+      "background": "rgba(1,10,19,0.42)",
+      "border": "rgba(46,232,255,0.22)"
+    },
+    "taskbarClock": {
+      "background": "rgba(46,232,255,0.08)",
+      "color": "#a3fbff"
+    }
+  },
+  "blocks": {
+    "titlebar": {
+      "title": "星舰驾驶舱 - Vibe 终端",
+      "subtitle": "深空跃迁 / 指令甲板",
+      "badge": "航行中"
+    },
+    "profile": {
+      "name": "舰桥 AI 核心",
+      "status": "量子链路在线",
+      "signature": "航线稳定，终端指令等待执行。",
+      "badge": "CORE"
+    },
+    "showcase": {
+      "enabled": true,
+      "title": "星舰主视窗",
+      "subtitle": "FTL 航行模拟",
+      "body": "舰体姿态、雷达扫描与遥测输出已同步到 Vibe 工作区。",
+      "badge": "驾驶舱",
+      "footer": "主推进器低噪运行，外层星流已锁定"
+    },
+    "statusbar": {
+      "left": "舰桥链路已建立",
+      "right": "深空航行模式"
+    },
+    "taskbar": {
+      "enabled": true,
+      "startButton": {
+        "label": "舰桥"
+      },
+      "startMenu": {
+        "items": [
+          {
+            "label": "外观设置",
+            "action": "openAppearance"
+          },
+          {
+            "label": "切换到皮肤模式",
+            "action": "setTheme",
+            "theme": "skin"
+          },
+          {
+            "label": "切换亮色主题",
+            "action": "setTheme",
+            "theme": "light"
+          },
+          {
+            "label": "切换暗色主题",
+            "action": "setTheme",
+            "theme": "dark"
+          },
+          {
+            "label": "导入皮肤...",
+            "action": "importSkin"
+          },
+          {
+            "type": "separator"
+          },
+          {
+            "label": "星舰驾驶舱",
+            "disabled": true
+          }
+        ]
+      },
+      "items": [
+        {
+          "label": "主终端",
+          "active": true
+        },
+        {
+          "label": "雷达阵列"
+        },
+        {
+          "label": "跃迁航线"
+        }
+      ],
+      "tray": [
+        "雷达",
+        "护盾",
+        "在线"
+      ],
+      "clockFormat": "HH:mm"
+    }
+  },
+  "decorations": {
+    "variant": "starship-cockpit",
+    "titlebarMark": "AI",
+    "avatarTemplate": "space-ai-core",
+    "showcaseTemplate": "space-ship",
+    "rightCards": [
+      {
+        "template": "space-radar",
+        "title": "雷达扫描",
+        "subtitle": "近轨目标追踪",
+        "badge": "SCAN",
+        "footer": "三处目标已标记"
+      },
+      {
+        "template": "space-ship",
+        "title": "舰体模拟",
+        "subtitle": "姿态慢速旋转",
+        "badge": "MODEL",
+        "footer": "推进器矢量锁定"
+      },
+      {
+        "template": "space-telemetry",
+        "title": "遥测输出",
+        "subtitle": "数据检测",
+        "badge": "LIVE",
+        "items": [
+          {
+            "label": "跃迁核心",
+            "badge": "稳定"
+          },
+          {
+            "label": "护盾矩阵",
+            "badge": "97%"
+          },
+          {
+            "label": "导航星图",
+            "badge": "同步"
+          },
+          {
+            "label": "生命维持",
+            "badge": "正常"
+          }
+        ],
+        "footer": "持续监测中"
+      },
+      {
+        "template": "space-starmap",
+        "title": "航线星图",
+        "subtitle": "下一跃迁点",
+        "badge": "ROUTE",
+        "items": [
+          {
+            "label": "始发",
+            "badge": "SOL"
+          },
+          {
+            "label": "中继",
+            "badge": "NOVA-7"
+          },
+          {
+            "label": "目标",
+            "badge": "ORION"
+          }
+        ],
+        "footer": "预计抵达 T+04:18"
+      }
+    ]
+  },
+  "showcase": {
+    "enabled": true,
+    "title": "星舰驾驶舱",
+    "subtitle": "Cinematic cockpit skin",
+    "body": "Safe template blocks render radar, spacecraft, and telemetry without user-provided code.",
+    "badge": "Vibe Skin",
+    "footer": "Built-in standard skin package"
+  }
+}
