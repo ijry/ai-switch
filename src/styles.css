@@ -182,6 +182,42 @@ button:disabled {
   text-transform: var(--vibe-titlebar-text-transform);
 }
 
+.vibe-skin-titlebar-controls {
+  background: var(--vibe-titlebar-controls-background-layer, transparent);
+  background-position: var(--vibe-titlebar-controls-background-position, center);
+  background-repeat: var(--vibe-titlebar-controls-background-repeat, no-repeat);
+  background-size: var(--vibe-titlebar-controls-background-size, cover);
+  border-color: var(--vibe-titlebar-controls-border, transparent);
+  color: var(--vibe-titlebar-controls-color, var(--vibe-titlebar-color, var(--vibe-text)));
+  box-shadow: var(--vibe-titlebar-controls-shadow);
+}
+
+.vibe-skin-window-button {
+  display: inline-grid;
+  height: 1.35rem;
+  width: 1.55rem;
+  place-items: center;
+  border: 1px solid var(--vibe-window-button-border, rgba(255, 255, 255, 0.58));
+  border-radius: 0.45rem;
+  background: var(--vibe-window-button-background-layer, linear-gradient(180deg, rgba(255,255,255,0.92), rgba(71,159,230,0.88) 48%, rgba(16,100,188,0.9)));
+  color: var(--vibe-window-button-color, #ffffff);
+  box-shadow: var(--vibe-window-button-shadow, inset 0 1px 0 rgba(255,255,255,0.8), 0 1px 2px rgba(0,45,96,0.3));
+  font-size: 0.8rem;
+  line-height: 1;
+}
+
+.vibe-skin-window-button-minimize {
+  background: var(--vibe-window-button-minimize-background-layer, var(--vibe-window-button-background-layer, linear-gradient(180deg, #effbff, #3294e5 52%, #0d62b5)));
+}
+
+.vibe-skin-window-button-maximize {
+  background: var(--vibe-window-button-maximize-background-layer, var(--vibe-window-button-background-layer, linear-gradient(180deg, #effbff, #3294e5 52%, #0d62b5)));
+}
+
+.vibe-skin-window-button-close {
+  background: var(--vibe-window-button-close-background-layer, linear-gradient(180deg, #ffb0b7, #f05b68 46%, #b8202f));
+}
+
 .vibe-skin-sidebar-header {
   background: var(--vibe-sidebar-header-background-layer, var(--vibe-panel-strong));
   background-position: var(--vibe-sidebar-header-background-position, center);
@@ -192,6 +228,39 @@ button:disabled {
   box-shadow: var(--vibe-sidebar-header-shadow);
   backdrop-filter: var(--vibe-sidebar-header-backdrop-filter);
   padding: var(--vibe-sidebar-header-padding);
+}
+
+.vibe-skin-profile {
+  background: var(--vibe-sidebar-profile-background-layer, transparent);
+  background-position: var(--vibe-sidebar-profile-background-position, center);
+  background-repeat: var(--vibe-sidebar-profile-background-repeat, no-repeat);
+  background-size: var(--vibe-sidebar-profile-background-size, cover);
+  border-color: var(--vibe-sidebar-profile-border, transparent);
+  color: var(--vibe-sidebar-profile-color, var(--vibe-text));
+  box-shadow: var(--vibe-sidebar-profile-shadow);
+  padding: var(--vibe-sidebar-profile-padding);
+}
+
+.vibe-skin-avatar {
+  background: var(--vibe-avatar-background-layer, radial-gradient(circle at 35% 20%, #ffffff, #9edbff 46%, #2684d5));
+  background-position: var(--vibe-avatar-background-position, center);
+  background-repeat: var(--vibe-avatar-background-repeat, no-repeat);
+  background-size: var(--vibe-avatar-background-size, cover);
+  border-color: var(--vibe-avatar-border, rgba(255, 255, 255, 0.78));
+  box-shadow: var(--vibe-avatar-shadow, inset 0 1px 0 rgba(255,255,255,0.82), 0 8px 18px rgba(13,104,190,0.22));
+}
+
+.vibe-skin-online-badge {
+  background: var(--vibe-online-badge-background-layer, linear-gradient(180deg, #8cff9f, #16a34a));
+  border-color: var(--vibe-online-badge-border, #ffffff);
+  box-shadow: var(--vibe-online-badge-shadow, 0 0 0 1px rgba(16,129,62,0.22));
+}
+
+.vibe-skin-profile-badge {
+  background: var(--vibe-profile-badge-background-layer, linear-gradient(180deg, #fff8c9, #f3b61f));
+  border-color: var(--vibe-profile-badge-border, rgba(157, 101, 0, 0.26));
+  color: var(--vibe-profile-badge-color, #7a4a00);
+  box-shadow: var(--vibe-profile-badge-shadow);
 }
 
 .vibe-skin-control-panel {
@@ -317,10 +386,17 @@ button:disabled {
   padding: var(--vibe-terminal-shell-padding);
 }
 
+.vibe-skin-terminal-shell .xterm-pane,
+.vibe-skin-terminal-shell .xterm-pane-skin-transparent,
 .vibe-skin-terminal-shell .xterm,
 .vibe-skin-terminal-shell .xterm-screen,
-.vibe-skin-terminal-shell .xterm-viewport {
-  background: transparent;
+.vibe-skin-terminal-shell .xterm-viewport,
+.vibe-skin-terminal-shell .xterm-helpers,
+.vibe-skin-terminal-shell .xterm-rows,
+.vibe-skin-terminal-shell .xterm-screen canvas,
+.vibe-skin-terminal-shell canvas {
+  background: transparent !important;
+  background-color: transparent !important;
 }
 
 .vibe-skin-empty-state {
@@ -350,6 +426,36 @@ button:disabled {
   border-color: var(--vibe-right-card-border, var(--vibe-border));
   color: var(--vibe-right-card-color, var(--vibe-text));
   box-shadow: var(--vibe-right-card-shadow);
+}
+
+.vibe-skin-showcase-stage {
+  background: var(--vibe-showcase-stage-background-layer, radial-gradient(circle at 50% 12%, rgba(255,255,255,0.95), rgba(195,232,255,0.72) 42%, rgba(73,155,221,0.42)));
+  background-position: var(--vibe-showcase-stage-background-position, center);
+  background-repeat: var(--vibe-showcase-stage-background-repeat, no-repeat);
+  background-size: var(--vibe-showcase-stage-background-size, cover);
+  border-color: var(--vibe-showcase-stage-border, var(--vibe-border));
+  color: var(--vibe-showcase-stage-color, var(--vibe-text));
+  box-shadow: var(--vibe-showcase-stage-shadow, inset 0 1px 0 rgba(255,255,255,0.82));
+}
+
+.vibe-skin-showcase-figure {
+  background: var(--vibe-showcase-figure-background-layer, transparent);
+  background-position: var(--vibe-showcase-figure-background-position, center);
+  background-repeat: var(--vibe-showcase-figure-background-repeat, no-repeat);
+  background-size: var(--vibe-showcase-figure-background-size, cover);
+  border-color: var(--vibe-showcase-figure-border, rgba(255,255,255,0.58));
+  color: var(--vibe-showcase-figure-color, var(--vibe-text));
+  box-shadow: var(--vibe-showcase-figure-shadow, 0 18px 30px rgba(10,82,154,0.2));
+}
+
+.vibe-skin-showcase-footer {
+  background: var(--vibe-showcase-footer-background-layer, rgba(255,255,255,0.5));
+  background-position: var(--vibe-showcase-footer-background-position, center);
+  background-repeat: var(--vibe-showcase-footer-background-repeat, no-repeat);
+  background-size: var(--vibe-showcase-footer-background-size, cover);
+  border-color: var(--vibe-showcase-footer-border, var(--vibe-border));
+  color: var(--vibe-showcase-footer-color, var(--vibe-muted-text));
+  box-shadow: var(--vibe-showcase-footer-shadow);
 }
 
 .vibe-skin-status-bar {

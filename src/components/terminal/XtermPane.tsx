@@ -17,54 +17,62 @@ type XtermPaneProps = {
   active?: boolean;
   themeMode?: "dark" | "light";
   themeOverride?: VibeTerminalTheme;
+  transparentSurface?: boolean;
   onStatusChange?: (sessionId: string, status: TerminalStatus) => void;
 };
 
-function createTheme(themeMode: "dark" | "light", themeOverride?: VibeTerminalTheme) {
-  if (themeMode === "light") {
-    return {
-      background: "#f8fafc",
-      black: "#334155",
-      blue: "#2563eb",
-      brightBlack: "#64748b",
-      brightBlue: "#3b82f6",
-      brightCyan: "#06b6d4",
-      brightGreen: "#16a34a",
-      brightMagenta: "#c026d3",
-      brightRed: "#dc2626",
-      brightWhite: "#0f172a",
-      brightYellow: "#ca8a04",
-      cyan: "#0891b2",
-      foreground: "#0f172a",
-      green: "#15803d",
-      magenta: "#a21caf",
-      red: "#b91c1c",
-      white: "#475569",
-      yellow: "#a16207",
-      ...themeOverride,
-    };
-  }
+function createTheme(
+  themeMode: "dark" | "light",
+  themeOverride?: VibeTerminalTheme,
+  transparentSurface = false,
+) {
+  const baseTheme =
+    themeMode === "light"
+      ? {
+          background: "#f8fafc",
+          black: "#334155",
+          blue: "#2563eb",
+          brightBlack: "#64748b",
+          brightBlue: "#3b82f6",
+          brightCyan: "#06b6d4",
+          brightGreen: "#16a34a",
+          brightMagenta: "#c026d3",
+          brightRed: "#dc2626",
+          brightWhite: "#0f172a",
+          brightYellow: "#ca8a04",
+          cyan: "#0891b2",
+          foreground: "#0f172a",
+          green: "#15803d",
+          magenta: "#a21caf",
+          red: "#b91c1c",
+          white: "#475569",
+          yellow: "#a16207",
+        }
+      : {
+          background: "#002b36",
+          black: "#073642",
+          blue: "#268bd2",
+          brightBlack: "#586e75",
+          brightBlue: "#839496",
+          brightCyan: "#2aa198",
+          brightGreen: "#859900",
+          brightMagenta: "#d33682",
+          brightRed: "#dc322f",
+          brightWhite: "#fdf6e3",
+          brightYellow: "#b58900",
+          cyan: "#2aa198",
+          foreground: "#d8e2dc",
+          green: "#859900",
+          magenta: "#6c71c4",
+          red: "#dc322f",
+          white: "#93a1a1",
+          yellow: "#b58900",
+        };
 
   return {
-    background: "#002b36",
-    black: "#073642",
-    blue: "#268bd2",
-    brightBlack: "#586e75",
-    brightBlue: "#839496",
-    brightCyan: "#2aa198",
-    brightGreen: "#859900",
-    brightMagenta: "#d33682",
-    brightRed: "#dc322f",
-    brightWhite: "#fdf6e3",
-    brightYellow: "#b58900",
-    cyan: "#2aa198",
-    foreground: "#d8e2dc",
-    green: "#859900",
-    magenta: "#6c71c4",
-    red: "#dc322f",
-    white: "#93a1a1",
-    yellow: "#b58900",
+    ...baseTheme,
     ...themeOverride,
+    ...(transparentSurface ? { background: "transparent" } : {}),
   };
 }
 
@@ -73,12 +81,16 @@ export function XtermPane({
   active = true,
   themeMode = "dark",
   themeOverride,
+  transparentSurface = false,
   onStatusChange,
 }: XtermPaneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const theme = useMemo(() => createTheme(themeMode, themeOverride), [themeMode, themeOverride]);
+  const theme = useMemo(
+    () => createTheme(themeMode, themeOverride, transparentSurface),
+    [themeMode, themeOverride, transparentSurface],
+  );
 
   useEffect(() => {
     const host = hostRef.current;
@@ -197,7 +209,9 @@ export function XtermPane({
   return (
     <div
       aria-label={`${session.title} terminal`}
-      className={`h-full min-h-0 ${active ? "block" : "hidden"}`}
+      className={`xterm-pane h-full min-h-0 ${transparentSurface ? "xterm-pane-skin-transparent" : ""} ${
+        active ? "block" : "hidden"
+      }`}
       ref={hostRef}
     />
   );

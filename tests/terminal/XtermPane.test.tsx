@@ -4,6 +4,7 @@ import { XtermPane } from "../../src/components/terminal/XtermPane";
 import type { TerminalSession } from "../../src/lib/api/types";
 
 const subscribe = vi.fn(async () => vi.fn());
+const terminalConstructorOptions = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 
 vi.mock("../../src/lib/transport", () => ({
   getTransport: () => ({
@@ -26,7 +27,7 @@ vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 80;
     rows = 24;
-    options: Record<string, unknown> = {};
+    options: Record<string, unknown>;
     dispose = vi.fn();
     focus = vi.fn();
     loadAddon = vi.fn();
@@ -35,6 +36,11 @@ vi.mock("@xterm/xterm", () => ({
     write = vi.fn();
     writeln = vi.fn();
     onData = vi.fn(() => ({ dispose: vi.fn() }));
+
+    constructor(options: Record<string, unknown>) {
+      this.options = options;
+      terminalConstructorOptions.push(options);
+    }
   },
 }));
 
@@ -51,6 +57,7 @@ const session: TerminalSession = {
 describe("XtermPane", () => {
   afterEach(() => {
     subscribe.mockClear();
+    terminalConstructorOptions.length = 0;
   });
 
   it("subscribes to terminal events through the active transport", async () => {
@@ -63,5 +70,27 @@ describe("XtermPane", () => {
       "terminal://exit",
       "terminal://error",
     ]);
+  });
+
+  it("marks skin panes transparent and uses a transparent xterm background", async () => {
+    const { container } = render(
+      <XtermPane
+        session={session}
+        themeMode="light"
+        themeOverride={{
+          background: "#010203",
+          foreground: "#eafcff",
+        }}
+        transparentSurface
+      />,
+    );
+
+    expect(container.querySelector(".xterm-pane-skin-transparent")).not.toBeNull();
+    await waitFor(() => expect(terminalConstructorOptions).toHaveLength(1));
+
+    expect(terminalConstructorOptions[0]?.theme).toMatchObject({
+      background: "transparent",
+      foreground: "#eafcff",
+    });
   });
 });
