@@ -448,7 +448,7 @@ describe("AccountsScreen", () => {
     );
   });
 
-  it("renders filtered route request statistics and paginates request rows", async () => {
+  it("renders filtered route request statistics, expands request details, and paginates request rows", async () => {
     const expectedMonthStart = new Date();
     expectedMonthStart.setHours(0, 0, 0, 0);
     expectedMonthStart.setDate(1);
@@ -467,14 +467,20 @@ describe("AccountsScreen", () => {
           request_page_size: requestPageSize ?? 20,
           requests: [
             {
-              id: `request-${requestPage ?? 1}-${since ?? "all"}`,
+              id: "request-success",
               account_id: "cred-official-1",
               account_name: "Team Account",
               source_label: "route_proxy",
               metric_type: "request",
               amount: 1,
               unit: "count",
-              metadata_json: "{\"path\":\"/v1/responses\",\"status\":201}",
+              metadata_json: JSON.stringify({
+                platform: "codex",
+                route_credential_id: "cred-official-1",
+                route_credential_name: "Team Account",
+                path: "/v1/responses",
+                status: 201,
+              }),
               created_at: "2026-07-17T08:00:00Z",
             },
             {
@@ -508,9 +514,28 @@ describe("AccountsScreen", () => {
     expect(screen.getByText("/v1/responses")).toBeInTheDocument();
     expect(screen.getByText("201")).toBeInTheDocument();
     expect(screen.getAllByText("route_proxy")).toHaveLength(2);
-    const invalidMetadataRow = screen.getByText("Broken Metadata Account").closest("div");
+    expect(screen.getByLabelText("查看请求 request-success 详情")).toBeInTheDocument();
+
+    const invalidMetadataRow = screen.getByText("Broken Metadata Account").closest("[data-route-request-row]");
     expect(invalidMetadataRow).not.toBeNull();
     expect(within(invalidMetadataRow as HTMLElement).getAllByText("-")).toHaveLength(2);
+
+    await userEvent.click(screen.getByLabelText("查看请求 request-success 详情"));
+
+    const successDetail = await screen.findByLabelText("请求 request-success 详情");
+    expect(within(successDetail).getByText("请求详情")).toBeInTheDocument();
+    expect(within(successDetail).getByText("request-success")).toBeInTheDocument();
+    expect(within(successDetail).getByText("cred-official-1")).toBeInTheDocument();
+    expect(within(successDetail).getByText("Team Account")).toBeInTheDocument();
+    expect(within(successDetail).getByText("1 count")).toBeInTheDocument();
+    expect(within(successDetail).getByText(/"path": "\/v1\/responses"/)).toBeInTheDocument();
+    expect(within(successDetail).getByText(/"status": 201/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("查看请求 request-invalid-metadata 详情"));
+
+    const invalidDetail = await screen.findByLabelText("请求 request-invalid-metadata 详情");
+    expect(within(invalidDetail).getByText("metadata_json 无法解析，显示原始内容。")).toBeInTheDocument();
+    expect(within(invalidDetail).getByText("{bad json")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("下一页请求"));
 
@@ -607,7 +632,12 @@ describe("AccountsScreen", () => {
         platform: "codex",
         token_count: 1024,
         cost_micros: 1200,
-        metadata_json: JSON.stringify({ source: "ui_test_route" }),
+        metadata_json: JSON.stringify({
+          source: "ui_test_route",
+          path: "/__ai-switch/test-route",
+          status: "selected",
+          request_kind: "manual_pool_selection",
+        }),
       }),
     );
     expect(screen.getByText("最近路由到：Team Account")).toBeInTheDocument();

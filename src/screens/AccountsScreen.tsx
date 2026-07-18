@@ -41,6 +41,7 @@ import type {
   ModelMapping,
   RouteConfigWriteOutcome,
   RouteCredential,
+  RoutePoolUsageLog,
 } from "../lib/api/types";
 import {
   ClipboardImageReadError,
@@ -92,23 +93,108 @@ function formatUsageTime(value: string) {
   return date.toLocaleString();
 }
 
-function parseUsageMetadata(metadataJson: string) {
+type ParsedUsageMetadata = {
+  path: string;
+  status: string;
+  formattedJson: string;
+  raw: string;
+  valid: boolean;
+};
+
+function metadataField(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return "-";
+}
+
+function parseUsageMetadata(metadataJson: string): ParsedUsageMetadata {
   try {
     const value = JSON.parse(metadataJson) as unknown;
-    if (!value || typeof value !== "object") {
-      return { path: "-", status: "-" };
+    const formattedJson = JSON.stringify(value, null, 2) ?? metadataJson;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return {
+        path: "-",
+        status: "-",
+        formattedJson,
+        raw: metadataJson,
+        valid: true,
+      };
     }
     const record = value as Record<string, unknown>;
     return {
-      path: typeof record.path === "string" && record.path.trim() ? record.path : "-",
-      status:
-        typeof record.status === "number" || typeof record.status === "string"
-          ? String(record.status)
-          : "-",
+      path: metadataField(record, "path"),
+      status: metadataField(record, "status"),
+      formattedJson,
+      raw: metadataJson,
+      valid: true,
     };
   } catch {
-    return { path: "-", status: "-" };
+    return {
+      path: "-",
+      status: "-",
+      formattedJson: metadataJson,
+      raw: metadataJson,
+      valid: false,
+    };
   }
+}
+
+function RouteRequestDetail({
+  metadata,
+  request,
+}: {
+  metadata: ParsedUsageMetadata;
+  request: RoutePoolUsageLog;
+}) {
+  return (
+    <div
+      aria-label={`请求 ${request.id} 详情`}
+      className="border-t border-stone-100 bg-stone-50 px-3 py-3"
+      id={`route-request-detail-${request.id}`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[12px] font-semibold text-stone-800">请求详情</p>
+        <p className="font-mono text-[11px] text-stone-500">{request.id}</p>
+      </div>
+      <div className="mt-3 grid gap-2 text-[12px] sm:grid-cols-2 lg:grid-cols-3">
+        <div>
+          <p className="text-[11px] font-medium text-stone-500">账号</p>
+          <p className="mt-0.5 text-stone-800">{request.account_name ?? "-"}</p>
+        </div>
+        <div>
+          <p className="text-[11px] font-medium text-stone-500">账号 ID</p>
+          <p className="mt-0.5 break-all font-mono text-[11px] text-stone-700">{request.account_id ?? "-"}</p>
+        </div>
+        <div>
+          <p className="text-[11px] font-medium text-stone-500">来源</p>
+          <p className="mt-0.5 text-stone-800">{request.source_label}</p>
+        </div>
+        <div>
+          <p className="text-[11px] font-medium text-stone-500">指标</p>
+          <p className="mt-0.5 text-stone-800">
+            {request.amount} {request.unit}
+          </p>
+        </div>
+        <div>
+          <p className="text-[11px] font-medium text-stone-500">时间</p>
+          <p className="mt-0.5 text-stone-800">{formatUsageTime(request.created_at)}</p>
+        </div>
+      </div>
+      <div className="mt-3">
+        <p className="text-[11px] font-medium text-stone-500">
+          {metadata.valid ? "metadata_json" : "metadata_json 无法解析，显示原始内容。"}
+        </p>
+        <pre className="mt-1 max-h-56 overflow-auto rounded-lg border border-stone-200 bg-white p-2 font-mono text-[11px] leading-relaxed text-stone-700">
+          {metadata.valid ? metadata.formattedJson : metadata.raw}
+        </pre>
+      </div>
+    </div>
+  );
 }
 
 type AccountsScreenProps = {
@@ -357,6 +443,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const [statsOpen, setStatsOpen] = useState(false);
   const [statsPeriod, setStatsPeriod] = useState<RouteStatsPeriod>("today");
   const [requestPage, setRequestPage] = useState(1);
+  const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [createMode, setCreateMode] = useState<CreateMode>("api");
   const [officialText, setOfficialText] = useState(() => defaultOfficialJson(activePlatform));
@@ -403,6 +490,10 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   useEffect(() => {
     setRequestPage(1);
   }, [activePlatform]);
+
+  useEffect(() => {
+    setExpandedRequestId(null);
+  }, [activePlatform, statsPeriod, requestPage]);
 
   useEffect(() => {
     if (routePoolQuery.data) {
@@ -643,7 +734,12 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       platform: activePlatform,
       token_count: 1024,
       cost_micros: 1200,
-      metadata_json: JSON.stringify({ source: "ui_test_route" }),
+      metadata_json: JSON.stringify({
+        source: "ui_test_route",
+        path: "/__ai-switch/test-route",
+        status: "selected",
+        request_kind: "manual_pool_selection",
+      }),
     });
   };
 
@@ -925,18 +1021,29 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                 <div className="divide-y divide-stone-100">
                   {(routeStats?.requests ?? []).map((request) => {
                     const metadata = parseUsageMetadata(request.metadata_json);
+                    const expanded = expandedRequestId === request.id;
                     return (
-                      <div
-                        className="grid gap-2 px-3 py-2.5 text-[12px] text-stone-600 lg:grid-cols-[1.2fr_1fr_0.5fr_1.4fr_0.8fr] lg:items-center"
-                        key={request.id}
-                      >
-                        <span className="font-medium text-stone-800">{formatUsageTime(request.created_at)}</span>
-                        <span className="truncate">{request.account_name ?? request.account_id ?? "-"}</span>
-                        <span className="rounded-lg bg-stone-100 px-2 py-1 text-center font-semibold text-stone-700">
-                          {metadata.status}
-                        </span>
-                        <span className="truncate font-mono text-[11px]">{metadata.path}</span>
-                        <span className="truncate">{request.source_label}</span>
+                      <div className="bg-white" data-route-request-row key={request.id}>
+                        <div className="grid gap-2 px-3 py-2.5 text-[12px] text-stone-600 lg:grid-cols-[1.2fr_1fr_0.5fr_1.4fr_0.8fr_auto] lg:items-center">
+                          <span className="font-medium text-stone-800">{formatUsageTime(request.created_at)}</span>
+                          <span className="truncate">{request.account_name ?? request.account_id ?? "-"}</span>
+                          <span className="rounded-lg bg-stone-100 px-2 py-1 text-center font-semibold text-stone-700">
+                            {metadata.status}
+                          </span>
+                          <span className="truncate font-mono text-[11px]">{metadata.path}</span>
+                          <span className="truncate">{request.source_label}</span>
+                          <button
+                            aria-controls={`route-request-detail-${request.id}`}
+                            aria-expanded={expanded}
+                            aria-label={`${expanded ? "隐藏" : "查看"}请求 ${request.id} 详情`}
+                            className="inline-flex items-center justify-center rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50"
+                            onClick={() => setExpandedRequestId(expanded ? null : request.id)}
+                            type="button"
+                          >
+                            详情
+                          </button>
+                        </div>
+                        {expanded ? <RouteRequestDetail metadata={metadata} request={request} /> : null}
                       </div>
                     );
                   })}
