@@ -6,9 +6,9 @@ Vibe mode accepts three skin file types:
 - `.aiskin`: a JSON manifest, or a zip package using the `.aiskin` extension.
 - `.zip`: a package containing `skin.json` or `vibe-skin.json`.
 
-Zip packages can include image assets. When `ui.backgroundImage`, `regions.*.backgroundImage`, `showcase.image`, `blocks.profile.avatar`, or `blocks.showcase.figure` is a relative path, Vibe resolves it from inside the zip package and stores it as a data URL in local storage.
+Zip packages can include image assets. When `ui.backgroundImage`, `regions.*.backgroundImage`, `showcase.image`, `blocks.profile.avatar`, `blocks.showcase.figure`, `blocks.taskbar.startButton.icon`, or `blocks.taskbar.items[].icon` is a relative path, Vibe resolves it from inside the zip package and stores it as a data URL in local storage.
 
-The built-in `Codex 2007 Blue` skin is QQ2007-inspired chrome: glossy title bar, left rail, tab strip, terminal shell, right display rail, and status bar. It does not directly use the reference image as a full-screen background.
+The built-in `Codex 2007 Blue` skin is QQ2007-inspired chrome: glossy title bar, left rail, tab strip, terminal shell, right display rail, and taskbar. It does not directly use the reference image as a full-screen background.
 
 ## Minimal Manifest
 
@@ -94,6 +94,28 @@ The built-in `Codex 2007 Blue` skin is QQ2007-inspired chrome: glossy title bar,
     "statusbar": {
       "left": "AI Switch 已连接",
       "right": "皮肤区域已启用"
+    },
+    "taskbar": {
+      "enabled": true,
+      "startButton": {
+        "label": "开始",
+        "icon": "assets/start.png"
+      },
+      "startMenu": {
+        "items": [
+          { "label": "外观设置", "action": "openAppearance" },
+          { "label": "切换到皮肤模式", "action": "setTheme", "theme": "skin" },
+          { "label": "切换暗色主题", "action": "setTheme", "theme": "dark" },
+          { "label": "导入皮肤...", "action": "importSkin" },
+          { "type": "separator" },
+          { "label": "AI Switch 终端", "disabled": true }
+        ]
+      },
+      "items": [
+        { "label": "AI Switch 终端", "icon": "assets/app.png", "active": true }
+      ],
+      "tray": ["Vibe", "在线"],
+      "clockFormat": "HH:mm"
     }
   }
 }
@@ -123,10 +145,19 @@ Supported blocks:
 - `blocks.showcase.footer`: footer tag under the showcase stage.
 - `blocks.statusbar.left`: left status bar text.
 - `blocks.statusbar.right`: right status bar text.
+- `blocks.taskbar.enabled`: enables the taskbar. Set to `false` to keep the older status bar.
+- `blocks.taskbar.startButton.label`: start button text, for example `开始`.
+- `blocks.taskbar.startButton.icon`: start button image path or data URL.
+- `blocks.taskbar.startMenu.items`: safe start-menu items. Supported actions are `openAppearance`, `setTheme`, `importSkin`, and `clearSkin`.
+- `blocks.taskbar.items`: decorative taskbar application items with `label`, optional `icon`, and optional `active`.
+- `blocks.taskbar.tray`: short tray labels.
+- `blocks.taskbar.clockFormat`: currently supports `HH:mm`.
 
 If `blocks.showcase` is omitted, the older `showcase` object still renders in the right rail. If `blocks.showcase` exists, it takes precedence over `showcase`.
 
 The minimize, maximize, and close controls in the skin titlebar are decorative. They are intentionally inert and do not call native window APIs.
+
+The taskbar start menu supports only a fixed allowlist of app actions. Unknown actions, malformed `setTheme` values, disabled items, and separators do nothing. Skins cannot provide callbacks or native window commands.
 
 ## Region Keys
 
@@ -166,6 +197,14 @@ Skins can define styles for these regions:
 - `showcaseFigure`
 - `showcaseFooter`
 - `statusBar`
+- `taskbar`
+- `taskbarStartButton`
+- `taskbarStartMenu`
+- `taskbarMenuItem`
+- `taskbarItem`
+- `taskbarItemActive`
+- `taskbarTray`
+- `taskbarClock`
 - `button`
 - `buttonHover`
 - `ghostButton`
@@ -208,6 +247,8 @@ my-skin.zip
     terminal-shell.png
     avatar-frame.png
     avatar.png
+    start.png
+    app.png
     showcase-stage.png
     qqshow.png
 ```
