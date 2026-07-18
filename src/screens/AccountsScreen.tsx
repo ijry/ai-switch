@@ -4,6 +4,8 @@ import {
   ArrowRight,
   BarChart3,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Edit3,
   FileCode2,
   KeyRound,
@@ -55,6 +57,8 @@ const routeStatsPeriods = [
   { key: "month", label: "本月" },
   { key: "all", label: "累计" },
 ] as const;
+
+const routeStatsPageSize = 20;
 
 type RouteStatsPeriod = (typeof routeStatsPeriods)[number]["key"];
 
@@ -351,6 +355,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const [draftPoolIds, setDraftPoolIds] = useState<Set<string>>(() => new Set());
   const [statsOpen, setStatsOpen] = useState(false);
   const [statsPeriod, setStatsPeriod] = useState<RouteStatsPeriod>("today");
+  const [requestPage, setRequestPage] = useState(1);
   const [createOpen, setCreateOpen] = useState(false);
   const [createMode, setCreateMode] = useState<CreateMode>("api");
   const [officialText, setOfficialText] = useState(() => defaultOfficialJson(activePlatform));
@@ -385,13 +390,17 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     queryFn: () => listRouteCredentials(activePlatform),
   });
   const routePoolQuery = useQuery({
-    queryKey: ["route-pool", activePlatform, statsSince],
-    queryFn: () => getRoutePool(activePlatform, statsSince),
+    queryKey: ["route-pool", activePlatform, statsSince, requestPage, routeStatsPageSize],
+    queryFn: () => getRoutePool(activePlatform, statsSince, requestPage, routeStatsPageSize),
   });
   const routeProxyQuery = useQuery({
     queryKey: ["route-proxy-status"],
     queryFn: getRouteProxyStatus,
   });
+
+  useEffect(() => {
+    setRequestPage(1);
+  }, [activePlatform]);
 
   useEffect(() => {
     if (routePoolQuery.data) {
@@ -432,6 +441,20 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     return () => window.clearTimeout(timeout);
   }, [configWriteOutcomes]);
 
+  useEffect(() => {
+    const stats = routePoolQuery.data?.stats;
+    if (!stats) {
+      return;
+    }
+    const nextPageCount = Math.max(
+      1,
+      Math.ceil(stats.request_row_count / Math.max(1, stats.request_page_size)),
+    );
+    if (requestPage > nextPageCount) {
+      setRequestPage(nextPageCount);
+    }
+  }, [requestPage, routePoolQuery.data?.stats]);
+
   const credentials = credentialsQuery.data ?? [];
   const groupedCredentials = useMemo(() => {
     const groups = new Map<string, RouteCredential[]>();
@@ -444,6 +467,13 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
 
   const routeStats = routePoolQuery.data?.stats;
   const costTotal = (routeStats?.cost_micros ?? 0) / 1_000_000;
+  const requestRowCount = routeStats?.request_row_count ?? (routeStats?.requests ?? []).length;
+  const resolvedRequestPage = routeStats?.request_page ?? requestPage;
+  const resolvedRequestPageSize = routeStats?.request_page_size ?? routeStatsPageSize;
+  const requestPageCount = Math.max(
+    1,
+    Math.ceil(requestRowCount / Math.max(1, resolvedRequestPageSize)),
+  );
 
   const invalidateAccountData = async () => {
     await Promise.all([
@@ -613,6 +643,11 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       cost_micros: 1200,
       metadata_json: JSON.stringify({ source: "ui_test_route" }),
     });
+  };
+
+  const selectStatsPeriod = (period: RouteStatsPeriod) => {
+    setStatsPeriod(period);
+    setRequestPage(1);
   };
 
   const decodeApiKey = () => {
@@ -825,7 +860,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-[13px] font-semibold text-stone-950">请求统计</p>
-                <p className="text-[12px] text-stone-500">仅统计当前 {platformLabels[activePlatform]} 算力池账号</p>
+                <p className="text-[12px] text-stone-500">统计当前 {platformLabels[activePlatform]} 的历史路由请求</p>
               </div>
               <div className="grid grid-cols-4 gap-1 rounded-xl bg-stone-100 p-1">
                 {routeStatsPeriods.map((period) => (
@@ -836,7 +871,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                         : "text-stone-500 hover:text-stone-900"
                     }`}
                     key={period.key}
-                    onClick={() => setStatsPeriod(period.key)}
+                    onClick={() => selectStatsPeriod(period.key)}
                     type="button"
                   >
                     {period.label}
@@ -866,7 +901,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
               <div className="flex items-center justify-between border-b border-stone-100 bg-stone-50 px-3 py-2">
                 <p className="text-[12px] font-semibold text-stone-700">请求列表</p>
                 <p className="text-[11px] font-medium text-stone-500">
-                  {(routeStats?.requests ?? []).length} 条
+                  {requestRowCount} 条
                 </p>
               </div>
               {(routeStats?.requests ?? []).length === 0 ? (
@@ -892,6 +927,36 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                   })}
                 </div>
               )}
+              <div className="flex flex-col gap-2 border-t border-stone-100 bg-stone-50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-[11px] font-medium text-stone-500">
+                  共 {requestRowCount} 条 · 每页 {resolvedRequestPageSize} 条
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    aria-label="上一页请求"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50 disabled:opacity-50"
+                    disabled={resolvedRequestPage <= 1}
+                    onClick={() => setRequestPage((page) => Math.max(1, page - 1))}
+                    type="button"
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                    上一页
+                  </button>
+                  <span className="min-w-20 text-center text-[12px] font-semibold text-stone-600">
+                    第 {resolvedRequestPage} / {requestPageCount} 页
+                  </span>
+                  <button
+                    aria-label="下一页请求"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50 disabled:opacity-50"
+                    disabled={resolvedRequestPage >= requestPageCount}
+                    onClick={() => setRequestPage((page) => page + 1)}
+                    type="button"
+                  >
+                    下一页
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}

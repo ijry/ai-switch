@@ -155,6 +155,9 @@ export type RoutePoolStats = {
   cost_micros: number;
   recent_logs: RoutePoolUsageLog[];
   requests: RoutePoolUsageLog[];
+  request_row_count: number;
+  request_page: number;
+  request_page_size: number;
 };
 
 export type RoutePoolState = {

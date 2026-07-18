@@ -74,8 +74,18 @@ export function listTargetApps(): Promise<TargetApp[]> {
   return invoke("list_target_apps");
 }
 
-export function getRoutePool(platform: string, since?: string | null): Promise<RoutePoolState> {
-  return invoke("get_route_pool", { platform, since: since ?? null });
+export function getRoutePool(
+  platform: string,
+  since?: string | null,
+  requestPage?: number | null,
+  requestPageSize?: number | null,
+): Promise<RoutePoolState> {
+  return invoke("get_route_pool", {
+    platform,
+    since: since ?? null,
+    request_page: requestPage ?? null,
+    request_page_size: requestPageSize ?? null,
+  });
 }
 
 export function setRoutePoolMembers(input: {

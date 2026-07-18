@@ -94,6 +94,9 @@ function statsFixture(overrides: Partial<RoutePoolStats> = {}): RoutePoolStats {
     cost_micros: 0,
     recent_logs: [],
     requests: [],
+    request_row_count: 0,
+    request_page: 1,
+    request_page_size: 20,
     ...overrides,
   };
 }
@@ -445,55 +448,63 @@ describe("AccountsScreen", () => {
     );
   });
 
-  it("renders filtered route request statistics and request rows", async () => {
+  it("renders filtered route request statistics and paginates request rows", async () => {
     const expectedMonthStart = new Date();
     expectedMonthStart.setHours(0, 0, 0, 0);
     expectedMonthStart.setDate(1);
 
-    vi.mocked(getRoutePool).mockImplementation(async (platform, since) => ({
-      platform,
-      account_ids: ["cred-official-1"],
-      stats: statsFixture({
-        member_count: 1,
-        request_count: 1,
-        token_count: 2048,
-        cost_micros: 1500,
-        requests: [
-          {
-            id: `request-${since ?? "all"}`,
-            account_id: "cred-official-1",
-            account_name: "Team Account",
-            source_label: "route_proxy",
-            metric_type: "request",
-            amount: 1,
-            unit: "count",
-            metadata_json: "{\"path\":\"/v1/responses\",\"status\":201}",
-            created_at: "2026-07-17T08:00:00Z",
-          },
-          {
-            id: "request-invalid-metadata",
-            account_id: "cred-api-1",
-            account_name: "Broken Metadata Account",
-            source_label: "route_proxy",
-            metric_type: "request",
-            amount: 1,
-            unit: "count",
-            metadata_json: "{bad json",
-            created_at: "2026-07-17T08:01:00Z",
-          },
-        ],
+    vi.mocked(getRoutePool).mockImplementation(
+      async (platform, since, requestPage = 1, requestPageSize = 20) => ({
+        platform,
+        account_ids: ["cred-official-1"],
+        stats: statsFixture({
+          member_count: 1,
+          request_count: 99,
+          token_count: 2048,
+          cost_micros: 1500,
+          request_row_count: 42,
+          request_page: requestPage ?? 1,
+          request_page_size: requestPageSize ?? 20,
+          requests: [
+            {
+              id: `request-${requestPage ?? 1}-${since ?? "all"}`,
+              account_id: "cred-official-1",
+              account_name: "Team Account",
+              source_label: "route_proxy",
+              metric_type: "request",
+              amount: 1,
+              unit: "count",
+              metadata_json: "{\"path\":\"/v1/responses\",\"status\":201}",
+              created_at: "2026-07-17T08:00:00Z",
+            },
+            {
+              id: "request-invalid-metadata",
+              account_id: "cred-api-1",
+              account_name: "Broken Metadata Account",
+              source_label: "route_proxy",
+              metric_type: "request",
+              amount: 1,
+              unit: "count",
+              metadata_json: "{bad json",
+              created_at: "2026-07-17T08:01:00Z",
+            },
+          ],
+        }),
       }),
-    }));
+    );
 
     renderScreen();
 
     await userEvent.click(await screen.findByLabelText("查看算力池统计"));
 
     expect(await screen.findByText("请求统计")).toBeInTheDocument();
+    expect(screen.getByText("统计当前 Codex 的历史路由请求")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "当日" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "本周" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "本月" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "累计" })).toBeInTheDocument();
+    expect(screen.getByText("共 42 条 · 每页 20 条")).toBeInTheDocument();
+    expect(screen.getByText("第 1 / 3 页")).toBeInTheDocument();
     expect(screen.getByText("/v1/responses")).toBeInTheDocument();
     expect(screen.getByText("201")).toBeInTheDocument();
     expect(screen.getAllByText("route_proxy")).toHaveLength(2);
@@ -501,18 +512,31 @@ describe("AccountsScreen", () => {
     expect(invalidMetadataRow).not.toBeNull();
     expect(within(invalidMetadataRow as HTMLElement).getAllByText("-")).toHaveLength(2);
 
+    await userEvent.click(screen.getByLabelText("下一页请求"));
+
+    await waitFor(() =>
+      expect(getRoutePool).toHaveBeenLastCalledWith(
+        "codex",
+        expect.any(String),
+        2,
+        20,
+      ),
+    );
+
     await userEvent.click(screen.getByRole("button", { name: "本月" }));
 
     await waitFor(() =>
       expect(getRoutePool).toHaveBeenLastCalledWith(
         "codex",
         expectedMonthStart.toISOString(),
+        1,
+        20,
       ),
     );
 
     await userEvent.click(screen.getByRole("button", { name: "累计" }));
 
-    await waitFor(() => expect(getRoutePool).toHaveBeenLastCalledWith("codex", null));
+    await waitFor(() => expect(getRoutePool).toHaveBeenLastCalledWith("codex", null, 1, 20));
   });
 
   it("starts proxy, writes configs, and tests the credential pool route", async () => {
