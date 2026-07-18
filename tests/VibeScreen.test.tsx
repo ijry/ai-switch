@@ -122,12 +122,12 @@ describe("VibeScreen", () => {
   it("groups local sessions by project directory", async () => {
     renderScreen();
 
-    expect(await screen.findByText("repo/app")).toBeInTheDocument();
+    const folderToggle = await screen.findByRole("button", {
+      name: "Expand folder D:/repo/app",
+    });
+    expect(folderToggle).toHaveTextContent("repo/app");
     expect(screen.queryByText("D:/repo/app")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Expand folder D:/repo/app" })).toHaveAttribute(
-      "title",
-      "D:/repo/app",
-    );
+    expect(folderToggle).toHaveAttribute("title", "D:/repo/app");
     expect(screen.queryByText("Fix terminal bug")).not.toBeInTheDocument();
     expect(screen.queryByText("Missing resume")).not.toBeInTheDocument();
 
@@ -239,6 +239,51 @@ describe("VibeScreen", () => {
       await screen.findByRole("heading", { name: "Terminal workspace · Vibe mode" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("Agent accounts placeholder")).not.toBeInTheDocument();
+  });
+
+  it("renders the empty-state launch composer with agent and routing controls", async () => {
+    renderScreen();
+
+    expect(await screen.findByPlaceholderText("Send a message...")).toBeInTheDocument();
+    await screen.findByRole("button", { name: "Expand folder D:/repo/app" });
+    expect(screen.getByText("Start or resume a session")).toBeInTheDocument();
+    expect(screen.getByText("Agent (full access)")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Codex" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Claude" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(screen.getByRole("button", { name: "Gemini" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "OpenCode" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "OpenClaw" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Hermes" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Folder")).toHaveTextContent("repo/app");
+    expect(screen.getByLabelText("Folder")).toHaveTextContent("New folder...");
+    expect(screen.getByLabelText("Model")).toHaveValue("auto");
+    expect(screen.getByLabelText("Reasoning")).toHaveValue("auto");
+    expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument();
+  });
+
+  it("creates a new agent session from the empty-state launch composer", async () => {
+    renderScreen();
+
+    await screen.findByPlaceholderText("Send a message...");
+    await screen.findByRole("button", { name: "Expand folder D:/repo/app" });
+    await userEvent.selectOptions(screen.getByLabelText("Folder"), "D:/repo/app");
+    await userEvent.click(screen.getByRole("button", { name: "Claude" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    await waitFor(() =>
+      expect(createTerminalSession).toHaveBeenCalledWith({
+        kind: "agent",
+        platform: "claude",
+        command: null,
+        title: "claude - D:/repo/app",
+        cwd: "D:/repo/app",
+        cols: 100,
+        rows: 30,
+      }),
+    );
   });
 
   it("opens appearance settings and switches Vibe themes from the dialog", async () => {
@@ -412,6 +457,17 @@ describe("VibeScreen", () => {
     expect(screen.getByText("舰桥链路已建立")).toBeInTheDocument();
     expect(screen.getByText("深空航行模式")).toBeInTheDocument();
     expect(screen.getByText("舰桥")).toBeInTheDocument();
+    expect(screen.getByText("出发下一个星球")).toBeInTheDocument();
+    expect(screen.getByText("选择智能体、航线与推理功率，舰桥将打开新的终端任务。")).toBeInTheDocument();
+    expect(screen.getByText("武器选项")).toBeInTheDocument();
+    expect(screen.getByText("全舰权限")).toBeInTheDocument();
+    expect(screen.getByText("任务模式")).toBeInTheDocument();
+    expect(screen.getByText("深空探索")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("输入本次航行指令...")).toBeInTheDocument();
+    expect(screen.getByLabelText("航线目录")).toBeInTheDocument();
+    expect(screen.getByLabelText("舰载模型")).toBeInTheDocument();
+    expect(screen.getByLabelText("推理功率")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "跃迁启动" })).toBeInTheDocument();
     expect(screen.getByTestId("vibe-skin-space-ai-core")).toBeInTheDocument();
     expect(screen.getAllByTestId("vibe-skin-space-ship").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByTestId("vibe-skin-space-radar")).toBeInTheDocument();
@@ -420,6 +476,11 @@ describe("VibeScreen", () => {
     expect(document.querySelector(".vibe-skin--starship-cockpit")).toBeTruthy();
     expect(document.querySelector(".vibe-skin-space-card")).toBeTruthy();
     expect(document.querySelector(".vibe-skin-space-telemetry-card")).toBeTruthy();
+    expect(document.querySelector(".vibe-skin-right-rail")).toHaveClass(
+      "overflow-y-auto",
+      "vibe-scrollbar-skin",
+    );
+    expect(document.querySelector(".vibe-skin-showcase-stage")).not.toHaveClass("flex-1");
     expect(screen.queryByText("皮肤区域")).not.toBeInTheDocument();
   });
 
@@ -511,7 +572,9 @@ describe("VibeScreen", () => {
   it("does not render QQ2007 decorative skin blocks in dark or light themes", async () => {
     renderScreen();
 
-    expect(await screen.findByText("repo/app")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Expand folder D:/repo/app" }),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Codex 好友")).not.toBeInTheDocument();
     expect(screen.queryByTestId("vibe-window-controls")).not.toBeInTheDocument();
 

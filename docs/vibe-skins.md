@@ -105,6 +105,20 @@ To make a derivative skin, copy one of those folders, edit `skin.json` with a ne
       "left": "AI Switch 已连接",
       "right": "皮肤区域已启用"
     },
+    "launch": {
+      "title": "启动或恢复一个会话",
+      "body": "选择智能体、项目目录和启动偏好，终端会在这里打开。",
+      "placeholder": "输入本次会话目标...",
+      "sendLabel": "启动",
+      "folderLabel": "文件夹",
+      "modelLabel": "模型",
+      "reasoningLabel": "推理程度",
+      "agentStripLabel": "智能体选择",
+      "agentStripPrefix": "",
+      "agentStripSuffix": "完全访问",
+      "extraLabel": "",
+      "extraValue": ""
+    },
     "taskbar": {
       "enabled": true,
       "startButton": {
@@ -163,6 +177,8 @@ All `ui` fields are optional. Missing values fall back to the built-in Codex 200
 
 `blocks` customizes safe app-rendered skin content. Values are strings and image references only; the app never executes user HTML, CSS files, or scripts from a skin package.
 
+The startup composer uses fixed app-rendered agent icons. Skins can style the selector container and option states, and can add safe text chips around it, but cannot replace the agent SVGs with executable content.
+
 Supported blocks:
 
 - `blocks.titlebar.title`: main Chinese-style title text in the skin titlebar.
@@ -181,6 +197,18 @@ Supported blocks:
 - `blocks.showcase.footer`: footer tag under the showcase stage.
 - `blocks.statusbar.left`: left status bar text.
 - `blocks.statusbar.right`: right status bar text.
+- `blocks.launch.title`: empty terminal startup title, for example `出发下一个星球`.
+- `blocks.launch.body`: helper text under the startup title.
+- `blocks.launch.placeholder`: startup composer input placeholder.
+- `blocks.launch.sendLabel`: startup composer button text.
+- `blocks.launch.folderLabel`: folder selector label.
+- `blocks.launch.modelLabel`: model selector label.
+- `blocks.launch.reasoningLabel`: reasoning selector label.
+- `blocks.launch.agentStripLabel`: fixed agent icon selector label.
+- `blocks.launch.agentStripPrefix`: optional text chip before the agent selector, for example `武器选项`.
+- `blocks.launch.agentStripSuffix`: optional text chip after the agent selector, for example `全舰权限`.
+- `blocks.launch.extraLabel`: optional decorative chip label under the agent selector.
+- `blocks.launch.extraValue`: optional decorative chip value under the agent selector.
 - `blocks.taskbar.enabled`: enables the taskbar. Set to `false` to keep the older status bar.
 - `blocks.taskbar.startButton.label`: start button text, for example `开始`.
 - `blocks.taskbar.startButton.icon`: start button image path or data URL.
@@ -246,6 +274,16 @@ Skins can define styles for these regions:
 - `tabClose`
 - `terminalShell`
 - `emptyState`
+- `launchPanel`
+- `agentStrip`
+- `agentOption`
+- `agentOptionActive`
+- `composer`
+- `composerInput`
+- `composerMetaBar`
+- `composerControl`
+- `composerSendButton`
+- `composerAddon`
 - `modal`
 - `rightRail`
 - `rightCard`

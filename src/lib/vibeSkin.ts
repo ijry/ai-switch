@@ -99,6 +99,16 @@ export const VIBE_SKIN_REGION_KEYS = [
   "select",
   "danger",
   "showcaseOrb",
+  "launchPanel",
+  "agentStrip",
+  "agentOption",
+  "agentOptionActive",
+  "composer",
+  "composerInput",
+  "composerMetaBar",
+  "composerControl",
+  "composerSendButton",
+  "composerAddon",
   "taskbar",
   "taskbarStartButton",
   "taskbarStartMenu",
@@ -171,6 +181,21 @@ export type VibeSkinShowcaseBlock = {
 export type VibeSkinStatusbarBlock = {
   left?: string;
   right?: string;
+};
+
+export type VibeSkinLaunchBlock = {
+  title?: string;
+  body?: string;
+  placeholder?: string;
+  sendLabel?: string;
+  folderLabel?: string;
+  modelLabel?: string;
+  reasoningLabel?: string;
+  agentStripLabel?: string;
+  agentStripPrefix?: string;
+  agentStripSuffix?: string;
+  extraLabel?: string;
+  extraValue?: string;
 };
 
 export type VibeSkinTaskbarAction = "openAppearance" | "setTheme" | "importSkin" | "clearSkin";
@@ -292,6 +317,7 @@ export type VibeSkinBlocks = {
   profile?: VibeSkinProfileBlock;
   showcase?: VibeSkinShowcaseBlock;
   statusbar?: VibeSkinStatusbarBlock;
+  launch?: VibeSkinLaunchBlock;
   taskbar?: VibeSkinTaskbarBlock;
 };
 
@@ -301,6 +327,7 @@ export type ResolvedVibeSkinBlocks = {
   showcase: Omit<Required<VibeSkinShowcaseBlock>, "figure"> &
     Pick<VibeSkinShowcaseBlock, "figure">;
   statusbar: Required<VibeSkinStatusbarBlock>;
+  launch: Required<VibeSkinLaunchBlock>;
   taskbar: ResolvedVibeSkinTaskbarBlock;
 };
 
@@ -327,6 +354,20 @@ export const DEFAULT_VIBE_SKIN_BLOCKS: ResolvedVibeSkinBlocks = {
   statusbar: {
     left: "AI Switch 已连接",
     right: "皮肤区域已启用",
+  },
+  launch: {
+    title: "启动或恢复一个会话",
+    body: "选择智能体、项目目录和启动偏好，终端会在这里打开。",
+    placeholder: "输入本次会话目标...",
+    sendLabel: "启动",
+    folderLabel: "文件夹",
+    modelLabel: "模型",
+    reasoningLabel: "推理程度",
+    agentStripLabel: "智能体选择",
+    agentStripPrefix: "",
+    agentStripSuffix: "完全访问",
+    extraLabel: "",
+    extraValue: "",
   },
   taskbar: {
     enabled: true,
@@ -557,6 +598,35 @@ function normalizeStatusbarBlock(value: unknown): VibeSkinStatusbarBlock | undef
   return Object.keys(block).length > 0 ? block : undefined;
 }
 
+function normalizeLaunchBlock(value: unknown): VibeSkinLaunchBlock | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  const block: VibeSkinLaunchBlock = {};
+  for (const key of [
+    "title",
+    "body",
+    "placeholder",
+    "sendLabel",
+    "folderLabel",
+    "modelLabel",
+    "reasoningLabel",
+    "agentStripLabel",
+    "agentStripPrefix",
+    "agentStripSuffix",
+    "extraLabel",
+    "extraValue",
+  ] as const) {
+    const item = optionalString(source[key]);
+    if (item) {
+      block[key] = item;
+    }
+  }
+  return Object.keys(block).length > 0 ? block : undefined;
+}
+
 const SAFE_TASKBAR_ACTIONS = new Set<VibeSkinTaskbarAction>([
   "openAppearance",
   "setTheme",
@@ -711,6 +781,7 @@ function normalizeBlocks(value: unknown): VibeSkinBlocks | undefined {
     profile: normalizeProfileBlock(source.profile),
     showcase: normalizeShowcaseBlock(source.showcase),
     statusbar: normalizeStatusbarBlock(source.statusbar),
+    launch: normalizeLaunchBlock(source.launch),
     taskbar: normalizeTaskbarBlock(source.taskbar),
   };
   return Object.values(blocks).some(Boolean) ? blocks : undefined;
@@ -1168,6 +1239,10 @@ export function getVibeSkinBlocks(skin: VibeSkinDefinition): ResolvedVibeSkinBlo
     statusbar: {
       ...DEFAULT_VIBE_SKIN_BLOCKS.statusbar,
       ...skin.blocks?.statusbar,
+    },
+    launch: {
+      ...DEFAULT_VIBE_SKIN_BLOCKS.launch,
+      ...skin.blocks?.launch,
     },
     taskbar: {
       ...DEFAULT_VIBE_SKIN_BLOCKS.taskbar,

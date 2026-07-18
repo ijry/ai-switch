@@ -47,6 +47,17 @@ describe("vibeSkin", () => {
           windowButtonClose: {
             background: "linear-gradient(#ff9aa2, #b51f2e)",
           },
+          launchPanel: {
+            background: "linear-gradient(#effbff, #b7e7ff)",
+            border: "rgba(21,104,184,0.48)",
+          },
+          composerInput: {
+            background: "#ffffff",
+            color: "#12375f",
+          },
+          composerSendButton: {
+            background: "linear-gradient(#45d5ff, #0d73cd)",
+          },
         },
         showcase: {
           enabled: true,
@@ -76,6 +87,20 @@ describe("vibeSkin", () => {
             left: "已连接",
             right: "皮肤区域已启用",
           },
+          launch: {
+            title: "自定义启动",
+            body: "选择智能体与文件夹。",
+            placeholder: "输入启动目标",
+            sendLabel: "出发",
+            folderLabel: "项目舱",
+            modelLabel: "模型舱",
+            reasoningLabel: "推理舱",
+            agentStripLabel: "智能体编队",
+            agentStripPrefix: "武器选项",
+            agentStripSuffix: "完全权限",
+            extraLabel: "模式",
+            extraValue: "探索",
+          },
         },
       }),
     );
@@ -104,6 +129,7 @@ describe("vibeSkin", () => {
     expect(skin.blocks?.profile?.avatar).toMatch(/^data:image\/png;base64,/);
     expect(skin.blocks?.showcase?.figure).toMatch(/^data:image\/png;base64,/);
     expect(skin.blocks?.statusbar?.left).toBe("已连接");
+    expect(skin.blocks?.launch?.title).toBe("自定义启动");
 
     const variables = skinToCssVariables(skin) as Record<string, unknown>;
     expect(variables["--vibe-sidebar-profile-background-layer"]).toBe(
@@ -115,6 +141,22 @@ describe("vibeSkin", () => {
     expect(variables["--vibe-window-button-close-background-layer"]).toBe(
       "linear-gradient(#ff9aa2, #b51f2e)",
     );
+    expect(variables["--vibe-launch-panel-background-layer"]).toBe(
+      "linear-gradient(#effbff, #b7e7ff)",
+    );
+    expect(variables["--vibe-composer-input-color"]).toBe("#12375f");
+    expect(variables["--vibe-composer-send-button-background-layer"]).toBe(
+      "linear-gradient(#45d5ff, #0d73cd)",
+    );
+
+    const blocks = getVibeSkinBlocks(skin);
+    expect(blocks.launch).toMatchObject({
+      title: "自定义启动",
+      placeholder: "输入启动目标",
+      sendLabel: "出发",
+      agentStripPrefix: "武器选项",
+      extraValue: "探索",
+    });
   });
 
   it("imports decoration templates and image assets from zip skin packages", async () => {
@@ -323,6 +365,8 @@ describe("vibeSkin", () => {
     expect(builtInSkin?.decorations?.variant).toBe("starship-cockpit");
     expect(builtInSkin?.decorations?.avatarTemplate).toBe("space-ai-core");
     expect(builtInSkin?.decorations?.showcaseTemplate).toBe("space-ship");
+    expect(builtInSkin?.blocks?.launch?.title).toBe("出发下一个星球");
+    expect(builtInSkin?.blocks?.launch?.agentStripPrefix).toBe("武器选项");
     expect(builtInSkin?.decorations?.rightCards?.map((card) => card.template)).toEqual([
       "space-radar",
       "space-ship",
@@ -337,6 +381,7 @@ describe("vibeSkin", () => {
     );
 
     expect(imported.id).toBe("starship-cockpit");
+    expect(getVibeSkinBlocks(imported).launch.sendLabel).toBe("跃迁启动");
     expect(imported.decorations).toEqual(builtInSkin?.decorations);
   });
 

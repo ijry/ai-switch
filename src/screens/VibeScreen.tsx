@@ -9,12 +9,13 @@ import {
   PanelLeftClose,
   Play,
   Plus,
+  SendHorizontal,
   SunMedium,
   TerminalSquare,
   Upload,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, ReactNode } from "react";
 import { createTerminalSession, killTerminalSession, listSessions } from "../lib/api/client";
 import { useI18n } from "../lib/i18n";
@@ -54,6 +55,24 @@ const agentOptions = [
   { platform: "openclaw", label: "OpenClaw" },
   { platform: "hermes", label: "Hermes" },
 ] as const;
+
+const launchModelOptions = [
+  { value: "auto", label: "Auto" },
+  { value: "gpt-5", label: "GPT-5" },
+  { value: "claude-sonnet-4", label: "Claude Sonnet 4" },
+  { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+] as const;
+
+const launchReasoningOptions = [
+  { value: "auto", label: "Auto" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+] as const;
+
+const chooseFolderOptionValue = "__choose_folder__";
+
+type AgentPlatform = (typeof agentOptions)[number]["platform"];
 
 type VibeTheme = "dark" | "light" | "skin";
 
@@ -255,6 +274,226 @@ function shortTabTitle(title: string) {
     }
   }
   return leaf;
+}
+
+type AgentIconProps = {
+  platform: AgentPlatform;
+  className?: string;
+};
+
+type AgentSvgProps = {
+  size?: string | number;
+};
+
+const baseAgentSvgStyle = { flex: "none", lineHeight: 1 } as const;
+
+function useSvgGradientId(prefix: string) {
+  return `${prefix}-${useId().replace(/:/g, "")}`;
+}
+
+function CodexAgentSvg({ size = "100%" }: AgentSvgProps) {
+  const gradientId = useSvgGradientId("codex-agent");
+  return (
+    <svg
+      height={size}
+      style={baseAgentSvgStyle}
+      viewBox="2 2 20 20"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M9.064 3.344a4.578 4.578 0 012.285-.312c1 .115 1.891.54 2.673 1.275.01.01.024.017.037.021a.09.09 0 00.043 0 4.55 4.55 0 013.046.275l.047.022.116.057a4.581 4.581 0 012.188 2.399c.209.51.313 1.041.315 1.595a4.24 4.24 0 01-.134 1.223.123.123 0 00.03.115c.594.607.988 1.33 1.183 2.17.289 1.425-.007 2.71-.887 3.854l-.136.166a4.548 4.548 0 01-2.201 1.388.123.123 0 00-.081.076c-.191.551-.383 1.023-.74 1.494-.9 1.187-2.222 1.846-3.711 1.838-1.187-.006-2.239-.44-3.157-1.302a.107.107 0 00-.105-.024c-.388.125-.78.143-1.204.138a4.441 4.441 0 01-1.945-.466 4.544 4.544 0 01-1.61-1.335c-.152-.202-.303-.392-.414-.617a5.81 5.81 0 01-.37-.961 4.582 4.582 0 01-.014-2.298.124.124 0 00.006-.056.085.085 0 00-.027-.048 4.467 4.467 0 01-1.034-1.651 3.896 3.896 0 01-.251-1.192 5.189 5.189 0 01.141-1.6c.337-1.112.982-1.985 1.933-2.618.212-.141.413-.251.601-.33.215-.089.43-.164.646-.227a.098.098 0 00.065-.066 4.51 4.51 0 01.829-1.615 4.535 4.535 0 011.837-1.388zm3.482 10.565a.637.637 0 000 1.272h3.636a.637.637 0 100-1.272h-3.636zM8.462 9.23a.637.637 0 00-1.106.631l1.272 2.224-1.266 2.136a.636.636 0 101.095.649l1.454-2.455a.636.636 0 00.005-.64L8.462 9.23z"
+        fill={`url(#${gradientId})`}
+      />
+      <defs>
+        <linearGradient
+          gradientUnits="userSpaceOnUse"
+          id={gradientId}
+          x1="12"
+          x2="12"
+          y1="3"
+          y2="21"
+        >
+          <stop stopColor="#B1A7FF" />
+          <stop offset=".5" stopColor="#7A9DFF" />
+          <stop offset="1" stopColor="#3941FF" />
+        </linearGradient>
+      </defs>
+    </svg>
+  );
+}
+
+function ClaudeAgentSvg({ size = "100%" }: AgentSvgProps) {
+  return (
+    <svg
+      height={size}
+      style={baseAgentSvgStyle}
+      viewBox="0 0 24 24"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        clipRule="evenodd"
+        d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z"
+        fill="#D97757"
+        fillRule="evenodd"
+      />
+    </svg>
+  );
+}
+
+function GeminiAgentSvg({ size = "100%" }: AgentSvgProps) {
+  const gradientId = useSvgGradientId("gemini-agent");
+  return (
+    <svg
+      height={size}
+      style={baseAgentSvgStyle}
+      viewBox="0 0 24 24"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M0 4.391A4.391 4.391 0 014.391 0h15.217A4.391 4.391 0 0124 4.391v15.217A4.391 4.391 0 0119.608 24H4.391A4.391 4.391 0 010 19.608V4.391z"
+        fill={`url(#${gradientId})`}
+      />
+      <path
+        clipRule="evenodd"
+        d="M19.74 1.444a2.816 2.816 0 012.816 2.816v15.48a2.816 2.816 0 01-2.816 2.816H4.26a2.816 2.816 0 01-2.816-2.816V4.26A2.816 2.816 0 014.26 1.444h15.48zM7.236 8.564l7.752 3.728-7.752 3.727v2.802l9.557-4.596v-3.866L7.236 5.763v2.801z"
+        fill="#1E1E2E"
+        fillRule="evenodd"
+      />
+      <defs>
+        <linearGradient
+          gradientUnits="userSpaceOnUse"
+          id={gradientId}
+          x1="24"
+          x2="0"
+          y1="6.587"
+          y2="16.494"
+        >
+          <stop stopColor="#EE4D5D" />
+          <stop offset=".328" stopColor="#B381DD" />
+          <stop offset=".476" stopColor="#207CFE" />
+        </linearGradient>
+      </defs>
+    </svg>
+  );
+}
+
+function OpenCodeAgentSvg({ size = "100%" }: AgentSvgProps) {
+  return (
+    <svg
+      fill="currentColor"
+      fillRule="evenodd"
+      height={size}
+      style={baseAgentSvgStyle}
+      viewBox="0 0 24 24"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path d="M16 6H8v12h8V6zm4 16H4V2h16v20z" />
+    </svg>
+  );
+}
+
+function OpenClawAgentSvg({ size = "100%" }: AgentSvgProps) {
+  const shellId = useSvgGradientId("openclaw-agent-shell");
+  const leftId = useSvgGradientId("openclaw-agent-left");
+  const rightId = useSvgGradientId("openclaw-agent-right");
+  return (
+    <svg
+      height={size}
+      style={baseAgentSvgStyle}
+      viewBox="0 0 24 24"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M12 2.568c-6.33 0-9.495 5.275-9.495 9.495 0 4.22 3.165 8.44 6.33 9.494v2.11h2.11v-2.11s1.055.422 2.11 0v2.11h2.11v-2.11c3.165-1.055 6.33-5.274 6.33-9.494S18.33 2.568 12 2.568z"
+        fill={`url(#${shellId})`}
+      />
+      <path
+        d="M3.56 9.953C.396 8.898-.66 11.008.396 13.118c1.055 2.11 3.164 1.055 4.22-1.055.632-1.477 0-2.11-1.056-2.11z"
+        fill={`url(#${leftId})`}
+      />
+      <path
+        d="M20.44 9.953c3.164-1.055 4.22 1.055 3.164 3.165-1.055 2.11-3.164 1.055-4.22-1.055-.632-1.477 0-2.11 1.056-2.11z"
+        fill={`url(#${rightId})`}
+      />
+      <path
+        d="M5.507 1.875c.476-.285 1.036-.233 1.615.037.577.27 1.223.774 1.937 1.488a.316.316 0 01-.447.447c-.693-.693-1.279-1.138-1.757-1.361-.475-.222-.795-.205-1.022-.069a.317.317 0 01-.326-.542zM16.877 1.913c.58-.27 1.14-.323 1.616-.038a.317.317 0 01-.326.542c-.227-.136-.547-.153-1.022.069-.478.223-1.064.668-1.756 1.361a.316.316 0 11-.448-.447c.714-.714 1.36-1.218 1.936-1.487z"
+        fill="#FF4D4D"
+      />
+      <path
+        d="M8.835 9.109a1.266 1.266 0 100-2.532 1.266 1.266 0 000 2.532zM15.165 9.109a1.266 1.266 0 100-2.532 1.266 1.266 0 000 2.532z"
+        fill="#050810"
+      />
+      <path
+        d="M9.046 8.16a.527.527 0 100-1.056.527.527 0 000 1.055zM15.376 8.16a.527.527 0 100-1.055.527.527 0 000 1.054z"
+        fill="#00E5CC"
+      />
+      <defs>
+        <linearGradient gradientUnits="userSpaceOnUse" id={shellId} x1="-.659" x2="27.023" y1=".458" y2="22.855">
+          <stop stopColor="#FF4D4D" />
+          <stop offset="1" stopColor="#991B1B" />
+        </linearGradient>
+        <linearGradient gradientUnits="userSpaceOnUse" id={leftId} x1="0" x2="4.311" y1="9.672" y2="14.949">
+          <stop stopColor="#FF4D4D" />
+          <stop offset="1" stopColor="#991B1B" />
+        </linearGradient>
+        <linearGradient gradientUnits="userSpaceOnUse" id={rightId} x1="19.385" x2="24.399" y1="9.953" y2="14.462">
+          <stop stopColor="#FF4D4D" />
+          <stop offset="1" stopColor="#991B1B" />
+        </linearGradient>
+      </defs>
+    </svg>
+  );
+}
+
+function HermesAgentSvg({ size = "100%" }: AgentSvgProps) {
+  return (
+    <svg
+      fill="none"
+      height={size}
+      style={baseAgentSvgStyle}
+      viewBox="0 0 24 24"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <rect height="20" rx="6" stroke="currentColor" strokeWidth="2" width="20" x="2" y="2" />
+      <path
+        d="M7 16V8M17 8v8M8 12h8M5 7.2l2.4-2.1M19 7.2l-2.4-2.1"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+      />
+    </svg>
+  );
+}
+
+function AgentIcon({ platform, className }: AgentIconProps) {
+  const iconClassName = ["inline-flex shrink-0", className].filter(Boolean).join(" ");
+  const icon =
+    platform === "codex" ? (
+      <CodexAgentSvg />
+    ) : platform === "claude" ? (
+      <ClaudeAgentSvg />
+    ) : platform === "gemini" ? (
+      <GeminiAgentSvg />
+    ) : platform === "opencode" ? (
+      <OpenCodeAgentSvg />
+    ) : platform === "openclaw" ? (
+      <OpenClawAgentSvg />
+    ) : (
+      <HermesAgentSvg />
+    );
+
+  return (
+    <span aria-hidden="true" className={iconClassName}>
+      {icon}
+    </span>
+  );
 }
 
 function statusDotClass(status: TerminalStatus, isActive: boolean, isDark: boolean) {
@@ -745,7 +984,12 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [createProjectDir, setCreateProjectDir] = useState("");
-  const [createPlatform, setCreatePlatform] = useState<(typeof agentOptions)[number]["platform"]>("codex");
+  const [createPlatform, setCreatePlatform] = useState<AgentPlatform>("codex");
+  const [launchPrompt, setLaunchPrompt] = useState("");
+  const [launchModel, setLaunchModel] =
+    useState<(typeof launchModelOptions)[number]["value"]>("auto");
+  const [launchReasoning, setLaunchReasoning] =
+    useState<(typeof launchReasoningOptions)[number]["value"]>("auto");
   const [themeMode, setThemeMode] = useState<VibeTheme>("dark");
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [startMenuOpen, setStartMenuOpen] = useState(false);
@@ -781,6 +1025,11 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     }
     return Array.from(directories);
   }, [sessionsQuery.data]);
+
+  useEffect(() => {
+    setCreateProjectDir((current) => current || projectDirectories[0] || "");
+  }, [projectDirectories]);
+
   const availableSkins = useMemo(
     () => [...BUILT_IN_VIBE_SKINS, ...(customSkin ? [customSkin] : [])],
     [customSkin],
@@ -834,6 +1083,15 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     }
   };
 
+  const handleLaunchFolderChange = (event: ChangeEvent<HTMLSelectElement>) => {
+    const value = event.target.value;
+    if (value === chooseFolderOptionValue) {
+      void chooseFolder();
+      return;
+    }
+    setCreateProjectDir(value);
+  };
+
   const importSkin = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -862,7 +1120,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     setThemeMode("skin");
   };
 
-  const launchNewAgent = () => {
+  const launchAgentSession = (closeDialog: boolean) => {
     const cwd = createProjectDir.trim();
     if (!cwd) {
       setError(t("vibe.errorProjectRequired"));
@@ -878,7 +1136,18 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       cols: 100,
       rows: 30,
     });
-    setCreateDialogOpen(false);
+    setLaunchPrompt("");
+    if (closeDialog) {
+      setCreateDialogOpen(false);
+    }
+  };
+
+  const launchNewAgent = () => {
+    launchAgentSession(true);
+  };
+
+  const launchFromComposer = () => {
+    launchAgentSession(false);
   };
 
   const closeTab = async (session: TerminalSession) => {
@@ -1041,6 +1310,85 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       clearCustomSkin();
     }
   };
+
+  const launchTitle = isSkin ? skinBlocks.launch.title : t("vibe.emptyTitle");
+  const launchBody = isSkin ? skinBlocks.launch.body : t("vibe.emptyBody");
+  const launchPlaceholder = isSkin
+    ? skinBlocks.launch.placeholder
+    : t("vibe.launchPlaceholder");
+  const launchSendLabel = isSkin ? skinBlocks.launch.sendLabel : t("vibe.launchSend");
+  const launchFolderLabel = isSkin ? skinBlocks.launch.folderLabel : t("vibe.launchFolder");
+  const launchModelLabel = isSkin ? skinBlocks.launch.modelLabel : t("vibe.launchModel");
+  const launchReasoningLabel = isSkin
+    ? skinBlocks.launch.reasoningLabel
+    : t("vibe.launchReasoning");
+  const launchAgentStripLabel = isSkin
+    ? skinBlocks.launch.agentStripLabel
+    : t("vibe.launchAgentFullAccess");
+  const launchAgentPrefix = isSkin ? skinBlocks.launch.agentStripPrefix : "";
+  const launchAgentSuffix = isSkin ? skinBlocks.launch.agentStripSuffix : "";
+  const launchExtraLabel = isSkin ? skinBlocks.launch.extraLabel : "";
+  const launchExtraValue = isSkin ? skinBlocks.launch.extraValue : "";
+  const customProjectDirectory =
+    createProjectDir.trim() && !projectDirectories.includes(createProjectDir.trim())
+      ? createProjectDir.trim()
+      : null;
+  const launchPanelClass = isSkin
+    ? "vibe-skin-launch-panel mx-auto w-full max-w-4xl shrink-0 rounded-[1.5rem] border p-3 text-left shadow-2xl backdrop-blur-xl sm:p-4"
+    : isDark
+      ? "mx-auto w-full max-w-4xl shrink-0 rounded-[1.5rem] border border-[#073642] bg-[#073642]/70 p-3 text-left shadow-2xl shadow-black/30 backdrop-blur-xl sm:p-4"
+      : "mx-auto w-full max-w-4xl shrink-0 rounded-[1.5rem] border border-white/80 bg-white/82 p-3 text-left shadow-2xl shadow-stone-900/10 backdrop-blur-xl sm:p-4";
+  const agentStripClass = isSkin
+    ? "vibe-skin-agent-strip rounded-2xl border p-2"
+    : isDark
+      ? "rounded-2xl border border-[#586e75]/55 bg-[#002b36]/72 p-2 text-[#d8e2dc]"
+      : "rounded-2xl border border-stone-200 bg-white/78 p-2 text-stone-700";
+  const agentOptionClass = (active: boolean) =>
+    isSkin
+      ? `vibe-skin-agent-option ${
+          active ? "vibe-skin-agent-option-active" : ""
+        } inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-[12px] font-semibold transition`
+      : isDark
+        ? `inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-[12px] font-semibold transition ${
+            active
+              ? "border-[#2aa198] bg-[#2aa198]/18 text-[#fdf6e3] shadow-[0_0_18px_rgba(42,161,152,0.18)]"
+              : "border-[#586e75]/50 bg-[#073642]/64 text-[#9fc3cf] hover:border-[#839496] hover:text-[#fdf6e3]"
+          }`
+        : `inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-[12px] font-semibold transition ${
+            active
+              ? "border-emerald-300 bg-emerald-50 text-emerald-900 shadow-sm"
+              : "border-stone-200 bg-white/70 text-stone-600 hover:border-stone-300 hover:text-stone-950"
+          }`;
+  const composerClass = isSkin
+    ? "vibe-skin-composer mt-3 rounded-2xl border p-2"
+    : isDark
+      ? "mt-3 rounded-2xl border border-[#586e75]/50 bg-[#001e27]/72 p-2"
+      : "mt-3 rounded-2xl border border-stone-200 bg-stone-50/82 p-2";
+  const composerInputClass = isSkin
+    ? "vibe-skin-composer-input min-h-20 w-full resize-none rounded-xl border px-3 py-3 text-sm outline-none transition"
+    : isDark
+      ? "min-h-20 w-full resize-none rounded-xl border border-[#586e75]/50 bg-[#002b36]/70 px-3 py-3 text-sm text-[#fdf6e3] outline-none placeholder:text-[#586e75] focus:border-[#268bd2]"
+      : "min-h-20 w-full resize-none rounded-xl border border-stone-200 bg-white px-3 py-3 text-sm text-stone-950 outline-none placeholder:text-stone-400 focus:border-blue-400";
+  const composerMetaBarClass = isSkin
+    ? "vibe-skin-composer-meta-bar mt-2 flex flex-col gap-2 rounded-xl border p-2 sm:flex-row sm:items-end"
+    : isDark
+      ? "mt-2 flex flex-col gap-2 rounded-xl border border-[#586e75]/40 bg-[#073642]/50 p-2 sm:flex-row sm:items-end"
+      : "mt-2 flex flex-col gap-2 rounded-xl border border-stone-200 bg-white/70 p-2 sm:flex-row sm:items-end";
+  const composerControlClass = isSkin
+    ? "vibe-skin-composer-control mt-1 h-10 w-full min-w-0 rounded-xl border px-3 text-[12px] outline-none transition"
+    : isDark
+      ? "mt-1 h-10 w-full min-w-0 rounded-xl border border-[#586e75]/55 bg-[#002b36] px-3 text-[12px] text-[#fdf6e3] outline-none focus:border-[#268bd2]"
+      : "mt-1 h-10 w-full min-w-0 rounded-xl border border-stone-200 bg-white px-3 text-[12px] text-stone-950 outline-none focus:border-blue-400";
+  const composerSendButtonClass = isSkin
+    ? "vibe-skin-composer-send-button inline-flex h-10 items-center justify-center gap-2 rounded-xl border px-4 text-[13px] font-semibold transition"
+    : isDark
+      ? "inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-[#b58900] bg-[#b58900] px-4 text-[13px] font-semibold text-[#002b36] transition hover:bg-[#cb4b16] hover:text-white"
+      : "inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-stone-950 px-4 text-[13px] font-semibold text-white transition hover:bg-stone-800";
+  const composerAddonClass = isSkin
+    ? "vibe-skin-composer-addon inline-flex shrink-0 items-center gap-1 rounded-full border px-3 py-1 text-[11px] font-semibold"
+    : isDark
+      ? "inline-flex shrink-0 items-center gap-1 rounded-full border border-[#586e75]/50 px-3 py-1 text-[11px] font-semibold text-[#9fc3cf]"
+      : "inline-flex shrink-0 items-center gap-1 rounded-full border border-stone-200 px-3 py-1 text-[11px] font-semibold text-stone-500";
 
   return (
     <main
@@ -1447,21 +1795,162 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
               <div
                 className={
                   isSkin
-                    ? "vibe-skin-empty-state grid h-full place-items-center text-center"
+                    ? `vibe-scrollbar ${scrollbarThemeClass} vibe-skin-empty-state flex h-full min-h-0 flex-col justify-between gap-4 overflow-y-auto p-4 text-center`
                     : isDark
-                    ? "grid h-full place-items-center text-center"
-                    : "grid h-full place-items-center text-center"
+                    ? `vibe-scrollbar ${scrollbarThemeClass} flex h-full min-h-0 flex-col justify-between gap-4 overflow-y-auto p-4 text-center`
+                    : `vibe-scrollbar ${scrollbarThemeClass} flex h-full min-h-0 flex-col justify-between gap-4 overflow-y-auto p-4 text-center`
                 }
               >
-                <div>
-                  <TerminalSquare className={isSkin ? "mx-auto h-8 w-8 text-[var(--vibe-accent)]" : isDark ? "mx-auto h-8 w-8 text-[#586e75]" : "mx-auto h-8 w-8 text-stone-400"} />
-                  <p className={isSkin ? "mt-2 text-sm font-semibold text-[var(--vibe-text)]" : isDark ? "mt-2 text-sm font-semibold text-[#fdf6e3]" : "mt-2 text-sm font-semibold text-stone-900"}>
-                    {t("vibe.emptyTitle")}
-                  </p>
-                  <p className={isSkin ? "mt-1 text-[13px] text-[var(--vibe-muted-text)]" : isDark ? "mt-1 text-[13px] text-[#93a1a1]" : "mt-1 text-[13px] text-stone-500"}>
-                    {t("vibe.emptyBody")}
-                  </p>
+                <div className="flex min-h-[9rem] flex-1 items-center justify-center pt-4">
+                  <div>
+                    <TerminalSquare
+                      className={
+                        isSkin
+                          ? "mx-auto h-8 w-8 text-[var(--vibe-accent)]"
+                          : isDark
+                            ? "mx-auto h-8 w-8 text-[#586e75]"
+                            : "mx-auto h-8 w-8 text-stone-400"
+                      }
+                    />
+                    <p
+                      className={
+                        isSkin
+                          ? "mt-2 text-sm font-semibold text-[var(--vibe-text)]"
+                          : isDark
+                            ? "mt-2 text-sm font-semibold text-[#fdf6e3]"
+                            : "mt-2 text-sm font-semibold text-stone-900"
+                      }
+                    >
+                      {launchTitle}
+                    </p>
+                    <p
+                      className={
+                        isSkin
+                          ? "mt-1 text-[13px] text-[var(--vibe-muted-text)]"
+                          : isDark
+                            ? "mt-1 text-[13px] text-[#93a1a1]"
+                            : "mt-1 text-[13px] text-stone-500"
+                      }
+                    >
+                      {launchBody}
+                    </p>
+                  </div>
                 </div>
+                <section aria-label={launchTitle} className={launchPanelClass}>
+                  <div className={agentStripClass}>
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        {launchAgentPrefix && <span className={composerAddonClass}>{launchAgentPrefix}</span>}
+                        <span className="truncate text-[12px] font-semibold">
+                          {launchAgentStripLabel}
+                        </span>
+                      </div>
+                      {launchAgentSuffix && <span className={composerAddonClass}>{launchAgentSuffix}</span>}
+                    </div>
+                    <div className="vibe-scrollbar vibe-scrollbar-horizontal flex gap-2 overflow-x-auto pb-1">
+                      {agentOptions.map((option) => {
+                        const active = createPlatform === option.platform;
+                        return (
+                          <button
+                            aria-pressed={active}
+                            className={agentOptionClass(active)}
+                            key={option.platform}
+                            onClick={() => setCreatePlatform(option.platform)}
+                            type="button"
+                          >
+                            <AgentIcon className="h-5 w-5" platform={option.platform} />
+                            <span>{option.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {(launchExtraLabel || launchExtraValue) && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {launchExtraLabel && <span className={composerAddonClass}>{launchExtraLabel}</span>}
+                      {launchExtraValue && <span className={composerAddonClass}>{launchExtraValue}</span>}
+                    </div>
+                  )}
+
+                  <div className={composerClass}>
+                    <textarea
+                      aria-label={launchPlaceholder}
+                      className={composerInputClass}
+                      onChange={(event) => setLaunchPrompt(event.target.value)}
+                      placeholder={launchPlaceholder}
+                      value={launchPrompt}
+                    />
+                    <div className={composerMetaBarClass}>
+                      <label className="min-w-0 flex-1 text-[11px] font-semibold">
+                        <span>{launchFolderLabel}</span>
+                        <select
+                          className={composerControlClass}
+                          onChange={handleLaunchFolderChange}
+                          value={createProjectDir}
+                        >
+                          <option value="">{t("vibe.selectFolder")}</option>
+                          {projectDirectories.map((directory) => (
+                            <option key={directory} value={directory}>
+                              {compactDirectoryLabel(directory)}
+                            </option>
+                          ))}
+                          {customProjectDirectory && (
+                            <option value={customProjectDirectory}>
+                              {compactDirectoryLabel(customProjectDirectory)}
+                            </option>
+                          )}
+                          <option value={chooseFolderOptionValue}>{t("vibe.launchNewFolder")}</option>
+                        </select>
+                      </label>
+                      <label className="min-w-0 flex-1 text-[11px] font-semibold sm:max-w-[11rem]">
+                        <span>{launchModelLabel}</span>
+                        <select
+                          className={composerControlClass}
+                          onChange={(event) =>
+                            setLaunchModel(
+                              event.target.value as (typeof launchModelOptions)[number]["value"],
+                            )
+                          }
+                          value={launchModel}
+                        >
+                          {launchModelOptions.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="min-w-0 flex-1 text-[11px] font-semibold sm:max-w-[10rem]">
+                        <span>{launchReasoningLabel}</span>
+                        <select
+                          className={composerControlClass}
+                          onChange={(event) =>
+                            setLaunchReasoning(
+                              event.target
+                                .value as (typeof launchReasoningOptions)[number]["value"],
+                            )
+                          }
+                          value={launchReasoning}
+                        >
+                          {launchReasoningOptions.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        className={composerSendButtonClass}
+                        onClick={launchFromComposer}
+                        type="button"
+                      >
+                        <SendHorizontal className="h-4 w-4" />
+                        <span>{launchSendLabel}</span>
+                      </button>
+                    </div>
+                  </div>
+                </section>
               </div>
             )}
             {tabs.map((tab) => (
@@ -1479,8 +1968,10 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
         </div>
 
         {showSkinShowcase && (
-          <aside className="vibe-skin-right-rail hidden min-h-0 flex-col overflow-hidden border-l p-3 lg:flex">
-            <div className="vibe-skin-right-card flex min-h-0 flex-1 flex-col rounded-3xl border p-3">
+          <aside
+            className={`vibe-scrollbar ${scrollbarThemeClass} vibe-scrollbar-active vibe-skin-right-rail hidden min-h-0 flex-col overflow-x-hidden overflow-y-auto border-l p-3 lg:flex`}
+          >
+            <div className="vibe-skin-right-card flex shrink-0 flex-col rounded-3xl border p-3">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-[10px] font-semibold tracking-[0.18em] text-[var(--vibe-muted-text)]">
@@ -1494,7 +1985,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                   </p>
                 </div>
               </div>
-              <div className="vibe-skin-showcase-stage mt-3 flex min-h-[220px] flex-1 flex-col items-center justify-center rounded-3xl border p-3 text-center">
+              <div className="vibe-skin-showcase-stage mt-3 flex min-h-[220px] flex-col items-center justify-center rounded-3xl border p-3 text-center">
                 {skinBlocks.showcase.figure ? (
                   <img
                     alt={`${skinBlocks.showcase.title} figure`}

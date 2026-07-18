@@ -630,6 +630,147 @@ button:disabled {
   color: var(--vibe-empty-state-color, var(--vibe-text));
 }
 
+.vibe-skin-launch-panel {
+  background: var(--vibe-launch-panel-background-layer, var(--vibe-panel-strong));
+  background-position: var(--vibe-launch-panel-background-position, center);
+  background-repeat: var(--vibe-launch-panel-background-repeat, no-repeat);
+  background-size: var(--vibe-launch-panel-background-size, cover);
+  border-color: var(--vibe-launch-panel-border, var(--vibe-border));
+  border-radius: var(--vibe-launch-panel-border-radius);
+  box-shadow: var(--vibe-launch-panel-shadow);
+  color: var(--vibe-launch-panel-color, var(--vibe-text));
+  backdrop-filter: var(--vibe-launch-panel-backdrop-filter);
+  font-size: var(--vibe-launch-panel-font-size);
+  line-height: var(--vibe-launch-panel-line-height);
+  letter-spacing: var(--vibe-launch-panel-letter-spacing);
+  padding: var(--vibe-launch-panel-padding);
+  text-transform: var(--vibe-launch-panel-text-transform);
+}
+
+.vibe-skin-agent-strip {
+  background: var(--vibe-agent-strip-background-layer, var(--vibe-panel-subtle));
+  background-position: var(--vibe-agent-strip-background-position, center);
+  background-repeat: var(--vibe-agent-strip-background-repeat, no-repeat);
+  background-size: var(--vibe-agent-strip-background-size, cover);
+  border-color: var(--vibe-agent-strip-border, var(--vibe-border));
+  box-shadow: var(--vibe-agent-strip-shadow);
+  color: var(--vibe-agent-strip-color, var(--vibe-text));
+  backdrop-filter: var(--vibe-agent-strip-backdrop-filter);
+  border-radius: var(--vibe-agent-strip-border-radius);
+  padding: var(--vibe-agent-strip-padding);
+}
+
+.vibe-skin-agent-option {
+  background: var(--vibe-agent-option-background-layer, var(--vibe-panel));
+  background-position: var(--vibe-agent-option-background-position, center);
+  background-repeat: var(--vibe-agent-option-background-repeat, no-repeat);
+  background-size: var(--vibe-agent-option-background-size, cover);
+  border-color: var(--vibe-agent-option-border, var(--vibe-border));
+  border-radius: var(--vibe-agent-option-border-radius);
+  box-shadow: var(--vibe-agent-option-shadow);
+  color: var(--vibe-agent-option-color, var(--vibe-muted-text));
+  padding: var(--vibe-agent-option-padding);
+}
+
+.vibe-skin-agent-option:hover {
+  background: var(--vibe-button-hover-background-layer, var(--vibe-tab-hover));
+  color: var(--vibe-text);
+}
+
+.vibe-skin-agent-option-active {
+  background: var(--vibe-agent-option-active-background-layer, var(--vibe-tab-active));
+  background-position: var(--vibe-agent-option-active-background-position, center);
+  background-repeat: var(--vibe-agent-option-active-background-repeat, no-repeat);
+  background-size: var(--vibe-agent-option-active-background-size, cover);
+  border-color: var(--vibe-agent-option-active-border, var(--vibe-accent));
+  box-shadow: var(--vibe-agent-option-active-shadow);
+  color: var(--vibe-agent-option-active-color, var(--vibe-text));
+}
+
+.vibe-skin-composer {
+  background: var(--vibe-composer-background-layer, var(--vibe-panel));
+  background-position: var(--vibe-composer-background-position, center);
+  background-repeat: var(--vibe-composer-background-repeat, no-repeat);
+  background-size: var(--vibe-composer-background-size, cover);
+  border-color: var(--vibe-composer-border, var(--vibe-border));
+  border-radius: var(--vibe-composer-border-radius);
+  box-shadow: var(--vibe-composer-shadow);
+  color: var(--vibe-composer-color, var(--vibe-text));
+  backdrop-filter: var(--vibe-composer-backdrop-filter);
+  padding: var(--vibe-composer-padding);
+}
+
+.vibe-skin-composer-input {
+  background: var(--vibe-composer-input-background-layer, var(--vibe-field-background-layer, var(--vibe-panel-strong)));
+  background-position: var(--vibe-composer-input-background-position, center);
+  background-repeat: var(--vibe-composer-input-background-repeat, no-repeat);
+  background-size: var(--vibe-composer-input-background-size, cover);
+  border-color: var(--vibe-composer-input-border, var(--vibe-field-border, var(--vibe-border)));
+  border-radius: var(--vibe-composer-input-border-radius);
+  box-shadow: var(--vibe-composer-input-shadow);
+  color: var(--vibe-composer-input-color, var(--vibe-field-color, var(--vibe-text)));
+  padding: var(--vibe-composer-input-padding);
+}
+
+.vibe-skin-composer-input::placeholder {
+  color: var(--vibe-muted-text);
+  opacity: 0.72;
+}
+
+.vibe-skin-composer-meta-bar {
+  background: var(--vibe-composer-meta-bar-background-layer, var(--vibe-panel-subtle));
+  background-position: var(--vibe-composer-meta-bar-background-position, center);
+  background-repeat: var(--vibe-composer-meta-bar-background-repeat, no-repeat);
+  background-size: var(--vibe-composer-meta-bar-background-size, cover);
+  border-color: var(--vibe-composer-meta-bar-border, var(--vibe-border));
+  border-radius: var(--vibe-composer-meta-bar-border-radius);
+  box-shadow: var(--vibe-composer-meta-bar-shadow);
+  color: var(--vibe-composer-meta-bar-color, var(--vibe-muted-text));
+  padding: var(--vibe-composer-meta-bar-padding);
+}
+
+.vibe-skin-composer-control {
+  background: var(--vibe-composer-control-background-layer, var(--vibe-select-background-layer, var(--vibe-field-background-layer, var(--vibe-panel-strong))));
+  background-position: var(--vibe-composer-control-background-position, center);
+  background-repeat: var(--vibe-composer-control-background-repeat, no-repeat);
+  background-size: var(--vibe-composer-control-background-size, cover);
+  border-color: var(--vibe-composer-control-border, var(--vibe-select-border, var(--vibe-border)));
+  border-radius: var(--vibe-composer-control-border-radius);
+  box-shadow: var(--vibe-composer-control-shadow);
+  color: var(--vibe-composer-control-color, var(--vibe-select-color, var(--vibe-text)));
+  padding: var(--vibe-composer-control-padding);
+}
+
+.vibe-skin-composer-send-button {
+  background: var(--vibe-composer-send-button-background-layer, var(--vibe-button-background-layer, var(--vibe-button)));
+  background-position: var(--vibe-composer-send-button-background-position, center);
+  background-repeat: var(--vibe-composer-send-button-background-repeat, no-repeat);
+  background-size: var(--vibe-composer-send-button-background-size, cover);
+  border-color: var(--vibe-composer-send-button-border, var(--vibe-button-border, var(--vibe-border)));
+  border-radius: var(--vibe-composer-send-button-border-radius);
+  box-shadow: var(--vibe-composer-send-button-shadow, var(--vibe-button-shadow));
+  color: var(--vibe-composer-send-button-color, var(--vibe-button-color, var(--vibe-button-text)));
+  padding: var(--vibe-composer-send-button-padding);
+}
+
+.vibe-skin-composer-send-button:hover {
+  background: var(--vibe-button-hover-background-layer, var(--vibe-button-hover));
+}
+
+.vibe-skin-composer-addon {
+  background: var(--vibe-composer-addon-background-layer, var(--vibe-panel-subtle));
+  background-position: var(--vibe-composer-addon-background-position, center);
+  background-repeat: var(--vibe-composer-addon-background-repeat, no-repeat);
+  background-size: var(--vibe-composer-addon-background-size, cover);
+  border-color: var(--vibe-composer-addon-border, var(--vibe-border));
+  border-radius: var(--vibe-composer-addon-border-radius);
+  box-shadow: var(--vibe-composer-addon-shadow);
+  color: var(--vibe-composer-addon-color, var(--vibe-muted-text));
+  font-size: var(--vibe-composer-addon-font-size);
+  letter-spacing: var(--vibe-composer-addon-letter-spacing);
+  padding: var(--vibe-composer-addon-padding);
+}
+
 .vibe-skin-modal {
   background: var(--vibe-modal-background-layer, var(--vibe-panel-strong));
   background-position: var(--vibe-modal-background-position, center);
@@ -1560,6 +1701,10 @@ button:disabled {
 .vibe-skin-ghost:focus-visible,
 .vibe-skin-field:focus,
 .vibe-skin-select:focus,
+.vibe-skin-agent-option:focus-visible,
+.vibe-skin-composer-input:focus,
+.vibe-skin-composer-control:focus,
+.vibe-skin-composer-send-button:focus-visible,
 .vibe-skin-list-trigger:focus-visible,
 .vibe-skin-session:focus-visible,
 .vibe-skin-tab-close:focus-visible {
@@ -1619,20 +1764,25 @@ button:disabled {
 
 .vibe-skin--starship-cockpit.vibe-skin::before {
   background:
+    radial-gradient(ellipse at 50% 52%, rgba(163, 251, 255, 0.2), transparent 8rem),
     radial-gradient(circle at 18% 22%, rgba(255, 255, 255, 0.95) 0 1px, transparent 2px),
     radial-gradient(circle at 72% 14%, rgba(163, 251, 255, 0.86) 0 1px, transparent 2px),
     radial-gradient(circle at 46% 62%, rgba(248, 199, 106, 0.78) 0 1px, transparent 2px),
     radial-gradient(circle at 86% 76%, rgba(255, 255, 255, 0.82) 0 1px, transparent 2px),
-    repeating-linear-gradient(112deg, transparent 0 18px, rgba(163, 251, 255, 0.13) 19px, transparent 22px);
+    repeating-linear-gradient(112deg, transparent 0 18px, rgba(163, 251, 255, 0.14) 19px, transparent 22px),
+    repeating-linear-gradient(78deg, transparent 0 34px, rgba(255, 255, 255, 0.12) 35px, transparent 38px);
   background-size:
+    100% 100%,
     320px 320px,
     420px 420px,
     360px 360px,
     520px 520px,
+    100% 100%,
     100% 100%;
-  opacity: 0.52;
-  transform: perspective(900px) rotateX(58deg) scale(1.2);
-  animation: vibe-space-starflow 8s linear infinite;
+  opacity: 0.68;
+  filter: blur(0.15px);
+  transform: perspective(900px) rotateX(58deg) scale(1.28);
+  animation: vibe-space-starflow 5.8s linear infinite;
 }
 
 .vibe-skin--starship-cockpit.vibe-skin::after {
@@ -1672,12 +1822,55 @@ button:disabled {
   z-index: 1;
 }
 
+.vibe-skin--starship-cockpit .vibe-skin-body {
+  overflow: hidden;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-body::before,
+.vibe-skin--starship-cockpit .vibe-skin-body::after {
+  position: absolute;
+  pointer-events: none;
+  content: "";
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-body::before {
+  inset: -38%;
+  z-index: 0;
+  background:
+    repeating-conic-gradient(from 15deg at 50% 52%, transparent 0 5deg, rgba(163, 251, 255, 0.17) 5.4deg 5.9deg, transparent 6.4deg 12deg),
+    radial-gradient(ellipse at 50% 52%, transparent 0 9%, rgba(46, 232, 255, 0.12) 10% 11%, transparent 13% 27%, rgba(248, 199, 106, 0.1) 28% 29%, transparent 31% 100%);
+  -webkit-mask-image: radial-gradient(ellipse at 50% 52%, #000 0 72%, transparent 79%);
+  mask-image: radial-gradient(ellipse at 50% 52%, #000 0 72%, transparent 79%);
+  opacity: 0.55;
+  transform-origin: 50% 52%;
+  animation: vibe-space-warp-tunnel 6.4s linear infinite;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-body::after {
+  inset: -12%;
+  z-index: 0;
+  background:
+    radial-gradient(circle at 49% 49%, rgba(255, 255, 255, 0.92) 0 1px, transparent 2px),
+    radial-gradient(circle at 54% 52%, rgba(163, 251, 255, 0.78) 0 1px, transparent 2px),
+    radial-gradient(circle at 45% 57%, rgba(248, 199, 106, 0.74) 0 1px, transparent 2px),
+    linear-gradient(90deg, transparent 0 45%, rgba(163, 251, 255, 0.12) 49%, rgba(255, 255, 255, 0.28) 50%, rgba(163, 251, 255, 0.12) 51%, transparent 55%);
+  background-size:
+    180px 150px,
+    260px 210px,
+    340px 280px,
+    100% 100%;
+  mix-blend-mode: screen;
+  opacity: 0.36;
+  animation: vibe-space-warp-streaks 2.2s linear infinite;
+}
+
 .vibe-skin--starship-cockpit .vibe-skin-titlebar {
   clip-path: polygon(0 0, 100% 0, 98.5% 100%, 1.5% 100%);
   text-transform: uppercase;
 }
 
 .vibe-skin--starship-cockpit .vibe-skin-titlebar::before,
+.vibe-skin--starship-cockpit .vibe-skin-launch-panel::before,
 .vibe-skin--starship-cockpit .vibe-skin-right-card::before,
 .vibe-skin--starship-cockpit .vibe-skin-terminal-shell::before,
 .vibe-skin--starship-cockpit .vibe-skin-taskbar::before {
@@ -1691,6 +1884,7 @@ button:disabled {
 }
 
 .vibe-skin--starship-cockpit .vibe-skin-titlebar::before,
+.vibe-skin--starship-cockpit .vibe-skin-launch-panel::before,
 .vibe-skin--starship-cockpit .vibe-skin-right-card::before,
 .vibe-skin--starship-cockpit .vibe-skin-terminal-shell::before {
   top: 0.45rem;
@@ -1698,6 +1892,34 @@ button:disabled {
 
 .vibe-skin--starship-cockpit .vibe-skin-taskbar::before {
   top: 0;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-titlebar::before,
+.vibe-skin--starship-cockpit .vibe-skin-launch-panel::before,
+.vibe-skin--starship-cockpit .vibe-skin-right-card::before,
+.vibe-skin--starship-cockpit .vibe-skin-terminal-shell::before,
+.vibe-skin--starship-cockpit .vibe-skin-taskbar::before,
+.vibe-skin--starship-cockpit .vibe-skin-sidebar-header::after,
+.vibe-skin--starship-cockpit .vibe-skin-control-panel::after,
+.vibe-skin--starship-cockpit .vibe-skin-group-panel::after,
+.vibe-skin--starship-cockpit .vibe-skin-launch-panel::after,
+.vibe-skin--starship-cockpit .vibe-skin-right-card::after,
+.vibe-skin--starship-cockpit .vibe-skin-showcase-stage::after,
+.vibe-skin--starship-cockpit .vibe-skin-terminal-shell::after {
+  z-index: 0;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-titlebar > *,
+.vibe-skin--starship-cockpit .vibe-skin-taskbar > *,
+.vibe-skin--starship-cockpit .vibe-skin-sidebar-header > *,
+.vibe-skin--starship-cockpit .vibe-skin-control-panel > *,
+.vibe-skin--starship-cockpit .vibe-skin-group-panel > *,
+.vibe-skin--starship-cockpit .vibe-skin-launch-panel > *,
+.vibe-skin--starship-cockpit .vibe-skin-right-card > *,
+.vibe-skin--starship-cockpit .vibe-skin-showcase-stage > *,
+.vibe-skin--starship-cockpit .vibe-skin-terminal-shell > * {
+  position: relative;
+  z-index: 1;
 }
 
 .vibe-skin--starship-cockpit .vibe-skin-titlebar-controls {
@@ -1716,12 +1938,24 @@ button:disabled {
 .vibe-skin--starship-cockpit .vibe-skin-sidebar,
 .vibe-skin--starship-cockpit .vibe-skin-workspace,
 .vibe-skin--starship-cockpit .vibe-skin-right-rail {
+  position: relative;
+  z-index: 1;
   backdrop-filter: blur(16px) saturate(1.2);
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-right-rail {
+  overscroll-behavior: contain;
+  scrollbar-color: rgba(46, 232, 255, 0.46) transparent;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-right-rail::-webkit-scrollbar-thumb {
+  background-color: rgba(46, 232, 255, 0.42);
 }
 
 .vibe-skin--starship-cockpit .vibe-skin-sidebar-header,
 .vibe-skin--starship-cockpit .vibe-skin-control-panel,
 .vibe-skin--starship-cockpit .vibe-skin-group-panel,
+.vibe-skin--starship-cockpit .vibe-skin-launch-panel,
 .vibe-skin--starship-cockpit .vibe-skin-right-card,
 .vibe-skin--starship-cockpit .vibe-skin-showcase-stage,
 .vibe-skin--starship-cockpit .vibe-skin-terminal-shell {
@@ -1729,9 +1963,14 @@ button:disabled {
   overflow: hidden;
 }
 
+.vibe-skin--starship-cockpit .vibe-skin-right-card {
+  flex-shrink: 0;
+}
+
 .vibe-skin--starship-cockpit .vibe-skin-sidebar-header::after,
 .vibe-skin--starship-cockpit .vibe-skin-control-panel::after,
 .vibe-skin--starship-cockpit .vibe-skin-group-panel::after,
+.vibe-skin--starship-cockpit .vibe-skin-launch-panel::after,
 .vibe-skin--starship-cockpit .vibe-skin-right-card::after,
 .vibe-skin--starship-cockpit .vibe-skin-showcase-stage::after,
 .vibe-skin--starship-cockpit .vibe-skin-terminal-shell::after {
@@ -1817,6 +2056,34 @@ button:disabled {
     radial-gradient(circle at 50% 0%, rgba(46, 232, 255, 0.1), transparent 14rem),
     linear-gradient(180deg, rgba(1, 9, 18, 0.18), rgba(1, 6, 12, 0.04)) !important;
   backdrop-filter: blur(3px);
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-launch-panel {
+  clip-path: polygon(1rem 0, calc(100% - 1.4rem) 0, 100% 1.1rem, 100% 100%, 0 100%, 0 1rem);
+  text-shadow: 0 0 10px rgba(46, 232, 255, 0.2);
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-launch-panel::after {
+  background:
+    linear-gradient(120deg, transparent 0 34%, rgba(163, 251, 255, 0.12) 42%, transparent 50%),
+    repeating-linear-gradient(90deg, transparent 0 28px, rgba(46, 232, 255, 0.035) 29px, transparent 30px);
+  animation: vibe-space-console-scan 4.8s linear infinite;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-agent-strip {
+  text-transform: uppercase;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-agent-option:hover,
+.vibe-skin--starship-cockpit .vibe-skin-composer-send-button:hover {
+  border-color: rgba(163, 251, 255, 0.58);
+  box-shadow:
+    0 0 18px rgba(46, 232, 255, 0.22),
+    inset 0 0 16px rgba(46, 232, 255, 0.1);
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-composer-input {
+  caret-color: #f8c76a;
 }
 
 .vibe-skin--starship-cockpit .vibe-skin-terminal-shell .xterm-pane,
@@ -2145,15 +2412,47 @@ button:disabled {
       0 0,
       0 0,
       0 0,
+      0 0,
+      0 0,
       0 0;
   }
   to {
     background-position:
-      180px 360px,
-      -220px 260px,
-      120px 300px,
-      -160px 380px,
-      0 320px;
+      0 0,
+      260px 580px,
+      -300px 460px,
+      190px 520px,
+      -240px 620px,
+      0 520px,
+      0 -420px;
+  }
+}
+
+@keyframes vibe-space-warp-tunnel {
+  from {
+    transform: scale(0.92) rotate(0deg);
+  }
+  to {
+    transform: scale(1.16) rotate(18deg);
+  }
+}
+
+@keyframes vibe-space-warp-streaks {
+  from {
+    background-position:
+      0 0,
+      0 0,
+      0 0,
+      0 0;
+    transform: scale(0.95);
+  }
+  to {
+    background-position:
+      0 460px,
+      -140px 560px,
+      180px 680px,
+      0 0;
+    transform: scale(1.12);
   }
 }
 
@@ -2199,6 +2498,19 @@ button:disabled {
   }
 }
 
+@keyframes vibe-space-console-scan {
+  from {
+    background-position:
+      -180px 0,
+      0 0;
+  }
+  to {
+    background-position:
+      420px 0,
+      160px 0;
+  }
+}
+
 @media (max-width: 1023px) {
   .vibe-skin--starship-cockpit .vibe-skin-frame::before {
     inset: 3.25rem 0.35rem 3.05rem;
@@ -2208,6 +2520,9 @@ button:disabled {
 
 @media (prefers-reduced-motion: reduce) {
   .vibe-skin--starship-cockpit.vibe-skin::before,
+  .vibe-skin--starship-cockpit .vibe-skin-body::before,
+  .vibe-skin--starship-cockpit .vibe-skin-body::after,
+  .vibe-skin--starship-cockpit .vibe-skin-launch-panel::after,
   .vibe-skin-space-ai-core-pulse,
   .vibe-skin-space-radar-sweep,
   .vibe-skin-space-ship-model,
