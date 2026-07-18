@@ -19,8 +19,20 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }));
 
 vi.mock("../src/components/terminal/XtermPane", () => ({
-  XtermPane: ({ session, themeOverride }: { session: TerminalSession; themeOverride?: unknown }) => (
-    <div data-testid={`terminal-pane-${session.id}`} data-theme-override={themeOverride ? "yes" : "no"}>
+  XtermPane: ({
+    session,
+    themeOverride,
+    transparentSurface,
+  }: {
+    session: TerminalSession;
+    themeOverride?: unknown;
+    transparentSurface?: boolean;
+  }) => (
+    <div
+      data-testid={`terminal-pane-${session.id}`}
+      data-theme-override={themeOverride ? "yes" : "no"}
+      data-transparent-surface={transparentSurface ? "yes" : "no"}
+    >
       {session.title}
     </div>
   ),
@@ -69,6 +81,13 @@ function renderScreen() {
 
 async function expandProjectDirectory() {
   await userEvent.click(await screen.findByRole("button", { name: "Expand folder D:/repo/app" }));
+}
+
+async function switchToSkinTheme() {
+  const themeButton = await screen.findByRole("button", { name: "Switch Vibe theme" });
+  await userEvent.click(themeButton);
+  await userEvent.click(themeButton);
+  return themeButton;
 }
 
 describe("VibeScreen", () => {
@@ -167,6 +186,46 @@ describe("VibeScreen", () => {
     expect(screen.getByText("No terminal tabs yet.").parentElement).toHaveClass("vibe-skin-tabbar");
   });
 
+  it("renders built-in QQ2007 skin blocks with Chinese decorative UI", async () => {
+    renderScreen();
+
+    await switchToSkinTheme();
+
+    expect(screen.getByText("AI Switch 终端")).toBeInTheDocument();
+    expect(screen.getByText("QQ2007 蓝色经典")).toBeInTheDocument();
+    expect(screen.getAllByText("皮肤模式").length).toBeGreaterThan(0);
+    expect(screen.getByText("在线")).toBeInTheDocument();
+    expect(screen.getByText("正在使用 Vibe 终端")).toBeInTheDocument();
+    expect(screen.getByText("经典蓝钻")).toBeInTheDocument();
+    expect(screen.getByText("QQ秀展示")).toBeInTheDocument();
+    expect(screen.getByText("我的QQ秀")).toBeInTheDocument();
+    expect(screen.getByText("自定义展示区")).toBeInTheDocument();
+    expect(screen.getByText("AI Switch 已连接")).toBeInTheDocument();
+    expect(screen.getByText("皮肤区域已启用")).toBeInTheDocument();
+
+    const controls = screen.getByTestId("vibe-window-controls");
+    expect(controls).toHaveAttribute("aria-hidden", "true");
+    expect(controls).toHaveTextContent("—");
+    expect(controls).toHaveTextContent("□");
+    expect(controls).toHaveTextContent("×");
+    expect(
+      screen.queryByRole("button", { name: /minimize|maximize|close window/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not render QQ2007 decorative skin blocks in dark or light themes", async () => {
+    renderScreen();
+
+    expect(await screen.findByText("D:/repo/app")).toBeInTheDocument();
+    expect(screen.queryByText("QQ秀展示")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("vibe-window-controls")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Switch Vibe theme" }));
+
+    expect(screen.queryByText("QQ秀展示")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("vibe-window-controls")).not.toBeInTheDocument();
+  });
+
   it("renders custom skin showcase regions", async () => {
     window.localStorage.setItem(
       VIBE_SKIN_STORAGE_KEY,
@@ -189,27 +248,99 @@ describe("VibeScreen", () => {
         regions: {
           rightRail: { background: "#123456" },
           terminalShell: { background: "#010203" },
+          showcaseStage: { background: "#102030" },
         },
-        showcase: {
-          enabled: true,
-          title: "Right Rail Demo",
-          badge: "Custom Rail",
-          footer: "region keys",
+        blocks: {
+          titlebar: {
+            title: "霓虹终端",
+            subtitle: "自定义标题栏",
+            badge: "自定义皮肤",
+          },
+          profile: {
+            name: "霓虹用户",
+            status: "忙碌",
+            signature: "正在调试右侧展示区",
+            badge: "VIP",
+            avatar: "data:image/png;base64,AAAA",
+          },
+          showcase: {
+            title: "右侧QQ秀",
+            subtitle: "Neon Figure",
+            body: "blocks.showcase 控制展示内容。",
+            badge: "Custom Rail",
+            figure: "data:image/png;base64,BBBB",
+            footer: "region keys",
+          },
+          statusbar: {
+            left: "霓虹已连接",
+            right: "状态栏右侧",
+          },
         },
       }),
     );
     renderScreen();
 
-    const themeButton = await screen.findByRole("button", { name: "Switch Vibe theme" });
-    await userEvent.click(themeButton);
-    await userEvent.click(themeButton);
+    await switchToSkinTheme();
 
     expect(screen.getByLabelText("Vibe skin")).toHaveValue("showcase-skin");
-    expect(screen.getByText("Right Rail Demo")).toBeInTheDocument();
+    expect(screen.getByText("霓虹终端")).toBeInTheDocument();
+    expect(screen.getByText("霓虹用户")).toBeInTheDocument();
+    expect(screen.getByText("忙碌")).toBeInTheDocument();
+    expect(screen.getByText("右侧QQ秀")).toBeInTheDocument();
     expect(screen.getByText("Custom Rail")).toBeInTheDocument();
     expect(screen.getByText("terminalShell")).toBeInTheDocument();
     expect(screen.getByText("rightRail")).toBeInTheDocument();
+    expect(screen.getByText("showcaseStage")).toBeInTheDocument();
     expect(screen.getByText("region keys")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "霓虹用户 avatar" })).toHaveAttribute(
+      "src",
+      "data:image/png;base64,AAAA",
+    );
+    expect(screen.getByRole("img", { name: "右侧QQ秀 figure" })).toHaveAttribute(
+      "src",
+      "data:image/png;base64,BBBB",
+    );
+  });
+
+  it("renders legacy showcase content when blocks.showcase is absent", async () => {
+    window.localStorage.setItem(
+      VIBE_SKIN_STORAGE_KEY,
+      JSON.stringify({
+        id: "legacy-showcase-skin",
+        name: "Legacy Showcase Skin",
+        ui: {
+          accent: "#1678d8",
+          background: "#dff5ff",
+          panel: "rgba(232,247,255,0.78)",
+          panelStrong: "rgba(255,255,255,0.92)",
+          panelSubtle: "rgba(216,239,255,0.68)",
+          border: "rgba(15,99,184,0.34)",
+          text: "#0d315d",
+          mutedText: "#386b9e",
+          button: "#1678d8",
+          buttonText: "#ffffff",
+          buttonHover: "#0f61ae",
+        },
+        showcase: {
+          enabled: true,
+          title: "旧版展示标题",
+          badge: "旧版徽标",
+          image: "data:image/png;base64,CCCC",
+          footer: "旧版页脚",
+        },
+      }),
+    );
+    renderScreen();
+
+    await switchToSkinTheme();
+
+    expect(screen.getByText("旧版展示标题")).toBeInTheDocument();
+    expect(screen.getByText("旧版徽标")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "旧版展示标题 figure" })).toHaveAttribute(
+      "src",
+      "data:image/png;base64,CCCC",
+    );
+    expect(screen.getByText("旧版页脚")).toBeInTheDocument();
   });
 
   it("imports a custom Vibe skin package and applies its terminal theme", async () => {
@@ -254,6 +385,10 @@ describe("VibeScreen", () => {
 
     expect(await screen.findByTestId("terminal-pane-term-1")).toHaveAttribute(
       "data-theme-override",
+      "yes",
+    );
+    expect(await screen.findByTestId("terminal-pane-term-1")).toHaveAttribute(
+      "data-transparent-surface",
       "yes",
     );
   });

@@ -21,6 +21,7 @@ import { useI18n } from "../lib/i18n";
 import {
   BUILT_IN_VIBE_SKINS,
   clearStoredVibeSkin,
+  getVibeSkinBlocks,
   importVibeSkinPackage,
   VIBE_SKIN_REGION_KEYS,
   readStoredVibeSkin,
@@ -340,10 +341,10 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     : isDark
       ? "vibe-scrollbar-dark"
       : "vibe-scrollbar-light";
-  const skinShowcase = activeSkin.showcase;
-  const showSkinShowcase = Boolean(isSkin && skinShowcase && skinShowcase.enabled !== false);
+  const skinBlocks = useMemo(() => getVibeSkinBlocks(activeSkin), [activeSkin]);
+  const showSkinShowcase = Boolean(isSkin && skinBlocks.showcase.enabled);
   const skinBodyGridClass = showSkinShowcase
-    ? "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)_236px]"
+    ? "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)_260px]"
     : "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)]";
   const activeSkinRegionKeys = isSkin
     ? VIBE_SKIN_REGION_KEYS.filter((region) => Boolean(activeSkin.regions?.[region]))
@@ -362,17 +363,31 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     >
       <div className={isSkin ? "vibe-skin-frame flex h-full min-h-0 flex-col" : "grid h-full min-h-0 grid-cols-1 lg:grid-cols-[356px_minmax(0,1fr)]"}>
         {isSkin && (
-          <div className="vibe-skin-titlebar flex h-10 shrink-0 items-center justify-between gap-3 border-b px-4 text-[11px] font-semibold uppercase tracking-[0.22em]">
+          <div className="vibe-skin-titlebar flex h-11 shrink-0 items-center justify-between gap-3 border-b px-3 text-[11px] font-semibold">
             <div className="flex min-w-0 items-center gap-3">
-              <span className="inline-flex h-4 w-4 shrink-0 rounded-full border border-[rgba(255,255,255,0.55)] bg-[var(--vibe-accent)] shadow-[inset_0_1px_0_rgba(255,255,255,0.58)]" />
+              <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full border border-[rgba(255,255,255,0.65)] bg-[var(--vibe-accent)] text-[10px] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.72)]">
+                Q
+              </span>
               <div className="min-w-0">
-                <p className="truncate">{t("vibe.title")}</p>
-                <p className="truncate text-[10px] tracking-[0.18em] opacity-80">{activeSkin.name}</p>
+                <p className="truncate text-[13px] tracking-normal">{skinBlocks.titlebar.title}</p>
+                <p className="truncate text-[10px] tracking-[0.12em] opacity-85">
+                  {skinBlocks.titlebar.subtitle}
+                </p>
               </div>
             </div>
-            <div className="flex items-center gap-2 text-[10px] tracking-[0.18em] opacity-90">
-              <span className="rounded-full border border-[rgba(255,255,255,0.45)] px-2 py-1">{themeLabel}</span>
-              <span className="rounded-full border border-[rgba(255,255,255,0.45)] px-2 py-1">{activeSkin.author ?? "AI Switch"}</span>
+            <div className="flex items-center gap-2">
+              <span className="rounded-full border border-[rgba(255,255,255,0.48)] px-2 py-1 text-[10px] tracking-[0.12em]">
+                {skinBlocks.titlebar.badge}
+              </span>
+              <div
+                aria-hidden="true"
+                className="vibe-skin-titlebar-controls flex items-center gap-1"
+                data-testid="vibe-window-controls"
+              >
+                <span className="vibe-skin-window-button vibe-skin-window-button-minimize">—</span>
+                <span className="vibe-skin-window-button vibe-skin-window-button-maximize">□</span>
+                <span className="vibe-skin-window-button vibe-skin-window-button-close">×</span>
+              </div>
             </div>
           </div>
         )}
@@ -405,31 +420,74 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                   : "mb-4 flex items-start justify-between gap-3 rounded-2xl border border-white/80 bg-white/56 p-3 shadow-sm backdrop-blur-xl"
               }
             >
-              <div className="flex min-w-0 items-center gap-2">
-                <AiSwitchLogo className="h-9 w-9 shrink-0 rounded-2xl shadow-sm" />
-                <div className="min-w-0">
-                  <h1 className={isSkin ? "truncate text-[13px] font-semibold text-[var(--vibe-text)]" : isDark ? "truncate text-[13px] font-semibold text-[#fdf6e3]" : "truncate text-[13px] font-semibold text-stone-950"}>
-                    {t("vibe.title")} · {t("vibe.kicker")}
-                  </h1>
-                  <p className={isSkin ? "truncate text-[11px] text-[var(--vibe-muted-text)]" : isDark ? "truncate text-[11px] text-[#93a1a1]" : "truncate text-[11px] text-stone-500"}>
-                    {t("vibe.subtitle")}
-                  </p>
-                </div>
-              </div>
-              <button
-                aria-label={t("layout.switchToAgent")}
-                className={
-                  isSkin
-                    ? "vibe-skin-ghost grid h-8 w-8 shrink-0 place-items-center rounded-xl border shadow-sm transition-colors focus:outline-none focus-visible:ring-2"
-                    : isDark
-                    ? "grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-[#586e75] bg-[#073642] text-[#93a1a1] shadow-sm transition-colors hover:border-[#839496] hover:text-[#fdf6e3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#268bd2]"
-                    : "grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-stone-200 bg-white/70 text-stone-600 shadow-sm transition-colors hover:border-stone-300 hover:bg-white hover:text-stone-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
-                }
-                onClick={onExitVibe}
-                type="button"
-              >
-                <PanelLeftClose className="h-4 w-4" />
-              </button>
+              {isSkin ? (
+                <>
+                  <div className="vibe-skin-profile flex min-w-0 flex-1 items-center gap-3">
+                    <div className="vibe-skin-avatar relative grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-2xl border">
+                      {skinBlocks.profile.avatar ? (
+                        <img
+                          alt={`${skinBlocks.profile.name} avatar`}
+                          className="h-full w-full object-cover"
+                          src={skinBlocks.profile.avatar}
+                        />
+                      ) : (
+                        <AiSwitchLogo className="h-9 w-9 rounded-xl" />
+                      )}
+                      <span className="vibe-skin-online-badge absolute bottom-1 right-1 h-3.5 w-3.5 rounded-full border-2" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <h1 className="truncate text-[14px] font-semibold text-[var(--vibe-text)]">
+                          {skinBlocks.profile.name}
+                        </h1>
+                        <span className="vibe-skin-profile-badge rounded-full border px-2 py-0.5 text-[10px]">
+                          {skinBlocks.profile.badge}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 truncate text-[11px] text-[var(--vibe-muted-text)]">
+                        {skinBlocks.profile.status}
+                      </p>
+                      <p className="mt-1 truncate text-[11px] text-[var(--vibe-text)] opacity-80">
+                        {skinBlocks.profile.signature}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    aria-label={t("layout.switchToAgent")}
+                    className="vibe-skin-ghost grid h-8 w-8 shrink-0 place-items-center rounded-xl border shadow-sm transition-colors focus:outline-none focus-visible:ring-2"
+                    onClick={onExitVibe}
+                    type="button"
+                  >
+                    <PanelLeftClose className="h-4 w-4" />
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <AiSwitchLogo className="h-9 w-9 shrink-0 rounded-2xl shadow-sm" />
+                    <div className="min-w-0">
+                      <h1 className={isDark ? "truncate text-[13px] font-semibold text-[#fdf6e3]" : "truncate text-[13px] font-semibold text-stone-950"}>
+                        {t("vibe.title")} · {t("vibe.kicker")}
+                      </h1>
+                      <p className={isDark ? "truncate text-[11px] text-[#93a1a1]" : "truncate text-[11px] text-stone-500"}>
+                        {t("vibe.subtitle")}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    aria-label={t("layout.switchToAgent")}
+                    className={
+                      isDark
+                        ? "grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-[#586e75] bg-[#073642] text-[#93a1a1] shadow-sm transition-colors hover:border-[#839496] hover:text-[#fdf6e3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#268bd2]"
+                        : "grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-stone-200 bg-white/70 text-stone-600 shadow-sm transition-colors hover:border-stone-300 hover:bg-white hover:text-stone-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                    }
+                    onClick={onExitVibe}
+                    type="button"
+                  >
+                    <PanelLeftClose className="h-4 w-4" />
+                  </button>
+                </>
+              )}
             </div>
 
             <div
@@ -757,6 +815,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 session={tab}
                 themeMode={terminalThemeMode}
                 themeOverride={isSkin ? activeSkin.terminal : undefined}
+                transparentSurface={isSkin}
               />
             ))}
           </div>
@@ -764,43 +823,43 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
 
         {showSkinShowcase && (
           <aside className="vibe-skin-right-rail hidden min-h-0 flex-col overflow-hidden border-l p-3 lg:flex">
-            <div className="vibe-skin-right-card flex min-h-0 flex-1 flex-col rounded-3xl border p-4">
+            <div className="vibe-skin-right-card flex min-h-0 flex-1 flex-col rounded-3xl border p-3">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--vibe-muted-text)]">
-                    {skinShowcase?.badge ?? t("vibe.themeSkin")}
+                  <p className="text-[10px] font-semibold tracking-[0.18em] text-[var(--vibe-muted-text)]">
+                    {skinBlocks.showcase.badge}
                   </p>
                   <h2 className="mt-1 truncate text-lg font-semibold text-[var(--vibe-text)]">
-                    {skinShowcase?.title ?? activeSkin.name}
+                    {skinBlocks.showcase.title}
                   </h2>
                   <p className="mt-1 text-[12px] text-[var(--vibe-muted-text)]">
-                    {skinShowcase?.subtitle ?? activeSkin.author ?? t("vibe.subtitle")}
+                    {skinBlocks.showcase.subtitle}
                   </p>
                 </div>
-                {skinShowcase?.image ? (
+              </div>
+              <div className="vibe-skin-showcase-stage mt-3 flex min-h-[220px] flex-1 flex-col items-center justify-center rounded-3xl border p-3 text-center">
+                {skinBlocks.showcase.figure ? (
                   <img
-                    alt=""
-                    className="h-20 w-20 shrink-0 rounded-2xl border object-cover"
-                    src={skinShowcase.image}
+                    alt={`${skinBlocks.showcase.title} figure`}
+                    className="vibe-skin-showcase-figure max-h-52 w-full max-w-[168px] object-contain"
+                    src={skinBlocks.showcase.figure}
                   />
                 ) : (
-                  <div className="vibe-skin-showcase-orb grid h-20 w-20 shrink-0 place-items-center rounded-2xl border">
-                    <AiSwitchLogo className="h-10 w-10 rounded-xl" />
+                  <div className="vibe-skin-showcase-figure vibe-skin-showcase-orb grid h-32 w-28 place-items-center rounded-[2rem] border">
+                    <AiSwitchLogo className="h-14 w-14 rounded-2xl" />
                   </div>
                 )}
+                <p className="mt-3 text-[13px] leading-6 text-[var(--vibe-text)] opacity-90">
+                  {skinBlocks.showcase.body}
+                </p>
               </div>
-              <p className="mt-4 text-[13px] leading-6 text-[var(--vibe-text)] opacity-90">
-                {skinShowcase?.body ?? t("vibe.emptyBody")}
-              </p>
-              <div className="mt-auto pt-4">
-                <div className="rounded-2xl border px-3 py-2 text-[11px] text-[var(--vibe-muted-text)]">
-                  {skinShowcase?.footer ?? activeSkin.id}
-                </div>
+              <div className="vibe-skin-showcase-footer mt-3 rounded-2xl border px-3 py-2 text-[11px] text-[var(--vibe-muted-text)]">
+                {skinBlocks.showcase.footer}
               </div>
             </div>
             <div className="vibe-skin-right-card mt-3 rounded-2xl border p-3">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--vibe-muted-text)]">
-                Regions
+              <p className="text-[10px] font-semibold tracking-[0.18em] text-[var(--vibe-muted-text)]">
+                皮肤区域
               </p>
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {activeSkinRegionKeys.length > 0 ? (
@@ -820,12 +879,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
 
         {isSkin && (
           <div className="vibe-skin-status-bar flex h-9 shrink-0 items-center justify-between gap-3 border-t px-4 text-[11px] font-medium">
-            <span className="truncate">{activeSkin.name}</span>
-            <span className="flex items-center gap-3">
-              <span>{activeSkin.author ?? "AI Switch"}</span>
-              <span>{tabs.length}</span>
-              <span>{themeLabel}</span>
-            </span>
+            <span className="truncate">{skinBlocks.statusbar.left}</span>
+            <span className="truncate">{skinBlocks.statusbar.right}</span>
           </div>
         )}
       </div>
