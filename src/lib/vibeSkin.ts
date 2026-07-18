@@ -57,9 +57,18 @@ export const VIBE_SKIN_REGION_KEYS = [
   "app",
   "body",
   "titlebar",
+  "titlebarControls",
+  "windowButton",
+  "windowButtonMinimize",
+  "windowButtonMaximize",
+  "windowButtonClose",
   "toolbar",
   "sidebar",
   "sidebarHeader",
+  "sidebarProfile",
+  "avatar",
+  "onlineBadge",
+  "profileBadge",
   "controlPanel",
   "sessionList",
   "listTrigger",
@@ -75,6 +84,9 @@ export const VIBE_SKIN_REGION_KEYS = [
   "modal",
   "rightRail",
   "rightCard",
+  "showcaseStage",
+  "showcaseFigure",
+  "showcaseFooter",
   "statusBar",
   "button",
   "buttonHover",
@@ -120,6 +132,76 @@ export type VibeSkinShowcase = {
   footer?: string;
 };
 
+export type VibeSkinTitlebarBlock = {
+  title?: string;
+  subtitle?: string;
+  badge?: string;
+};
+
+export type VibeSkinProfileBlock = {
+  name?: string;
+  status?: string;
+  signature?: string;
+  badge?: string;
+  avatar?: string;
+};
+
+export type VibeSkinShowcaseBlock = {
+  enabled?: boolean;
+  title?: string;
+  subtitle?: string;
+  body?: string;
+  badge?: string;
+  figure?: string;
+  footer?: string;
+};
+
+export type VibeSkinStatusbarBlock = {
+  left?: string;
+  right?: string;
+};
+
+export type VibeSkinBlocks = {
+  titlebar?: VibeSkinTitlebarBlock;
+  profile?: VibeSkinProfileBlock;
+  showcase?: VibeSkinShowcaseBlock;
+  statusbar?: VibeSkinStatusbarBlock;
+};
+
+export type ResolvedVibeSkinBlocks = {
+  titlebar: Required<VibeSkinTitlebarBlock>;
+  profile: Omit<Required<VibeSkinProfileBlock>, "avatar"> & Pick<VibeSkinProfileBlock, "avatar">;
+  showcase: Omit<Required<VibeSkinShowcaseBlock>, "figure"> &
+    Pick<VibeSkinShowcaseBlock, "figure">;
+  statusbar: Required<VibeSkinStatusbarBlock>;
+};
+
+export const DEFAULT_VIBE_SKIN_BLOCKS: ResolvedVibeSkinBlocks = {
+  titlebar: {
+    title: "AI Switch 终端",
+    subtitle: "QQ2007 蓝色经典",
+    badge: "皮肤模式",
+  },
+  profile: {
+    name: "AI Switch",
+    status: "在线",
+    signature: "正在使用 Vibe 终端",
+    badge: "经典蓝钻",
+  },
+  showcase: {
+    enabled: true,
+    title: "QQ秀展示",
+    subtitle: "Codex 2007 Blue",
+    body: "右侧展示区可由皮肤定义图片、舞台和说明。",
+    badge: "我的QQ秀",
+    footer: "自定义展示区",
+  },
+  statusbar: {
+    left: "AI Switch 已连接",
+    right: "皮肤区域已启用",
+  },
+};
+
 export type VibeSkinDefinition = {
   id: string;
   name: string;
@@ -129,6 +211,7 @@ export type VibeSkinDefinition = {
   terminal?: VibeTerminalTheme;
   regions?: Partial<Record<VibeSkinRegionKey, VibeSkinRegionStyle>>;
   showcase?: VibeSkinShowcase;
+  blocks?: VibeSkinBlocks;
 };
 
 export const BUILT_IN_VIBE_SKINS: VibeSkinDefinition[] = [
@@ -162,7 +245,7 @@ export const BUILT_IN_VIBE_SKINS: VibeSkinDefinition[] = [
       focus: "#44a7ff",
     },
     terminal: {
-      background: "#f7fbff",
+      background: "transparent",
       black: "#1f4b75",
       blue: "#0d6ec9",
       brightBlack: "#6088ad",
@@ -276,6 +359,31 @@ export const BUILT_IN_VIBE_SKINS: VibeSkinDefinition[] = [
       field: {
         background: "linear-gradient(180deg, #ffffff, #e7f7ff)",
         border: "rgba(31, 132, 211, 0.42)",
+      },
+    },
+    blocks: {
+      titlebar: {
+        title: "AI Switch 终端",
+        subtitle: "QQ2007 蓝色经典",
+        badge: "皮肤模式",
+      },
+      profile: {
+        name: "AI Switch",
+        status: "在线",
+        signature: "正在使用 Vibe 终端",
+        badge: "经典蓝钻",
+      },
+      showcase: {
+        enabled: true,
+        title: "QQ秀展示",
+        subtitle: "Codex 2007 Blue",
+        body: "右侧展示区可由皮肤定义图片、舞台和说明。",
+        badge: "我的QQ秀",
+        footer: "自定义展示区",
+      },
+      statusbar: {
+        left: "AI Switch 已连接",
+        right: "皮肤区域已启用",
       },
     },
     showcase: {
@@ -406,6 +514,88 @@ function normalizeShowcase(value: unknown): VibeSkinShowcase | undefined {
   return Object.keys(showcase).length > 0 ? showcase : undefined;
 }
 
+function normalizeTitlebarBlock(value: unknown): VibeSkinTitlebarBlock | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  const block: VibeSkinTitlebarBlock = {};
+  for (const key of ["title", "subtitle", "badge"] as const) {
+    const item = optionalString(source[key]);
+    if (item) {
+      block[key] = item;
+    }
+  }
+  return Object.keys(block).length > 0 ? block : undefined;
+}
+
+function normalizeProfileBlock(value: unknown): VibeSkinProfileBlock | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  const block: VibeSkinProfileBlock = {};
+  for (const key of ["name", "status", "signature", "badge", "avatar"] as const) {
+    const item = optionalString(source[key]);
+    if (item) {
+      block[key] = item;
+    }
+  }
+  return Object.keys(block).length > 0 ? block : undefined;
+}
+
+function normalizeShowcaseBlock(value: unknown): VibeSkinShowcaseBlock | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  const block: VibeSkinShowcaseBlock = {};
+  if (typeof source.enabled === "boolean") {
+    block.enabled = source.enabled;
+  }
+  for (const key of ["title", "subtitle", "body", "badge", "figure", "footer"] as const) {
+    const item = optionalString(source[key]);
+    if (item) {
+      block[key] = item;
+    }
+  }
+  return Object.keys(block).length > 0 ? block : undefined;
+}
+
+function normalizeStatusbarBlock(value: unknown): VibeSkinStatusbarBlock | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  const block: VibeSkinStatusbarBlock = {};
+  for (const key of ["left", "right"] as const) {
+    const item = optionalString(source[key]);
+    if (item) {
+      block[key] = item;
+    }
+  }
+  return Object.keys(block).length > 0 ? block : undefined;
+}
+
+function normalizeBlocks(value: unknown): VibeSkinBlocks | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  const blocks: VibeSkinBlocks = {
+    titlebar: normalizeTitlebarBlock(source.titlebar),
+    profile: normalizeProfileBlock(source.profile),
+    showcase: normalizeShowcaseBlock(source.showcase),
+    statusbar: normalizeStatusbarBlock(source.statusbar),
+  };
+  return Object.values(blocks).some(Boolean) ? blocks : undefined;
+}
+
 async function resolveImageReference(
   value: string | undefined,
   fieldName: string,
@@ -442,6 +632,28 @@ async function resolveRegionAssets(
   }
 }
 
+async function resolveBlockAssets(blocks: VibeSkinBlocks | undefined, resolveAsset?: AssetResolver) {
+  if (!blocks) {
+    return;
+  }
+
+  if (blocks.profile?.avatar) {
+    blocks.profile.avatar = await resolveImageReference(
+      blocks.profile.avatar,
+      "blocks.profile.avatar",
+      resolveAsset,
+    );
+  }
+
+  if (blocks.showcase?.figure) {
+    blocks.showcase.figure = await resolveImageReference(
+      blocks.showcase.figure,
+      "blocks.showcase.figure",
+      resolveAsset,
+    );
+  }
+}
+
 async function normalizeSkinManifest(
   manifest: unknown,
   resolveAsset?: AssetResolver,
@@ -457,6 +669,7 @@ async function normalizeSkinManifest(
   };
   const regions = normalizeRegions(raw.regions);
   const showcase = normalizeShowcase(raw.showcase);
+  const blocks = normalizeBlocks(raw.blocks);
 
   ui.backgroundImage = await resolveImageReference(
     ui.backgroundImage,
@@ -464,6 +677,7 @@ async function normalizeSkinManifest(
     resolveAsset,
   );
   await resolveRegionAssets(regions, resolveAsset);
+  await resolveBlockAssets(blocks, resolveAsset);
   if (showcase?.image) {
     showcase.image = await resolveImageReference(showcase.image, "showcase.image", resolveAsset);
   }
@@ -477,6 +691,7 @@ async function normalizeSkinManifest(
     terminal: normalizeTerminalTheme(raw.terminal),
     regions,
     showcase,
+    blocks,
   };
 }
 
@@ -611,6 +826,47 @@ function normalizeStoredSkin(value: unknown): VibeSkinDefinition {
     terminal: normalizeTerminalTheme(raw.terminal),
     regions: normalizeRegions(raw.regions),
     showcase: normalizeShowcase(raw.showcase),
+    blocks: normalizeBlocks(raw.blocks),
+  };
+}
+
+function legacyShowcaseToBlock(
+  showcase: VibeSkinShowcase | undefined,
+): VibeSkinShowcaseBlock | undefined {
+  if (!showcase) {
+    return undefined;
+  }
+  return {
+    enabled: showcase.enabled,
+    title: showcase.title,
+    subtitle: showcase.subtitle,
+    body: showcase.body,
+    badge: showcase.badge,
+    figure: showcase.image,
+    footer: showcase.footer,
+  };
+}
+
+export function getVibeSkinBlocks(skin: VibeSkinDefinition): ResolvedVibeSkinBlocks {
+  const showcaseSource = skin.blocks?.showcase ?? legacyShowcaseToBlock(skin.showcase);
+  return {
+    titlebar: {
+      ...DEFAULT_VIBE_SKIN_BLOCKS.titlebar,
+      ...skin.blocks?.titlebar,
+    },
+    profile: {
+      ...DEFAULT_VIBE_SKIN_BLOCKS.profile,
+      ...skin.blocks?.profile,
+    },
+    showcase: {
+      ...DEFAULT_VIBE_SKIN_BLOCKS.showcase,
+      ...showcaseSource,
+      enabled: showcaseSource?.enabled ?? DEFAULT_VIBE_SKIN_BLOCKS.showcase.enabled,
+    },
+    statusbar: {
+      ...DEFAULT_VIBE_SKIN_BLOCKS.statusbar,
+      ...skin.blocks?.statusbar,
+    },
   };
 }
 
