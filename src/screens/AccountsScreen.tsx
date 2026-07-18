@@ -59,6 +59,7 @@ const routeStatsPeriods = [
 ] as const;
 
 const routeStatsPageSize = 20;
+const routeStatsRefreshMs = 5000;
 
 type RouteStatsPeriod = (typeof routeStatsPeriods)[number]["key"];
 
@@ -392,6 +393,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const routePoolQuery = useQuery({
     queryKey: ["route-pool", activePlatform, statsSince, requestPage, routeStatsPageSize],
     queryFn: () => getRoutePool(activePlatform, statsSince, requestPage, routeStatsPageSize),
+    refetchInterval: statsOpen ? routeStatsRefreshMs : false,
   });
   const routeProxyQuery = useQuery({
     queryKey: ["route-proxy-status"],
@@ -650,6 +652,13 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     setRequestPage(1);
   };
 
+  const toggleStatsPanel = () => {
+    if (!statsOpen) {
+      void routePoolQuery.refetch();
+    }
+    setStatsOpen((open) => !open);
+  };
+
   const decodeApiKey = () => {
     try {
       setApiKey(
@@ -835,7 +844,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
               <button
                 aria-label="查看算力池统计"
                 className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 transition-colors hover:bg-emerald-50"
-                onClick={() => setStatsOpen((open) => !open)}
+                onClick={toggleStatsPanel}
                 type="button"
               >
                 <BarChart3 className="h-3.5 w-3.5" />

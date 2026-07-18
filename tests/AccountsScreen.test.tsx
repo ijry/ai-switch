@@ -539,6 +539,53 @@ describe("AccountsScreen", () => {
     await waitFor(() => expect(getRoutePool).toHaveBeenLastCalledWith("codex", null, 1, 20));
   });
 
+  it("auto refreshes route statistics only while the panel is open", async () => {
+    vi.mocked(getRoutePool).mockResolvedValue({
+      platform: "codex",
+      account_ids: [],
+      stats: statsFixture({
+        request_row_count: 0,
+        request_page: 1,
+        request_page_size: 20,
+      }),
+    });
+
+    renderScreen();
+
+    await screen.findByText("Codex 账号");
+    expect(getRoutePool).toHaveBeenCalledTimes(1);
+
+    vi.useFakeTimers();
+
+    act(() => {
+      fireEvent.click(screen.getByLabelText("查看算力池统计"));
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(getRoutePool).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+      await Promise.resolve();
+    });
+
+    expect(getRoutePool).toHaveBeenCalledTimes(3);
+
+    act(() => {
+      fireEvent.click(screen.getByLabelText("查看算力池统计"));
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+      await Promise.resolve();
+    });
+
+    expect(getRoutePool).toHaveBeenCalledTimes(3);
+  });
+
   it("starts proxy, writes configs, and tests the credential pool route", async () => {
     renderScreen();
 
