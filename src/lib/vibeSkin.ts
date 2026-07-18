@@ -95,6 +95,14 @@ export const VIBE_SKIN_REGION_KEYS = [
   "select",
   "danger",
   "showcaseOrb",
+  "taskbar",
+  "taskbarStartButton",
+  "taskbarStartMenu",
+  "taskbarMenuItem",
+  "taskbarItem",
+  "taskbarItemActive",
+  "taskbarTray",
+  "taskbarClock",
 ] as const;
 
 export type VibeSkinRegionKey = (typeof VIBE_SKIN_REGION_KEYS)[number];
@@ -161,11 +169,62 @@ export type VibeSkinStatusbarBlock = {
   right?: string;
 };
 
+export type VibeSkinTaskbarAction = "openAppearance" | "setTheme" | "importSkin" | "clearSkin";
+
+export type VibeSkinTaskbarMenuItem =
+  | {
+      type: "separator";
+    }
+  | {
+      label: string;
+      action?: VibeSkinTaskbarAction;
+      theme?: "dark" | "light" | "skin";
+      disabled?: boolean;
+    };
+
+export type VibeSkinTaskbarButton = {
+  label?: string;
+  icon?: string;
+};
+
+export type VibeSkinTaskbarItem = {
+  label?: string;
+  icon?: string;
+  active?: boolean;
+};
+
+export type VibeSkinTaskbarBlock = {
+  enabled?: boolean;
+  startButton?: VibeSkinTaskbarButton;
+  startMenu?: {
+    items?: VibeSkinTaskbarMenuItem[];
+  };
+  items?: VibeSkinTaskbarItem[];
+  tray?: string[];
+  clockFormat?: "HH:mm";
+};
+
+export type ResolvedVibeSkinTaskbarBlock = {
+  enabled: boolean;
+  startButton: Required<Pick<VibeSkinTaskbarButton, "label">> &
+    Pick<VibeSkinTaskbarButton, "icon">;
+  startMenu: {
+    items: VibeSkinTaskbarMenuItem[];
+  };
+  items: Array<
+    Required<Pick<VibeSkinTaskbarItem, "label" | "active">> &
+      Pick<VibeSkinTaskbarItem, "icon">
+  >;
+  tray: string[];
+  clockFormat: "HH:mm";
+};
+
 export type VibeSkinBlocks = {
   titlebar?: VibeSkinTitlebarBlock;
   profile?: VibeSkinProfileBlock;
   showcase?: VibeSkinShowcaseBlock;
   statusbar?: VibeSkinStatusbarBlock;
+  taskbar?: VibeSkinTaskbarBlock;
 };
 
 export type ResolvedVibeSkinBlocks = {
@@ -174,6 +233,7 @@ export type ResolvedVibeSkinBlocks = {
   showcase: Omit<Required<VibeSkinShowcaseBlock>, "figure"> &
     Pick<VibeSkinShowcaseBlock, "figure">;
   statusbar: Required<VibeSkinStatusbarBlock>;
+  taskbar: ResolvedVibeSkinTaskbarBlock;
 };
 
 export const DEFAULT_VIBE_SKIN_BLOCKS: ResolvedVibeSkinBlocks = {
@@ -199,6 +259,26 @@ export const DEFAULT_VIBE_SKIN_BLOCKS: ResolvedVibeSkinBlocks = {
   statusbar: {
     left: "AI Switch 已连接",
     right: "皮肤区域已启用",
+  },
+  taskbar: {
+    enabled: true,
+    startButton: {
+      label: "开始",
+    },
+    startMenu: {
+      items: [
+        { label: "外观设置", action: "openAppearance" },
+        { label: "切换到皮肤模式", action: "setTheme", theme: "skin" },
+        { label: "切换亮色主题", action: "setTheme", theme: "light" },
+        { label: "切换暗色主题", action: "setTheme", theme: "dark" },
+        { label: "导入皮肤...", action: "importSkin" },
+        { type: "separator" },
+        { label: "AI Switch 终端", disabled: true },
+      ],
+    },
+    items: [{ label: "AI Switch 终端", active: true }],
+    tray: ["Vibe", "在线"],
+    clockFormat: "HH:mm",
   },
 };
 
@@ -384,6 +464,26 @@ export const BUILT_IN_VIBE_SKINS: VibeSkinDefinition[] = [
       statusbar: {
         left: "AI Switch 已连接",
         right: "皮肤区域已启用",
+      },
+      taskbar: {
+        enabled: true,
+        startButton: {
+          label: "开始",
+        },
+        startMenu: {
+          items: [
+            { label: "外观设置", action: "openAppearance" },
+            { label: "切换到皮肤模式", action: "setTheme", theme: "skin" },
+            { label: "切换亮色主题", action: "setTheme", theme: "light" },
+            { label: "切换暗色主题", action: "setTheme", theme: "dark" },
+            { label: "导入皮肤...", action: "importSkin" },
+            { type: "separator" },
+            { label: "AI Switch 终端", disabled: true },
+          ],
+        },
+        items: [{ label: "AI Switch 终端", active: true }],
+        tray: ["Vibe", "在线"],
+        clockFormat: "HH:mm",
       },
     },
     showcase: {
@@ -581,6 +681,149 @@ function normalizeStatusbarBlock(value: unknown): VibeSkinStatusbarBlock | undef
   return Object.keys(block).length > 0 ? block : undefined;
 }
 
+const SAFE_TASKBAR_ACTIONS = new Set<VibeSkinTaskbarAction>([
+  "openAppearance",
+  "setTheme",
+  "importSkin",
+  "clearSkin",
+]);
+
+function normalizeTaskbarMenuItem(value: unknown): VibeSkinTaskbarMenuItem | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  if (source.type === "separator") {
+    return { type: "separator" };
+  }
+
+  const label = optionalString(source.label);
+  if (!label) {
+    return undefined;
+  }
+
+  if (source.disabled === true) {
+    return { label, disabled: true };
+  }
+
+  const action = optionalString(source.action);
+  if (!action || !SAFE_TASKBAR_ACTIONS.has(action as VibeSkinTaskbarAction)) {
+    return undefined;
+  }
+
+  const item: VibeSkinTaskbarMenuItem = {
+    label,
+    action: action as VibeSkinTaskbarAction,
+  };
+  if (item.action === "setTheme") {
+    const theme = optionalString(source.theme);
+    if (theme !== "dark" && theme !== "light" && theme !== "skin") {
+      return undefined;
+    }
+    item.theme = theme;
+  }
+  return item;
+}
+
+function normalizeTaskbarButton(value: unknown): VibeSkinTaskbarButton | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  const button: VibeSkinTaskbarButton = {};
+  const label = optionalString(source.label);
+  const icon = optionalString(source.icon);
+  if (label) {
+    button.label = label;
+  }
+  if (icon) {
+    button.icon = icon;
+  }
+  return Object.keys(button).length > 0 ? button : undefined;
+}
+
+function normalizeTaskbarItems(value: unknown): VibeSkinTaskbarItem[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const items = value
+    .map((item): VibeSkinTaskbarItem | undefined => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return undefined;
+      }
+      const source = item as Record<string, unknown>;
+      const label = optionalString(source.label);
+      if (!label) {
+        return undefined;
+      }
+
+      const normalized: VibeSkinTaskbarItem = { label };
+      const icon = optionalString(source.icon);
+      if (icon) {
+        normalized.icon = icon;
+      }
+      if (typeof source.active === "boolean") {
+        normalized.active = source.active;
+      }
+      return normalized;
+    })
+    .filter((item): item is VibeSkinTaskbarItem => Boolean(item));
+  return items.length > 0 ? items : undefined;
+}
+
+function normalizeTaskbarBlock(value: unknown): VibeSkinTaskbarBlock | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  const block: VibeSkinTaskbarBlock = {};
+  if (typeof source.enabled === "boolean") {
+    block.enabled = source.enabled;
+  }
+
+  const startButton = normalizeTaskbarButton(source.startButton);
+  if (startButton) {
+    block.startButton = startButton;
+  }
+
+  const startMenuSource =
+    source.startMenu && typeof source.startMenu === "object" && !Array.isArray(source.startMenu)
+      ? (source.startMenu as Record<string, unknown>)
+      : undefined;
+  const menuItems = Array.isArray(startMenuSource?.items)
+    ? startMenuSource.items
+        .map(normalizeTaskbarMenuItem)
+        .filter((item): item is VibeSkinTaskbarMenuItem => Boolean(item))
+    : undefined;
+  if (menuItems && menuItems.length > 0) {
+    block.startMenu = { items: menuItems };
+  }
+
+  const items = normalizeTaskbarItems(source.items);
+  if (items) {
+    block.items = items;
+  }
+
+  if (Array.isArray(source.tray)) {
+    const tray = source.tray
+      .map((item) => optionalString(item))
+      .filter((item): item is string => Boolean(item));
+    if (tray.length > 0) {
+      block.tray = tray.slice(0, 6);
+    }
+  }
+
+  if (source.clockFormat === "HH:mm") {
+    block.clockFormat = "HH:mm";
+  }
+
+  return Object.keys(block).length > 0 ? block : undefined;
+}
+
 function normalizeBlocks(value: unknown): VibeSkinBlocks | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -592,6 +835,7 @@ function normalizeBlocks(value: unknown): VibeSkinBlocks | undefined {
     profile: normalizeProfileBlock(source.profile),
     showcase: normalizeShowcaseBlock(source.showcase),
     statusbar: normalizeStatusbarBlock(source.statusbar),
+    taskbar: normalizeTaskbarBlock(source.taskbar),
   };
   return Object.values(blocks).some(Boolean) ? blocks : undefined;
 }
@@ -651,6 +895,24 @@ async function resolveBlockAssets(blocks: VibeSkinBlocks | undefined, resolveAss
       "blocks.showcase.figure",
       resolveAsset,
     );
+  }
+
+  if (blocks.taskbar?.startButton?.icon) {
+    blocks.taskbar.startButton.icon = await resolveImageReference(
+      blocks.taskbar.startButton.icon,
+      "blocks.taskbar.startButton.icon",
+      resolveAsset,
+    );
+  }
+
+  for (const item of blocks.taskbar?.items ?? []) {
+    if (item.icon) {
+      item.icon = await resolveImageReference(
+        item.icon,
+        "blocks.taskbar.items.icon",
+        resolveAsset,
+      );
+    }
   }
 }
 
@@ -849,6 +1111,7 @@ function legacyShowcaseToBlock(
 
 export function getVibeSkinBlocks(skin: VibeSkinDefinition): ResolvedVibeSkinBlocks {
   const showcaseSource = skin.blocks?.showcase ?? legacyShowcaseToBlock(skin.showcase);
+  const taskbarSource = skin.blocks?.taskbar;
   return {
     titlebar: {
       ...DEFAULT_VIBE_SKIN_BLOCKS.titlebar,
@@ -866,6 +1129,26 @@ export function getVibeSkinBlocks(skin: VibeSkinDefinition): ResolvedVibeSkinBlo
     statusbar: {
       ...DEFAULT_VIBE_SKIN_BLOCKS.statusbar,
       ...skin.blocks?.statusbar,
+    },
+    taskbar: {
+      ...DEFAULT_VIBE_SKIN_BLOCKS.taskbar,
+      ...taskbarSource,
+      enabled: taskbarSource?.enabled ?? DEFAULT_VIBE_SKIN_BLOCKS.taskbar.enabled,
+      startButton: {
+        ...DEFAULT_VIBE_SKIN_BLOCKS.taskbar.startButton,
+        ...taskbarSource?.startButton,
+      },
+      startMenu: {
+        items: taskbarSource?.startMenu?.items ?? DEFAULT_VIBE_SKIN_BLOCKS.taskbar.startMenu.items,
+      },
+      items:
+        taskbarSource?.items?.map((item) => ({
+          active: false,
+          ...item,
+          label: item.label ?? "AI Switch 终端",
+        })) ?? DEFAULT_VIBE_SKIN_BLOCKS.taskbar.items,
+      tray: taskbarSource?.tray ?? DEFAULT_VIBE_SKIN_BLOCKS.taskbar.tray,
+      clockFormat: taskbarSource?.clockFormat ?? DEFAULT_VIBE_SKIN_BLOCKS.taskbar.clockFormat,
     },
   };
 }

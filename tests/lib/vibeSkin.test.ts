@@ -257,4 +257,164 @@ describe("vibeSkin", () => {
     expect(blocks?.showcase.footer).toBe("旧页脚");
     expect(blocks?.statusbar.right).toBe("右侧状态");
   });
+
+  it("imports taskbar blocks, taskbar icon assets, and taskbar region variables", async () => {
+    const zip = new JSZip();
+    zip.file(
+      "skin.json",
+      JSON.stringify({
+        id: "taskbar-skin",
+        name: "Taskbar Skin",
+        ui: {
+          accent: "#1678d8",
+          background: "#0f6bc4",
+        },
+        regions: {
+          taskbar: {
+            background: "linear-gradient(#4bb5ff, #0d65bd)",
+            border: "rgba(5,82,150,0.65)",
+          },
+          taskbarStartButton: {
+            backgroundImage: "assets/start-bg.png",
+            borderRadius: "999px",
+          },
+          taskbarStartMenu: {
+            background: "linear-gradient(#ffffff, #c7ecff)",
+          },
+          taskbarMenuItem: {
+            color: "#12375f",
+          },
+          taskbarItemActive: {
+            background: "linear-gradient(#ffffff, #80caff)",
+          },
+          taskbarClock: {
+            color: "#ffffff",
+          },
+        },
+        blocks: {
+          taskbar: {
+            enabled: true,
+            startButton: {
+              label: "开始",
+              icon: "assets/start.png",
+            },
+            startMenu: {
+              items: [
+                { label: "外观设置", action: "openAppearance" },
+                { label: "切换亮色主题", action: "setTheme", theme: "light" },
+                { label: "导入皮肤...", action: "importSkin" },
+                { type: "separator" },
+                { label: "禁用项", disabled: true },
+                { label: "非法项", action: "launchNativeWindow" },
+              ],
+            },
+            items: [
+              { label: "AI Switch 终端", icon: "assets/app.png", active: true },
+              { label: "资料卡", active: false },
+            ],
+            tray: ["Vibe", "在线"],
+            clockFormat: "HH:mm",
+          },
+        },
+      }),
+    );
+    zip.file("assets/start.png", new Uint8Array([137, 80, 78, 71]));
+    zip.file("assets/app.png", new Uint8Array([137, 80, 78, 71]));
+    zip.file("assets/start-bg.png", new Uint8Array([137, 80, 78, 71]));
+
+    const blob = await zip.generateAsync({ type: "blob" });
+    const skin = await importVibeSkinPackage(
+      new File([blob], "taskbar.zip", { type: "application/zip" }),
+    );
+    const blocks = getVibeSkinBlocks(skin);
+    const variables = skinToCssVariables(skin) as Record<string, unknown>;
+
+    expect(blocks.taskbar.enabled).toBe(true);
+    expect(blocks.taskbar.startButton.label).toBe("开始");
+    expect(blocks.taskbar.startButton.icon).toMatch(/^data:image\/png;base64,/);
+    expect(blocks.taskbar.startMenu.items).toEqual([
+      { label: "外观设置", action: "openAppearance" },
+      { label: "切换亮色主题", action: "setTheme", theme: "light" },
+      { label: "导入皮肤...", action: "importSkin" },
+      { type: "separator" },
+      { label: "禁用项", disabled: true },
+    ]);
+    expect(blocks.taskbar.items[0]).toMatchObject({
+      label: "AI Switch 终端",
+      active: true,
+    });
+    expect(blocks.taskbar.items[0]?.icon).toMatch(/^data:image\/png;base64,/);
+    expect(blocks.taskbar.items[1]).toEqual({ label: "资料卡", active: false });
+    expect(blocks.taskbar.tray).toEqual(["Vibe", "在线"]);
+    expect(blocks.taskbar.clockFormat).toBe("HH:mm");
+    expect(variables["--vibe-taskbar-background-layer"]).toBe(
+      "linear-gradient(#4bb5ff, #0d65bd)",
+    );
+    expect(variables["--vibe-taskbar-start-button-background-image"]).toMatch(
+      /^url\("data:image\/png;base64,/,
+    );
+    expect(variables["--vibe-taskbar-start-menu-background-layer"]).toBe(
+      "linear-gradient(#ffffff, #c7ecff)",
+    );
+    expect(variables["--vibe-taskbar-clock-color"]).toBe("#ffffff");
+  });
+
+  it("resolves taskbar defaults and preserves custom disabled taskbars", () => {
+    const baseUi = {
+      accent: "#1678d8",
+      accentText: "#ffffff",
+      background: "#0f6bc4",
+      backgroundOverlay: "transparent",
+      panel: "rgba(226,245,255,0.88)",
+      panelStrong: "rgba(255,255,255,0.96)",
+      panelSubtle: "rgba(188,226,250,0.8)",
+      border: "rgba(14,99,181,0.42)",
+      text: "#0d315d",
+      mutedText: "#3d6d9f",
+      button: "#1678d8",
+      buttonText: "#ffffff",
+      buttonHover: "#2088e5",
+      dangerBackground: "#b72434",
+      dangerText: "#ffffff",
+      tabBar: "rgba(239,250,255,0.94)",
+      tabActive: "#ffffff",
+      tabInactive: "rgba(151,210,247,0.54)",
+      tabHover: "rgba(255,255,255,0.72)",
+      focus: "#44a7ff",
+    };
+    const builtIn = getVibeSkinBlocks({
+      id: "minimal",
+      name: "Minimal",
+      ui: baseUi,
+    });
+    const disabled = getVibeSkinBlocks({
+      id: "disabled",
+      name: "Disabled",
+      ui: baseUi,
+      blocks: {
+        taskbar: {
+          enabled: false,
+        },
+      },
+    });
+
+    expect(builtIn.taskbar.enabled).toBe(true);
+    expect(builtIn.taskbar.startButton.label).toBe("开始");
+    expect(builtIn.taskbar.startMenu.items).toContainEqual({
+      label: "外观设置",
+      action: "openAppearance",
+    });
+    expect(builtIn.taskbar.startMenu.items).toContainEqual({
+      label: "切换暗色主题",
+      action: "setTheme",
+      theme: "dark",
+    });
+    expect(builtIn.taskbar.items).toContainEqual({
+      label: "AI Switch 终端",
+      active: true,
+    });
+    expect(builtIn.taskbar.tray).toEqual(["Vibe", "在线"]);
+    expect(disabled.taskbar.enabled).toBe(false);
+    expect(disabled.taskbar.startButton.label).toBe("开始");
+  });
 });
