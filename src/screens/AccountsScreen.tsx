@@ -783,28 +783,34 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
         </div>
 
         <div className="mx-4 mt-3 rounded-2xl border border-emerald-200 bg-gradient-to-r from-emerald-50 to-white px-3 py-2.5">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex min-w-0 flex-1 items-start gap-2">
               <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-emerald-600 text-white shadow-sm">
                 <KeyRound className="h-4 w-4" />
               </span>
-              <span className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-emerald-200 bg-white/90 px-2.5 py-1.5 text-[12px] font-semibold text-emerald-900">
-                算力池
-              </span>
-              <span className="shrink-0 rounded-xl border border-emerald-100 bg-white/90 px-2.5 py-1.5 text-[12px] font-medium text-stone-600">
-                已加入 {draftPoolIds.size} 个账号
-              </span>
-              <span className="min-w-0 truncate rounded-xl border border-emerald-100 bg-white/90 px-2.5 py-1.5 text-[12px] font-medium text-stone-600">
-                本地代理：{routeProxyQuery.data?.running ? routeProxyQuery.data.base_url ?? "运行中" : "未启动"}
-              </span>
-              {lastRouteAccount && (
-                <span className="min-w-0 truncate rounded-xl border border-emerald-100 bg-white/90 px-2.5 py-1.5 text-[12px] font-medium text-stone-600">
-                  最近路由到：{lastRouteAccount}
-                </span>
-              )}
+              <div className="min-w-0 flex-1 space-y-1">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-emerald-200 bg-white/90 px-2.5 py-1.5 text-[12px] font-semibold text-emerald-900">
+                    算力池
+                  </span>
+                  <span className="text-[12px] font-medium text-stone-600">
+                    已加入 {draftPoolIds.size} 个账号
+                  </span>
+                </div>
+                <div className="flex min-w-0 flex-wrap gap-x-4 gap-y-1 text-[12px] font-medium text-stone-500">
+                  <span className="min-w-0 break-all">
+                    本地代理：{routeProxyQuery.data?.running ? routeProxyQuery.data.base_url ?? "运行中" : "未启动"}
+                  </span>
+                  {lastRouteAccount && (
+                    <span className="min-w-0 break-all">
+                      最近路由到：{lastRouteAccount}
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
 
-            <div className="flex shrink-0 flex-nowrap items-center gap-2">
+            <div className="flex shrink-0 flex-wrap items-center gap-2 lg:flex-nowrap">
               <button
                 aria-label={routeProxyQuery.data?.running ? "停止本地路由代理" : "启动本地路由代理"}
                 className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 transition-colors hover:bg-emerald-50 disabled:opacity-50"

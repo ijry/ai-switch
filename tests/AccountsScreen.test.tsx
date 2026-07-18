@@ -611,6 +611,10 @@ describe("AccountsScreen", () => {
       }),
     );
     expect(screen.getByText("最近路由到：Team Account")).toBeInTheDocument();
+    const proxyStatus = screen.getByText("本地代理：http://127.0.0.1:43111");
+    const recentRouteStatus = screen.getByText("最近路由到：Team Account");
+    expect(proxyStatus.className).not.toContain("bg-white");
+    expect(recentRouteStatus.className).not.toContain("bg-white");
   });
 
   it("clears route config write results after a short delay", async () => {
