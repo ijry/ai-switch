@@ -28,7 +28,7 @@ import {
   skinToCssVariables,
   writeStoredVibeSkin,
 } from "../lib/vibeSkin";
-import type { VibeSkinDefinition } from "../lib/vibeSkin";
+import type { VibeSkinDefinition, VibeSkinTaskbarMenuItem } from "../lib/vibeSkin";
 import { AiSwitchLogo } from "../components/brand/AiSwitchLogo";
 import type {
   CreateTerminalSessionInput,
@@ -59,6 +59,15 @@ function titleForSession(session: SessionMeta) {
 
 function directoryLabel(session: SessionMeta, unknownLabel: string) {
   return session.projectDir?.trim() || unknownLabel;
+}
+
+function compactDirectoryLabel(directory: string) {
+  const trimmed = directory.trim();
+  const parts = trimmed.split(/[\\/]+/).filter(Boolean);
+  if (parts.length < 2) {
+    return directory;
+  }
+  return parts.slice(-2).join("/");
 }
 
 function groupSessions(sessions: SessionMeta[], unknownLabel: string) {
@@ -116,14 +125,10 @@ function statusLabel(status: TerminalStatus, t: (key: "vibe.status.running" | "v
   return t(`vibe.status.${status}` as "vibe.status.running" | "vibe.status.exited" | "vibe.status.error");
 }
 
-function nextVibeTheme(current: VibeTheme): VibeTheme {
-  if (current === "dark") {
-    return "light";
-  }
-  if (current === "light") {
-    return "skin";
-  }
-  return "dark";
+function formatTaskbarClock(date: Date) {
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
 }
 
 export function VibeScreen({ onExitVibe }: VibeScreenProps) {
@@ -134,6 +139,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const [createProjectDir, setCreateProjectDir] = useState("");
   const [createPlatform, setCreatePlatform] = useState<(typeof agentOptions)[number]["platform"]>("codex");
   const [themeMode, setThemeMode] = useState<VibeTheme>("dark");
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [startMenuOpen, setStartMenuOpen] = useState(false);
+  const [clockNow, setClockNow] = useState(() => new Date());
   const [customSkin, setCustomSkin] = useState<VibeSkinDefinition | null>(() => readStoredVibeSkin());
   const [activeSkinId, setActiveSkinId] = useState<string>(
     () => readStoredVibeSkin()?.id ?? BUILT_IN_VIBE_SKINS[0].id,
@@ -142,6 +150,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const [sessionListScrolling, setSessionListScrolling] = useState(false);
   const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(() => new Set());
   const skinFileInputRef = useRef<HTMLInputElement | null>(null);
+  const startButtonRef = useRef<HTMLButtonElement | null>(null);
+  const startMenuRef = useRef<HTMLDivElement | null>(null);
   const sessionListScrollTimeout = useRef<number | null>(null);
 
   const sessionsQuery = useQuery({
@@ -349,6 +359,78 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const activeSkinRegionKeys = isSkin
     ? VIBE_SKIN_REGION_KEYS.filter((region) => Boolean(activeSkin.regions?.[region]))
     : [];
+  const taskbarEnabled = Boolean(isSkin && skinBlocks.taskbar.enabled);
+  const currentTime = formatTaskbarClock(clockNow);
+
+  useEffect(() => {
+    if (!taskbarEnabled) {
+      return;
+    }
+
+    const interval = window.setInterval(() => setClockNow(new Date()), 30_000);
+    return () => window.clearInterval(interval);
+  }, [taskbarEnabled]);
+
+  useEffect(() => {
+    if (!startMenuOpen) {
+      return;
+    }
+
+    const closeOnOutsideMouseDown = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      if (startButtonRef.current?.contains(target) || startMenuRef.current?.contains(target)) {
+        return;
+      }
+      setStartMenuOpen(false);
+    };
+
+    window.addEventListener("mousedown", closeOnOutsideMouseDown);
+    return () => window.removeEventListener("mousedown", closeOnOutsideMouseDown);
+  }, [startMenuOpen]);
+
+  useEffect(() => {
+    if (!taskbarEnabled) {
+      setStartMenuOpen(false);
+    }
+  }, [taskbarEnabled]);
+
+  const openAppearance = () => {
+    setStartMenuOpen(false);
+    setAppearanceOpen(true);
+  };
+
+  const triggerSkinImport = () => {
+    setStartMenuOpen(false);
+    skinFileInputRef.current?.click();
+  };
+
+  const runTaskbarMenuItem = (item: VibeSkinTaskbarMenuItem) => {
+    if ("type" in item || item.disabled || !item.action) {
+      return;
+    }
+
+    setStartMenuOpen(false);
+    if (item.action === "openAppearance") {
+      setAppearanceOpen(true);
+      return;
+    }
+    if (item.action === "setTheme") {
+      if (item.theme === "dark" || item.theme === "light" || item.theme === "skin") {
+        setThemeMode(item.theme);
+      }
+      return;
+    }
+    if (item.action === "importSkin") {
+      skinFileInputRef.current?.click();
+      return;
+    }
+    if (item.action === "clearSkin" && customSkin) {
+      clearCustomSkin();
+    }
+  };
 
   return (
     <main
@@ -522,15 +604,15 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                     ? "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-[#586e75] bg-[#002b36] px-2 text-[12px] font-semibold text-[#fdf6e3] transition-colors hover:border-[#839496] hover:bg-[#073642]"
                     : "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-2 text-[12px] font-semibold text-stone-700 transition-colors hover:border-stone-300 hover:bg-stone-50"
                 }
-                onClick={() => setThemeMode((current) => nextVibeTheme(current))}
+                onClick={openAppearance}
                 type="button"
               >
-                {isDark ? (
-                  <SunMedium className="h-4 w-4" />
-                ) : isSkin ? (
-                  <Palette className="h-4 w-4" />
-                ) : (
+                {themeMode === "dark" ? (
                   <MoonStar className="h-4 w-4" />
+                ) : themeMode === "light" ? (
+                  <SunMedium className="h-4 w-4" />
+                ) : (
+                  <Palette className="h-4 w-4" />
                 )}
                 <span>{themeLabel}</span>
               </button>
@@ -542,49 +624,6 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 accept=".aiskin,.json,.zip,application/json,application/zip"
                 onChange={(event) => void importSkin(event)}
               />
-              <button
-                aria-label={t("vibe.importSkin")}
-                className={
-                  isSkin
-                    ? "vibe-skin-ghost inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border px-2 text-[12px] font-semibold transition-colors"
-                    : isDark
-                      ? "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-[#586e75] bg-[#002b36] px-2 text-[12px] font-semibold text-[#fdf6e3] transition-colors hover:border-[#839496] hover:bg-[#073642]"
-                      : "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-2 text-[12px] font-semibold text-stone-700 transition-colors hover:border-stone-300 hover:bg-stone-50"
-                }
-                onClick={() => skinFileInputRef.current?.click()}
-                type="button"
-              >
-                <Upload className="h-4 w-4" />
-                <span>{t("vibe.importSkinShort")}</span>
-              </button>
-
-              {isSkin && (
-                <div className="flex w-full items-center gap-2">
-                  <select
-                    aria-label={t("vibe.skinSelect")}
-                    className="vibe-skin-select min-w-0 flex-1 rounded-xl border px-3 py-2 text-[12px] font-semibold outline-none transition"
-                    onChange={(event) => setActiveSkinId(event.target.value)}
-                    value={activeSkin.id}
-                  >
-                    {availableSkins.map((skin) => (
-                      <option key={skin.id} value={skin.id}>
-                        {skin.name}
-                      </option>
-                    ))}
-                  </select>
-                  {customSkin && (
-                    <button
-                      aria-label={t("vibe.clearSkin")}
-                      className="vibe-skin-ghost inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border px-2 text-[12px] font-semibold transition-colors"
-                      onClick={clearCustomSkin}
-                      type="button"
-                    >
-                      <X className="h-4 w-4" />
-                      <span>{t("vibe.clearSkinShort")}</span>
-                    </button>
-                  )}
-                </div>
-              )}
             </div>
 
             {error && (
@@ -644,6 +683,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                           ? t("vibe.collapseDirectoryAria", { directory: group.directory })
                           : t("vibe.expandDirectoryAria", { directory: group.directory })
                       }
+                      title={group.directory}
                       className={
                         isSkin
                           ? "vibe-skin-list-trigger flex w-full items-center gap-2 rounded-xl px-1 py-1 text-left text-[12px] font-semibold transition"
@@ -656,7 +696,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                     >
                       <ToggleIcon className={isSkin ? "h-3.5 w-3.5 shrink-0 text-[var(--vibe-muted-text)]" : isDark ? "h-3.5 w-3.5 shrink-0 text-[#93a1a1]" : "h-3.5 w-3.5 shrink-0 text-stone-400"} />
                       <FolderOpen className={isSkin ? "h-4 w-4 shrink-0 text-[var(--vibe-accent)]" : isDark ? "h-4 w-4 shrink-0 text-[#b58900]" : "h-4 w-4 shrink-0 text-amber-600"} />
-                      <span className="truncate">{group.directory}</span>
+                      <span className="truncate">{compactDirectoryLabel(group.directory)}</span>
                     </button>
                     {expanded && (
                       <div className="mt-2 space-y-1.5">
@@ -877,13 +917,249 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
         )}
         </div>
 
-        {isSkin && (
+        {taskbarEnabled ? (
+          <div className="vibe-skin-taskbar relative flex h-10 shrink-0 items-center gap-2 border-t px-2 text-[11px] font-semibold">
+            {startMenuOpen && (
+              <div
+                aria-label="开始菜单"
+                className="vibe-skin-taskbar-start-menu absolute bottom-full left-2 z-40 mb-2 w-64 overflow-hidden rounded-2xl border p-2"
+                ref={startMenuRef}
+                role="menu"
+              >
+                <div className="mb-2 rounded-xl border border-white/50 bg-white/45 px-3 py-2 text-[12px] font-semibold text-[var(--vibe-text)]">
+                  {skinBlocks.profile.name}
+                </div>
+                <div className="space-y-1">
+                  {skinBlocks.taskbar.startMenu.items.map((item, index) =>
+                    "type" in item ? (
+                      <div
+                        aria-orientation="horizontal"
+                        className="my-1 h-px bg-[var(--vibe-border)]/70"
+                        key={`separator-${index}`}
+                        role="separator"
+                      />
+                    ) : (
+                      <button
+                        className="vibe-skin-taskbar-menu-item flex w-full items-center rounded-xl px-3 py-2 text-left text-[12px] transition disabled:cursor-not-allowed disabled:opacity-50"
+                        disabled={item.disabled}
+                        key={`${item.label}-${index}`}
+                        onClick={() => runTaskbarMenuItem(item)}
+                        role="menuitem"
+                        type="button"
+                      >
+                        {item.label}
+                      </button>
+                    ),
+                  )}
+                </div>
+              </div>
+            )}
+
+            <button
+              aria-expanded={startMenuOpen}
+              className="vibe-skin-taskbar-start-button inline-flex h-8 shrink-0 items-center gap-2 border px-4 text-[13px] font-bold italic tracking-wide transition"
+              onClick={() => setStartMenuOpen((current) => !current)}
+              ref={startButtonRef}
+              type="button"
+            >
+              {skinBlocks.taskbar.startButton.icon && (
+                <img
+                  alt=""
+                  aria-hidden="true"
+                  className="h-4 w-4 shrink-0 object-contain"
+                  src={skinBlocks.taskbar.startButton.icon}
+                />
+              )}
+              <span>{skinBlocks.taskbar.startButton.label}</span>
+            </button>
+
+            <div className="flex min-w-0 flex-1 items-center gap-1.5">
+              {skinBlocks.taskbar.items.map((item, index) => (
+                <div
+                  className={`${
+                    item.active ? "vibe-skin-taskbar-item-active" : "vibe-skin-taskbar-item"
+                  } flex h-7 min-w-0 max-w-[180px] items-center gap-2 rounded-lg border px-2 text-[11px]`}
+                  key={`${item.label}-${index}`}
+                >
+                  {item.icon && (
+                    <img
+                      alt=""
+                      aria-hidden="true"
+                      className="h-4 w-4 shrink-0 object-contain"
+                      src={item.icon}
+                    />
+                  )}
+                  <span className="truncate">{item.label}</span>
+                </div>
+              ))}
+              <span className="ml-1 hidden truncate text-[10px] font-medium opacity-90 sm:inline">
+                {skinBlocks.statusbar.left}
+              </span>
+            </div>
+
+            <div className="vibe-skin-taskbar-tray hidden h-7 shrink-0 items-center gap-1 rounded-lg border px-2 sm:flex">
+              {skinBlocks.taskbar.tray.map((item, index) => (
+                <span key={`${item}-${index}`} className="whitespace-nowrap">
+                  {item}
+                </span>
+              ))}
+              <span className="hidden whitespace-nowrap lg:inline">{skinBlocks.statusbar.right}</span>
+            </div>
+            <div className="vibe-skin-taskbar-clock flex h-7 shrink-0 items-center rounded-lg border px-2 tabular-nums">
+              {currentTime}
+            </div>
+          </div>
+        ) : isSkin ? (
           <div className="vibe-skin-status-bar flex h-9 shrink-0 items-center justify-between gap-3 border-t px-4 text-[11px] font-medium">
             <span className="truncate">{skinBlocks.statusbar.left}</span>
             <span className="truncate">{skinBlocks.statusbar.right}</span>
           </div>
-        )}
+        ) : null}
       </div>
+
+      {appearanceOpen && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setAppearanceOpen(false);
+            }
+          }}
+        >
+          <div
+            aria-labelledby="vibe-appearance-title"
+            aria-modal="true"
+            className={
+              isSkin
+                ? "vibe-skin-modal vibe-skin-panel-strong w-full max-w-md rounded-3xl border p-4 shadow-2xl"
+                : isDark
+                  ? "w-full max-w-md rounded-3xl border border-[#073642] bg-[#002b36] p-4 text-[#fdf6e3] shadow-2xl shadow-black/40"
+                  : "w-full max-w-md rounded-3xl border border-stone-200 bg-white p-4 text-stone-950 shadow-2xl shadow-stone-950/15"
+            }
+            role="dialog"
+          >
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h2 id="vibe-appearance-title" className="text-base font-semibold">
+                  {t("vibe.appearanceTitle")}
+                </h2>
+                <p className={isSkin ? "mt-1 text-[12px] text-[var(--vibe-muted-text)]" : isDark ? "mt-1 text-[12px] text-[#93a1a1]" : "mt-1 text-[12px] text-stone-500"}>
+                  {t("vibe.appearanceSubtitle")}
+                </p>
+              </div>
+              <button
+                aria-label={t("vibe.cancel")}
+                className={
+                  isSkin
+                    ? "vibe-skin-ghost grid h-8 w-8 place-items-center rounded-xl border transition"
+                    : isDark
+                      ? "grid h-8 w-8 place-items-center rounded-xl border border-[#586e75] text-[#93a1a1] transition hover:text-[#fdf6e3]"
+                      : "grid h-8 w-8 place-items-center rounded-xl border border-stone-200 text-stone-500 transition hover:text-stone-950"
+                }
+                onClick={() => setAppearanceOpen(false)}
+                type="button"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <p className={isSkin ? "mb-2 text-[12px] font-semibold text-[var(--vibe-muted-text)]" : isDark ? "mb-2 text-[12px] font-semibold text-[#93a1a1]" : "mb-2 text-[12px] font-semibold text-stone-600"}>
+                  {t("vibe.themeChoices")}
+                </p>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { mode: "dark" as const, label: t("vibe.themeDark") },
+                    { mode: "light" as const, label: t("vibe.themeLight") },
+                    { mode: "skin" as const, label: t("vibe.themeSkin") },
+                  ].map((choice) => (
+                    <button
+                      aria-pressed={themeMode === choice.mode}
+                      className={
+                        themeMode === choice.mode
+                          ? isSkin
+                            ? "vibe-skin-primary rounded-xl border px-3 py-2 text-[12px] font-semibold"
+                            : "rounded-xl bg-stone-950 px-3 py-2 text-[12px] font-semibold text-white"
+                          : isSkin
+                            ? "vibe-skin-ghost rounded-xl border px-3 py-2 text-[12px] font-semibold"
+                            : isDark
+                              ? "rounded-xl border border-[#586e75] px-3 py-2 text-[12px] font-semibold text-[#93a1a1]"
+                              : "rounded-xl border border-stone-200 px-3 py-2 text-[12px] font-semibold text-stone-600"
+                      }
+                      key={choice.mode}
+                      onClick={() => setThemeMode(choice.mode)}
+                      type="button"
+                    >
+                      {choice.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <label className={isSkin ? "block text-[12px] font-semibold text-[var(--vibe-muted-text)]" : isDark ? "block text-[12px] font-semibold text-[#93a1a1]" : "block text-[12px] font-semibold text-stone-600"}>
+                {t("vibe.skinSelect")}
+                <select
+                  aria-label={t("vibe.skinSelect")}
+                  className={
+                    isSkin
+                      ? "vibe-skin-select mt-1 w-full rounded-xl border px-3 py-2 text-[13px] outline-none transition"
+                      : isDark
+                        ? "mt-1 w-full rounded-xl border border-[#586e75] bg-[#073642] px-3 py-2 text-[13px] text-[#fdf6e3] outline-none focus:border-[#268bd2]"
+                        : "mt-1 w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] text-stone-950 outline-none focus:border-blue-400"
+                  }
+                  onChange={(event) => {
+                    setActiveSkinId(event.target.value);
+                    setThemeMode("skin");
+                  }}
+                  value={activeSkinId}
+                >
+                  {availableSkins.map((skin) => (
+                    <option key={skin.id} value={skin.id}>
+                      {skin.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  className={
+                    isSkin
+                      ? "vibe-skin-ghost inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-[12px] font-semibold transition"
+                      : isDark
+                        ? "inline-flex items-center gap-2 rounded-xl border border-[#586e75] px-3 py-2 text-[12px] font-semibold text-[#93a1a1] transition hover:text-[#fdf6e3]"
+                        : "inline-flex items-center gap-2 rounded-xl border border-stone-200 px-3 py-2 text-[12px] font-semibold text-stone-600 transition hover:text-stone-950"
+                  }
+                  onClick={triggerSkinImport}
+                  type="button"
+                >
+                  <Upload className="h-4 w-4" />
+                  <span>{t("vibe.importSkinShort")}</span>
+                </button>
+                {customSkin && (
+                  <button
+                    className={
+                      isSkin
+                        ? "vibe-skin-danger rounded-xl border px-3 py-2 text-[12px] font-semibold transition"
+                        : isDark
+                          ? "rounded-xl border border-red-400/60 px-3 py-2 text-[12px] font-semibold text-red-200 transition hover:bg-red-500/20"
+                          : "rounded-xl border border-red-200 px-3 py-2 text-[12px] font-semibold text-red-700 transition hover:bg-red-50"
+                    }
+                    onClick={clearCustomSkin}
+                    type="button"
+                  >
+                    {t("vibe.clearSkin")}
+                  </button>
+                )}
+              </div>
+              <p className={isSkin ? "text-[12px] leading-5 text-[var(--vibe-muted-text)]" : isDark ? "text-[12px] leading-5 text-[#93a1a1]" : "text-[12px] leading-5 text-stone-500"}>
+                {t("vibe.appearanceHelp")}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {createDialogOpen && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-4">

@@ -83,11 +83,19 @@ async function expandProjectDirectory() {
   await userEvent.click(await screen.findByRole("button", { name: "Expand folder D:/repo/app" }));
 }
 
+async function openAppearanceDialog() {
+  await userEvent.click(await screen.findByRole("button", { name: "Switch Vibe theme" }));
+  return screen.findByRole("dialog", { name: "Appearance" });
+}
+
+async function switchThemeFromAppearance(theme: "Solarized Dark" | "Light" | "Skin") {
+  await openAppearanceDialog();
+  await userEvent.click(await screen.findByRole("button", { name: theme }));
+  await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+}
+
 async function switchToSkinTheme() {
-  const themeButton = await screen.findByRole("button", { name: "Switch Vibe theme" });
-  await userEvent.click(themeButton);
-  await userEvent.click(themeButton);
-  return themeButton;
+  await switchThemeFromAppearance("Skin");
 }
 
 describe("VibeScreen", () => {
@@ -114,7 +122,12 @@ describe("VibeScreen", () => {
   it("groups local sessions by project directory", async () => {
     renderScreen();
 
-    expect(await screen.findByText("D:/repo/app")).toBeInTheDocument();
+    expect(await screen.findByText("repo/app")).toBeInTheDocument();
+    expect(screen.queryByText("D:/repo/app")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand folder D:/repo/app" })).toHaveAttribute(
+      "title",
+      "D:/repo/app",
+    );
     expect(screen.queryByText("Fix terminal bug")).not.toBeInTheDocument();
     expect(screen.queryByText("Missing resume")).not.toBeInTheDocument();
 
@@ -166,22 +179,31 @@ describe("VibeScreen", () => {
     expect(screen.queryByText("Agent accounts placeholder")).not.toBeInTheDocument();
   });
 
-  it("cycles Vibe through dark, light, and skin themes", async () => {
+  it("opens appearance settings and switches Vibe themes from the dialog", async () => {
     renderScreen();
 
-    const themeButton = await screen.findByRole("button", { name: "Switch Vibe theme" });
     expect(screen.getByText("Solarized Dark")).toBeInTheDocument();
 
-    await userEvent.click(themeButton);
+    await openAppearanceDialog();
+    expect(screen.getByRole("button", { name: "Solarized Dark" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Light" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
 
-    expect(screen.getByText("Light")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Light" }));
+
+    expect(screen.getByRole("button", { name: "Switch Vibe theme" })).toHaveTextContent("Light");
     expect(screen.getByRole("button", { name: "Expand folder D:/repo/app" })).toHaveClass("text-stone-800");
     expect(screen.getByText("No terminal tabs yet.").parentElement).toHaveClass("bg-white/85");
     expect(screen.getByText("Start or resume a session")).toHaveClass("text-stone-900");
 
-    await userEvent.click(themeButton);
+    await userEvent.click(screen.getByRole("button", { name: "Skin" }));
 
-    expect(themeButton).toHaveTextContent("Skin");
+    expect(screen.getByRole("button", { name: "Switch Vibe theme" })).toHaveTextContent("Skin");
     expect(screen.getByLabelText("Vibe skin")).toHaveValue("codex-2007-blue");
     expect(screen.getByText("No terminal tabs yet.").parentElement).toHaveClass("vibe-skin-tabbar");
   });
@@ -191,10 +213,10 @@ describe("VibeScreen", () => {
 
     await switchToSkinTheme();
 
-    expect(screen.getByText("AI Switch 终端")).toBeInTheDocument();
+    expect(screen.getAllByText("AI Switch 终端").length).toBeGreaterThan(0);
     expect(screen.getByText("QQ2007 蓝色经典")).toBeInTheDocument();
     expect(screen.getAllByText("皮肤模式").length).toBeGreaterThan(0);
-    expect(screen.getByText("在线")).toBeInTheDocument();
+    expect(screen.getAllByText("在线").length).toBeGreaterThan(0);
     expect(screen.getByText("正在使用 Vibe 终端")).toBeInTheDocument();
     expect(screen.getByText("经典蓝钻")).toBeInTheDocument();
     expect(screen.getByText("QQ秀展示")).toBeInTheDocument();
@@ -216,11 +238,11 @@ describe("VibeScreen", () => {
   it("does not render QQ2007 decorative skin blocks in dark or light themes", async () => {
     renderScreen();
 
-    expect(await screen.findByText("D:/repo/app")).toBeInTheDocument();
+    expect(await screen.findByText("repo/app")).toBeInTheDocument();
     expect(screen.queryByText("QQ秀展示")).not.toBeInTheDocument();
     expect(screen.queryByTestId("vibe-window-controls")).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: "Switch Vibe theme" }));
+    await switchThemeFromAppearance("Light");
 
     expect(screen.queryByText("QQ秀展示")).not.toBeInTheDocument();
     expect(screen.queryByTestId("vibe-window-controls")).not.toBeInTheDocument();
@@ -282,6 +304,7 @@ describe("VibeScreen", () => {
 
     await switchToSkinTheme();
 
+    await openAppearanceDialog();
     expect(screen.getByLabelText("Vibe skin")).toHaveValue("showcase-skin");
     expect(screen.getByText("霓虹终端")).toBeInTheDocument();
     expect(screen.getByText("霓虹用户")).toBeInTheDocument();
@@ -374,12 +397,14 @@ describe("VibeScreen", () => {
       { type: "application/json" },
     );
 
+    await openAppearanceDialog();
     await userEvent.upload(screen.getByLabelText("Choose Vibe skin package"), skinFile);
 
     await waitFor(() => expect(screen.getByLabelText("Vibe skin")).toHaveValue("custom-neon"));
     expect(screen.getByRole("button", { name: "Switch Vibe theme" })).toHaveTextContent("Skin");
     expect(window.localStorage.getItem(VIBE_SKIN_STORAGE_KEY)).toContain("Custom Neon");
 
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await expandProjectDirectory();
     await userEvent.click(await screen.findByRole("button", { name: /Resume Fix terminal bug/ }));
 
@@ -391,6 +416,160 @@ describe("VibeScreen", () => {
       "data-transparent-surface",
       "yes",
     );
+  });
+
+  it("renders the skin taskbar and replaces the old skin status bar when enabled", async () => {
+    renderScreen();
+
+    await switchToSkinTheme();
+
+    expect(screen.getByRole("button", { name: "开始" })).toBeInTheDocument();
+    expect(screen.getAllByText("AI Switch 终端").length).toBeGreaterThan(0);
+    expect(screen.getByText("AI Switch 已连接")).toBeInTheDocument();
+    expect(screen.getByText("皮肤区域已启用")).toBeInTheDocument();
+    expect(screen.getByText("Vibe")).toBeInTheDocument();
+    expect(screen.getAllByText("在线").length).toBeGreaterThan(0);
+    expect(document.querySelector(".vibe-skin-taskbar")).toBeTruthy();
+    expect(document.querySelector(".vibe-skin-status-bar")).toBeFalsy();
+  });
+
+  it("falls back to the skin status bar when a custom skin disables the taskbar", async () => {
+    window.localStorage.setItem(
+      VIBE_SKIN_STORAGE_KEY,
+      JSON.stringify({
+        id: "no-taskbar",
+        name: "No Taskbar",
+        ui: {
+          accent: "#1678d8",
+          background: "#dff5ff",
+          panel: "rgba(232,247,255,0.78)",
+          panelStrong: "rgba(255,255,255,0.92)",
+          panelSubtle: "rgba(216,239,255,0.68)",
+          border: "rgba(15,99,184,0.34)",
+          text: "#0d315d",
+          mutedText: "#386b9e",
+          button: "#1678d8",
+          buttonText: "#ffffff",
+          buttonHover: "#0f61ae",
+        },
+        blocks: {
+          taskbar: {
+            enabled: false,
+          },
+          statusbar: {
+            left: "自定义左侧状态",
+            right: "自定义右侧状态",
+          },
+        },
+      }),
+    );
+    renderScreen();
+
+    await switchToSkinTheme();
+
+    expect(screen.queryByRole("button", { name: "开始" })).not.toBeInTheDocument();
+    expect(document.querySelector(".vibe-skin-taskbar")).toBeFalsy();
+    expect(document.querySelector(".vibe-skin-status-bar")).toBeTruthy();
+    expect(screen.getByText("自定义左侧状态")).toBeInTheDocument();
+    expect(screen.getByText("自定义右侧状态")).toBeInTheDocument();
+  });
+
+  it("opens the taskbar start menu and executes only safe actions", async () => {
+    window.localStorage.setItem(
+      VIBE_SKIN_STORAGE_KEY,
+      JSON.stringify({
+        id: "menu-skin",
+        name: "Menu Skin",
+        ui: {
+          accent: "#1678d8",
+          background: "#dff5ff",
+          panel: "rgba(232,247,255,0.78)",
+          panelStrong: "rgba(255,255,255,0.92)",
+          panelSubtle: "rgba(216,239,255,0.68)",
+          border: "rgba(15,99,184,0.34)",
+          text: "#0d315d",
+          mutedText: "#386b9e",
+          button: "#1678d8",
+          buttonText: "#ffffff",
+          buttonHover: "#0f61ae",
+        },
+        blocks: {
+          taskbar: {
+            startMenu: {
+              items: [
+                { label: "外观设置", action: "openAppearance" },
+                { label: "切换暗色主题", action: "setTheme", theme: "dark" },
+                { label: "非法动作", action: "nativeCloseWindow" },
+                { type: "separator" },
+                { label: "不可点击", disabled: true },
+              ],
+            },
+          },
+        },
+      }),
+    );
+    renderScreen();
+
+    await switchToSkinTheme();
+    await userEvent.click(screen.getByRole("button", { name: "开始" }));
+
+    expect(screen.getByRole("menu", { name: "开始菜单" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "外观设置" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "切换暗色主题" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "非法动作" })).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "不可点击" })).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("menuitem", { name: "切换暗色主题" }));
+
+    expect(screen.queryByRole("button", { name: "开始" })).not.toBeInTheDocument();
+    expect(screen.getByText("Solarized Dark")).toBeInTheDocument();
+
+    await switchToSkinTheme();
+    await userEvent.click(screen.getByRole("button", { name: "开始" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "外观设置" }));
+
+    expect(await screen.findByRole("dialog", { name: "Appearance" })).toBeInTheDocument();
+    expect(screen.queryByRole("menu", { name: "开始菜单" })).not.toBeInTheDocument();
+  });
+
+  it("keeps skin select, import, and clear controls inside the appearance dialog", async () => {
+    window.localStorage.setItem(
+      VIBE_SKIN_STORAGE_KEY,
+      JSON.stringify({
+        id: "stored-popup-skin",
+        name: "Stored Popup Skin",
+        ui: {
+          accent: "#1678d8",
+          background: "#dff5ff",
+          panel: "rgba(232,247,255,0.78)",
+          panelStrong: "rgba(255,255,255,0.92)",
+          panelSubtle: "rgba(216,239,255,0.68)",
+          border: "rgba(15,99,184,0.34)",
+          text: "#0d315d",
+          mutedText: "#386b9e",
+          button: "#1678d8",
+          buttonText: "#ffffff",
+          buttonHover: "#0f61ae",
+        },
+      }),
+    );
+    renderScreen();
+
+    expect(screen.queryByLabelText("Vibe skin")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Import skin" })).not.toBeInTheDocument();
+
+    await openAppearanceDialog();
+
+    const dialog = screen.getByRole("dialog", { name: "Appearance" });
+    expect(dialog).toContainElement(screen.getByLabelText("Vibe skin"));
+    expect(dialog).toContainElement(screen.getByRole("button", { name: "Import skin" }));
+    expect(dialog).toContainElement(screen.getByRole("button", { name: "Clear custom skin" }));
+
+    await userEvent.selectOptions(screen.getByLabelText("Vibe skin"), "codex-2007-blue");
+    expect(screen.getByLabelText("Vibe skin")).toHaveValue("codex-2007-blue");
+
+    await userEvent.click(screen.getByRole("button", { name: "Clear custom skin" }));
+    expect(window.localStorage.getItem(VIBE_SKIN_STORAGE_KEY)).toBeNull();
   });
 
   it("creates a new agent session through the modal", async () => {
