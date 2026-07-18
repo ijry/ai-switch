@@ -1,6 +1,7 @@
 import JSZip from "jszip";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  BUILT_IN_VIBE_SKINS,
   clearStoredVibeSkin,
   getVibeSkinBlocks,
   importVibeSkinPackage,
@@ -116,6 +117,97 @@ describe("vibeSkin", () => {
     );
   });
 
+  it("imports decoration templates and image assets from zip skin packages", async () => {
+    const zip = new JSZip();
+    zip.file(
+      "skin.json",
+      JSON.stringify({
+        id: "uploaded-rescue",
+        name: "Uploaded Rescue",
+        ui: {
+          accent: "#0b7fec",
+          background: "#78d4ff",
+        },
+        blocks: {
+          titlebar: {
+            title: "上传救援主题",
+            subtitle: "皮肤包",
+            badge: "待命",
+          },
+          profile: {
+            name: "莱德队长",
+            status: "总部在线",
+            signature: "自定义包",
+            badge: "队长",
+          },
+          showcase: {
+            enabled: true,
+            title: "汪汪队总部",
+            subtitle: "上传包",
+            body: "来自皮肤文件包。",
+            badge: "救援总部",
+            footer: "自定义展示",
+          },
+        },
+        decorations: {
+          variant: "rescue-pups",
+          titlebarMark: "汪汪队超长",
+          avatarTemplate: "rescue-rider",
+          showcaseTemplate: "rescue-hq",
+          unsafeTemplate: "nativeCloseWindow",
+          rightCards: [
+            {
+              template: "rescue-dog-team",
+              title: "上传狗狗队",
+              badge: "狗狗们",
+              figure: "assets/team.png",
+              items: [
+                { label: "红色救援狗狗", tone: "red", image: "assets/red-dog.png" },
+                { label: "非法模板狗狗", template: "nativeCloseWindow", tone: "purple" },
+                { template: "rescue-mayor" },
+              ],
+            },
+            {
+              template: "rescue-civic",
+              title: "上传市政",
+              items: [
+                { label: "古微市长", template: "rescue-mayor" },
+                { label: "咕咕鸡", template: "rescue-chicken", image: "assets/chicken.png" },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    zip.file("assets/team.png", new Uint8Array([137, 80, 78, 71]));
+    zip.file("assets/red-dog.png", new Uint8Array([137, 80, 78, 71]));
+    zip.file("assets/chicken.png", new Uint8Array([137, 80, 78, 71]));
+
+    const blob = await zip.generateAsync({ type: "blob" });
+    const skin = await importVibeSkinPackage(
+      new File([blob], "uploaded-rescue.zip", { type: "application/zip" }),
+    );
+
+    expect(skin.id).toBe("uploaded-rescue");
+    expect(skin.decorations?.variant).toBe("rescue-pups");
+    expect(skin.decorations?.titlebarMark).toBe("汪汪队超");
+    expect(skin.decorations?.avatarTemplate).toBe("rescue-rider");
+    expect(skin.decorations?.showcaseTemplate).toBe("rescue-hq");
+    expect(skin.decorations?.rightCards).toHaveLength(2);
+    expect(skin.decorations?.rightCards?.[0]?.figure).toMatch(/^data:image\/png;base64,/);
+    expect(skin.decorations?.rightCards?.[0]?.items?.[0]?.image).toMatch(
+      /^data:image\/png;base64,/,
+    );
+    expect(skin.decorations?.rightCards?.[0]?.items?.[1]).toEqual({
+      label: "非法模板狗狗",
+    });
+    expect(skin.decorations?.rightCards?.[0]?.items).toHaveLength(2);
+    expect(skin.decorations?.rightCards?.[1]?.items?.[1]?.image).toMatch(
+      /^data:image\/png;base64,/,
+    );
+    expect(JSON.stringify(skin.decorations)).not.toContain("nativeCloseWindow");
+  });
+
   it("imports plain JSON aiskin manifests", async () => {
     const skin = await importVibeSkinPackage(
       new File(
@@ -137,6 +229,23 @@ describe("vibeSkin", () => {
     expect(skin.id).toBe("plain-json");
     expect(skin.name).toBe("Plain JSON");
     expect(skin.ui.accent).toBe("#00ffee");
+  });
+
+  it("keeps built-in skins as importable standard package manifests", async () => {
+    for (const builtInSkin of BUILT_IN_VIBE_SKINS) {
+      const skin = await importVibeSkinPackage(
+        new File([JSON.stringify(builtInSkin)], `${builtInSkin.id}.aiskin`, {
+          type: "application/json",
+        }),
+      );
+
+      expect(skin.id).toBe(builtInSkin.id);
+      expect(skin.name).toBe(builtInSkin.name);
+      expect(skin.ui.accent).toBe(builtInSkin.ui.accent);
+      expect(skin.terminal?.background).toBe("transparent");
+      expect(skin.blocks?.titlebar?.title).toBe(builtInSkin.blocks?.titlebar?.title);
+      expect(skin.decorations).toEqual(builtInSkin.decorations);
+    }
   });
 
   it("persists custom skins and exposes CSS variables", () => {

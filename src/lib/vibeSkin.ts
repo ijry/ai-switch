@@ -1,6 +1,9 @@
 import JSZip from "jszip";
 import type { CSSProperties } from "react";
 
+import codex2007BlueSkinManifest from "../skins/codex-2007-blue/skin.json";
+import rescuePupsAdventureBaySkinManifest from "../skins/rescue-pups-adventure-bay/skin.json";
+
 export const VIBE_SKIN_STORAGE_KEY = "ai-switch.vibe.custom-skin";
 
 const MAX_IMPORT_SIZE_BYTES = 8 * 1024 * 1024;
@@ -204,6 +207,61 @@ export type VibeSkinTaskbarBlock = {
   clockFormat?: "HH:mm";
 };
 
+export const VIBE_SKIN_DECORATION_VARIANTS = ["codex-2007", "rescue-pups"] as const;
+
+export type VibeSkinDecorationVariant = (typeof VIBE_SKIN_DECORATION_VARIANTS)[number];
+
+export const VIBE_SKIN_DECORATION_TEMPLATES = [
+  "qq-mascot",
+  "qq-person",
+  "rescue-rider",
+  "rescue-hq",
+  "rescue-dog-team",
+  "rescue-civic",
+  "rescue-mayor",
+  "rescue-chicken",
+] as const;
+
+export type VibeSkinDecorationTemplate = (typeof VIBE_SKIN_DECORATION_TEMPLATES)[number];
+
+export const VIBE_SKIN_DECORATION_TONES = [
+  "red",
+  "blue",
+  "yellow",
+  "green",
+  "pink",
+  "orange",
+  "neutral",
+] as const;
+
+export type VibeSkinDecorationTone = (typeof VIBE_SKIN_DECORATION_TONES)[number];
+
+export type VibeSkinDecorationItem = {
+  label: string;
+  badge?: string;
+  template?: VibeSkinDecorationTemplate;
+  tone?: VibeSkinDecorationTone;
+  image?: string;
+};
+
+export type VibeSkinDecorationCard = {
+  title?: string;
+  subtitle?: string;
+  badge?: string;
+  footer?: string;
+  template?: VibeSkinDecorationTemplate;
+  figure?: string;
+  items?: VibeSkinDecorationItem[];
+};
+
+export type VibeSkinDecorations = {
+  variant?: VibeSkinDecorationVariant;
+  titlebarMark?: string;
+  avatarTemplate?: VibeSkinDecorationTemplate;
+  showcaseTemplate?: VibeSkinDecorationTemplate;
+  rightCards?: VibeSkinDecorationCard[];
+};
+
 export type ResolvedVibeSkinTaskbarBlock = {
   enabled: boolean;
   startButton: Required<Pick<VibeSkinTaskbarButton, "label">> &
@@ -292,209 +350,16 @@ export type VibeSkinDefinition = {
   regions?: Partial<Record<VibeSkinRegionKey, VibeSkinRegionStyle>>;
   showcase?: VibeSkinShowcase;
   blocks?: VibeSkinBlocks;
+  decorations?: VibeSkinDecorations;
 };
 
+function asBuiltInVibeSkin(skin: unknown): VibeSkinDefinition {
+  return skin as VibeSkinDefinition;
+}
+
 export const BUILT_IN_VIBE_SKINS: VibeSkinDefinition[] = [
-  {
-    id: "codex-2007-blue",
-    name: "Codex 2007 Blue",
-    author: "AI Switch",
-    version: "2.0.0",
-    ui: {
-      accent: "#1678d8",
-      accentText: "#ffffff",
-      background:
-        "linear-gradient(180deg, #63b9fb 0%, #2b89df 42%, #0e62b8 100%)",
-      backgroundOverlay:
-        "radial-gradient(circle at 18% 6%, rgba(255,255,255,0.72), transparent 17rem), radial-gradient(circle at 82% 12%, rgba(163,222,255,0.56), transparent 16rem), linear-gradient(180deg, rgba(255,255,255,0.24), rgba(8,63,126,0.24))",
-      panel: "rgba(226, 245, 255, 0.88)",
-      panelStrong: "rgba(255, 255, 255, 0.96)",
-      panelSubtle: "rgba(188, 226, 250, 0.8)",
-      border: "rgba(14, 99, 181, 0.42)",
-      text: "#0d315d",
-      mutedText: "#3d6d9f",
-      button: "linear-gradient(180deg, #63c7ff 0%, #1678d8 48%, #0c5cab 100%)",
-      buttonText: "#ffffff",
-      buttonHover: "linear-gradient(180deg, #7bd3ff 0%, #2088e5 48%, #0b539e 100%)",
-      dangerBackground: "linear-gradient(180deg, #ff7e87, #b72434)",
-      dangerText: "#ffffff",
-      tabBar: "linear-gradient(180deg, rgba(239,250,255,0.94), rgba(183,226,252,0.9))",
-      tabActive: "linear-gradient(180deg, #ffffff 0%, #f5fcff 48%, #d7f0ff 100%)",
-      tabInactive: "linear-gradient(180deg, rgba(151,210,247,0.54), rgba(103,176,229,0.38))",
-      tabHover: "rgba(255, 255, 255, 0.72)",
-      focus: "#44a7ff",
-    },
-    terminal: {
-      background: "transparent",
-      black: "#1f4b75",
-      blue: "#0d6ec9",
-      brightBlack: "#6088ad",
-      brightBlue: "#268fe8",
-      brightCyan: "#20a6c9",
-      brightGreen: "#3d9b5c",
-      brightMagenta: "#9b63c6",
-      brightRed: "#d94b5a",
-      brightWhite: "#ffffff",
-      brightYellow: "#d4931f",
-      cyan: "#1685a8",
-      foreground: "#12375f",
-      green: "#2f854d",
-      magenta: "#7c55ab",
-      red: "#b73546",
-      white: "#d9edf8",
-      yellow: "#b37613",
-    },
-    regions: {
-      app: {
-        background:
-          "linear-gradient(180deg, #6fc5ff 0%, #2f91e5 36%, #126bc4 100%)",
-        backgroundOverlay:
-          "radial-gradient(circle at 12% 2%, rgba(255,255,255,0.94), transparent 12rem), radial-gradient(circle at 92% 0%, rgba(195,240,255,0.68), transparent 15rem), linear-gradient(90deg, rgba(255,255,255,0.18), transparent 28%, rgba(0,61,129,0.16))",
-        border: "rgba(7, 86, 160, 0.72)",
-        color: "#0d315d",
-      },
-      titlebar: {
-        background:
-          "linear-gradient(180deg, #e7fbff 0%, #8bd7ff 18%, #34a0ef 45%, #0f6bc4 100%)",
-        backgroundOverlay:
-          "linear-gradient(90deg, rgba(255,255,255,0.48), transparent 32%, rgba(255,255,255,0.2) 64%, transparent)",
-        border: "rgba(5, 82, 150, 0.65)",
-        color: "#ffffff",
-        shadow: "inset 0 1px 0 rgba(255,255,255,0.86), 0 1px 0 rgba(7,74,139,0.35)",
-      },
-      sidebar: {
-        background:
-          "linear-gradient(180deg, rgba(231,249,255,0.96) 0%, rgba(179,225,252,0.92) 42%, rgba(96,169,226,0.86) 100%)",
-        backgroundOverlay:
-          "radial-gradient(circle at 18% 8%, rgba(255,255,255,0.9), transparent 9rem), linear-gradient(90deg, rgba(255,255,255,0.32), transparent 72%)",
-        border: "rgba(13, 104, 190, 0.52)",
-        shadow: "inset -1px 0 0 rgba(255,255,255,0.42)",
-      },
-      sidebarHeader: {
-        background:
-          "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(221,246,255,0.96) 48%, rgba(159,218,252,0.94) 100%)",
-        border: "rgba(31, 132, 211, 0.42)",
-        shadow: "0 12px 22px rgba(15,99,184,0.16), inset 0 1px 0 rgba(255,255,255,0.86)",
-        backdropFilter: "blur(14px)",
-      },
-      controlPanel: {
-        background:
-          "linear-gradient(180deg, rgba(255,255,255,0.88), rgba(207,237,255,0.82))",
-        border: "rgba(31, 132, 211, 0.38)",
-        shadow: "0 10px 20px rgba(15,99,184,0.12)",
-        backdropFilter: "blur(14px)",
-      },
-      groupPanel: {
-        background:
-          "linear-gradient(180deg, rgba(255,255,255,0.96), rgba(225,246,255,0.94) 48%, rgba(193,229,251,0.9))",
-        border: "rgba(38, 143, 222, 0.34)",
-        shadow: "0 10px 18px rgba(13,104,190,0.1), inset 0 1px 0 rgba(255,255,255,0.9)",
-      },
-      workspace: {
-        background:
-          "linear-gradient(180deg, rgba(231,248,255,0.94), rgba(198,233,252,0.92) 46%, rgba(154,209,244,0.88))",
-        backgroundOverlay:
-          "linear-gradient(90deg, rgba(255,255,255,0.4), transparent 34%), radial-gradient(circle at 86% 12%, rgba(255,255,255,0.64), transparent 12rem)",
-        border: "rgba(13, 104, 190, 0.5)",
-        shadow: "inset 1px 0 0 rgba(255,255,255,0.42), 0 18px 44px rgba(4,54,112,0.16)",
-      },
-      tabBar: {
-        background:
-          "linear-gradient(180deg, rgba(255,255,255,0.96), rgba(214,241,255,0.94) 54%, rgba(159,217,251,0.92))",
-        border: "rgba(31, 132, 211, 0.38)",
-        shadow: "inset 0 -1px 0 rgba(28,121,203,0.2)",
-      },
-      terminalShell: {
-        background: "#f7fbff",
-        border: "rgba(20, 105, 184, 0.36)",
-        shadow: "inset 0 1px 0 rgba(255,255,255,0.95), 0 18px 34px rgba(18,91,166,0.14)",
-        borderRadius: "16px",
-      },
-      emptyState: {
-        background:
-          "radial-gradient(circle at 50% 38%, rgba(255,255,255,0.98), rgba(233,248,255,0.82) 44%, rgba(186,226,251,0.42) 72%, transparent)",
-        color: "#0d315d",
-      },
-      rightRail: {
-        background:
-          "linear-gradient(180deg, rgba(216,243,255,0.92), rgba(151,211,247,0.86) 56%, rgba(74,157,222,0.8))",
-        backgroundOverlay:
-          "radial-gradient(circle at 68% 8%, rgba(255,255,255,0.94), transparent 8rem), linear-gradient(90deg, rgba(255,255,255,0.24), transparent)",
-        border: "rgba(13, 104, 190, 0.46)",
-        shadow: "inset 1px 0 0 rgba(255,255,255,0.48)",
-      },
-      rightCard: {
-        background:
-          "linear-gradient(180deg, rgba(255,255,255,0.96), rgba(226,247,255,0.94) 50%, rgba(172,224,252,0.92))",
-        border: "rgba(31, 132, 211, 0.38)",
-        shadow: "0 16px 28px rgba(10,82,154,0.16), inset 0 1px 0 rgba(255,255,255,0.92)",
-      },
-      statusBar: {
-        background:
-          "linear-gradient(180deg, rgba(211,239,255,0.94), rgba(139,204,244,0.92))",
-        border: "rgba(13, 104, 190, 0.48)",
-        color: "#174a7c",
-        shadow: "inset 0 1px 0 rgba(255,255,255,0.7)",
-      },
-      field: {
-        background: "linear-gradient(180deg, #ffffff, #e7f7ff)",
-        border: "rgba(31, 132, 211, 0.42)",
-      },
-    },
-    blocks: {
-      titlebar: {
-        title: "AI Switch 终端",
-        subtitle: "QQ2007 蓝色经典",
-        badge: "皮肤模式",
-      },
-      profile: {
-        name: "AI Switch",
-        status: "在线",
-        signature: "正在使用 Vibe 终端",
-        badge: "经典蓝钻",
-      },
-      showcase: {
-        enabled: true,
-        title: "QQ秀展示",
-        subtitle: "Codex 2007 Blue",
-        body: "右侧展示区可由皮肤定义图片、舞台和说明。",
-        badge: "我的QQ秀",
-        footer: "自定义展示区",
-      },
-      statusbar: {
-        left: "AI Switch 已连接",
-        right: "皮肤区域已启用",
-      },
-      taskbar: {
-        enabled: true,
-        startButton: {
-          label: "开始",
-        },
-        startMenu: {
-          items: [
-            { label: "外观设置", action: "openAppearance" },
-            { label: "切换到皮肤模式", action: "setTheme", theme: "skin" },
-            { label: "切换亮色主题", action: "setTheme", theme: "light" },
-            { label: "切换暗色主题", action: "setTheme", theme: "dark" },
-            { label: "导入皮肤...", action: "importSkin" },
-            { type: "separator" },
-            { label: "AI Switch 终端", disabled: true },
-          ],
-        },
-        items: [{ label: "AI Switch 终端", active: true }],
-        tray: ["Vibe", "在线"],
-        clockFormat: "HH:mm",
-      },
-    },
-    showcase: {
-      enabled: true,
-      title: "Codex 2007",
-      subtitle: "Blue chrome skin",
-      body: "Region-based skinning keeps terminal output clear while the shell, panels, and showcase stay expressive.",
-      badge: "Vibe Skin",
-      footer: "QQ2007-inspired layout",
-    },
-  },
+  asBuiltInVibeSkin(codex2007BlueSkinManifest),
+  asBuiltInVibeSkin(rescuePupsAdventureBaySkinManifest),
 ];
 
 const FALLBACK_UI = BUILT_IN_VIBE_SKINS[0].ui;
@@ -840,6 +705,136 @@ function normalizeBlocks(value: unknown): VibeSkinBlocks | undefined {
   return Object.values(blocks).some(Boolean) ? blocks : undefined;
 }
 
+const SAFE_DECORATION_VARIANTS = new Set<VibeSkinDecorationVariant>(VIBE_SKIN_DECORATION_VARIANTS);
+const SAFE_DECORATION_TEMPLATES = new Set<VibeSkinDecorationTemplate>(
+  VIBE_SKIN_DECORATION_TEMPLATES,
+);
+const SAFE_DECORATION_TONES = new Set<VibeSkinDecorationTone>(VIBE_SKIN_DECORATION_TONES);
+
+function normalizeDecorationVariant(value: unknown): VibeSkinDecorationVariant | undefined {
+  const variant = optionalString(value);
+  return variant && SAFE_DECORATION_VARIANTS.has(variant as VibeSkinDecorationVariant)
+    ? (variant as VibeSkinDecorationVariant)
+    : undefined;
+}
+
+function normalizeDecorationTemplate(value: unknown): VibeSkinDecorationTemplate | undefined {
+  const template = optionalString(value);
+  return template && SAFE_DECORATION_TEMPLATES.has(template as VibeSkinDecorationTemplate)
+    ? (template as VibeSkinDecorationTemplate)
+    : undefined;
+}
+
+function normalizeDecorationTone(value: unknown): VibeSkinDecorationTone | undefined {
+  const tone = optionalString(value);
+  return tone && SAFE_DECORATION_TONES.has(tone as VibeSkinDecorationTone)
+    ? (tone as VibeSkinDecorationTone)
+    : undefined;
+}
+
+function normalizeDecorationItem(value: unknown): VibeSkinDecorationItem | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  const label = optionalString(source.label);
+  if (!label) {
+    return undefined;
+  }
+
+  const item: VibeSkinDecorationItem = { label };
+  const badge = optionalString(source.badge);
+  const image = optionalString(source.image);
+  const template = normalizeDecorationTemplate(source.template);
+  const tone = normalizeDecorationTone(source.tone);
+
+  if (badge) {
+    item.badge = badge;
+  }
+  if (image) {
+    item.image = image;
+  }
+  if (template) {
+    item.template = template;
+  }
+  if (tone) {
+    item.tone = tone;
+  }
+
+  return item;
+}
+
+function normalizeDecorationCard(value: unknown): VibeSkinDecorationCard | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  const card: VibeSkinDecorationCard = {};
+  for (const key of ["title", "subtitle", "badge", "footer", "figure"] as const) {
+    const item = optionalString(source[key]);
+    if (item) {
+      card[key] = item;
+    }
+  }
+
+  const template = normalizeDecorationTemplate(source.template);
+  if (template) {
+    card.template = template;
+  }
+
+  if (Array.isArray(source.items)) {
+    const items = source.items
+      .map(normalizeDecorationItem)
+      .filter((item): item is VibeSkinDecorationItem => Boolean(item))
+      .slice(0, 12);
+    if (items.length > 0) {
+      card.items = items;
+    }
+  }
+
+  return Object.keys(card).length > 0 ? card : undefined;
+}
+
+function normalizeDecorations(value: unknown): VibeSkinDecorations | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  const decorations: VibeSkinDecorations = {};
+  const variant = normalizeDecorationVariant(source.variant);
+  const titlebarMark = optionalString(source.titlebarMark);
+  const avatarTemplate = normalizeDecorationTemplate(source.avatarTemplate);
+  const showcaseTemplate = normalizeDecorationTemplate(source.showcaseTemplate);
+
+  if (variant) {
+    decorations.variant = variant;
+  }
+  if (titlebarMark) {
+    decorations.titlebarMark = titlebarMark.slice(0, 4);
+  }
+  if (avatarTemplate) {
+    decorations.avatarTemplate = avatarTemplate;
+  }
+  if (showcaseTemplate) {
+    decorations.showcaseTemplate = showcaseTemplate;
+  }
+
+  if (Array.isArray(source.rightCards)) {
+    const rightCards = source.rightCards
+      .map(normalizeDecorationCard)
+      .filter((card): card is VibeSkinDecorationCard => Boolean(card))
+      .slice(0, 6);
+    if (rightCards.length > 0) {
+      decorations.rightCards = rightCards;
+    }
+  }
+
+  return Object.keys(decorations).length > 0 ? decorations : undefined;
+}
+
 async function resolveImageReference(
   value: string | undefined,
   fieldName: string,
@@ -916,6 +911,35 @@ async function resolveBlockAssets(blocks: VibeSkinBlocks | undefined, resolveAss
   }
 }
 
+async function resolveDecorationAssets(
+  decorations: VibeSkinDecorations | undefined,
+  resolveAsset?: AssetResolver,
+) {
+  if (!decorations) {
+    return;
+  }
+
+  for (const card of decorations.rightCards ?? []) {
+    if (card.figure) {
+      card.figure = await resolveImageReference(
+        card.figure,
+        "decorations.rightCards.figure",
+        resolveAsset,
+      );
+    }
+
+    for (const item of card.items ?? []) {
+      if (item.image) {
+        item.image = await resolveImageReference(
+          item.image,
+          "decorations.rightCards.items.image",
+          resolveAsset,
+        );
+      }
+    }
+  }
+}
+
 async function normalizeSkinManifest(
   manifest: unknown,
   resolveAsset?: AssetResolver,
@@ -932,6 +956,7 @@ async function normalizeSkinManifest(
   const regions = normalizeRegions(raw.regions);
   const showcase = normalizeShowcase(raw.showcase);
   const blocks = normalizeBlocks(raw.blocks);
+  const decorations = normalizeDecorations(raw.decorations);
 
   ui.backgroundImage = await resolveImageReference(
     ui.backgroundImage,
@@ -940,6 +965,7 @@ async function normalizeSkinManifest(
   );
   await resolveRegionAssets(regions, resolveAsset);
   await resolveBlockAssets(blocks, resolveAsset);
+  await resolveDecorationAssets(decorations, resolveAsset);
   if (showcase?.image) {
     showcase.image = await resolveImageReference(showcase.image, "showcase.image", resolveAsset);
   }
@@ -954,6 +980,7 @@ async function normalizeSkinManifest(
     regions,
     showcase,
     blocks,
+    decorations,
   };
 }
 
@@ -1089,6 +1116,7 @@ function normalizeStoredSkin(value: unknown): VibeSkinDefinition {
     regions: normalizeRegions(raw.regions),
     showcase: normalizeShowcase(raw.showcase),
     blocks: normalizeBlocks(raw.blocks),
+    decorations: normalizeDecorations(raw.decorations),
   };
 }
 

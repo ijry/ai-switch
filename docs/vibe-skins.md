@@ -6,9 +6,16 @@ Vibe mode accepts three skin file types:
 - `.aiskin`: a JSON manifest, or a zip package using the `.aiskin` extension.
 - `.zip`: a package containing `skin.json` or `vibe-skin.json`.
 
-Zip packages can include image assets. When `ui.backgroundImage`, `regions.*.backgroundImage`, `showcase.image`, `blocks.profile.avatar`, `blocks.showcase.figure`, `blocks.taskbar.startButton.icon`, or `blocks.taskbar.items[].icon` is a relative path, Vibe resolves it from inside the zip package and stores it as a data URL in local storage.
+Zip packages can include image assets. When `ui.backgroundImage`, `regions.*.backgroundImage`, `showcase.image`, `blocks.profile.avatar`, `blocks.showcase.figure`, `blocks.taskbar.startButton.icon`, `blocks.taskbar.items[].icon`, `decorations.rightCards[].figure`, or `decorations.rightCards[].items[].image` is a relative path, Vibe resolves it from inside the zip package and stores it as a data URL in local storage.
 
 The built-in `Codex 2007 Blue` skin is QQ2007-inspired chrome: glossy title bar, left rail, tab strip, terminal shell, right display rail, and taskbar. It does not directly use the reference image as a full-screen background.
+
+Built-in skins are stored as ordinary package manifests under `src/skins/`:
+
+- `src/skins/codex-2007-blue/skin.json`
+- `src/skins/rescue-pups-adventure-bay/skin.json`
+
+To make a derivative skin, copy one of those folders, edit `skin.json` with a new `id`, `name`, colors, regions, blocks, decorations, and optional `assets/` paths, then zip the folder or rename the JSON manifest to `.aiskin`.
 
 ## Minimal Manifest
 
@@ -117,6 +124,32 @@ The built-in `Codex 2007 Blue` skin is QQ2007-inspired chrome: glossy title bar,
       "tray": ["Vibe", "在线"],
       "clockFormat": "HH:mm"
     }
+  },
+  "decorations": {
+    "variant": "rescue-pups",
+    "titlebarMark": "汪",
+    "avatarTemplate": "rescue-rider",
+    "showcaseTemplate": "rescue-hq",
+    "rightCards": [
+      {
+        "template": "rescue-dog-team",
+        "title": "汪汪队员",
+        "badge": "狗狗们",
+        "items": [
+          { "label": "红色救援狗狗", "tone": "red" },
+          { "label": "蓝色救援狗狗", "tone": "blue" },
+          { "label": "黄色救援狗狗", "tone": "yellow" }
+        ]
+      },
+      {
+        "template": "rescue-civic",
+        "title": "冒险湾市政",
+        "items": [
+          { "label": "古微市长", "template": "rescue-mayor" },
+          { "label": "咕咕鸡", "template": "rescue-chicken" }
+        ]
+      }
+    ]
   }
 }
 ```
@@ -158,6 +191,26 @@ If `blocks.showcase` is omitted, the older `showcase` object still renders in th
 The minimize, maximize, and close controls in the skin titlebar are decorative. They are intentionally inert and do not call native window APIs.
 
 The taskbar start menu supports only a fixed allowlist of app actions. Unknown actions, malformed `setTheme` values, disabled items, and separators do nothing. Skins cannot provide callbacks or native window commands.
+
+## Decorations
+
+`decorations` defines optional app-rendered decorative layout pieces. It is intended for highly themed skins such as QQ2007-style side rails or a rescue-team layout. These values are still skin package data, not hardcoded by skin ID.
+
+Supported fields:
+
+- `decorations.variant`: optional visual variant class. Supported values are `codex-2007` and `rescue-pups`.
+- `decorations.titlebarMark`: short text shown in the titlebar badge. It is truncated to four characters.
+- `decorations.avatarTemplate`: app-rendered template for the left profile avatar. Supported values include `qq-person` and `rescue-rider`.
+- `decorations.showcaseTemplate`: app-rendered template for the right showcase stage. Supported values include `qq-mascot` and `rescue-hq`.
+- `decorations.rightCards`: extra right-rail cards declared by the skin package.
+- `decorations.rightCards[].template`: card layout template. Supported values include `qq-person`, `rescue-dog-team`, and `rescue-civic`.
+- `decorations.rightCards[].figure`: card image path or data URL.
+- `decorations.rightCards[].items[]`: card items with `label`, optional `badge`, optional `template`, optional `tone`, and optional `image`.
+- `decorations.rightCards[].items[].template`: item template. Supported values include `qq-person`, `rescue-mayor`, and `rescue-chicken`.
+- `decorations.rightCards[].items[].tone`: rescue dog color. Supported values are `red`, `blue`, `yellow`, `green`, `pink`, `orange`, and `neutral`.
+- `decorations.rightCards[].items[].image`: item image path or data URL.
+
+Unknown `variant`, `template`, `tone`, and action-like values are ignored. A skin package can combine app-rendered templates with its own images, but it cannot inject arbitrary HTML, CSS files, JavaScript, or native window commands.
 
 ## Region Keys
 
@@ -251,6 +304,11 @@ my-skin.zip
     app.png
     showcase-stage.png
     qqshow.png
+    dog-red.png
+    mayor.png
+    chicken.png
 ```
 
 The app accepts PNG, JPG, WEBP, GIF, and SVG asset paths. Imported skins are limited to 8 MB before extraction and must fit in browser local storage after assets are embedded.
+
+The repository includes `fixtures/vibe-skins/rescue-pups/skin.json` as an upload-focused example skin package manifest. Zip that folder and import the zip, or rename the JSON manifest to `.aiskin` for a no-asset package.

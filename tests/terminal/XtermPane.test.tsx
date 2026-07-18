@@ -88,6 +88,7 @@ describe("XtermPane", () => {
     expect(container.querySelector(".xterm-pane-skin-transparent")).not.toBeNull();
     await waitFor(() => expect(terminalConstructorOptions).toHaveLength(1));
 
+    expect(terminalConstructorOptions[0]?.allowTransparency).toBe(true);
     expect(terminalConstructorOptions[0]?.theme).toMatchObject({
       background: "transparent",
       foreground: "#eafcff",

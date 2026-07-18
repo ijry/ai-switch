@@ -137,6 +137,68 @@ describe("VibeScreen", () => {
     expect(screen.getByText("Missing resume")).toBeInTheDocument();
   });
 
+  it("merges dated session directories by meaningful child folder", async () => {
+    vi.mocked(listSessions).mockResolvedValue([
+      {
+        providerId: "codex",
+        sessionId: "dated-1",
+        title: "Older dated session",
+        projectDir: "D:/repo/sessions/2026-05-24/project-alpha",
+        createdAt: 1,
+        lastActiveAt: 2,
+        sourcePath: "D:/repo/sessions/2026-05-24/project-alpha/session.jsonl",
+        resumeCommand: "codex resume dated-1",
+      },
+      {
+        providerId: "codex",
+        sessionId: "dated-2",
+        title: "Newer dated session",
+        projectDir: "D:/repo/sessions/2026-05-28/project-alpha",
+        createdAt: 3,
+        lastActiveAt: 4,
+        sourcePath: "D:/repo/sessions/2026-05-28/project-alpha/session.jsonl",
+        resumeCommand: "codex resume dated-2",
+      },
+    ]);
+    renderScreen();
+
+    const folderToggle = await screen.findByRole("button", {
+      name: "Expand folder project-alpha",
+    });
+    expect(folderToggle).toHaveTextContent("project-alpha");
+    expect(screen.queryByRole("button", { name: "Expand folder 2026-05-24/project-alpha" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Expand folder 2026-05-28/project-alpha" })).not.toBeInTheDocument();
+
+    await userEvent.click(folderToggle);
+
+    expect(screen.getByText("Older dated session")).toBeInTheDocument();
+    expect(screen.getByText("Newer dated session")).toBeInTheDocument();
+  });
+
+  it("groups date and uuid session directories by day", async () => {
+    vi.mocked(listSessions).mockResolvedValue([
+      {
+        providerId: "codex",
+        sessionId: "opaque-1",
+        title: "Opaque session",
+        projectDir: "D:/repo/sessions/2026-05-24/123e4567-e89b-12d3-a456-426614174000",
+        createdAt: 1,
+        lastActiveAt: 2,
+        sourcePath:
+          "D:/repo/sessions/2026-05-24/123e4567-e89b-12d3-a456-426614174000/session.jsonl",
+        resumeCommand: "codex resume opaque-1",
+      },
+    ]);
+    renderScreen();
+
+    const folderToggle = await screen.findByRole("button", {
+      name: "Expand folder D:/repo/sessions/2026-05-24",
+    });
+    expect(folderToggle).toHaveTextContent("2026-05-24");
+    expect(folderToggle).toHaveAttribute("title", "D:/repo/sessions/2026-05-24");
+    expect(screen.queryByText("123e4567-e89b-12d3-a456-426614174000")).not.toBeInTheDocument();
+  });
+
   it("launches a resume terminal from a complete session", async () => {
     renderScreen();
 
@@ -197,8 +259,10 @@ describe("VibeScreen", () => {
     await userEvent.click(screen.getByRole("button", { name: "Light" }));
 
     expect(screen.getByRole("button", { name: "Switch Vibe theme" })).toHaveTextContent("Light");
-    expect(screen.getByRole("button", { name: "Expand folder D:/repo/app" })).toHaveClass("text-stone-800");
-    expect(screen.getByText("No terminal tabs yet.").parentElement).toHaveClass("bg-white/85");
+    const lightFolderToggle = screen.getByRole("button", { name: "Expand folder D:/repo/app" });
+    expect(lightFolderToggle).toHaveClass("vibe-light-list-trigger");
+    expect(lightFolderToggle.parentElement).toHaveClass("vibe-light-group-panel");
+    expect(screen.getByText("No terminal tabs yet.").parentElement).toHaveClass("vibe-light-tabbar");
     expect(screen.getByText("Start or resume a session")).toHaveClass("text-stone-900");
 
     await userEvent.click(screen.getByRole("button", { name: "Skin" }));
@@ -208,22 +272,81 @@ describe("VibeScreen", () => {
     expect(screen.getByText("No terminal tabs yet.").parentElement).toHaveClass("vibe-skin-tabbar");
   });
 
+  it("uses cohesive dark colors for the session list and tabs", async () => {
+    renderScreen();
+
+    expect(screen.getByText("No terminal tabs yet.").parentElement).toHaveClass("vibe-dark-tabbar");
+
+    const folderToggle = await screen.findByRole("button", {
+      name: "Expand folder D:/repo/app",
+    });
+    expect(folderToggle).toHaveClass("vibe-dark-list-trigger");
+    expect(folderToggle.parentElement).toHaveClass("vibe-dark-group-panel");
+
+    await userEvent.click(folderToggle);
+
+    const resumableSession = screen.getByRole("button", { name: /Resume Fix terminal bug/ });
+    expect(resumableSession).toHaveClass("vibe-dark-session-card");
+    expect(screen.getByText("codex · codex resume s1")).toHaveClass("vibe-dark-session-meta");
+
+    await userEvent.click(resumableSession);
+
+    const tabButton = await screen.findByRole("button", { name: "Fix terminal bug" });
+    expect(tabButton.parentElement).toHaveClass("vibe-dark-tab-active");
+    const closeButton = screen.getByRole("button", { name: "Close Fix terminal bug" });
+    expect(closeButton).toHaveClass("vibe-dark-tab-close");
+    expect(closeButton).not.toHaveClass("rounded-md");
+  });
+
+  it("uses cohesive light colors for the session list and tabs", async () => {
+    renderScreen();
+
+    await switchThemeFromAppearance("Light");
+
+    expect(screen.getByText("No terminal tabs yet.").parentElement).toHaveClass("vibe-light-tabbar");
+
+    const folderToggle = await screen.findByRole("button", {
+      name: "Expand folder D:/repo/app",
+    });
+    expect(folderToggle).toHaveClass("vibe-light-list-trigger");
+    expect(folderToggle.parentElement).toHaveClass("vibe-light-group-panel");
+
+    await userEvent.click(folderToggle);
+
+    const resumableSession = screen.getByRole("button", { name: /Resume Fix terminal bug/ });
+    expect(resumableSession).toHaveClass("vibe-light-session-card");
+    expect(screen.getByText("codex · codex resume s1")).toHaveClass("vibe-light-session-meta");
+
+    await userEvent.click(resumableSession);
+
+    const tabButton = await screen.findByRole("button", { name: "Fix terminal bug" });
+    expect(tabButton.parentElement).toHaveClass("vibe-light-tab-active");
+    const closeButton = screen.getByRole("button", { name: "Close Fix terminal bug" });
+    expect(closeButton).toHaveClass("vibe-light-tab-close");
+    expect(closeButton).not.toHaveClass("rounded-md");
+  });
+
   it("renders built-in QQ2007 skin blocks with Chinese decorative UI", async () => {
     renderScreen();
 
     await switchToSkinTheme();
 
-    expect(screen.getAllByText("AI Switch 终端").length).toBeGreaterThan(0);
+    expect(screen.getByText("Codex 2007 - 优化 KV 读写成本")).toBeInTheDocument();
     expect(screen.getByText("QQ2007 蓝色经典")).toBeInTheDocument();
-    expect(screen.getAllByText("皮肤模式").length).toBeGreaterThan(0);
     expect(screen.getAllByText("在线").length).toBeGreaterThan(0);
-    expect(screen.getByText("正在使用 Vibe 终端")).toBeInTheDocument();
-    expect(screen.getByText("经典蓝钻")).toBeInTheDocument();
-    expect(screen.getByText("QQ秀展示")).toBeInTheDocument();
-    expect(screen.getByText("我的QQ秀")).toBeInTheDocument();
-    expect(screen.getByText("自定义展示区")).toBeInTheDocument();
-    expect(screen.getByText("AI Switch 已连接")).toBeInTheDocument();
-    expect(screen.getByText("皮肤区域已启用")).toBeInTheDocument();
+    expect(screen.getAllByText("Codex 小蓝").length).toBeGreaterThan(0);
+    expect(screen.getByText("手机在线")).toBeInTheDocument();
+    expect(screen.getByText("代码有问题？找我！")).toBeInTheDocument();
+    expect(screen.getByText("蓝钻 LV7")).toBeInTheDocument();
+    expect(screen.getByText("Codex 好友")).toBeInTheDocument();
+    expect(screen.getByText("今天也在陪你写代码。")).toBeInTheDocument();
+    expect(screen.getByText("双击发送消息")).toBeInTheDocument();
+    expect(screen.getByText("我的好友 (2/8)")).toBeInTheDocument();
+    expect(screen.getByTestId("vibe-skin-qq-mascot")).toBeInTheDocument();
+    expect(screen.getByTestId("vibe-skin-qq-person")).toBeInTheDocument();
+    expect(screen.queryByText("皮肤区域")).not.toBeInTheDocument();
+    expect(screen.getByText("Codex 已连接")).toBeInTheDocument();
+    expect(screen.getByText("QQ2007 皮肤模式")).toBeInTheDocument();
 
     const controls = screen.getByTestId("vibe-window-controls");
     expect(controls).toHaveAttribute("aria-hidden", "true");
@@ -235,16 +358,134 @@ describe("VibeScreen", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("renders the built-in rescue pups skin with themed decorative regions", async () => {
+    renderScreen();
+
+    await switchToSkinTheme();
+    await openAppearanceDialog();
+    await userEvent.selectOptions(screen.getByLabelText("Vibe skin"), "rescue-pups-adventure-bay");
+
+    expect(screen.getByLabelText("Vibe skin")).toHaveValue("rescue-pups-adventure-bay");
+    expect(screen.getByText("汪汪队终端救援站")).toBeInTheDocument();
+    expect(screen.getByText("冒险湾主题")).toBeInTheDocument();
+    expect(screen.getByText("救援待命")).toBeInTheDocument();
+    expect(screen.getAllByText("莱德队长").length).toBeGreaterThan(0);
+    expect(screen.getByText("总部在线")).toBeInTheDocument();
+    expect(screen.getByText("没有困难的任务，只有勇敢的队员。")).toBeInTheDocument();
+    expect(screen.getAllByText("汪汪队总部").length).toBeGreaterThan(0);
+    expect(screen.getByText("狗狗们已在总部集结，随时支援终端任务。")).toBeInTheDocument();
+    expect(screen.getByText("莱德队长正在调度狗狗们")).toBeInTheDocument();
+    expect(screen.getByText("汪汪队员")).toBeInTheDocument();
+    expect(screen.getByText("狗狗们")).toBeInTheDocument();
+    expect(screen.getByText("冒险湾市政")).toBeInTheDocument();
+    expect(screen.getByText("古微市长")).toBeInTheDocument();
+    expect(screen.getByText("咕咕鸡")).toBeInTheDocument();
+    expect(screen.getByText("冒险湾已连接")).toBeInTheDocument();
+    expect(screen.getByText("救援队待命")).toBeInTheDocument();
+    expect(screen.getByText("出动")).toBeInTheDocument();
+    expect(screen.getByTestId("vibe-skin-rescue-avatar")).toBeInTheDocument();
+    expect(screen.getByTestId("vibe-skin-rescue-hq")).toBeInTheDocument();
+    expect(screen.getByTestId("vibe-skin-rescue-dogs")).toBeInTheDocument();
+    expect(screen.getByTestId("vibe-skin-rescue-mayor")).toBeInTheDocument();
+    expect(screen.getByTestId("vibe-skin-rescue-chicken")).toBeInTheDocument();
+    expect(screen.queryByText("皮肤区域")).not.toBeInTheDocument();
+  });
+
+  it("renders custom rescue-style decorations from a stored skin package manifest", async () => {
+    window.localStorage.setItem(
+      VIBE_SKIN_STORAGE_KEY,
+      JSON.stringify({
+        id: "uploaded-rescue",
+        name: "Uploaded Rescue",
+        ui: {
+          accent: "#0b7fec",
+          background: "#78d4ff",
+          panel: "rgba(255, 250, 229, 0.9)",
+          panelStrong: "rgba(255, 255, 255, 0.96)",
+          panelSubtle: "rgba(191, 230, 255, 0.82)",
+          border: "rgba(8, 93, 174, 0.42)",
+          text: "#102a43",
+          mutedText: "#43627d",
+          button: "#0b7fec",
+          buttonText: "#ffffff",
+          buttonHover: "#1687ef",
+        },
+        blocks: {
+          titlebar: {
+            title: "上传救援主题",
+            subtitle: "皮肤包",
+            badge: "待命",
+          },
+          profile: {
+            name: "莱德队长",
+            status: "总部在线",
+            signature: "自定义包",
+            badge: "队长",
+          },
+          showcase: {
+            enabled: true,
+            title: "汪汪队总部",
+            subtitle: "上传包",
+            body: "来自皮肤文件包。",
+            badge: "救援总部",
+            footer: "自定义展示",
+          },
+        },
+        decorations: {
+          variant: "rescue-pups",
+          titlebarMark: "汪",
+          avatarTemplate: "rescue-rider",
+          showcaseTemplate: "rescue-hq",
+          rightCards: [
+            {
+              template: "rescue-dog-team",
+              title: "上传狗狗队",
+              badge: "狗狗们",
+              items: [{ label: "红色救援狗狗", tone: "red" }],
+            },
+            {
+              template: "rescue-civic",
+              title: "上传市政",
+              items: [
+                { label: "古微市长", template: "rescue-mayor" },
+                { label: "咕咕鸡", template: "rescue-chicken" },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    renderScreen();
+
+    await switchToSkinTheme();
+    await openAppearanceDialog();
+
+    expect(screen.getByLabelText("Vibe skin")).toHaveValue("uploaded-rescue");
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(document.querySelector(".vibe-skin--rescue-pups")).toBeTruthy();
+    expect(screen.getByText("上传救援主题")).toBeInTheDocument();
+    expect(screen.getByText("皮肤包")).toBeInTheDocument();
+    expect(screen.getByText("来自皮肤文件包。")).toBeInTheDocument();
+    expect(screen.getByText("上传狗狗队")).toBeInTheDocument();
+    expect(screen.getByText("上传市政")).toBeInTheDocument();
+    expect(screen.getByTestId("vibe-skin-rescue-avatar")).toBeInTheDocument();
+    expect(screen.getByTestId("vibe-skin-rescue-hq")).toBeInTheDocument();
+    expect(screen.getByTestId("vibe-skin-rescue-dogs")).toBeInTheDocument();
+    expect(screen.getByTestId("vibe-skin-rescue-mayor")).toBeInTheDocument();
+    expect(screen.getByTestId("vibe-skin-rescue-chicken")).toBeInTheDocument();
+  });
+
   it("does not render QQ2007 decorative skin blocks in dark or light themes", async () => {
     renderScreen();
 
     expect(await screen.findByText("repo/app")).toBeInTheDocument();
-    expect(screen.queryByText("QQ秀展示")).not.toBeInTheDocument();
+    expect(screen.queryByText("Codex 好友")).not.toBeInTheDocument();
     expect(screen.queryByTestId("vibe-window-controls")).not.toBeInTheDocument();
 
     await switchThemeFromAppearance("Light");
 
-    expect(screen.queryByText("QQ秀展示")).not.toBeInTheDocument();
+    expect(screen.queryByText("Codex 好友")).not.toBeInTheDocument();
     expect(screen.queryByTestId("vibe-window-controls")).not.toBeInTheDocument();
   });
 
@@ -425,8 +666,8 @@ describe("VibeScreen", () => {
 
     expect(screen.getByRole("button", { name: "开始" })).toBeInTheDocument();
     expect(screen.getAllByText("AI Switch 终端").length).toBeGreaterThan(0);
-    expect(screen.getByText("AI Switch 已连接")).toBeInTheDocument();
-    expect(screen.getByText("皮肤区域已启用")).toBeInTheDocument();
+    expect(screen.getByText("Codex 已连接")).toBeInTheDocument();
+    expect(screen.getByText("QQ2007 皮肤模式")).toBeInTheDocument();
     expect(screen.getByText("Vibe")).toBeInTheDocument();
     expect(screen.getAllByText("在线").length).toBeGreaterThan(0);
     expect(document.querySelector(".vibe-skin-taskbar")).toBeTruthy();

@@ -1,0 +1,361 @@
+{
+  "id": "rescue-pups-adventure-bay",
+  "name": "汪汪队救援主题",
+  "author": "AI Switch",
+  "version": "1.0.0",
+  "ui": {
+    "accent": "#0b7fec",
+    "accentText": "#ffffff",
+    "background": "linear-gradient(180deg, #7fd8ff 0%, #2d9cff 36%, #0e6cc7 64%, #f5c13d 65%, #f0992e 100%)",
+    "backgroundOverlay": "radial-gradient(circle at 12% 9%, rgba(255,255,255,0.92), transparent 8rem), radial-gradient(circle at 86% 12%, rgba(255,242,151,0.64), transparent 10rem), radial-gradient(circle at 20% 86%, rgba(75,194,82,0.42), transparent 11rem)",
+    "panel": "rgba(255, 250, 229, 0.9)",
+    "panelStrong": "rgba(255, 255, 255, 0.96)",
+    "panelSubtle": "rgba(191, 230, 255, 0.82)",
+    "border": "rgba(8, 93, 174, 0.42)",
+    "text": "#102a43",
+    "mutedText": "#43627d",
+    "button": "linear-gradient(180deg, #ff6f62 0%, #e6352d 52%, #b91f1a 100%)",
+    "buttonText": "#ffffff",
+    "buttonHover": "linear-gradient(180deg, #ff8579 0%, #ef453d 52%, #c3231d 100%)",
+    "dangerBackground": "linear-gradient(180deg, #ff7d79, #b91f1a)",
+    "dangerText": "#ffffff",
+    "tabBar": "linear-gradient(180deg, rgba(255,255,255,0.92), rgba(202,235,255,0.9))",
+    "tabActive": "linear-gradient(180deg, #ffffff 0%, #fff9df 54%, #ffe6a6 100%)",
+    "tabInactive": "linear-gradient(180deg, rgba(111,188,246,0.45), rgba(35,137,221,0.34))",
+    "tabHover": "rgba(255, 242, 172, 0.58)",
+    "focus": "#ffbd22"
+  },
+  "terminal": {
+    "background": "transparent",
+    "black": "#1f3448",
+    "blue": "#0b73d9",
+    "brightBlack": "#6c8195",
+    "brightBlue": "#1c9bff",
+    "brightCyan": "#14a9c7",
+    "brightGreen": "#38a84f",
+    "brightMagenta": "#d85cb7",
+    "brightRed": "#ef4b45",
+    "brightWhite": "#ffffff",
+    "brightYellow": "#f6b51f",
+    "cyan": "#0b87a2",
+    "foreground": "#102a43",
+    "green": "#2d8a40",
+    "magenta": "#bd4d9c",
+    "red": "#cf2f2a",
+    "white": "#e8f2fb",
+    "yellow": "#c48708"
+  },
+  "regions": {
+    "app": {
+      "background": "linear-gradient(180deg, #78d4ff 0%, #2699f5 43%, #0f6ac7 70%, #f6bd34 70%, #e8892c 100%)",
+      "backgroundOverlay": "radial-gradient(circle at 10% 8%, rgba(255,255,255,0.88), transparent 8rem), radial-gradient(circle at 88% 10%, rgba(255,237,145,0.66), transparent 11rem), radial-gradient(circle at 12% 86%, rgba(47,177,72,0.46), transparent 10rem)",
+      "border": "rgba(7, 83, 158, 0.62)",
+      "color": "#102a43"
+    },
+    "body": {
+      "background": "linear-gradient(90deg, rgba(255,255,255,0.18), transparent 32%, rgba(255,200,66,0.16) 72%, rgba(255,255,255,0.18))"
+    },
+    "titlebar": {
+      "background": "linear-gradient(180deg, #ffffff 0%, #89d8ff 16%, #1687ef 54%, #0b5db8 100%)",
+      "backgroundOverlay": "linear-gradient(90deg, rgba(255,255,255,0.5), transparent 30%, rgba(255,218,74,0.25) 64%, transparent)",
+      "border": "rgba(4, 72, 139, 0.68)",
+      "color": "#ffffff",
+      "shadow": "inset 0 1px 0 rgba(255,255,255,0.86), 0 2px 0 rgba(6,73,141,0.28)"
+    },
+    "titlebarControls": {
+      "color": "#ffffff"
+    },
+    "windowButton": {
+      "background": "linear-gradient(180deg, #ffffff, #60bdf9 48%, #0b72d6)",
+      "border": "rgba(255,255,255,0.72)",
+      "shadow": "inset 0 1px 0 rgba(255,255,255,0.88), 0 1px 2px rgba(0,46,98,0.34)"
+    },
+    "windowButtonClose": {
+      "background": "linear-gradient(180deg, #ffb39f, #ef4a3f 48%, #b91f1a)"
+    },
+    "sidebar": {
+      "background": "linear-gradient(180deg, rgba(235,249,255,0.96), rgba(177,224,255,0.91) 44%, rgba(71,164,232,0.84) 78%, rgba(255,205,82,0.76))",
+      "backgroundOverlay": "radial-gradient(circle at 18% 8%, rgba(255,255,255,0.92), transparent 8rem), radial-gradient(circle at 86% 94%, rgba(35,158,61,0.32), transparent 8rem)",
+      "border": "rgba(8, 92, 173, 0.5)",
+      "shadow": "inset -1px 0 0 rgba(255,255,255,0.48)"
+    },
+    "sidebarHeader": {
+      "background": "linear-gradient(180deg, rgba(255,255,255,0.96), rgba(255,248,216,0.94) 54%, rgba(255,216,96,0.88))",
+      "border": "rgba(214, 136, 17, 0.32)",
+      "shadow": "0 14px 22px rgba(164,91,6,0.12), inset 0 1px 0 rgba(255,255,255,0.92)"
+    },
+    "sidebarProfile": {
+      "padding": "0"
+    },
+    "avatar": {
+      "background": "radial-gradient(circle at 35% 22%, #ffffff, #ffd65c 42%, #ef473d 43%, #b91f1a 100%)",
+      "border": "rgba(255,255,255,0.86)",
+      "shadow": "inset 0 1px 0 rgba(255,255,255,0.88), 0 10px 18px rgba(185,31,26,0.24)"
+    },
+    "onlineBadge": {
+      "background": "linear-gradient(180deg, #b8ff7c, #2ead4d)",
+      "border": "#ffffff",
+      "shadow": "0 0 0 1px rgba(28,126,58,0.22), 0 0 8px rgba(70,205,82,0.5)"
+    },
+    "profileBadge": {
+      "background": "linear-gradient(180deg, #ffffff, #ffda58 46%, #f5a623)",
+      "border": "rgba(176, 108, 0, 0.32)",
+      "color": "#744000"
+    },
+    "controlPanel": {
+      "background": "linear-gradient(180deg, rgba(255,255,255,0.9), rgba(221,244,255,0.82))",
+      "border": "rgba(8, 93, 174, 0.34)",
+      "shadow": "0 10px 20px rgba(13,95,176,0.12)"
+    },
+    "groupPanel": {
+      "background": "linear-gradient(180deg, rgba(255,255,255,0.95), rgba(236,249,255,0.9) 50%, rgba(204,235,255,0.82))",
+      "border": "rgba(8, 93, 174, 0.32)",
+      "shadow": "0 10px 18px rgba(13,95,176,0.1), inset 0 1px 0 rgba(255,255,255,0.9)"
+    },
+    "workspace": {
+      "background": "linear-gradient(180deg, rgba(236,250,255,0.74), rgba(206,237,255,0.46) 54%, rgba(255,228,136,0.26))",
+      "backgroundOverlay": "radial-gradient(circle at 84% 16%, rgba(255,255,255,0.7), transparent 10rem), linear-gradient(90deg, rgba(255,255,255,0.28), transparent 34%)",
+      "border": "rgba(8, 93, 174, 0.44)",
+      "shadow": "inset 1px 0 0 rgba(255,255,255,0.46), 0 18px 44px rgba(4,54,112,0.14)"
+    },
+    "tabBar": {
+      "background": "linear-gradient(180deg, rgba(255,255,255,0.92), rgba(218,242,255,0.86) 56%, rgba(133,204,249,0.72))",
+      "border": "rgba(8, 93, 174, 0.34)",
+      "shadow": "inset 0 -1px 0 rgba(20,102,181,0.18)"
+    },
+    "tab": {
+      "background": "linear-gradient(180deg, rgba(255,255,255,0.54), rgba(106,187,246,0.28))",
+      "border": "rgba(8, 93, 174, 0.22)",
+      "color": "#23425f"
+    },
+    "tabActive": {
+      "background": "linear-gradient(180deg, #ffffff 0%, #fff7d5 52%, #ffd761 100%)",
+      "border": "rgba(208, 126, 0, 0.38)",
+      "color": "#102a43",
+      "shadow": "0 6px 16px rgba(185,116,9,0.18), inset 0 1px 0 rgba(255,255,255,0.92)"
+    },
+    "terminalShell": {
+      "background": "linear-gradient(180deg, rgba(255,255,255,0.26), rgba(255,255,255,0.08))",
+      "border": "rgba(8, 93, 174, 0.24)",
+      "shadow": "inset 0 1px 0 rgba(255,255,255,0.75), 0 18px 34px rgba(10,73,139,0.12)",
+      "borderRadius": "18px"
+    },
+    "emptyState": {
+      "background": "radial-gradient(circle at 50% 35%, rgba(255,255,255,0.92), rgba(225,246,255,0.64) 46%, transparent 74%)",
+      "color": "#102a43"
+    },
+    "rightRail": {
+      "background": "linear-gradient(180deg, rgba(236,250,255,0.94), rgba(151,217,255,0.86) 58%, rgba(255,206,83,0.76))",
+      "backgroundOverlay": "radial-gradient(circle at 66% 8%, rgba(255,255,255,0.92), transparent 8rem), radial-gradient(circle at 20% 94%, rgba(42,166,69,0.3), transparent 8rem)",
+      "border": "rgba(8, 93, 174, 0.42)",
+      "shadow": "inset 1px 0 0 rgba(255,255,255,0.52)"
+    },
+    "rightCard": {
+      "background": "linear-gradient(180deg, rgba(255,255,255,0.96), rgba(255,248,218,0.92) 50%, rgba(255,219,105,0.78))",
+      "border": "rgba(208, 126, 0, 0.28)",
+      "shadow": "0 16px 28px rgba(146,87,0,0.14), inset 0 1px 0 rgba(255,255,255,0.92)"
+    },
+    "showcaseStage": {
+      "background": "radial-gradient(circle at 50% 12%, rgba(255,255,255,0.96), rgba(181,229,255,0.76) 36%, rgba(58,166,239,0.54) 72%, rgba(48,164,72,0.38))",
+      "border": "rgba(8, 93, 174, 0.28)",
+      "shadow": "inset 0 1px 0 rgba(255,255,255,0.88)"
+    },
+    "showcaseFigure": {
+      "border": "rgba(255,255,255,0.72)",
+      "shadow": "0 18px 30px rgba(9,88,166,0.18)"
+    },
+    "showcaseFooter": {
+      "background": "rgba(255, 255, 255, 0.56)",
+      "border": "rgba(208, 126, 0, 0.24)",
+      "color": "#43627d"
+    },
+    "statusBar": {
+      "background": "linear-gradient(180deg, rgba(255,233,131,0.9), rgba(238,153,48,0.9))",
+      "border": "rgba(175, 96, 8, 0.42)",
+      "color": "#623400"
+    },
+    "field": {
+      "background": "linear-gradient(180deg, #ffffff, #e8f6ff)",
+      "border": "rgba(8, 93, 174, 0.34)"
+    },
+    "taskbar": {
+      "background": "linear-gradient(180deg, #ffdb60 0%, #f5ad24 45%, #e27322 100%)",
+      "border": "rgba(161, 84, 0, 0.54)",
+      "color": "#ffffff",
+      "shadow": "inset 0 1px 0 rgba(255,255,255,0.66), 0 -10px 20px rgba(109,63,0,0.16)"
+    },
+    "taskbarStartButton": {
+      "background": "linear-gradient(180deg, #ff766b 0%, #e83c35 50%, #b91f1a 100%)",
+      "border": "rgba(255,255,255,0.72)",
+      "color": "#ffffff",
+      "shadow": "inset 0 1px 0 rgba(255,255,255,0.7), 0 4px 10px rgba(135,26,20,0.28)"
+    },
+    "taskbarStartMenu": {
+      "background": "linear-gradient(180deg, rgba(255,255,255,0.98), rgba(255,248,215,0.96) 48%, rgba(172,222,255,0.94))",
+      "border": "rgba(8, 93, 174, 0.36)",
+      "color": "#102a43"
+    },
+    "taskbarMenuItem": {
+      "color": "#102a43"
+    },
+    "taskbarItem": {
+      "background": "rgba(255, 255, 255, 0.18)",
+      "border": "rgba(255, 255, 255, 0.35)",
+      "color": "#ffffff"
+    },
+    "taskbarItemActive": {
+      "background": "linear-gradient(180deg, rgba(255,255,255,0.46), rgba(16,126,226,0.42))",
+      "border": "rgba(255,255,255,0.58)",
+      "color": "#ffffff"
+    },
+    "taskbarTray": {
+      "background": "rgba(15, 98, 184, 0.32)",
+      "border": "rgba(255,255,255,0.34)",
+      "color": "#ffffff"
+    },
+    "taskbarClock": {
+      "background": "rgba(255,255,255,0.18)",
+      "color": "#ffffff"
+    }
+  },
+  "blocks": {
+    "titlebar": {
+      "title": "汪汪队终端救援站",
+      "subtitle": "冒险湾主题",
+      "badge": "救援待命"
+    },
+    "profile": {
+      "name": "莱德队长",
+      "status": "总部在线",
+      "signature": "没有困难的任务，只有勇敢的队员。",
+      "badge": "队长"
+    },
+    "showcase": {
+      "enabled": true,
+      "title": "汪汪队总部",
+      "subtitle": "冒险湾指挥塔",
+      "body": "狗狗们已在总部集结，随时支援终端任务。",
+      "badge": "救援总部",
+      "footer": "莱德队长正在调度狗狗们"
+    },
+    "statusbar": {
+      "left": "冒险湾已连接",
+      "right": "救援队待命"
+    },
+    "taskbar": {
+      "enabled": true,
+      "startButton": {
+        "label": "出动"
+      },
+      "startMenu": {
+        "items": [
+          {
+            "label": "外观设置",
+            "action": "openAppearance"
+          },
+          {
+            "label": "切换到皮肤模式",
+            "action": "setTheme",
+            "theme": "skin"
+          },
+          {
+            "label": "切换亮色主题",
+            "action": "setTheme",
+            "theme": "light"
+          },
+          {
+            "label": "切换暗色主题",
+            "action": "setTheme",
+            "theme": "dark"
+          },
+          {
+            "label": "导入皮肤...",
+            "action": "importSkin"
+          },
+          {
+            "type": "separator"
+          },
+          {
+            "label": "汪汪队总部",
+            "disabled": true
+          }
+        ]
+      },
+      "items": [
+        {
+          "label": "汪汪队总部",
+          "active": true
+        },
+        {
+          "label": "冒险湾监控"
+        }
+      ],
+      "tray": [
+        "总部",
+        "待命"
+      ],
+      "clockFormat": "HH:mm"
+    }
+  },
+  "decorations": {
+    "variant": "rescue-pups",
+    "titlebarMark": "汪",
+    "avatarTemplate": "rescue-rider",
+    "showcaseTemplate": "rescue-hq",
+    "rightCards": [
+      {
+        "template": "rescue-dog-team",
+        "title": "汪汪队员",
+        "badge": "狗狗们",
+        "items": [
+          {
+            "label": "红色救援狗狗",
+            "tone": "red"
+          },
+          {
+            "label": "蓝色救援狗狗",
+            "tone": "blue"
+          },
+          {
+            "label": "黄色救援狗狗",
+            "tone": "yellow"
+          },
+          {
+            "label": "绿色救援狗狗",
+            "tone": "green"
+          },
+          {
+            "label": "粉色救援狗狗",
+            "tone": "pink"
+          },
+          {
+            "label": "橙色救援狗狗",
+            "tone": "orange"
+          }
+        ]
+      },
+      {
+        "template": "rescue-civic",
+        "title": "冒险湾市政",
+        "items": [
+          {
+            "label": "古微市长",
+            "template": "rescue-mayor"
+          },
+          {
+            "label": "咕咕鸡",
+            "template": "rescue-chicken"
+          }
+        ]
+      }
+    ]
+  },
+  "showcase": {
+    "enabled": true,
+    "title": "汪汪队总部",
+    "subtitle": "Adventure Bay tower",
+    "body": "A playful rescue-command layout with flexible skin regions and custom display slots.",
+    "badge": "Rescue Skin",
+    "footer": "Built-in CSS illustration skin"
+  }
+}

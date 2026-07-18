@@ -1,0 +1,106 @@
+{
+  "id": "uploaded-rescue-pups",
+  "name": "汪汪队救援皮肤包",
+  "author": "AI Switch",
+  "version": "1.0.0",
+  "ui": {
+    "accent": "#0b7fec",
+    "accentText": "#ffffff",
+    "background": "linear-gradient(180deg, #7fd8ff 0%, #2d9cff 36%, #0e6cc7 64%, #f5c13d 65%, #f0992e 100%)",
+    "backgroundOverlay": "radial-gradient(circle at 12% 9%, rgba(255,255,255,0.92), transparent 8rem), radial-gradient(circle at 86% 12%, rgba(255,242,151,0.64), transparent 10rem)",
+    "panel": "rgba(255, 250, 229, 0.9)",
+    "panelStrong": "rgba(255, 255, 255, 0.96)",
+    "panelSubtle": "rgba(191, 230, 255, 0.82)",
+    "border": "rgba(8, 93, 174, 0.42)",
+    "text": "#102a43",
+    "mutedText": "#43627d",
+    "button": "linear-gradient(180deg, #ff6f62 0%, #e6352d 52%, #b91f1a 100%)",
+    "buttonText": "#ffffff",
+    "buttonHover": "linear-gradient(180deg, #ff8579 0%, #ef453d 52%, #c3231d 100%)",
+    "dangerBackground": "linear-gradient(180deg, #ff7d79, #b91f1a)",
+    "dangerText": "#ffffff",
+    "tabBar": "linear-gradient(180deg, rgba(255,255,255,0.92), rgba(202,235,255,0.9))",
+    "tabActive": "linear-gradient(180deg, #ffffff 0%, #fff9df 54%, #ffe6a6 100%)",
+    "tabInactive": "linear-gradient(180deg, rgba(111,188,246,0.45), rgba(35,137,221,0.34))",
+    "tabHover": "rgba(255, 242, 172, 0.58)",
+    "focus": "#ffbd22"
+  },
+  "terminal": {
+    "background": "transparent",
+    "foreground": "#102a43",
+    "black": "#1f3448",
+    "red": "#cf2f2a",
+    "green": "#2d8a40",
+    "yellow": "#c48708",
+    "blue": "#0b73d9",
+    "magenta": "#bd4d9c",
+    "cyan": "#0b87a2",
+    "white": "#e8f2fb"
+  },
+  "blocks": {
+    "titlebar": {
+      "title": "汪汪队终端救援站",
+      "subtitle": "冒险湾主题",
+      "badge": "救援待命"
+    },
+    "profile": {
+      "name": "莱德队长",
+      "status": "总部在线",
+      "signature": "没有困难的任务，只有勇敢的队员。",
+      "badge": "队长"
+    },
+    "showcase": {
+      "enabled": true,
+      "title": "汪汪队总部",
+      "subtitle": "冒险湾指挥塔",
+      "body": "狗狗们已在总部集结，随时支援终端任务。",
+      "badge": "救援总部",
+      "footer": "莱德队长正在调度狗狗们"
+    },
+    "statusbar": {
+      "left": "冒险湾已连接",
+      "right": "救援队待命"
+    },
+    "taskbar": {
+      "enabled": true,
+      "startButton": {
+        "label": "出动"
+      },
+      "items": [
+        { "label": "汪汪队总部", "active": true },
+        { "label": "冒险湾监控" }
+      ],
+      "tray": ["总部", "待命"],
+      "clockFormat": "HH:mm"
+    }
+  },
+  "decorations": {
+    "variant": "rescue-pups",
+    "titlebarMark": "汪",
+    "avatarTemplate": "rescue-rider",
+    "showcaseTemplate": "rescue-hq",
+    "rightCards": [
+      {
+        "template": "rescue-dog-team",
+        "title": "汪汪队员",
+        "badge": "狗狗们",
+        "items": [
+          { "label": "红色救援狗狗", "tone": "red" },
+          { "label": "蓝色救援狗狗", "tone": "blue" },
+          { "label": "黄色救援狗狗", "tone": "yellow" },
+          { "label": "绿色救援狗狗", "tone": "green" },
+          { "label": "粉色救援狗狗", "tone": "pink" },
+          { "label": "橙色救援狗狗", "tone": "orange" }
+        ]
+      },
+      {
+        "template": "rescue-civic",
+        "title": "冒险湾市政",
+        "items": [
+          { "label": "古微市长", "template": "rescue-mayor" },
+          { "label": "咕咕鸡", "template": "rescue-chicken" }
+        ]
+      }
+    ]
+  }
+}

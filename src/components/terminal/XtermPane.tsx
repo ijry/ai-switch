@@ -100,6 +100,7 @@ export function XtermPane({
 
     const terminal = new Terminal({
       allowProposedApi: false,
+      allowTransparency: transparentSurface,
       convertEol: true,
       cursorBlink: true,
       fontFamily: '"JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace',

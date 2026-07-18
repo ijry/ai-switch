@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, ReactNode } from "react";
 import { createTerminalSession, killTerminalSession, listSessions } from "../lib/api/client";
 import { useI18n } from "../lib/i18n";
 import {
@@ -28,7 +28,15 @@ import {
   skinToCssVariables,
   writeStoredVibeSkin,
 } from "../lib/vibeSkin";
-import type { VibeSkinDefinition, VibeSkinTaskbarMenuItem } from "../lib/vibeSkin";
+import type {
+  VibeSkinDecorationCard,
+  VibeSkinDecorationItem,
+  VibeSkinDecorationTemplate,
+  VibeSkinDecorationTone,
+  VibeSkinDecorationVariant,
+  VibeSkinDefinition,
+  VibeSkinTaskbarMenuItem,
+} from "../lib/vibeSkin";
 import { AiSwitchLogo } from "../components/brand/AiSwitchLogo";
 import type {
   CreateTerminalSessionInput,
@@ -53,8 +61,145 @@ type VibeScreenProps = {
   onExitVibe?: () => void;
 };
 
-function titleForSession(session: SessionMeta) {
-  return session.title?.trim() || session.projectDir?.trim() || session.sessionId;
+type SessionDirectoryDisplay = {
+  key: string;
+  label: string;
+  title: string;
+};
+
+type SessionGroup = SessionDirectoryDisplay & {
+  items: SessionMeta[];
+};
+
+const isoDateSegmentPattern = /^\d{4}-\d{2}-\d{2}$/;
+const yearSegmentPattern = /^\d{4}$/;
+const monthOrDaySegmentPattern = /^\d{2}$/;
+const uuidSegmentPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const compactUuidSegmentPattern = /^[0-9a-f]{24,}$/i;
+
+function pathSegments(directory: string) {
+  return directory.trim().split(/[\\/]+/).filter(Boolean);
+}
+
+function joinDisplayPath(parts: string[]) {
+  return parts.join("/");
+}
+
+function isDateSegment(segment: string) {
+  return isoDateSegmentPattern.test(segment);
+}
+
+function isDateTriplet(parts: string[], index: number) {
+  const year = parts[index];
+  const month = parts[index + 1];
+  const day = parts[index + 2];
+  if (!year || !month || !day) {
+    return false;
+  }
+
+  return (
+    yearSegmentPattern.test(year) &&
+    monthOrDaySegmentPattern.test(month) &&
+    monthOrDaySegmentPattern.test(day)
+  );
+}
+
+function dateLabelFromTriplet(parts: string[], index: number) {
+  return `${parts[index]}-${parts[index + 1]}-${parts[index + 2]}`;
+}
+
+function isOpaqueSessionSegment(segment: string) {
+  return uuidSegmentPattern.test(segment) || compactUuidSegmentPattern.test(segment);
+}
+
+function stripTrailingOpaqueSegments(parts: string[]) {
+  let end = parts.length;
+  while (end > 0 && isOpaqueSessionSegment(parts[end - 1] ?? "")) {
+    end -= 1;
+  }
+  return parts.slice(0, end);
+}
+
+function datedDirectoryDisplay(directory: string): SessionDirectoryDisplay | null {
+  const parts = pathSegments(directory);
+
+  for (let index = parts.length - 2; index >= 0; index -= 1) {
+    if (!isDateSegment(parts[index] ?? "")) {
+      continue;
+    }
+
+    const dateLabel = parts[index] ?? "";
+    const parentParts = parts.slice(0, index);
+    const childParts = parts.slice(index + 1);
+    return directoryDisplayFromDateParts(parentParts, dateLabel, childParts);
+  }
+
+  for (let index = parts.length - 4; index >= 0; index -= 1) {
+    if (!isDateTriplet(parts, index)) {
+      continue;
+    }
+
+    const dateLabel = dateLabelFromTriplet(parts, index);
+    const parentParts = parts.slice(0, index);
+    const childParts = parts.slice(index + 3);
+    return directoryDisplayFromDateParts(parentParts, dateLabel, childParts);
+  }
+
+  return null;
+}
+
+function directoryDisplayFromDateParts(
+  parentParts: string[],
+  dateLabel: string,
+  childParts: string[],
+): SessionDirectoryDisplay | null {
+  if (childParts.length === 0) {
+    return null;
+  }
+
+  const datePath = joinDisplayPath([...parentParts, dateLabel]);
+  if (isOpaqueSessionSegment(childParts[0] ?? "")) {
+    return {
+      key: `date:${datePath.toLowerCase()}`,
+      label: dateLabel,
+      title: datePath,
+    };
+  }
+
+  const meaningfulChildParts = stripTrailingOpaqueSegments(childParts);
+  const label = joinDisplayPath(meaningfulChildParts);
+  if (!label) {
+    return {
+      key: `date:${datePath.toLowerCase()}`,
+      label: dateLabel,
+      title: datePath,
+    };
+  }
+
+  return {
+    key: `dated-name:${joinDisplayPath(parentParts).toLowerCase()}:${label.toLowerCase()}`,
+    label,
+    title: label,
+  };
+}
+
+function directoryDisplay(session: SessionMeta, unknownLabel: string): SessionDirectoryDisplay {
+  const directory = directoryLabel(session, unknownLabel);
+  const datedDisplay = datedDirectoryDisplay(directory);
+  if (datedDisplay) {
+    return datedDisplay;
+  }
+
+  return {
+    key: `directory:${directory}`,
+    label: compactDirectoryLabel(directory),
+    title: directory,
+  };
+}
+
+function titleForSession(session: SessionMeta, unknownLabel = "Unknown directory") {
+  return session.title?.trim() || directoryDisplay(session, unknownLabel).label || session.sessionId;
 }
 
 function directoryLabel(session: SessionMeta, unknownLabel: string) {
@@ -71,15 +216,16 @@ function compactDirectoryLabel(directory: string) {
 }
 
 function groupSessions(sessions: SessionMeta[], unknownLabel: string) {
-  const groups = new Map<string, SessionMeta[]>();
+  const groups = new Map<string, SessionGroup>();
   for (const session of sessions) {
-    const directory = directoryLabel(session, unknownLabel);
-    groups.set(directory, [...(groups.get(directory) ?? []), session]);
+    const display = directoryDisplay(session, unknownLabel);
+    const current = groups.get(display.key);
+    groups.set(display.key, {
+      ...display,
+      items: [...(current?.items ?? []), session],
+    });
   }
-  return Array.from(groups.entries()).map(([directory, items]) => ({
-    directory,
-    items,
-  }));
+  return Array.from(groups.values());
 }
 
 function formatError(error: unknown) {
@@ -113,12 +259,12 @@ function shortTabTitle(title: string) {
 
 function statusDotClass(status: TerminalStatus, isActive: boolean, isDark: boolean) {
   if (status === "running") {
-    return isActive ? "bg-emerald-500" : isDark ? "bg-[#859900]" : "bg-emerald-400";
+    return isActive ? "bg-emerald-400" : isDark ? "bg-[#5eead4]" : "bg-emerald-400";
   }
   if (status === "error") {
-    return isActive ? "bg-red-500" : isDark ? "bg-[#dc322f]" : "bg-red-400";
+    return isActive ? "bg-red-500" : isDark ? "bg-[#fb7185]" : "bg-red-400";
   }
-  return isActive ? "bg-stone-400" : isDark ? "bg-[#586e75]" : "bg-stone-500";
+  return isActive ? "bg-slate-400" : isDark ? "bg-[#64748b]" : "bg-stone-500";
 }
 
 function statusLabel(status: TerminalStatus, t: (key: "vibe.status.running" | "vibe.status.exited" | "vibe.status.error") => string) {
@@ -129,6 +275,300 @@ function formatTaskbarClock(date: Date) {
   const hours = String(date.getHours()).padStart(2, "0");
   const minutes = String(date.getMinutes()).padStart(2, "0");
   return `${hours}:${minutes}`;
+}
+
+function skinVariantClass(variant: VibeSkinDecorationVariant | undefined) {
+  return variant ? `vibe-skin--${variant}` : "";
+}
+
+function renderRescueDog(label: string, tone: VibeSkinDecorationTone = "neutral") {
+  return (
+    <span
+      aria-label={label}
+      className={`vibe-skin-rescue-dog vibe-skin-rescue-dog-${tone}`}
+      role="img"
+    >
+      <span className="vibe-skin-rescue-dog-ear vibe-skin-rescue-dog-ear-left" />
+      <span className="vibe-skin-rescue-dog-ear vibe-skin-rescue-dog-ear-right" />
+      <span className="vibe-skin-rescue-dog-face" />
+    </span>
+  );
+}
+
+function renderSkinTemplateFigure(
+  template: VibeSkinDecorationTemplate | undefined,
+  label: string,
+  className = "",
+): ReactNode {
+  if (template === "qq-mascot") {
+    return (
+      <div
+        aria-label={label}
+        className={`vibe-skin-showcase-figure vibe-skin-qq-mascot ${className}`}
+        data-testid="vibe-skin-qq-mascot"
+        role="img"
+      >
+        <span className="vibe-skin-qq-mascot-antenna" />
+        <span className="vibe-skin-qq-mascot-ear vibe-skin-qq-mascot-ear-left" />
+        <span className="vibe-skin-qq-mascot-ear vibe-skin-qq-mascot-ear-right" />
+        <span className="vibe-skin-qq-mascot-screen">AI</span>
+        <span className="vibe-skin-qq-mascot-scarf" />
+      </div>
+    );
+  }
+
+  if (template === "qq-person") {
+    return (
+      <div
+        aria-label={label}
+        className={`vibe-skin-qq-person ${className}`}
+        data-testid="vibe-skin-qq-person"
+        role="img"
+      >
+        <span className="vibe-skin-qq-person-hair" />
+        <span className="vibe-skin-qq-person-face" />
+        <span className="vibe-skin-qq-person-body" />
+        <span className="vibe-skin-qq-person-hand vibe-skin-qq-person-hand-left" />
+        <span className="vibe-skin-qq-person-hand vibe-skin-qq-person-hand-right" />
+      </div>
+    );
+  }
+
+  if (template === "rescue-rider") {
+    return (
+      <div
+        aria-label={label}
+        className={`vibe-skin-rescue-avatar-mark ${className}`}
+        data-testid="vibe-skin-rescue-avatar"
+        role="img"
+      >
+        <span className="vibe-skin-rescue-avatar-face" />
+        <span className="vibe-skin-rescue-avatar-hair" />
+        <span className="vibe-skin-rescue-avatar-vest" />
+      </div>
+    );
+  }
+
+  if (template === "rescue-hq") {
+    return (
+      <div
+        aria-label={label}
+        className={`vibe-skin-showcase-figure vibe-skin-rescue-hq ${className}`}
+        data-testid="vibe-skin-rescue-hq"
+        role="img"
+      >
+        <span className="vibe-skin-rescue-hq-sky" />
+        <span className="vibe-skin-rescue-hq-antenna" />
+        <span className="vibe-skin-rescue-hq-deck" />
+        <span className="vibe-skin-rescue-hq-window vibe-skin-rescue-hq-window-left" />
+        <span className="vibe-skin-rescue-hq-window vibe-skin-rescue-hq-window-right" />
+        <span className="vibe-skin-rescue-hq-tower" />
+        <span className="vibe-skin-rescue-hq-badge">总部</span>
+        <span className="vibe-skin-rescue-hq-base" />
+        <span className="vibe-skin-rescue-hq-hill vibe-skin-rescue-hq-hill-left" />
+        <span className="vibe-skin-rescue-hq-hill vibe-skin-rescue-hq-hill-right" />
+      </div>
+    );
+  }
+
+  if (template === "rescue-mayor") {
+    return (
+      <div
+        aria-label={label}
+        className={`vibe-skin-rescue-mayor ${className}`}
+        data-testid="vibe-skin-rescue-mayor"
+        role="img"
+      >
+        <span className="vibe-skin-rescue-mayor-hat" />
+        <span className="vibe-skin-rescue-mayor-head" />
+        <span className="vibe-skin-rescue-mayor-body" />
+      </div>
+    );
+  }
+
+  if (template === "rescue-chicken") {
+    return (
+      <div
+        aria-label={label}
+        className={`vibe-skin-rescue-chicken ${className}`}
+        data-testid="vibe-skin-rescue-chicken"
+        role="img"
+      >
+        <span className="vibe-skin-rescue-chicken-comb" />
+        <span className="vibe-skin-rescue-chicken-body" />
+        <span className="vibe-skin-rescue-chicken-wing" />
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function renderSkinDecorationItemFigure(item: VibeSkinDecorationItem) {
+  if (item.image) {
+    return (
+      <img
+        alt={`${item.label} image`}
+        className="vibe-skin-decoration-image max-h-28 w-full object-contain"
+        src={item.image}
+      />
+    );
+  }
+
+  if (item.template) {
+    return renderSkinTemplateFigure(item.template, item.label);
+  }
+
+  return null;
+}
+
+function SkinDecorationCard({
+  card,
+  regionKeys,
+}: {
+  card: VibeSkinDecorationCard;
+  regionKeys: string[];
+}) {
+  if (card.template === "qq-person") {
+    const friend = card.items?.[0];
+    return (
+      <div className="vibe-skin-right-card vibe-skin-qq-friend-card mt-3 overflow-hidden rounded-2xl border">
+        <div className="vibe-skin-qq-card-title flex items-center justify-between px-3 py-2 text-[12px] font-semibold">
+          <span>{card.title ?? "我的好友"}</span>
+          <span>{card.badge ?? "QQ秀"}</span>
+        </div>
+        <div className="vibe-skin-qq-friend-stage mx-3 mt-3 grid place-items-center rounded-2xl border p-3">
+          {friend?.image ? (
+            <img
+              alt={`${friend.label} image`}
+              className="vibe-skin-decoration-image max-h-32 w-full object-contain"
+              src={friend.image}
+            />
+          ) : (
+            renderSkinTemplateFigure(friend?.template ?? "qq-person", friend?.label ?? "QQ秀好友形象")
+          )}
+        </div>
+        <div className="flex items-center justify-between px-3 py-3 text-[12px]">
+          <span className="font-semibold text-[var(--vibe-text)]">{friend?.label ?? "小希"}</span>
+          <span className="rounded-full border px-2 py-0.5 text-[11px] text-[var(--vibe-muted-text)]">
+            {friend?.badge ?? "在线"}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  if (card.template === "rescue-dog-team") {
+    return (
+      <div
+        className="vibe-skin-right-card vibe-skin-rescue-team-card mt-3 rounded-2xl border p-3"
+        data-testid="vibe-skin-rescue-dogs"
+      >
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[10px] font-semibold tracking-[0.18em] text-[var(--vibe-muted-text)]">
+            {card.title ?? "汪汪队员"}
+          </p>
+          {card.badge && (
+            <span className="rounded-full border px-2 py-0.5 text-[10px] font-semibold">
+              {card.badge}
+            </span>
+          )}
+        </div>
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          {(card.items ?? []).map((item) => (
+            <span className="grid place-items-center" key={`${item.label}-${item.tone ?? "neutral"}`}>
+              {item.image ? (
+                <img
+                  alt={`${item.label} image`}
+                  className="vibe-skin-decoration-image h-12 w-12 object-contain"
+                  src={item.image}
+                />
+              ) : (
+                renderRescueDog(item.label, item.tone)
+              )}
+            </span>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (card.template === "rescue-civic") {
+    return (
+      <div className="vibe-skin-right-card vibe-skin-rescue-civic-card mt-3 rounded-2xl border p-3">
+        <p className="text-[10px] font-semibold tracking-[0.18em] text-[var(--vibe-muted-text)]">
+          {card.title ?? "冒险湾市政"}
+        </p>
+        <div className="vibe-skin-rescue-civic-stage mt-3 grid grid-cols-2 gap-2 rounded-2xl border p-2">
+          {(card.items ?? []).map((item) => (
+            <div className="grid place-items-center gap-1" key={item.label}>
+              {renderSkinDecorationItemFigure(item)}
+              <span className="text-[11px] font-semibold">{item.label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const templateFigure = renderSkinTemplateFigure(
+    card.template,
+    card.title ?? card.badge ?? "皮肤装饰",
+    "mx-auto",
+  );
+
+  return (
+    <div className="vibe-skin-right-card mt-3 rounded-2xl border p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-[10px] font-semibold tracking-[0.18em] text-[var(--vibe-muted-text)]">
+            {card.badge ?? "皮肤区域"}
+          </p>
+          {card.title && (
+            <h3 className="mt-1 truncate text-[13px] font-semibold text-[var(--vibe-text)]">
+              {card.title}
+            </h3>
+          )}
+          {card.subtitle && (
+            <p className="mt-1 text-[11px] text-[var(--vibe-muted-text)]">{card.subtitle}</p>
+          )}
+        </div>
+      </div>
+      {card.figure ? (
+        <img
+          alt={`${card.title ?? "skin decoration"} figure`}
+          className="vibe-skin-decoration-image mx-auto mt-3 max-h-36 w-full object-contain"
+          src={card.figure}
+        />
+      ) : (
+        templateFigure && <div className="mt-3 grid place-items-center">{templateFigure}</div>
+      )}
+      {card.items && card.items.length > 0 ? (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {card.items.map((item) => (
+            <span key={item.label} className="rounded-full border px-2 py-1 text-[11px]">
+              {item.label}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {regionKeys.length > 0 ? (
+            regionKeys.slice(0, 8).map((region) => (
+              <span key={region} className="rounded-full border px-2 py-1 text-[11px]">
+                {region}
+              </span>
+            ))
+          ) : (
+            <span className="rounded-full border px-2 py-1 text-[11px]">ui</span>
+          )}
+        </div>
+      )}
+      {card.footer && (
+        <p className="mt-3 text-[11px] text-[var(--vibe-muted-text)]">{card.footer}</p>
+      )}
+    </div>
+  );
 }
 
 export function VibeScreen({ onExitVibe }: VibeScreenProps) {
@@ -203,7 +643,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       kind: "resume",
       platform: session.providerId,
       command: session.resumeCommand,
-      title: titleForSession(session),
+      title: titleForSession(session, t("vibe.unknownDirectory")),
       cwd: session.projectDir,
       cols: 100,
       rows: 30,
@@ -335,6 +775,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? null;
   const isDark = themeMode === "dark";
   const isSkin = themeMode === "skin";
+  const decorations = activeSkin.decorations;
+  const skinVariant = skinVariantClass(isSkin ? decorations?.variant : undefined);
   const skinStyle = useMemo(
     () => (isSkin ? skinToCssVariables(activeSkin) : undefined),
     [activeSkin, isSkin],
@@ -436,7 +878,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     <main
       className={
         isSkin
-          ? "vibe-skin h-screen max-h-[100dvh] overflow-hidden text-[var(--vibe-text)]"
+          ? `vibe-skin ${skinVariant} h-screen max-h-[100dvh] overflow-hidden text-[var(--vibe-text)]`
           : isDark
             ? "h-screen max-h-[100dvh] overflow-hidden bg-[#002b36] text-[#d8e2dc]"
             : "h-screen max-h-[100dvh] overflow-hidden text-stone-950"
@@ -446,18 +888,23 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       <div className={isSkin ? "vibe-skin-frame flex h-full min-h-0 flex-col" : "grid h-full min-h-0 grid-cols-1 lg:grid-cols-[356px_minmax(0,1fr)]"}>
         {isSkin && (
           <div className="vibe-skin-titlebar flex h-11 shrink-0 items-center justify-between gap-3 border-b px-3 text-[11px] font-semibold">
-            <div className="flex min-w-0 items-center gap-3">
+            <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
               <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full border border-[rgba(255,255,255,0.65)] bg-[var(--vibe-accent)] text-[10px] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.72)]">
-                Q
+                {decorations?.titlebarMark ?? "V"}
               </span>
-              <div className="min-w-0">
-                <p className="truncate text-[13px] tracking-normal">{skinBlocks.titlebar.title}</p>
-                <p className="truncate text-[10px] tracking-[0.12em] opacity-85">
-                  {skinBlocks.titlebar.subtitle}
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <p
+                  className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-[13px] tracking-normal"
+                  title={`${skinBlocks.titlebar.title} · ${skinBlocks.titlebar.subtitle}`}
+                >
+                  <span className="min-w-0 truncate">{skinBlocks.titlebar.title}</span>
+                  <span className="shrink-0 text-[10px] tracking-[0.12em] opacity-85">
+                    {skinBlocks.titlebar.subtitle}
+                  </span>
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               <span className="rounded-full border border-[rgba(255,255,255,0.48)] px-2 py-1 text-[10px] tracking-[0.12em]">
                 {skinBlocks.titlebar.badge}
               </span>
@@ -512,6 +959,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                           className="h-full w-full object-cover"
                           src={skinBlocks.profile.avatar}
                         />
+                      ) : decorations?.avatarTemplate ? (
+                        renderSkinTemplateFigure(decorations.avatarTemplate, "莱德队长头像")
                       ) : (
                         <AiSwitchLogo className="h-9 w-9 rounded-xl" />
                       )}
@@ -641,7 +1090,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
             <div
               className={`vibe-scrollbar ${scrollbarThemeClass} ${
                 sessionListScrolling ? "vibe-scrollbar-active" : ""
-              } ${isSkin ? "vibe-skin-session-list" : ""} min-h-0 flex-1 space-y-3 overflow-y-auto p-3`}
+              } ${isSkin ? "vibe-skin-session-list" : isDark ? "vibe-dark-session-list" : "vibe-light-session-list"} min-h-0 flex-1 space-y-3 overflow-y-auto p-3`}
               onScroll={markSessionListScrolling}
             >
               {sessionsQuery.isLoading && (
@@ -663,7 +1112,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 </p>
               )}
               {groupedSessions.map((group) => {
-                const expanded = expandedDirectories.has(group.directory);
+                const expanded = expandedDirectories.has(group.key);
                 const ToggleIcon = expanded ? ChevronDown : ChevronRight;
                 return (
                   <div
@@ -671,38 +1120,38 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                       isSkin
                         ? "vibe-skin-group-panel rounded-2xl border p-2"
                         : isDark
-                        ? "rounded-2xl border border-[#073642] bg-[#073642]/55 p-2"
-                        : "rounded-2xl border border-stone-200 bg-white/70 p-2 shadow-sm"
+                        ? "vibe-dark-group-panel rounded-2xl border p-2"
+                        : "vibe-light-group-panel rounded-2xl border p-2"
                     }
-                    key={group.directory}
+                    key={group.key}
                   >
                     <button
                       aria-expanded={expanded}
                       aria-label={
                         expanded
-                          ? t("vibe.collapseDirectoryAria", { directory: group.directory })
-                          : t("vibe.expandDirectoryAria", { directory: group.directory })
+                          ? t("vibe.collapseDirectoryAria", { directory: group.title })
+                          : t("vibe.expandDirectoryAria", { directory: group.title })
                       }
-                      title={group.directory}
+                      title={group.title}
                       className={
                         isSkin
                           ? "vibe-skin-list-trigger flex w-full items-center gap-2 rounded-xl px-1 py-1 text-left text-[12px] font-semibold transition"
                           : isDark
-                          ? "flex w-full items-center gap-2 rounded-xl px-1 py-1 text-left text-[12px] font-semibold text-[#fdf6e3] transition hover:bg-[#002b36]/55"
-                          : "flex w-full items-center gap-2 rounded-xl px-1 py-1 text-left text-[12px] font-semibold text-stone-800 transition hover:bg-stone-100/80"
+                            ? "vibe-dark-list-trigger flex w-full items-center gap-2 rounded-xl px-1 py-1 text-left text-[12px] font-semibold transition"
+                            : "vibe-light-list-trigger flex w-full items-center gap-2 rounded-xl px-1 py-1 text-left text-[12px] font-semibold transition"
                       }
-                      onClick={() => toggleDirectory(group.directory)}
+                      onClick={() => toggleDirectory(group.key)}
                       type="button"
                     >
-                      <ToggleIcon className={isSkin ? "h-3.5 w-3.5 shrink-0 text-[var(--vibe-muted-text)]" : isDark ? "h-3.5 w-3.5 shrink-0 text-[#93a1a1]" : "h-3.5 w-3.5 shrink-0 text-stone-400"} />
-                      <FolderOpen className={isSkin ? "h-4 w-4 shrink-0 text-[var(--vibe-accent)]" : isDark ? "h-4 w-4 shrink-0 text-[#b58900]" : "h-4 w-4 shrink-0 text-amber-600"} />
-                      <span className="truncate">{compactDirectoryLabel(group.directory)}</span>
+                      <ToggleIcon className={isSkin ? "h-3.5 w-3.5 shrink-0 text-[var(--vibe-muted-text)]" : isDark ? "h-3.5 w-3.5 shrink-0 text-[#8fb0bc]" : "h-3.5 w-3.5 shrink-0 text-emerald-600/70"} />
+                      <FolderOpen className={isSkin ? "h-4 w-4 shrink-0 text-[var(--vibe-accent)]" : isDark ? "h-4 w-4 shrink-0 text-[#38bdf8]" : "h-4 w-4 shrink-0 text-amber-500"} />
+                      <span className="truncate">{group.label}</span>
                     </button>
                     {expanded && (
                       <div className="mt-2 space-y-1.5">
                         {group.items.map((session) => {
                           const canResume = Boolean(session.projectDir && session.resumeCommand);
-                          const title = titleForSession(session);
+                          const title = titleForSession(session, t("vibe.unknownDirectory"));
                           return (
                             <button
                               aria-label={
@@ -714,8 +1163,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                                 isSkin
                                   ? "vibe-skin-session w-full rounded-xl border px-3 py-2 text-left text-[13px] transition disabled:cursor-not-allowed disabled:opacity-45"
                                   : isDark
-                                  ? "w-full rounded-xl border border-[#073642] bg-[#002b36]/70 px-3 py-2 text-left text-[13px] text-[#fdf6e3] transition hover:border-[#b58900]/70 disabled:cursor-not-allowed disabled:opacity-45"
-                                  : "w-full rounded-xl border border-stone-200 bg-stone-50/80 px-3 py-2 text-left text-[13px] text-stone-800 transition hover:border-amber-500/50 hover:bg-white disabled:cursor-not-allowed disabled:opacity-45"
+                                    ? "vibe-dark-session-card w-full rounded-xl border px-3 py-2 text-left text-[13px] transition disabled:cursor-not-allowed disabled:opacity-55"
+                                    : "vibe-light-session-card w-full rounded-xl border px-3 py-2 text-left text-[13px] transition disabled:cursor-not-allowed disabled:opacity-45"
                               }
                               disabled={!canResume}
                               key={sessionKey(session)}
@@ -724,9 +1173,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                             >
                               <span className="flex items-center justify-between gap-2">
                                 <span className="truncate font-semibold">{title}</span>
-                                <Play className={isSkin ? "h-3.5 w-3.5 shrink-0 text-[var(--vibe-accent)]" : isDark ? "h-3.5 w-3.5 shrink-0 text-[#b58900]" : "h-3.5 w-3.5 shrink-0 text-amber-600"} />
+                                <Play className={isSkin ? "h-3.5 w-3.5 shrink-0 text-[var(--vibe-accent)]" : isDark ? "h-3.5 w-3.5 shrink-0 text-[#5eead4]" : "h-3.5 w-3.5 shrink-0 text-emerald-600"} />
                               </span>
-                              <span className={isSkin ? "mt-0.5 block truncate text-[11px] text-[var(--vibe-muted-text)]" : isDark ? "mt-0.5 block truncate text-[11px] text-[#93a1a1]" : "mt-0.5 block truncate text-[11px] text-stone-500"}>
+                              <span className={isSkin ? "mt-0.5 block truncate text-[11px] text-[var(--vibe-muted-text)]" : isDark ? "vibe-dark-session-meta mt-0.5 block truncate text-[11px]" : "vibe-light-session-meta mt-0.5 block truncate text-[11px]"}>
                                 {session.providerId} · {session.resumeCommand ?? t("vibe.missingResumeCommand")}
                               </span>
                             </button>
@@ -746,8 +1195,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
             isSkin
               ? "vibe-skin-workspace flex h-full min-h-0 min-w-0 flex-col overflow-hidden shadow-xl"
               : isDark
-              ? "flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[#002b36] shadow-xl shadow-black/20"
-              : "flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-50 shadow-xl shadow-stone-900/5"
+                ? "flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[#002b36] shadow-xl shadow-black/20"
+                : "flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-50 shadow-xl shadow-stone-900/5"
           }
         >
           <div
@@ -755,12 +1204,12 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
               isSkin
                 ? `vibe-scrollbar ${scrollbarThemeClass} vibe-scrollbar-horizontal vibe-skin-tabbar flex h-10 shrink-0 items-stretch gap-0 overflow-x-auto border-b px-1`
                 : isDark
-                ? "vibe-scrollbar vibe-scrollbar-dark vibe-scrollbar-horizontal flex h-10 shrink-0 items-stretch gap-0 overflow-x-auto border-b border-[#073642] bg-[#00212b] px-1"
-                : "vibe-scrollbar vibe-scrollbar-light vibe-scrollbar-horizontal flex h-10 shrink-0 items-stretch gap-0 overflow-x-auto border-b border-stone-200 bg-white/85 px-1"
+                  ? "vibe-scrollbar vibe-scrollbar-dark vibe-scrollbar-horizontal vibe-dark-tabbar flex h-10 shrink-0 items-stretch gap-1 overflow-x-auto border-b px-1"
+                  : "vibe-scrollbar vibe-scrollbar-light vibe-scrollbar-horizontal vibe-light-tabbar flex h-10 shrink-0 items-stretch gap-1 overflow-x-auto border-b px-1"
             }
           >
             {tabs.length === 0 && (
-              <p className={isSkin ? "flex items-center px-3 text-[12px] text-[var(--vibe-muted-text)]" : isDark ? "flex items-center px-3 text-[12px] text-[#93a1a1]" : "flex items-center px-3 text-[12px] text-stone-500"}>
+              <p className={isSkin ? "flex items-center px-3 text-[12px] text-[var(--vibe-muted-text)]" : isDark ? "flex items-center px-3 text-[12px] text-[#9fc3cf]" : "flex items-center px-3 text-[12px] text-stone-500"}>
                 {t("vibe.noTabs")}
               </p>
             )}
@@ -771,13 +1220,13 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                     ? isSkin
                       ? "vibe-skin-tab-active text-[var(--vibe-text)]"
                       : isDark
-                      ? "border-[#073642] bg-[#002b36] text-[#fdf6e3]"
-                      : "border-stone-200 bg-slate-50 text-stone-950"
+                        ? "vibe-dark-tab-active"
+                        : "vibe-light-tab-active"
                     : isSkin
                       ? "vibe-skin-tab text-[var(--vibe-muted-text)]"
                       : isDark
-                      ? "border-[#073642] bg-transparent text-[#93a1a1] hover:bg-[#073642]/55 hover:text-[#eee8d5]"
-                      : "border-stone-200 bg-transparent text-stone-500 hover:bg-stone-100/80 hover:text-stone-900"
+                        ? "vibe-dark-tab"
+                        : "vibe-light-tab"
                 }`}
                 key={tab.id}
                 title={`${tab.title} · ${statusLabel(tab.status, t)}`}
@@ -788,8 +1237,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                       isSkin
                         ? "absolute inset-x-0 bottom-0 h-[2px] bg-[var(--vibe-accent)]"
                         : isDark
-                        ? "absolute inset-x-0 bottom-0 h-[2px] bg-[#b58900]"
-                        : "absolute inset-x-0 bottom-0 h-[2px] bg-amber-400"
+                          ? "absolute inset-x-2 bottom-0 h-[2px] rounded-full bg-[#38bdf8]"
+                          : "absolute inset-x-0 bottom-0 h-[2px] bg-amber-400"
                     }
                   />
                 )}
@@ -805,10 +1254,10 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                   aria-label={t("vibe.closeTabAria", { title: tab.title })}
                   className={
                     isSkin
-                      ? "vibe-skin-tab-close mr-1.5 grid h-5 w-5 shrink-0 place-items-center rounded-md opacity-70 transition group-hover:opacity-100"
+                      ? "vibe-skin-tab-close mr-1.5 grid h-5 w-5 shrink-0 place-items-center opacity-70 transition group-hover:opacity-100"
                       : isDark
-                      ? "mr-1.5 grid h-5 w-5 shrink-0 place-items-center rounded-md text-[#93a1a1] opacity-70 transition hover:bg-[#073642] hover:text-[#fdf6e3] group-hover:opacity-100"
-                      : "mr-1.5 grid h-5 w-5 shrink-0 place-items-center rounded-md text-stone-400 opacity-70 transition hover:bg-stone-200 hover:text-stone-700 group-hover:opacity-100"
+                        ? "vibe-dark-tab-close mr-1.5 grid h-5 w-5 shrink-0 place-items-center opacity-70 transition group-hover:opacity-100"
+                        : "vibe-light-tab-close mr-1.5 grid h-5 w-5 shrink-0 place-items-center opacity-70 transition group-hover:opacity-100"
                   }
                   onClick={() => void closeTab(tab)}
                   type="button"
@@ -885,7 +1334,10 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                     src={skinBlocks.showcase.figure}
                   />
                 ) : (
-                  <div className="vibe-skin-showcase-figure vibe-skin-showcase-orb grid h-32 w-28 place-items-center rounded-[2rem] border">
+                  renderSkinTemplateFigure(
+                    decorations?.showcaseTemplate,
+                    skinBlocks.showcase.title,
+                  ) ?? <div className="vibe-skin-showcase-figure vibe-skin-showcase-orb grid h-32 w-28 place-items-center rounded-[2rem] border">
                     <AiSwitchLogo className="h-14 w-14 rounded-2xl" />
                   </div>
                 )}
@@ -897,22 +1349,32 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 {skinBlocks.showcase.footer}
               </div>
             </div>
-            <div className="vibe-skin-right-card mt-3 rounded-2xl border p-3">
-              <p className="text-[10px] font-semibold tracking-[0.18em] text-[var(--vibe-muted-text)]">
-                皮肤区域
-              </p>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {activeSkinRegionKeys.length > 0 ? (
-                  activeSkinRegionKeys.slice(0, 8).map((region) => (
-                    <span key={region} className="rounded-full border px-2 py-1 text-[11px]">
-                      {region}
-                    </span>
-                  ))
-                ) : (
-                  <span className="rounded-full border px-2 py-1 text-[11px]">ui</span>
-                )}
+            {decorations?.rightCards?.length ? (
+              decorations.rightCards.map((card, index) => (
+                <SkinDecorationCard
+                  card={card}
+                  key={`${card.template ?? "card"}-${card.title ?? index}`}
+                  regionKeys={activeSkinRegionKeys}
+                />
+              ))
+            ) : (
+              <div className="vibe-skin-right-card mt-3 rounded-2xl border p-3">
+                <p className="text-[10px] font-semibold tracking-[0.18em] text-[var(--vibe-muted-text)]">
+                  皮肤区域
+                </p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {activeSkinRegionKeys.length > 0 ? (
+                    activeSkinRegionKeys.slice(0, 8).map((region) => (
+                      <span key={region} className="rounded-full border px-2 py-1 text-[11px]">
+                        {region}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="rounded-full border px-2 py-1 text-[11px]">ui</span>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
           </aside>
         )}
         </div>
