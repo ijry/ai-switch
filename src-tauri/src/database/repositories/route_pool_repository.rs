@@ -199,28 +199,31 @@ impl RoutePoolRepository {
         pool: &SqlitePool,
         platform: &str,
         since: Option<&str>,
+        request_page: i64,
+        request_page_size: i64,
     ) -> Result<RoutePoolStats, AppError> {
-        let join_since_clause = if since.is_some() {
+        let usage_since_clause = if since.is_some() {
             " AND ue.created_at >= ?"
         } else {
             ""
         };
         let summary_sql = format!(
             "SELECT
-               COUNT(DISTINCT rpm.route_credential_id) AS member_count,
+               (SELECT COUNT(DISTINCT route_credential_id)
+                FROM route_pool_members
+                WHERE platform = ? AND enabled = 1) AS member_count,
                COALESCE(SUM(CASE WHEN ue.metric_type = 'request' THEN CASE WHEN ue.amount > 0 THEN ue.amount ELSE 1 END ELSE 0 END), 0) AS request_count,
                COALESCE(SUM(CASE WHEN ue.metric_type = 'token' OR ue.unit = 'token' THEN ue.amount ELSE 0 END), 0) AS token_count,
                COALESCE(SUM(CASE WHEN ue.metric_type = 'cost' AND ue.unit = 'usd_micros' THEN ue.amount ELSE 0 END), 0) AS cost_micros
-             FROM route_pool_members rpm
-             LEFT JOIN usage_events ue ON ue.route_credential_id = rpm.route_credential_id{join_since_clause}
-             WHERE rpm.platform = ? AND rpm.enabled = 1"
+             FROM usage_events ue
+             INNER JOIN route_credentials a ON a.id = ue.route_credential_id
+             WHERE a.platform = ?{usage_since_clause}"
         );
-        let mut summary_query = sqlx::query(&summary_sql);
+        let mut summary_query = sqlx::query(&summary_sql).bind(platform).bind(platform);
         if let Some(since) = since {
             summary_query = summary_query.bind(since);
         }
         let row = summary_query
-            .bind(platform)
             .fetch_one(pool)
             .await
             .map_err(|err| AppError::Database {
@@ -230,22 +233,13 @@ impl RoutePoolRepository {
                 recoverable: true,
             })?;
 
-        let log_since_clause = if since.is_some() {
-            " AND ue.created_at >= ?"
-        } else {
-            ""
-        };
         let log_sql = format!(
             "SELECT ue.id, ue.route_credential_id, a.display_name AS account_name,
                     ue.source_label, ue.metric_type, ue.amount, ue.unit, ue.metadata_json, ue.created_at
              FROM usage_events ue
-             INNER JOIN route_pool_members rpm
-               ON rpm.route_credential_id = ue.route_credential_id
-              AND rpm.platform = ?
-              AND rpm.enabled = 1
-             LEFT JOIN route_credentials a ON a.id = ue.route_credential_id
-             WHERE 1 = 1{log_since_clause}
-             ORDER BY ue.created_at DESC
+             INNER JOIN route_credentials a ON a.id = ue.route_credential_id
+             WHERE a.platform = ?{usage_since_clause}
+             ORDER BY ue.created_at DESC, ue.id DESC
              LIMIT 10"
         );
         let mut log_query = sqlx::query(&log_sql).bind(platform);
@@ -262,24 +256,45 @@ impl RoutePoolRepository {
                 recoverable: true,
             })?;
 
+        let request_count_sql = format!(
+            "SELECT COUNT(*) AS request_row_count
+             FROM usage_events ue
+             INNER JOIN route_credentials a ON a.id = ue.route_credential_id
+             WHERE a.platform = ? AND ue.metric_type = 'request'{usage_since_clause}"
+        );
+        let mut request_count_query = sqlx::query(&request_count_sql).bind(platform);
+        if let Some(since) = since {
+            request_count_query = request_count_query.bind(since);
+        }
+        let request_count_row =
+            request_count_query
+                .fetch_one(pool)
+                .await
+                .map_err(|err| AppError::Database {
+                    code: "database.route_pool_request_count",
+                    message: "Could not count route pool requests".to_string(),
+                    details: Some(err.to_string()),
+                    recoverable: true,
+                })?;
+        let request_row_count: i64 = request_count_row.get("request_row_count");
+
         let request_sql = format!(
             "SELECT ue.id, ue.route_credential_id, a.display_name AS account_name,
                     ue.source_label, ue.metric_type, ue.amount, ue.unit, ue.metadata_json, ue.created_at
              FROM usage_events ue
-             INNER JOIN route_pool_members rpm
-               ON rpm.route_credential_id = ue.route_credential_id
-              AND rpm.platform = ?
-              AND rpm.enabled = 1
-             LEFT JOIN route_credentials a ON a.id = ue.route_credential_id
-             WHERE ue.metric_type = 'request'{log_since_clause}
-             ORDER BY ue.created_at DESC
-             LIMIT 50"
+             INNER JOIN route_credentials a ON a.id = ue.route_credential_id
+             WHERE a.platform = ? AND ue.metric_type = 'request'{usage_since_clause}
+             ORDER BY ue.created_at DESC, ue.id DESC
+             LIMIT ? OFFSET ?"
         );
+        let offset = (request_page - 1) * request_page_size;
         let mut request_query = sqlx::query(&request_sql).bind(platform);
         if let Some(since) = since {
             request_query = request_query.bind(since);
         }
         let request_rows = request_query
+            .bind(request_page_size)
+            .bind(offset)
             .fetch_all(pool)
             .await
             .map_err(|err| AppError::Database {
@@ -308,6 +323,9 @@ impl RoutePoolRepository {
             cost_micros: row.get("cost_micros"),
             recent_logs: log_rows.into_iter().map(map_usage_log).collect(),
             requests: request_rows.into_iter().map(map_usage_log).collect(),
+            request_row_count,
+            request_page,
+            request_page_size,
         })
     }
 }

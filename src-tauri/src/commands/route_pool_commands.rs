@@ -11,10 +11,18 @@ pub async fn get_route_pool(
     state: State<'_, AppState>,
     platform: String,
     since: Option<String>,
+    request_page: Option<i64>,
+    request_page_size: Option<i64>,
 ) -> Result<RoutePoolState, ApiError> {
-    RoutePoolService::get(&state.pool, platform, since)
-        .await
-        .map_err(ApiError::from)
+    RoutePoolService::get(
+        &state.pool,
+        platform,
+        since,
+        request_page,
+        request_page_size,
+    )
+    .await
+    .map_err(ApiError::from)
 }
 
 #[tauri::command]

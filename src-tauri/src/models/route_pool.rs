@@ -24,6 +24,9 @@ pub struct RoutePoolStats {
     pub cost_micros: i64,
     pub recent_logs: Vec<RoutePoolUsageLog>,
     pub requests: Vec<RoutePoolUsageLog>,
+    pub request_row_count: i64,
+    pub request_page: i64,
+    pub request_page_size: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

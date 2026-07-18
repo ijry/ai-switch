@@ -10,15 +10,29 @@ use std::collections::HashSet;
 
 pub struct RoutePoolService;
 
+const DEFAULT_REQUEST_PAGE: i64 = 1;
+const DEFAULT_REQUEST_PAGE_SIZE: i64 = 20;
+const MAX_REQUEST_PAGE_SIZE: i64 = 100;
+
 impl RoutePoolService {
     pub async fn get(
         pool: &SqlitePool,
         platform: String,
         since: Option<String>,
+        request_page: Option<i64>,
+        request_page_size: Option<i64>,
     ) -> Result<RoutePoolState, AppError> {
         let platform = normalize_platform(&platform)?;
         let since = normalize_since(since)?;
-        Self::state(pool, &platform, since.as_deref()).await
+        let pagination = normalize_request_pagination(request_page, request_page_size);
+        Self::state(
+            pool,
+            &platform,
+            since.as_deref(),
+            pagination.page,
+            pagination.page_size,
+        )
+        .await
     }
 
     pub async fn set_members(
@@ -58,7 +72,14 @@ impl RoutePoolService {
         }
 
         RoutePoolRepository::replace_members(pool, &platform, &account_ids).await?;
-        Self::state(pool, &platform, None).await
+        Self::state(
+            pool,
+            &platform,
+            None,
+            DEFAULT_REQUEST_PAGE,
+            DEFAULT_REQUEST_PAGE_SIZE,
+        )
+        .await
     }
 
     pub async fn route_once(
@@ -126,7 +147,14 @@ impl RoutePoolService {
             platform: platform.clone(),
             selected_account_id: selected.id,
             selected_account_name: selected.display_name,
-            stats: RoutePoolRepository::stats(pool, &platform, None).await?,
+            stats: RoutePoolRepository::stats(
+                pool,
+                &platform,
+                None,
+                DEFAULT_REQUEST_PAGE,
+                DEFAULT_REQUEST_PAGE_SIZE,
+            )
+            .await?,
         })
     }
 
@@ -134,11 +162,20 @@ impl RoutePoolService {
         pool: &SqlitePool,
         platform: &str,
         since: Option<&str>,
+        request_page: i64,
+        request_page_size: i64,
     ) -> Result<RoutePoolState, AppError> {
         Ok(RoutePoolState {
             platform: platform.to_string(),
             account_ids: RoutePoolRepository::list_member_ids(pool, platform).await?,
-            stats: RoutePoolRepository::stats(pool, platform, since).await?,
+            stats: RoutePoolRepository::stats(
+                pool,
+                platform,
+                since,
+                request_page,
+                request_page_size,
+            )
+            .await?,
         })
     }
 }
@@ -186,6 +223,21 @@ fn normalize_since(since: Option<String>) -> Result<Option<String>, AppError> {
     })?;
 
     Ok(Some(value))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RequestPagination {
+    page: i64,
+    page_size: i64,
+}
+
+fn normalize_request_pagination(page: Option<i64>, page_size: Option<i64>) -> RequestPagination {
+    RequestPagination {
+        page: page.unwrap_or(DEFAULT_REQUEST_PAGE).max(1),
+        page_size: page_size
+            .unwrap_or(DEFAULT_REQUEST_PAGE_SIZE)
+            .clamp(1, MAX_REQUEST_PAGE_SIZE),
+    }
 }
 
 fn non_negative(value: i64, field: &'static str) -> Result<i64, AppError> {
@@ -407,10 +459,15 @@ mod tests {
         )
         .await;
 
-        let state =
-            RoutePoolService::get(&pool, "codex".to_string(), Some(since.to_string()))
-                .await
-                .expect("filtered state");
+        let state = RoutePoolService::get(
+            &pool,
+            "codex".to_string(),
+            Some(since.to_string()),
+            Some(1),
+            Some(20),
+        )
+        .await
+        .expect("filtered state");
 
         assert_eq!(state.stats.member_count, 1);
         assert_eq!(state.stats.request_count, 1);
@@ -418,6 +475,9 @@ mod tests {
         assert_eq!(state.stats.cost_micros, 300);
         assert_eq!(state.stats.recent_logs.len(), 3);
         assert_eq!(state.stats.requests.len(), 1);
+        assert_eq!(state.stats.request_row_count, 1);
+        assert_eq!(state.stats.request_page, 1);
+        assert_eq!(state.stats.request_page_size, 20);
         assert_eq!(state.stats.requests[0].metric_type, "request");
         assert_eq!(state.stats.requests[0].source_label, "route_proxy");
         assert_eq!(
@@ -430,14 +490,189 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stats_include_removed_pool_credentials_for_same_platform() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let removed_id = account(&pool, "codex", "RemovedCodex").await;
+        let active_id = account(&pool, "codex", "ActiveCodex").await;
+        let claude_id = account(&pool, "claude", "ClaudeOne").await;
+
+        RoutePoolService::set_members(
+            &pool,
+            SetRoutePoolMembersInput {
+                platform: "codex".to_string(),
+                account_ids: vec![removed_id.clone(), active_id.clone()],
+            },
+        )
+        .await
+        .expect("initial members");
+
+        usage_event_at(
+            &pool,
+            &removed_id,
+            "route_proxy",
+            "request",
+            1,
+            "count",
+            r#"{"path":"/v1/removed","status":200}"#,
+            "2026-07-17T08:00:00Z",
+        )
+        .await;
+        usage_event_at(
+            &pool,
+            &removed_id,
+            "route_proxy",
+            "token",
+            512,
+            "token",
+            r#"{"path":"/v1/removed","status":200}"#,
+            "2026-07-17T08:00:01Z",
+        )
+        .await;
+        usage_event_at(
+            &pool,
+            &active_id,
+            "route_proxy",
+            "request",
+            1,
+            "count",
+            r#"{"path":"/v1/active","status":201}"#,
+            "2026-07-17T08:01:00Z",
+        )
+        .await;
+        usage_event_at(
+            &pool,
+            &claude_id,
+            "route_proxy",
+            "request",
+            1,
+            "count",
+            r#"{"path":"/v1/claude","status":202}"#,
+            "2026-07-17T08:02:00Z",
+        )
+        .await;
+
+        RoutePoolService::set_members(
+            &pool,
+            SetRoutePoolMembersInput {
+                platform: "codex".to_string(),
+                account_ids: vec![active_id.clone()],
+            },
+        )
+        .await
+        .expect("removed one member");
+
+        let state = RoutePoolService::get(&pool, "codex".to_string(), None, Some(1), Some(20))
+            .await
+            .expect("state");
+
+        assert_eq!(state.stats.member_count, 1);
+        assert_eq!(state.stats.request_count, 2);
+        assert_eq!(state.stats.token_count, 512);
+        assert_eq!(state.stats.request_row_count, 2);
+        assert_eq!(state.stats.request_page, 1);
+        assert_eq!(state.stats.request_page_size, 20);
+
+        let request_names: Vec<&str> = state
+            .stats
+            .requests
+            .iter()
+            .filter_map(|request| request.account_name.as_deref())
+            .collect();
+        assert!(request_names.contains(&"RemovedCodex"));
+        assert!(request_names.contains(&"ActiveCodex"));
+        assert!(!request_names.contains(&"ClaudeOne"));
+    }
+
+    #[tokio::test]
+    async fn stats_paginates_request_rows_and_reports_total() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let account_id = account(&pool, "codex", "CodexOne").await;
+
+        RoutePoolService::set_members(
+            &pool,
+            SetRoutePoolMembersInput {
+                platform: "codex".to_string(),
+                account_ids: vec![account_id.clone()],
+            },
+        )
+        .await
+        .expect("members");
+
+        usage_event_at(
+            &pool,
+            &account_id,
+            "route_proxy",
+            "request",
+            1,
+            "count",
+            r#"{"path":"/v1/oldest","status":200}"#,
+            "2026-07-17T08:00:00Z",
+        )
+        .await;
+        usage_event_at(
+            &pool,
+            &account_id,
+            "route_proxy",
+            "request",
+            1,
+            "count",
+            r#"{"path":"/v1/middle","status":200}"#,
+            "2026-07-17T09:00:00Z",
+        )
+        .await;
+        usage_event_at(
+            &pool,
+            &account_id,
+            "route_proxy",
+            "request",
+            1,
+            "count",
+            r#"{"path":"/v1/newest","status":200}"#,
+            "2026-07-17T10:00:00Z",
+        )
+        .await;
+
+        let state = RoutePoolService::get(&pool, "codex".to_string(), None, Some(2), Some(2))
+            .await
+            .expect("page two");
+
+        assert_eq!(state.stats.request_count, 3);
+        assert_eq!(state.stats.request_row_count, 3);
+        assert_eq!(state.stats.request_page, 2);
+        assert_eq!(state.stats.request_page_size, 2);
+        assert_eq!(state.stats.requests.len(), 1);
+        assert!(state.stats.requests[0].metadata_json.contains("/v1/oldest"));
+    }
+
+    #[tokio::test]
+    async fn stats_normalizes_request_pagination_values() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+
+        let state = RoutePoolService::get(&pool, "codex".to_string(), None, Some(0), Some(500))
+            .await
+            .expect("normalized pagination");
+
+        assert_eq!(state.stats.request_page, 1);
+        assert_eq!(state.stats.request_page_size, 100);
+    }
+
+    #[tokio::test]
     async fn get_rejects_invalid_since_timestamp() {
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
 
-        let error =
-            RoutePoolService::get(&pool, "codex".to_string(), Some("not-a-date".to_string()))
-                .await
-                .expect_err("invalid since");
+        let error = RoutePoolService::get(
+            &pool,
+            "codex".to_string(),
+            Some("not-a-date".to_string()),
+            None,
+            None,
+        )
+        .await
+        .expect_err("invalid since");
 
         match error {
             AppError::Validation { code, .. } => {

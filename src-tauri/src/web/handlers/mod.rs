@@ -36,7 +36,11 @@ pub async fn dispatch_command(
         "get_settings" => to_value(get_settings_core(&state.paths).await.map_err(to_error)?),
         "save_settings" => {
             let settings: AppSettings = parse_arg(&args, "settings")?;
-            to_value(save_settings_core(&state.paths, settings).await.map_err(to_error)?)
+            to_value(
+                save_settings_core(&state.paths, settings)
+                    .await
+                    .map_err(to_error)?,
+            )
         }
         "list_sessions" => {
             let platform = optional_string_arg(&args, "platform");
@@ -133,10 +137,18 @@ pub async fn dispatch_command(
         "get_route_pool" => {
             let platform = required_string_arg(&args, "platform")?;
             let since = optional_string_arg(&args, "since");
+            let request_page = optional_i64_arg(&args, "request_page");
+            let request_page_size = optional_i64_arg(&args, "request_page_size");
             to_value(
-                RoutePoolService::get(&state.pool, platform, since)
-                    .await
-                    .map_err(to_error)?,
+                RoutePoolService::get(
+                    &state.pool,
+                    platform,
+                    since,
+                    request_page,
+                    request_page_size,
+                )
+                .await
+                .map_err(to_error)?,
             )
         }
         "set_route_pool_members" => {
@@ -194,9 +206,11 @@ pub async fn dispatch_command(
                     .map_err(to_error)?,
             )
         }
-        "get_web_service_config" => {
-            to_value(WebService::load_config(&state.paths).await.map_err(to_error)?)
-        }
+        "get_web_service_config" => to_value(
+            WebService::load_config(&state.paths)
+                .await
+                .map_err(to_error)?,
+        ),
         "save_web_service_config" => {
             let config: WebServiceConfig = parse_arg(&args, "config")?;
             let saved = WebService::save_config(&state.paths, &config)
@@ -239,7 +253,9 @@ pub async fn dispatch_command(
             to_value(WebService::stop(state.as_ref(), &config).await)
         }
         "get_tailscale_status" => {
-            let config = WebService::load_config(&state.paths).await.map_err(to_error)?;
+            let config = WebService::load_config(&state.paths)
+                .await
+                .map_err(to_error)?;
             let web_status = WebService::status(&state.web_service, &config).await;
             to_value(
                 TailscaleService::status(
@@ -252,7 +268,9 @@ pub async fn dispatch_command(
             )
         }
         "start_tailscale_login" => {
-            let config = WebService::load_config(&state.paths).await.map_err(to_error)?;
+            let config = WebService::load_config(&state.paths)
+                .await
+                .map_err(to_error)?;
             let web_status = WebService::status(&state.web_service, &config).await;
             to_value(
                 TailscaleService::start_login(
@@ -266,7 +284,9 @@ pub async fn dispatch_command(
         }
         "start_tailscale_with_auth_key" => {
             let auth_key = required_string_arg(&args, "authKey")?;
-            let mut config = WebService::load_config(&state.paths).await.map_err(to_error)?;
+            let mut config = WebService::load_config(&state.paths)
+                .await
+                .map_err(to_error)?;
             let web_status = WebService::status(&state.web_service, &config).await;
             to_value(
                 TailscaleService::start_with_auth_key(
@@ -281,10 +301,10 @@ pub async fn dispatch_command(
             )
         }
         "disconnect_tailscale" => {
-            let config = WebService::load_config(&state.paths).await.map_err(to_error)?;
-            to_value(
-                TailscaleService::disconnect(&state.tailscale, &state.paths, &config).await,
-            )
+            let config = WebService::load_config(&state.paths)
+                .await
+                .map_err(to_error)?;
+            to_value(TailscaleService::disconnect(&state.tailscale, &state.paths, &config).await)
         }
         other => Err(format!("Unknown command: {other}")),
     }
@@ -315,6 +335,14 @@ fn optional_string_arg(args: &Value, key: &str) -> Option<String> {
         })
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn optional_i64_arg(args: &Value, key: &str) -> Option<i64> {
+    match args.get(key) {
+        Some(Value::Number(number)) => number.as_i64(),
+        Some(Value::String(text)) => text.trim().parse::<i64>().ok(),
+        _ => None,
+    }
 }
 
 fn required_string_arg(args: &Value, key: &str) -> Result<String, String> {
