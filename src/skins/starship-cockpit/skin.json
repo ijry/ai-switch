@@ -45,6 +45,23 @@
     "brightCyan": "#a3fbff",
     "brightWhite": "#ffffff"
   },
+  "audio": {
+    "enabled": true,
+    "volume": 0.48,
+    "events": {
+      "agentSelect": "assets/sounds/weapon-switch.wav",
+      "hologramInteract": "assets/sounds/hologram-tap.wav",
+      "radarPulse": "assets/sounds/radar-pulse.wav"
+    },
+    "ambient": [
+      {
+        "id": "radar",
+        "src": "assets/sounds/radar-pulse.wav",
+        "intervalMs": 8500,
+        "volume": 0.18
+      }
+    ]
+  },
   "regions": {
     "app": {
       "background": "radial-gradient(circle at 18% 10%, rgba(46,232,255,0.17), transparent 18rem), radial-gradient(circle at 82% 18%, rgba(248,199,106,0.12), transparent 16rem), linear-gradient(135deg, #020617 0%, #061425 44%, #01030a 100%)",

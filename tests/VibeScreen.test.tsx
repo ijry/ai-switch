@@ -48,6 +48,22 @@ vi.mock("../src/lib/api/client", () => ({
   listSessions: vi.fn(),
 }));
 
+class MockAudioElement {
+  static instances: MockAudioElement[] = [];
+
+  currentTime = 0;
+  loop = false;
+  pause = vi.fn();
+  play = vi.fn(() => Promise.resolve());
+  src: string;
+  volume = 1;
+
+  constructor(src: string) {
+    this.src = src;
+    MockAudioElement.instances.push(this);
+  }
+}
+
 const sessions: SessionMeta[] = [
   {
     providerId: "codex",
@@ -102,6 +118,8 @@ describe("VibeScreen", () => {
   beforeEach(() => {
     window.localStorage.clear();
     (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    MockAudioElement.instances = [];
+    vi.stubGlobal("Audio", MockAudioElement);
     __resetTransportForTests();
     vi.mocked(createTerminalSession).mockReset();
     vi.mocked(killTerminalSession).mockReset();
@@ -318,6 +336,29 @@ describe("VibeScreen", () => {
     expect(screen.getByRole("button", { name: "Switch Vibe theme" })).toHaveTextContent("Skin");
     expect(screen.getByLabelText("Vibe skin")).toHaveValue("codex-2007-blue");
     expect(screen.getByText("No terminal tabs yet.").parentElement).toHaveClass("vibe-skin-tabbar");
+  });
+
+  it("persists the skin audio toggle from the appearance dialog", async () => {
+    const view = renderScreen();
+
+    await openAppearanceDialog();
+    const audioToggle = screen.getByLabelText("Skin sound effects");
+    expect(audioToggle).toBeChecked();
+
+    await userEvent.click(audioToggle);
+
+    await waitFor(() =>
+      expect(window.localStorage.getItem(VIBE_APPEARANCE_STORAGE_KEY)).toContain(
+        '"skinAudioEnabled":false',
+      ),
+    );
+    expect(audioToggle).not.toBeChecked();
+
+    view.unmount();
+    renderScreen();
+    await openAppearanceDialog();
+
+    expect(screen.getByLabelText("Skin sound effects")).not.toBeChecked();
   });
 
   it("uses cohesive dark colors for the session list and tabs", async () => {

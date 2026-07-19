@@ -250,6 +250,58 @@ describe("vibeSkin", () => {
     expect(JSON.stringify(skin.decorations)).not.toContain("nativeCloseWindow");
   });
 
+  it("imports zip skin audio assets and drops unsafe audio references", async () => {
+    const zip = new JSZip();
+    zip.file(
+      "skin.json",
+      JSON.stringify({
+        id: "audio-skin",
+        name: "Audio Skin",
+        ui: {
+          accent: "#2ee8ff",
+          background: "#020617",
+        },
+        audio: {
+          enabled: true,
+          volume: 0.6,
+          events: {
+            agentSelect: "assets/sounds/weapon.ogg",
+            hologramInteract: "assets/sounds/holo.wav",
+            radarPulse: "https://example.com/rejected.mp3",
+            nativeWindowClose: "assets/sounds/bad.wav",
+          },
+          ambient: [
+            { id: "radar", src: "assets/sounds/radar.mp3", loop: true, volume: 0.25 },
+            { id: "bad", src: "C:/bad.wav" },
+          ],
+        },
+      }),
+    );
+    zip.file("assets/sounds/weapon.ogg", new Uint8Array([79, 103, 103, 83]));
+    zip.file("assets/sounds/holo.wav", new Uint8Array([82, 73, 70, 70]));
+    zip.file("assets/sounds/radar.mp3", new Uint8Array([73, 68, 51]));
+    zip.file("assets/sounds/bad.wav", new Uint8Array([82, 73, 70, 70]));
+
+    const blob = await zip.generateAsync({ type: "blob" });
+    const skin = await importVibeSkinPackage(
+      new File([blob], "audio-skin.zip", { type: "application/zip" }),
+    );
+
+    expect(skin.audio?.enabled).toBe(true);
+    expect(skin.audio?.volume).toBe(0.6);
+    expect(skin.audio?.events?.agentSelect).toMatch(/^data:audio\/ogg;base64,/);
+    expect(skin.audio?.events?.hologramInteract).toMatch(/^data:audio\/wav;base64,/);
+    expect(skin.audio?.events?.radarPulse).toBeUndefined();
+    expect(JSON.stringify(skin.audio?.events)).not.toContain("nativeWindowClose");
+    expect(skin.audio?.ambient).toHaveLength(1);
+    expect(skin.audio?.ambient?.[0]).toMatchObject({
+      id: "radar",
+      loop: true,
+      volume: 0.25,
+    });
+    expect(skin.audio?.ambient?.[0]?.src).toMatch(/^data:audio\/mpeg;base64,/);
+  });
+
   it("keeps whitelisted cockpit decoration templates from uploaded skins", async () => {
     const skin = await importVibeSkinPackage(
       new File(

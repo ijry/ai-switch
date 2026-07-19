@@ -17,7 +17,31 @@ export type VibeAppearanceTheme = "dark" | "light" | "skin";
 export type VibeAppearancePreference = {
   themeMode?: VibeAppearanceTheme;
   skinId?: string;
+  skinAudioEnabled?: boolean;
 };
+
+export type VibeSkinAudioEvent = "agentSelect" | "hologramInteract" | "radarPulse";
+
+export type VibeSkinAudioAmbient = {
+  id: string;
+  src: string;
+  loop?: boolean;
+  intervalMs?: number;
+  volume?: number;
+};
+
+export type VibeSkinAudioDefinition = {
+  enabled?: boolean;
+  volume?: number;
+  events?: Partial<Record<VibeSkinAudioEvent, string>>;
+  ambient?: VibeSkinAudioAmbient[];
+};
+
+const VIBE_SKIN_AUDIO_EVENTS: VibeSkinAudioEvent[] = [
+  "agentSelect",
+  "hologramInteract",
+  "radarPulse",
+];
 
 export type VibeTerminalThemeKey =
   | "background"
@@ -407,6 +431,7 @@ export type VibeSkinDefinition = {
   version?: string;
   ui: VibeSkinUi;
   terminal?: VibeTerminalTheme;
+  audio?: VibeSkinAudioDefinition;
   regions?: Partial<Record<VibeSkinRegionKey, VibeSkinRegionStyle>>;
   showcase?: VibeSkinShowcase;
   blocks?: VibeSkinBlocks;
@@ -417,10 +442,57 @@ function asBuiltInVibeSkin(skin: unknown): VibeSkinDefinition {
   return skin as VibeSkinDefinition;
 }
 
+function withBuiltInAudioAssetUrls(
+  skin: VibeSkinDefinition,
+  audioAssetUrls: Record<string, string>,
+): VibeSkinDefinition {
+  if (!skin.audio) {
+    return skin;
+  }
+
+  const audio: VibeSkinAudioDefinition = { ...skin.audio };
+  if (skin.audio.events) {
+    const events: Partial<Record<VibeSkinAudioEvent, string>> = {};
+    for (const eventName of VIBE_SKIN_AUDIO_EVENTS) {
+      const src = skin.audio.events[eventName];
+      if (src) {
+        events[eventName] = audioAssetUrls[src] ?? src;
+      }
+    }
+    audio.events = events;
+  }
+  if (skin.audio.ambient) {
+    audio.ambient = skin.audio.ambient.map((item) => ({
+      ...item,
+      src: audioAssetUrls[item.src] ?? item.src,
+    }));
+  }
+
+  return {
+    ...skin,
+    audio,
+  };
+}
+
+const starshipCockpitAudioAssetUrls = {
+  "assets/sounds/weapon-switch.wav": new URL(
+    "../skins/starship-cockpit/assets/sounds/weapon-switch.wav",
+    import.meta.url,
+  ).href,
+  "assets/sounds/hologram-tap.wav": new URL(
+    "../skins/starship-cockpit/assets/sounds/hologram-tap.wav",
+    import.meta.url,
+  ).href,
+  "assets/sounds/radar-pulse.wav": new URL(
+    "../skins/starship-cockpit/assets/sounds/radar-pulse.wav",
+    import.meta.url,
+  ).href,
+};
+
 export const BUILT_IN_VIBE_SKINS: VibeSkinDefinition[] = [
   asBuiltInVibeSkin(codex2007BlueSkinManifest),
   asBuiltInVibeSkin(rescuePupsAdventureBaySkinManifest),
-  asBuiltInVibeSkin(starshipCockpitSkinManifest),
+  withBuiltInAudioAssetUrls(asBuiltInVibeSkin(starshipCockpitSkinManifest), starshipCockpitAudioAssetUrls),
 ];
 
 const FALLBACK_UI = BUILT_IN_VIBE_SKINS[0].ui;
@@ -446,6 +518,7 @@ const TERMINAL_THEME_KEYS: VibeTerminalThemeKey[] = [
 ];
 
 type AssetResolver = (path: string) => Promise<string>;
+type AudioAssetResolver = (path: string) => Promise<string>;
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -456,6 +529,14 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function optionalString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function optionalFiniteNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function clampVolume(value: number) {
+  return Math.min(Math.max(value, 0), 1);
 }
 
 function sanitizeId(value: unknown, fallbackName: string) {
@@ -485,6 +566,108 @@ function normalizeTerminalTheme(value: unknown): VibeTerminalTheme | undefined {
     }
   }
   return Object.keys(theme).length > 0 ? theme : undefined;
+}
+
+function isAcceptedAudioDataUrl(value: string) {
+  return /^data:audio\/(?:mpeg|mp3|ogg|wav)(?:;[^,]*)?,/i.test(value);
+}
+
+function isUnsafeRelativeAssetPath(value: string) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith("/") || value.startsWith("\\")) {
+    return true;
+  }
+
+  const normalized = normalizeZipPath(value);
+  return normalized.split("/").some((segment) => segment === ".." || segment === "");
+}
+
+function normalizeAudioReference(value: unknown) {
+  const src = optionalString(value);
+  if (!src) {
+    return undefined;
+  }
+  if (isAcceptedAudioDataUrl(src)) {
+    return src;
+  }
+  if (isUnsafeRelativeAssetPath(src) || !audioMimeTypeForPath(src)) {
+    return undefined;
+  }
+  return src;
+}
+
+function normalizeAudioAmbientItem(value: unknown): VibeSkinAudioAmbient | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  const id = optionalString(source.id);
+  const src = normalizeAudioReference(source.src);
+  if (!id || !src) {
+    return undefined;
+  }
+
+  const ambient: VibeSkinAudioAmbient = {
+    id,
+    src,
+  };
+  if (typeof source.loop === "boolean") {
+    ambient.loop = source.loop;
+  }
+  const intervalMs = optionalFiniteNumber(source.intervalMs);
+  if (intervalMs !== undefined && intervalMs > 0) {
+    ambient.intervalMs = Math.round(intervalMs);
+  }
+  const volume = optionalFiniteNumber(source.volume);
+  if (volume !== undefined) {
+    ambient.volume = clampVolume(volume);
+  }
+  return ambient;
+}
+
+function normalizeAudio(value: unknown): VibeSkinAudioDefinition | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  const audio: VibeSkinAudioDefinition = {};
+  if (typeof source.enabled === "boolean") {
+    audio.enabled = source.enabled;
+  }
+  const volume = optionalFiniteNumber(source.volume);
+  if (volume !== undefined) {
+    audio.volume = clampVolume(volume);
+  }
+
+  const eventSource =
+    source.events && typeof source.events === "object" && !Array.isArray(source.events)
+      ? (source.events as Record<string, unknown>)
+      : undefined;
+  if (eventSource) {
+    const events: Partial<Record<VibeSkinAudioEvent, string>> = {};
+    for (const eventName of VIBE_SKIN_AUDIO_EVENTS) {
+      const src = normalizeAudioReference(eventSource[eventName]);
+      if (src) {
+        events[eventName] = src;
+      }
+    }
+    if (Object.keys(events).length > 0) {
+      audio.events = events;
+    }
+  }
+
+  if (Array.isArray(source.ambient)) {
+    const ambient = source.ambient
+      .map(normalizeAudioAmbientItem)
+      .filter((item): item is VibeSkinAudioAmbient => Boolean(item))
+      .slice(0, 6);
+    if (ambient.length > 0) {
+      audio.ambient = ambient;
+    }
+  }
+
+  return Object.keys(audio).length > 0 ? audio : undefined;
 }
 
 function normalizeRegionStyle(value: unknown): VibeSkinRegionStyle | undefined {
@@ -1041,9 +1224,67 @@ async function resolveDecorationAssets(
   }
 }
 
+async function resolveAudioReference(
+  value: string | undefined,
+  resolveAsset?: AudioAssetResolver,
+) {
+  if (!value) {
+    return undefined;
+  }
+  if (isAcceptedAudioDataUrl(value)) {
+    return value;
+  }
+  if (isUnsafeRelativeAssetPath(value) || !audioMimeTypeForPath(value) || !resolveAsset) {
+    return undefined;
+  }
+  return resolveAsset(value);
+}
+
+async function resolveAudioAssets(
+  audio: VibeSkinAudioDefinition | undefined,
+  resolveAsset?: AudioAssetResolver,
+) {
+  if (!audio) {
+    return undefined;
+  }
+
+  const resolved: VibeSkinAudioDefinition = {};
+  if (typeof audio.enabled === "boolean") {
+    resolved.enabled = audio.enabled;
+  }
+  if (audio.volume !== undefined) {
+    resolved.volume = audio.volume;
+  }
+
+  const events: Partial<Record<VibeSkinAudioEvent, string>> = {};
+  for (const eventName of VIBE_SKIN_AUDIO_EVENTS) {
+    const src = await resolveAudioReference(audio.events?.[eventName], resolveAsset);
+    if (src) {
+      events[eventName] = src;
+    }
+  }
+  if (Object.keys(events).length > 0) {
+    resolved.events = events;
+  }
+
+  const ambient: VibeSkinAudioAmbient[] = [];
+  for (const item of audio.ambient ?? []) {
+    const src = await resolveAudioReference(item.src, resolveAsset);
+    if (src) {
+      ambient.push({ ...item, src });
+    }
+  }
+  if (ambient.length > 0) {
+    resolved.ambient = ambient;
+  }
+
+  return Object.keys(resolved).length > 0 ? resolved : undefined;
+}
+
 async function normalizeSkinManifest(
   manifest: unknown,
   resolveAsset?: AssetResolver,
+  resolveAudioAsset?: AudioAssetResolver,
 ): Promise<VibeSkinDefinition> {
   const raw = asRecord(manifest);
   const name = optionalString(raw.name) ?? "Custom Vibe Skin";
@@ -1058,6 +1299,7 @@ async function normalizeSkinManifest(
   const showcase = normalizeShowcase(raw.showcase);
   const blocks = normalizeBlocks(raw.blocks);
   const decorations = normalizeDecorations(raw.decorations);
+  const audio = normalizeAudio(raw.audio);
 
   ui.backgroundImage = await resolveImageReference(
     ui.backgroundImage,
@@ -1070,6 +1312,7 @@ async function normalizeSkinManifest(
   if (showcase?.image) {
     showcase.image = await resolveImageReference(showcase.image, "showcase.image", resolveAsset);
   }
+  const resolvedAudio = await resolveAudioAssets(audio, resolveAudioAsset);
 
   return {
     id: sanitizeId(raw.id, name),
@@ -1078,6 +1321,7 @@ async function normalizeSkinManifest(
     version: optionalString(raw.version),
     ui,
     terminal: normalizeTerminalTheme(raw.terminal),
+    audio: resolvedAudio,
     regions,
     showcase,
     blocks,
@@ -1100,6 +1344,20 @@ function mimeTypeForPath(path: string) {
     return "image/svg+xml";
   }
   return "image/png";
+}
+
+function audioMimeTypeForPath(path: string) {
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".mp3")) {
+    return "audio/mpeg";
+  }
+  if (lower.endsWith(".ogg")) {
+    return "audio/ogg";
+  }
+  if (lower.endsWith(".wav")) {
+    return "audio/wav";
+  }
+  return undefined;
 }
 
 function readFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
@@ -1166,8 +1424,21 @@ async function importZipSkin(file: File): Promise<VibeSkinDefinition> {
     const base64 = await entry.async("base64");
     return `data:${mimeTypeForPath(normalized)};base64,${base64}`;
   };
+  const resolveAudioAsset: AudioAssetResolver = async (assetPath) => {
+    const normalized = normalizeZipPath(assetPath);
+    const mimeType = audioMimeTypeForPath(normalized);
+    if (!mimeType) {
+      throw new Error(`Unsupported skin audio asset: ${assetPath}`);
+    }
+    const entry = zip.file(normalized);
+    if (!entry || entry.dir) {
+      throw new Error(`Skin asset not found: ${assetPath}`);
+    }
+    const base64 = await entry.async("base64");
+    return `data:${mimeType};base64,${base64}`;
+  };
 
-  return normalizeSkinManifest(manifest, resolveAsset);
+  return normalizeSkinManifest(manifest, resolveAsset, resolveAudioAsset);
 }
 
 export async function importVibeSkinPackage(file: File): Promise<VibeSkinDefinition> {
@@ -1218,6 +1489,7 @@ function normalizeStoredSkin(value: unknown): VibeSkinDefinition {
     showcase: normalizeShowcase(raw.showcase),
     blocks: normalizeBlocks(raw.blocks),
     decorations: normalizeDecorations(raw.decorations),
+    audio: normalizeAudio(raw.audio),
   };
 }
 
@@ -1326,6 +1598,8 @@ export function readStoredVibeAppearance(): VibeAppearancePreference {
     return {
       themeMode,
       skinId: optionalString(source.skinId),
+      skinAudioEnabled:
+        typeof source.skinAudioEnabled === "boolean" ? source.skinAudioEnabled : undefined,
     };
   } catch {
     return {};
@@ -1339,6 +1613,9 @@ export function writeStoredVibeAppearance(preference: VibeAppearancePreference) 
   }
   if (preference.skinId) {
     stored.skinId = preference.skinId;
+  }
+  if (typeof preference.skinAudioEnabled === "boolean") {
+    stored.skinAudioEnabled = preference.skinAudioEnabled;
   }
   window.localStorage.setItem(VIBE_APPEARANCE_STORAGE_KEY, JSON.stringify(stored));
 }

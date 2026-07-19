@@ -33,6 +33,7 @@ import {
 } from "../lib/vibeSkin";
 import type {
   VibeAppearanceTheme,
+  VibeSkinAudioEvent,
   VibeSkinDecorationCard,
   VibeSkinDecorationItem,
   VibeSkinDecorationTemplate,
@@ -82,6 +83,11 @@ type VibeTheme = VibeAppearanceTheme;
 
 type VibeScreenProps = {
   onExitVibe?: () => void;
+};
+
+type AmbientAudioHandle = {
+  audio: HTMLAudioElement;
+  intervalId?: number;
 };
 
 type SessionDirectoryDisplay = {
@@ -520,6 +526,10 @@ function formatTaskbarClock(date: Date) {
   return `${hours}:${minutes}`;
 }
 
+function clampAudioVolume(value: number) {
+  return Math.min(Math.max(value, 0), 1);
+}
+
 function skinVariantClass(variant: VibeSkinDecorationVariant | undefined) {
   return variant ? `vibe-skin--${variant}` : "";
 }
@@ -542,6 +552,7 @@ function renderSkinTemplateFigure(
   template: VibeSkinDecorationTemplate | undefined,
   label: string,
   className = "",
+  onInteract?: () => void,
 ): ReactNode {
   if (template === "qq-mascot") {
     return (
@@ -660,7 +671,7 @@ function renderSkinTemplateFigure(
   }
 
   if (template === "space-ship") {
-    return <StarshipHologram className={className} label={label} />;
+    return <StarshipHologram className={className} label={label} onInteract={onInteract} />;
   }
 
   if (template === "space-radar") {
@@ -721,9 +732,11 @@ function renderSkinDecorationItemFigure(item: VibeSkinDecorationItem) {
 
 function SkinDecorationCard({
   card,
+  onHologramInteract,
   regionKeys,
 }: {
   card: VibeSkinDecorationCard;
+  onHologramInteract?: () => void;
   regionKeys: string[];
 }) {
   if (card.template === "qq-person") {
@@ -817,6 +830,7 @@ function SkinDecorationCard({
       card.template,
       card.title || card.badge || "星舰展示",
       "mx-auto",
+      onHologramInteract,
     );
     const cardStatus = "status" in card ? card.status : "在线";
 
@@ -913,6 +927,7 @@ function SkinDecorationCard({
     card.template,
     card.title ?? card.badge ?? "皮肤装饰",
     "mx-auto",
+    onHologramInteract,
   );
 
   return (
@@ -971,6 +986,7 @@ function SkinDecorationCard({
 
 export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const { t } = useI18n();
+  const [initialAppearance] = useState(() => readStoredVibeAppearance());
   const [tabs, setTabs] = useState<TerminalSession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -982,14 +998,18 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const [launchReasoning, setLaunchReasoning] =
     useState<(typeof launchReasoningOptions)[number]["value"]>("auto");
   const [themeMode, setThemeMode] = useState<VibeTheme>(
-    () => readStoredVibeAppearance().themeMode ?? "dark",
+    () => initialAppearance.themeMode ?? "dark",
   );
+  const [skinAudioEnabled, setSkinAudioEnabled] = useState(
+    () => initialAppearance.skinAudioEnabled ?? true,
+  );
+  const [skinAudioActivated, setSkinAudioActivated] = useState(false);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [startMenuOpen, setStartMenuOpen] = useState(false);
   const [clockNow, setClockNow] = useState(() => new Date());
   const [customSkin, setCustomSkin] = useState<VibeSkinDefinition | null>(() => readStoredVibeSkin());
   const [activeSkinId, setActiveSkinId] = useState<string>(
-    () => readStoredVibeAppearance().skinId ?? readStoredVibeSkin()?.id ?? BUILT_IN_VIBE_SKINS[0].id,
+    () => initialAppearance.skinId ?? readStoredVibeSkin()?.id ?? BUILT_IN_VIBE_SKINS[0].id,
   );
   const [error, setError] = useState<string | null>(null);
   const [sessionListScrolling, setSessionListScrolling] = useState(false);
@@ -998,6 +1018,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const startButtonRef = useRef<HTMLButtonElement | null>(null);
   const startMenuRef = useRef<HTMLDivElement | null>(null);
   const sessionListScrollTimeout = useRef<number | null>(null);
+  const ambientAudioRef = useRef<AmbientAudioHandle[]>([]);
 
   const sessionsQuery = useQuery({
     queryKey: ["sessions"],
@@ -1039,8 +1060,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   }, [activeSkinId, availableSkins]);
 
   useEffect(() => {
-    writeStoredVibeAppearance({ themeMode, skinId: activeSkin.id });
-  }, [activeSkin.id, themeMode]);
+    writeStoredVibeAppearance({ themeMode, skinId: activeSkin.id, skinAudioEnabled });
+  }, [activeSkin.id, skinAudioEnabled, themeMode]);
 
   const openTerminal = useCallback(async (input: CreateTerminalSessionInput) => {
     setError(null);
@@ -1248,6 +1269,87 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const taskbarEnabled = Boolean(isSkin && skinBlocks.taskbar.enabled);
   const currentTime = formatTaskbarClock(clockNow);
 
+  const stopAmbientAudio = useCallback(() => {
+    for (const handle of ambientAudioRef.current) {
+      if (handle.intervalId !== undefined) {
+        window.clearInterval(handle.intervalId);
+      }
+      handle.audio.pause();
+      handle.audio.currentTime = 0;
+    }
+    ambientAudioRef.current = [];
+  }, []);
+
+  const activateSkinAudio = useCallback(() => {
+    setSkinAudioActivated(true);
+  }, []);
+
+  const playSkinAudioEvent = useCallback(
+    (eventName: VibeSkinAudioEvent) => {
+      if (!isSkin || !skinAudioEnabled || activeSkin.audio?.enabled === false) {
+        return;
+      }
+
+      const src = activeSkin.audio?.events?.[eventName];
+      if (!src || typeof Audio === "undefined") {
+        return;
+      }
+
+      const audio = new Audio(src);
+      audio.volume = clampAudioVolume(activeSkin.audio?.volume ?? 0.5);
+      void audio.play().catch(() => undefined);
+    },
+    [activeSkin.audio, isSkin, skinAudioEnabled],
+  );
+
+  const handleHologramInteract = useCallback(() => {
+    playSkinAudioEvent("hologramInteract");
+  }, [playSkinAudioEvent]);
+
+  useEffect(() => {
+    stopAmbientAudio();
+
+    if (
+      !skinAudioActivated ||
+      !isSkin ||
+      !skinAudioEnabled ||
+      activeSkin.audio?.enabled === false ||
+      typeof Audio === "undefined"
+    ) {
+      return;
+    }
+
+    for (const item of activeSkin.audio?.ambient ?? []) {
+      const audio = new Audio(item.src);
+      audio.loop = Boolean(item.loop);
+      audio.volume = clampAudioVolume(item.volume ?? activeSkin.audio?.volume ?? 0.35);
+
+      const play = () => {
+        audio.currentTime = 0;
+        void audio.play().catch(() => undefined);
+      };
+
+      const handle: AmbientAudioHandle = { audio };
+      if (item.loop) {
+        play();
+      } else if (item.intervalMs) {
+        play();
+        handle.intervalId = window.setInterval(play, item.intervalMs);
+      } else {
+        play();
+      }
+      ambientAudioRef.current.push(handle);
+    }
+
+    return stopAmbientAudio;
+  }, [
+    activeSkin.audio,
+    isSkin,
+    skinAudioActivated,
+    skinAudioEnabled,
+    stopAmbientAudio,
+  ]);
+
   useEffect(() => {
     if (!taskbarEnabled) {
       return;
@@ -1406,6 +1508,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
             ? "h-screen max-h-[100dvh] overflow-hidden bg-[#002b36] text-[#d8e2dc]"
             : "h-screen max-h-[100dvh] overflow-hidden text-stone-950"
       }
+      onKeyDownCapture={activateSkinAudio}
+      onPointerDownCapture={activateSkinAudio}
       style={skinStyle}
     >
       <div className={isSkin ? "vibe-skin-frame flex h-full min-h-0 flex-col" : "grid h-full min-h-0 grid-cols-1 lg:grid-cols-[356px_minmax(0,1fr)]"}>
@@ -1882,7 +1986,10 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                             aria-pressed={active}
                             className={agentOptionClass(active)}
                             key={option.platform}
-                            onClick={() => setCreatePlatform(option.platform)}
+                            onClick={() => {
+                              setCreatePlatform(option.platform);
+                              playSkinAudioEvent("agentSelect");
+                            }}
                             type="button"
                           >
                             <AgentIcon className="h-5 w-5" platform={option.platform} />
@@ -2028,6 +2135,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                     renderSkinTemplateFigure(
                       decorations?.showcaseTemplate,
                       skinBlocks.showcase.title || skinBlocks.showcase.badge || "皮肤展示",
+                      "",
+                      handleHologramInteract,
                     ) ?? <div className="vibe-skin-showcase-figure vibe-skin-showcase-orb grid h-32 w-28 place-items-center rounded-[2rem] border">
                       <AiSwitchLogo className="h-14 w-14 rounded-2xl" />
                     </div>
@@ -2048,6 +2157,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 <SkinDecorationCard
                   card={card}
                   key={`${card.template ?? "card"}-${card.title ?? index}`}
+                  onHologramInteract={handleHologramInteract}
                   regionKeys={activeSkinRegionKeys}
                 />
               ))
@@ -2276,6 +2386,24 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                     </option>
                   ))}
                 </select>
+              </label>
+
+              <label
+                className={
+                  isSkin
+                    ? "vibe-skin-ghost flex items-center justify-between gap-3 rounded-2xl border px-3 py-2 text-[12px] font-semibold text-[var(--vibe-text)]"
+                    : isDark
+                      ? "flex items-center justify-between gap-3 rounded-2xl border border-[#586e75] px-3 py-2 text-[12px] font-semibold text-[#fdf6e3]"
+                      : "flex items-center justify-between gap-3 rounded-2xl border border-stone-200 px-3 py-2 text-[12px] font-semibold text-stone-700"
+                }
+              >
+                <span>{t("vibe.skinAudioEnabled")}</span>
+                <input
+                  checked={skinAudioEnabled}
+                  className={isSkin ? "h-4 w-4 accent-[var(--vibe-accent)]" : "h-4 w-4 accent-blue-500"}
+                  onChange={(event) => setSkinAudioEnabled(event.target.checked)}
+                  type="checkbox"
+                />
               </label>
 
               <div className="flex flex-wrap gap-2">

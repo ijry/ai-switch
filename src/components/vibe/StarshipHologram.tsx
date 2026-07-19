@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import type { BufferGeometry, Material, Object3D, Vector3Tuple } from "three";
 
 type StarshipHologramProps = {
   className?: string;
   label: string;
+  onInteract?: () => void;
 };
 
 type DisposableMaterial = {
@@ -65,10 +67,17 @@ function disposeObject(object: Object3D) {
   });
 }
 
-export function StarshipHologram({ className = "", label }: StarshipHologramProps) {
+export function StarshipHologram({ className = "", label, onInteract }: StarshipHologramProps) {
   const hostRef = useRef<HTMLSpanElement | null>(null);
   const [webglReady, setWebglReady] = useState(false);
   const [webglFailed, setWebglFailed] = useState(false);
+
+  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === "mouse" && event.button !== 0) {
+      return;
+    }
+    onInteract?.();
+  };
 
   useEffect(() => {
     const host = hostRef.current;
@@ -627,6 +636,7 @@ export function StarshipHologram({ className = "", label }: StarshipHologramProp
         webglReady ? "vibe-skin-space-ship-webgl-ready" : ""
       } ${webglFailed ? "vibe-skin-space-ship-webgl-failed" : ""} ${className}`}
       data-testid="vibe-skin-space-ship"
+      onPointerDown={handlePointerDown}
       role="img"
     >
       <span aria-hidden="true" className="vibe-skin-space-ship-webgl-host" ref={hostRef} />
