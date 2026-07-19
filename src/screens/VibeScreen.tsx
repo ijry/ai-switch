@@ -1701,7 +1701,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 aria-label={t("vibe.switchTheme")}
                 className={
                   isSkin
-                    ? "vibe-skin-ghost inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border px-2 text-[12px] font-semibold transition-colors"
+                    ? "vibe-skin-ghost inline-flex h-8 shrink-0 items-center gap-1.5 rounded-xl border px-3.5 text-[12px] font-semibold transition-colors"
                     : isDark
                     ? "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-[#586e75] bg-[#002b36] px-2 text-[12px] font-semibold text-[#fdf6e3] transition-colors hover:border-[#839496] hover:bg-[#073642]"
                     : "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-2 text-[12px] font-semibold text-stone-700 transition-colors hover:border-stone-300 hover:bg-stone-50"

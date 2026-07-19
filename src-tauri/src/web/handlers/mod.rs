@@ -64,7 +64,7 @@ pub async fn dispatch_command(
         }
         "write_terminal_input" => {
             let session_id = required_string_arg(&args, "sessionId")?;
-            let data = required_string_arg(&args, "data")?;
+            let data = required_raw_string_arg(&args, "data")?;
             write_terminal_input_core(&state.terminals, &session_id, &data)?;
             to_value(())
         }
@@ -360,10 +360,47 @@ fn required_string_arg(args: &Value, key: &str) -> Result<String, String> {
     optional_string_arg(args, key).ok_or_else(|| format!("Missing argument: {key}"))
 }
 
+fn required_raw_string_arg(args: &Value, key: &str) -> Result<String, String> {
+    match args.get(key) {
+        Some(Value::String(text)) => Ok(text.clone()),
+        Some(Value::Null) | None => Err(format!("Missing argument: {key}")),
+        Some(_) => Err(format!("Invalid argument {key}: expected string")),
+    }
+}
+
 fn required_u16_arg(args: &Value, key: &str) -> Result<u16, String> {
     let value = args
         .get(key)
         .and_then(Value::as_u64)
         .ok_or_else(|| format!("Missing argument: {key}"))?;
     u16::try_from(value).map_err(|_| format!("Argument {key} is outside u16 range"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn required_raw_string_arg_preserves_terminal_control_input() {
+        let args = json!({ "data": "\r" });
+
+        assert_eq!(required_raw_string_arg(&args, "data"), Ok("\r".to_string()));
+    }
+
+    #[test]
+    fn required_raw_string_arg_allows_empty_terminal_input() {
+        let args = json!({ "data": "" });
+
+        assert_eq!(required_raw_string_arg(&args, "data"), Ok(String::new()));
+    }
+
+    #[test]
+    fn required_string_arg_still_rejects_blank_regular_input() {
+        let args = json!({ "data": "\r" });
+
+        assert_eq!(
+            required_string_arg(&args, "data"),
+            Err("Missing argument: data".to_string()),
+        );
+    }
 }

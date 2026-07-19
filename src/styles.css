@@ -86,6 +86,53 @@ button:disabled {
   height: 8px;
 }
 
+.xterm-pane {
+  --xterm-scrollbar-thumb: transparent;
+  --vscode-scrollbar-shadow: transparent;
+}
+
+.xterm-pane-scrollbar-dark {
+  --xterm-scrollbar-thumb: rgba(147, 161, 161, 0.42);
+}
+
+.xterm-pane-scrollbar-light {
+  --xterm-scrollbar-thumb: rgba(68, 64, 60, 0.32);
+}
+
+.xterm-pane-scrollbar-skin {
+  --xterm-scrollbar-thumb: color-mix(in srgb, var(--vibe-accent, #2ee8ff) 52%, transparent);
+}
+
+.xterm-pane .xterm-viewport {
+  scrollbar-color: var(--xterm-scrollbar-thumb) transparent;
+  scrollbar-width: thin;
+}
+
+.xterm-pane .xterm-viewport::-webkit-scrollbar {
+  height: 10px;
+  width: 10px;
+}
+
+.xterm-pane .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.xterm-pane .xterm-viewport::-webkit-scrollbar-thumb {
+  background-clip: content-box;
+  background-color: var(--xterm-scrollbar-thumb);
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+.xterm-pane .xterm-scrollable-element > .scrollbar {
+  background: transparent !important;
+}
+
+.xterm-pane .xterm-scrollable-element > .scrollbar > .slider {
+  background: var(--xterm-scrollbar-thumb) !important;
+  border-radius: 999px;
+}
+
 .vibe-skin {
   background: var(--vibe-app-background-layer, var(--vibe-background-layer));
   background-position: var(--vibe-app-background-position, center);
@@ -640,6 +687,7 @@ button:disabled {
 .vibe-skin-terminal-shell .xterm,
 .vibe-skin-terminal-shell .xterm-screen,
 .vibe-skin-terminal-shell .xterm-viewport,
+.vibe-skin-terminal-shell .xterm-scrollable-element,
 .vibe-skin-terminal-shell .xterm-helpers,
 .vibe-skin-terminal-shell .xterm-decoration-container,
 .vibe-skin-terminal-shell .xterm-selection-layer,
@@ -2181,11 +2229,13 @@ button:disabled {
 .vibe-skin--starship-cockpit .vibe-skin-tab,
 .vibe-skin--starship-cockpit .vibe-skin-tab-active {
   align-self: flex-end;
+  background: transparent !important;
   height: calc(100% - 0.28rem);
   border: 1px solid var(--vibe-tab-border, var(--vibe-border));
   border-bottom: 0;
   border-radius: 0.95rem 0.95rem 0 0;
   clip-path: polygon(0.55rem 0, calc(100% - 0.35rem) 0, 100% 100%, 0 100%);
+  color: #ffffff;
   transition:
     background-color 160ms ease,
     border-color 160ms ease,
@@ -2194,7 +2244,13 @@ button:disabled {
 }
 
 .vibe-skin--starship-cockpit .vibe-skin-tab:hover {
+  background: transparent !important;
   border-color: rgba(46, 232, 255, 0.38);
+  color: #ffffff;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-tab-active {
+  box-shadow: 0 0 18px rgba(46, 232, 255, 0.1);
 }
 
 .vibe-skin--starship-cockpit .vibe-skin-tab-close {
@@ -2210,7 +2266,7 @@ button:disabled {
   background:
     radial-gradient(circle at 50% 0%, rgba(46, 232, 255, 0.1), transparent 14rem),
     linear-gradient(180deg, rgba(1, 9, 18, 0.18), rgba(1, 6, 12, 0.04)) !important;
-  backdrop-filter: blur(3px);
+  /* backdrop-filter: blur(3px); */
 }
 
 .vibe-skin--starship-cockpit .vibe-skin-launch-panel {
@@ -2255,6 +2311,7 @@ button:disabled {
 .vibe-skin--starship-cockpit .vibe-skin-terminal-shell .xterm-pane,
 .vibe-skin--starship-cockpit .vibe-skin-terminal-shell .xterm,
 .vibe-skin--starship-cockpit .vibe-skin-terminal-shell .xterm-viewport,
+.vibe-skin--starship-cockpit .vibe-skin-terminal-shell .xterm-scrollable-element,
 .vibe-skin--starship-cockpit .vibe-skin-terminal-shell .xterm-screen,
 .vibe-skin--starship-cockpit .vibe-skin-terminal-shell .xterm-screen canvas,
 .vibe-skin--starship-cockpit .vibe-skin-terminal-shell canvas {

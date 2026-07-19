@@ -414,6 +414,10 @@ describe("vibeSkin", () => {
     expect(builtInSkin).toBeTruthy();
     expect(builtInSkin?.name).toBe("星舰驾驶舱");
     expect(builtInSkin?.terminal?.background).toBe("transparent");
+    expect(builtInSkin?.ui.tabActive).toBe("transparent");
+    expect(builtInSkin?.ui.tabInactive).toBe("transparent");
+    expect(builtInSkin?.regions?.tabActive?.background).toBe("transparent");
+    expect(builtInSkin?.regions?.tabActive?.color).toBe("#ffffff");
     expect(builtInSkin?.decorations?.variant).toBe("starship-cockpit");
     expect(builtInSkin?.decorations?.avatarTemplate).toBe("space-ai-core");
     expect(builtInSkin?.decorations?.showcaseTemplate).toBe("space-ship");

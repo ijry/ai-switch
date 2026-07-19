@@ -61,7 +61,7 @@ describe("XtermPane", () => {
   });
 
   it("subscribes to terminal events through the active transport", async () => {
-    render(<XtermPane session={session} />);
+    const { container } = render(<XtermPane session={session} />);
 
     await waitFor(() => expect(subscribe).toHaveBeenCalledTimes(3));
     const eventNames = subscribe.mock.calls.map((call: unknown[]) => call[0]);
@@ -70,6 +70,7 @@ describe("XtermPane", () => {
       "terminal://exit",
       "terminal://error",
     ]);
+    expect(container.querySelector(".xterm-pane-scrollbar-dark")).not.toBeNull();
   });
 
   it("marks skin panes transparent and uses a transparent xterm background", async () => {
@@ -86,6 +87,7 @@ describe("XtermPane", () => {
     );
 
     expect(container.querySelector(".xterm-pane-skin-transparent")).not.toBeNull();
+    expect(container.querySelector(".xterm-pane-scrollbar-skin")).not.toBeNull();
     await waitFor(() => expect(terminalConstructorOptions).toHaveLength(1));
 
     expect(terminalConstructorOptions[0]?.allowTransparency).toBe(true);
@@ -93,5 +95,11 @@ describe("XtermPane", () => {
       background: "transparent",
       foreground: "#eafcff",
     });
+  });
+
+  it("marks light panes with the light scrollbar theme", () => {
+    const { container } = render(<XtermPane session={session} themeMode="light" />);
+
+    expect(container.querySelector(".xterm-pane-scrollbar-light")).not.toBeNull();
   });
 });

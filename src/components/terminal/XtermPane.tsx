@@ -91,6 +91,11 @@ export function XtermPane({
     () => createTheme(themeMode, themeOverride, transparentSurface),
     [themeMode, themeOverride, transparentSurface],
   );
+  const scrollbarClass = transparentSurface
+    ? "xterm-pane-scrollbar-skin"
+    : themeMode === "dark"
+      ? "xterm-pane-scrollbar-dark"
+      : "xterm-pane-scrollbar-light";
 
   useEffect(() => {
     const host = hostRef.current;
@@ -210,7 +215,7 @@ export function XtermPane({
   return (
     <div
       aria-label={`${session.title} terminal`}
-      className={`xterm-pane h-full min-h-0 ${transparentSurface ? "xterm-pane-skin-transparent" : ""} ${
+      className={`xterm-pane ${scrollbarClass} h-full min-h-0 ${transparentSurface ? "xterm-pane-skin-transparent" : ""} ${
         active ? "block" : "hidden"
       }`}
       ref={hostRef}

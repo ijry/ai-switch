@@ -20,9 +20,9 @@
     "dangerBackground": "linear-gradient(180deg, #ff9b7a, #f45454)",
     "dangerText": "#190607",
     "tabBar": "linear-gradient(180deg, rgba(1,12,24,0.82), rgba(4,25,45,0.7))",
-    "tabActive": "linear-gradient(180deg, rgba(46,232,255,0.24), rgba(9,63,92,0.72))",
-    "tabInactive": "linear-gradient(180deg, rgba(6,28,52,0.62), rgba(2,14,28,0.68))",
-    "tabHover": "rgba(46, 232, 255, 0.12)",
+    "tabActive": "transparent",
+    "tabInactive": "transparent",
+    "tabHover": "transparent",
     "focus": "#f8c76a"
   },
   "terminal": {
@@ -157,15 +157,15 @@
       "border": "rgba(46,232,255,0.24)"
     },
     "tab": {
-      "background": "linear-gradient(180deg, rgba(6,28,52,0.62), rgba(2,14,28,0.68))",
+      "background": "transparent",
       "border": "rgba(46,232,255,0.18)",
-      "color": "#8bc9d8"
+      "color": "#d8fbff"
     },
     "tabActive": {
-      "background": "linear-gradient(180deg, rgba(46,232,255,0.24), rgba(9,63,92,0.72))",
+      "background": "transparent",
       "border": "rgba(46,232,255,0.38)",
-      "color": "#e6fbff",
-      "shadow": "0 0 24px rgba(46,232,255,0.14), inset 0 1px 0 rgba(163,251,255,0.25)"
+      "color": "#ffffff",
+      "shadow": "0 0 18px rgba(46,232,255,0.1)"
     },
     "tabClose": {
       "color": "#8bc9d8"
