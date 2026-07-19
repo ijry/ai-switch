@@ -1443,12 +1443,12 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       ? createProjectDir.trim()
       : null;
   const launchPanelClass = isSkin
-    ? "vibe-skin-launch-panel mx-auto w-full max-w-4xl shrink-0 rounded-[1.5rem] border p-3 text-left shadow-2xl backdrop-blur-xl sm:p-4"
+    ? "vibe-skin-launch-panel mx-auto w-full max-w-4xl shrink-0 rounded-[1.1rem] border p-2 text-left shadow-2xl backdrop-blur-xl"
     : isDark
       ? "mx-auto w-full max-w-4xl shrink-0 rounded-[1.5rem] border border-[#073642] bg-[#073642]/70 p-3 text-left shadow-2xl shadow-black/30 backdrop-blur-xl sm:p-4"
       : "mx-auto w-full max-w-4xl shrink-0 rounded-[1.5rem] border border-white/80 bg-white/82 p-3 text-left shadow-2xl shadow-stone-900/10 backdrop-blur-xl sm:p-4";
   const agentStripClass = isSkin
-    ? "vibe-skin-agent-strip rounded-2xl border p-2"
+    ? "vibe-skin-agent-strip flex flex-wrap items-center gap-1.5 rounded-lg border px-1.5 py-1"
     : isDark
       ? "rounded-2xl border border-[#586e75]/55 bg-[#002b36]/72 p-2 text-[#d8e2dc]"
       : "rounded-2xl border border-stone-200 bg-white/78 p-2 text-stone-700";
@@ -1456,7 +1456,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     isSkin
       ? `vibe-skin-agent-option ${
           active ? "vibe-skin-agent-option-active" : ""
-        } inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-[12px] font-semibold transition`
+        } inline-flex items-center gap-1.5 rounded-md border px-1.5 py-1 text-[10px] font-semibold leading-none transition`
       : isDark
         ? `inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-[12px] font-semibold transition ${
             active
@@ -1469,32 +1469,38 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
               : "border-stone-200 bg-white/70 text-stone-600 hover:border-stone-300 hover:text-stone-950"
           }`;
   const composerClass = isSkin
-    ? "vibe-skin-composer mt-3 rounded-2xl border p-2"
+    ? "vibe-skin-composer mt-1.5 rounded-lg border p-1.5"
     : isDark
       ? "mt-3 rounded-2xl border border-[#586e75]/50 bg-[#001e27]/72 p-2"
       : "mt-3 rounded-2xl border border-stone-200 bg-stone-50/82 p-2";
   const composerInputClass = isSkin
-    ? "vibe-skin-composer-input min-h-20 w-full resize-none rounded-xl border px-3 py-3 text-sm outline-none transition"
+    ? "vibe-skin-composer-input min-h-[3.25rem] w-full resize-none rounded-md border px-2 py-1.5 text-[12px] outline-none transition"
     : isDark
       ? "min-h-20 w-full resize-none rounded-xl border border-[#586e75]/50 bg-[#002b36]/70 px-3 py-3 text-sm text-[#fdf6e3] outline-none placeholder:text-[#586e75] focus:border-[#268bd2]"
       : "min-h-20 w-full resize-none rounded-xl border border-stone-200 bg-white px-3 py-3 text-sm text-stone-950 outline-none placeholder:text-stone-400 focus:border-blue-400";
   const composerMetaBarClass = isSkin
-    ? "vibe-skin-composer-meta-bar mt-2 flex flex-col gap-2 rounded-xl border p-2 sm:flex-row sm:items-end"
+    ? "vibe-skin-composer-meta-bar mt-1.5 flex flex-col gap-1 rounded-md border p-1 sm:flex-row sm:items-center"
     : isDark
       ? "mt-2 flex flex-col gap-2 rounded-xl border border-[#586e75]/40 bg-[#073642]/50 p-2 sm:flex-row sm:items-end"
       : "mt-2 flex flex-col gap-2 rounded-xl border border-stone-200 bg-white/70 p-2 sm:flex-row sm:items-end";
+  const composerLabelClass = isSkin
+    ? "min-w-0 flex flex-1 items-center gap-1 text-[10px] font-semibold leading-none"
+    : "min-w-0 flex-1 text-[11px] font-semibold";
+  const composerLabelTextClass = isSkin
+    ? "shrink-0 whitespace-nowrap text-[var(--vibe-muted-text)]"
+    : "";
   const composerControlClass = isSkin
-    ? "vibe-skin-composer-control mt-1 h-10 w-full min-w-0 rounded-xl border px-3 text-[12px] outline-none transition"
+    ? "vibe-skin-composer-control h-7 w-full min-w-0 flex-1 rounded-md border px-1.5 text-[10px] outline-none transition"
     : isDark
       ? "mt-1 h-10 w-full min-w-0 rounded-xl border border-[#586e75]/55 bg-[#002b36] px-3 text-[12px] text-[#fdf6e3] outline-none focus:border-[#268bd2]"
       : "mt-1 h-10 w-full min-w-0 rounded-xl border border-stone-200 bg-white px-3 text-[12px] text-stone-950 outline-none focus:border-blue-400";
   const composerSendButtonClass = isSkin
-    ? "vibe-skin-composer-send-button inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border px-4 text-[13px] font-semibold transition sm:ml-auto"
+    ? "vibe-skin-composer-send-button inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border px-2.5 text-[11px] font-semibold transition sm:ml-auto"
     : isDark
       ? "inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-[#b58900] bg-[#b58900] px-4 text-[13px] font-semibold text-[#002b36] transition hover:bg-[#cb4b16] hover:text-white sm:ml-auto"
       : "inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl bg-stone-950 px-4 text-[13px] font-semibold text-white transition hover:bg-stone-800 sm:ml-auto";
   const composerAddonClass = isSkin
-    ? "vibe-skin-composer-addon inline-flex shrink-0 items-center gap-1 rounded-full border px-3 py-1 text-[11px] font-semibold"
+    ? "vibe-skin-composer-addon inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-semibold leading-none"
     : isDark
       ? "inline-flex shrink-0 items-center gap-1 rounded-full border border-[#586e75]/50 px-3 py-1 text-[11px] font-semibold text-[#9fc3cf]"
       : "inline-flex shrink-0 items-center gap-1 rounded-full border border-stone-200 px-3 py-1 text-[11px] font-semibold text-stone-500";
@@ -1932,12 +1938,18 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                     : `vibe-scrollbar ${scrollbarThemeClass} flex h-full min-h-0 flex-col justify-between gap-4 overflow-y-auto p-4 text-center`
                 }
               >
-                <div className="flex min-h-[9rem] flex-1 items-center justify-center pt-4">
+                <div
+                  className={
+                    isSkin
+                      ? "flex min-h-[4rem] flex-1 items-center justify-center pt-1"
+                      : "flex min-h-[9rem] flex-1 items-center justify-center pt-4"
+                  }
+                >
                   <div>
                     <TerminalSquare
                       className={
                         isSkin
-                          ? "mx-auto h-8 w-8 text-[var(--vibe-accent)]"
+                          ? "mx-auto h-5 w-5 text-[var(--vibe-accent)]"
                           : isDark
                             ? "mx-auto h-8 w-8 text-[#586e75]"
                             : "mx-auto h-8 w-8 text-stone-400"
@@ -1946,7 +1958,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                     <p
                       className={
                         isSkin
-                          ? "mt-2 text-sm font-semibold text-[var(--vibe-text)]"
+                          ? "mt-1 text-[11px] font-semibold leading-none text-[var(--vibe-text)]"
                           : isDark
                             ? "mt-2 text-sm font-semibold text-[#fdf6e3]"
                             : "mt-2 text-sm font-semibold text-stone-900"
@@ -1957,7 +1969,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                     <p
                       className={
                         isSkin
-                          ? "mt-1 text-[13px] text-[var(--vibe-muted-text)]"
+                          ? "mt-0.5 text-[10px] leading-tight text-[var(--vibe-muted-text)]"
                           : isDark
                             ? "mt-1 text-[13px] text-[#93a1a1]"
                             : "mt-1 text-[13px] text-stone-500"
@@ -1969,16 +1981,28 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 </div>
                 <section aria-label={launchTitle} className={launchPanelClass}>
                   <div className={agentStripClass}>
-                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex min-w-0 items-center gap-2">
+                    <div
+                      className={
+                        isSkin
+                          ? "flex min-w-0 shrink-0 items-center gap-1"
+                          : "mb-2 flex flex-wrap items-center justify-between gap-2"
+                      }
+                    >
+                      <div className={isSkin ? "flex min-w-0 items-center gap-1.5" : "flex min-w-0 items-center gap-2"}>
                         {launchAgentPrefix && <span className={composerAddonClass}>{launchAgentPrefix}</span>}
-                        <span className="truncate text-[12px] font-semibold">
+                        <span className={isSkin ? "truncate text-[10px] font-semibold leading-none" : "truncate text-[12px] font-semibold"}>
                           {launchAgentStripLabel}
                         </span>
                       </div>
                       {launchAgentSuffix && <span className={composerAddonClass}>{launchAgentSuffix}</span>}
                     </div>
-                    <div className="vibe-scrollbar vibe-scrollbar-horizontal flex gap-2 overflow-x-auto pb-1">
+                    <div
+                      className={
+                        isSkin
+                          ? "vibe-scrollbar vibe-scrollbar-horizontal flex min-w-0 flex-1 gap-1 overflow-x-auto pb-0.5"
+                          : "vibe-scrollbar vibe-scrollbar-horizontal flex gap-2 overflow-x-auto pb-1"
+                      }
+                    >
                       {agentOptions.map((option) => {
                         const active = createPlatform === option.platform;
                         return (
@@ -1992,7 +2016,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                             }}
                             type="button"
                           >
-                            <AgentIcon className="h-5 w-5" platform={option.platform} />
+                            <AgentIcon className={isSkin ? "h-4 w-4" : "h-5 w-5"} platform={option.platform} />
                             <span>{option.label}</span>
                           </button>
                         );
@@ -2001,7 +2025,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                   </div>
 
                   {(launchExtraLabel || launchExtraValue) && (
-                    <div className="mt-3 flex flex-wrap gap-2">
+                    <div className={isSkin ? "mt-1 flex flex-wrap gap-1" : "mt-3 flex flex-wrap gap-2"}>
                       {launchExtraLabel && <span className={composerAddonClass}>{launchExtraLabel}</span>}
                       {launchExtraValue && <span className={composerAddonClass}>{launchExtraValue}</span>}
                     </div>
@@ -2016,8 +2040,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                       value={launchPrompt}
                     />
                     <div className={composerMetaBarClass}>
-                      <label className="min-w-0 flex-1 text-[11px] font-semibold sm:max-w-[18rem]">
-                        <span>{launchFolderLabel}</span>
+                      <label className={`${composerLabelClass} ${isSkin ? "sm:max-w-[12rem]" : "sm:max-w-[18rem]"}`}>
+                        <span className={composerLabelTextClass}>{launchFolderLabel}</span>
                         <select
                           className={`${composerControlClass} truncate`}
                           onChange={handleLaunchFolderChange}
@@ -2037,8 +2061,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                           <option value={chooseFolderOptionValue}>{t("vibe.launchNewFolder")}</option>
                         </select>
                       </label>
-                      <label className="min-w-0 flex-1 text-[11px] font-semibold sm:max-w-[11rem]">
-                        <span>{launchModelLabel}</span>
+                      <label className={`${composerLabelClass} ${isSkin ? "sm:max-w-[8.25rem]" : "sm:max-w-[11rem]"}`}>
+                        <span className={composerLabelTextClass}>{launchModelLabel}</span>
                         <select
                           className={composerControlClass}
                           onChange={(event) =>
@@ -2055,8 +2079,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                           ))}
                         </select>
                       </label>
-                      <label className="min-w-0 flex-1 text-[11px] font-semibold sm:max-w-[10rem]">
-                        <span>{launchReasoningLabel}</span>
+                      <label className={`${composerLabelClass} ${isSkin ? "sm:max-w-[8.25rem]" : "sm:max-w-[10rem]"}`}>
+                        <span className={composerLabelTextClass}>{launchReasoningLabel}</span>
                         <select
                           className={composerControlClass}
                           onChange={(event) =>
@@ -2079,7 +2103,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                         onClick={launchFromComposer}
                         type="button"
                       >
-                        <SendHorizontal className="h-4 w-4" />
+                        <SendHorizontal className={isSkin ? "h-3.5 w-3.5" : "h-4 w-4"} />
                         <span>{launchSendLabel}</span>
                       </button>
                     </div>
