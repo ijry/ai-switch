@@ -31,6 +31,8 @@ model output, raw response snippet, latency, and selected account.
 
 In the route pool panel, keep the button label as "测试路由" so the control stays compact.
 The result card title and detail content should clarify that this is a model connectivity test.
+The button must call the app's internal backend test command directly. It must not require the
+local route proxy to be running, and it must not require route config files to be written first.
 
 When clicked:
 
@@ -209,6 +211,8 @@ Rust tests cover:
 Frontend tests cover:
 
 - clicking "测试路由" calls `routePoolTestModel`.
+- "测试路由" remains available without starting the local proxy or writing route config files
+  when the pool has at least one enabled account.
 - success result shows account, status, latency, extracted output, request JSON, and response body.
 - failure result shows selected account and error/status details.
 - request statistics detail view displays model connectivity metadata.
