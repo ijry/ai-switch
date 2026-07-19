@@ -6,10 +6,18 @@ import rescuePupsAdventureBaySkinManifest from "../skins/rescue-pups-adventure-b
 import starshipCockpitSkinManifest from "../skins/starship-cockpit/skin.json";
 
 export const VIBE_SKIN_STORAGE_KEY = "ai-switch.vibe.custom-skin";
+export const VIBE_APPEARANCE_STORAGE_KEY = "ai-switch.vibe.appearance";
 
 const MAX_IMPORT_SIZE_BYTES = 8 * 1024 * 1024;
 const MAX_STORED_SKIN_BYTES = 4_500_000;
 const ZIP_MANIFEST_NAMES = ["skin.json", "vibe-skin.json"];
+
+export type VibeAppearanceTheme = "dark" | "light" | "skin";
+
+export type VibeAppearancePreference = {
+  themeMode?: VibeAppearanceTheme;
+  skinId?: string;
+};
 
 export type VibeTerminalThemeKey =
   | "background"
@@ -1296,6 +1304,42 @@ export function writeStoredVibeSkin(skin: VibeSkinDefinition) {
 
 export function clearStoredVibeSkin() {
   window.localStorage.removeItem(VIBE_SKIN_STORAGE_KEY);
+}
+
+export function readStoredVibeAppearance(): VibeAppearancePreference {
+  try {
+    const stored = window.localStorage.getItem(VIBE_APPEARANCE_STORAGE_KEY);
+    if (!stored) {
+      return {};
+    }
+    const raw = JSON.parse(stored) as unknown;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return {};
+    }
+
+    const source = raw as Record<string, unknown>;
+    const themeMode =
+      source.themeMode === "dark" || source.themeMode === "light" || source.themeMode === "skin"
+        ? source.themeMode
+        : undefined;
+    return {
+      themeMode,
+      skinId: optionalString(source.skinId),
+    };
+  } catch {
+    return {};
+  }
+}
+
+export function writeStoredVibeAppearance(preference: VibeAppearancePreference) {
+  const stored: VibeAppearancePreference = {};
+  if (preference.themeMode) {
+    stored.themeMode = preference.themeMode;
+  }
+  if (preference.skinId) {
+    stored.skinId = preference.skinId;
+  }
+  window.localStorage.setItem(VIBE_APPEARANCE_STORAGE_KEY, JSON.stringify(stored));
 }
 
 function cssUrl(value: string) {

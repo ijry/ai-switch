@@ -25,11 +25,14 @@ import {
   getVibeSkinBlocks,
   importVibeSkinPackage,
   VIBE_SKIN_REGION_KEYS,
+  readStoredVibeAppearance,
   readStoredVibeSkin,
   skinToCssVariables,
+  writeStoredVibeAppearance,
   writeStoredVibeSkin,
 } from "../lib/vibeSkin";
 import type {
+  VibeAppearanceTheme,
   VibeSkinDecorationCard,
   VibeSkinDecorationItem,
   VibeSkinDecorationTemplate,
@@ -75,7 +78,7 @@ const chooseFolderOptionValue = "__choose_folder__";
 
 type AgentPlatform = (typeof agentOptions)[number]["platform"];
 
-type VibeTheme = "dark" | "light" | "skin";
+type VibeTheme = VibeAppearanceTheme;
 
 type VibeScreenProps = {
   onExitVibe?: () => void;
@@ -975,13 +978,15 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     useState<(typeof launchModelOptions)[number]["value"]>("auto");
   const [launchReasoning, setLaunchReasoning] =
     useState<(typeof launchReasoningOptions)[number]["value"]>("auto");
-  const [themeMode, setThemeMode] = useState<VibeTheme>("dark");
+  const [themeMode, setThemeMode] = useState<VibeTheme>(
+    () => readStoredVibeAppearance().themeMode ?? "dark",
+  );
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [startMenuOpen, setStartMenuOpen] = useState(false);
   const [clockNow, setClockNow] = useState(() => new Date());
   const [customSkin, setCustomSkin] = useState<VibeSkinDefinition | null>(() => readStoredVibeSkin());
   const [activeSkinId, setActiveSkinId] = useState<string>(
-    () => readStoredVibeSkin()?.id ?? BUILT_IN_VIBE_SKINS[0].id,
+    () => readStoredVibeAppearance().skinId ?? readStoredVibeSkin()?.id ?? BUILT_IN_VIBE_SKINS[0].id,
   );
   const [error, setError] = useState<string | null>(null);
   const [sessionListScrolling, setSessionListScrolling] = useState(false);
@@ -1023,6 +1028,16 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     () => availableSkins.find((skin) => skin.id === activeSkinId) ?? BUILT_IN_VIBE_SKINS[0],
     [activeSkinId, availableSkins],
   );
+
+  useEffect(() => {
+    if (!availableSkins.some((skin) => skin.id === activeSkinId)) {
+      setActiveSkinId(BUILT_IN_VIBE_SKINS[0].id);
+    }
+  }, [activeSkinId, availableSkins]);
+
+  useEffect(() => {
+    writeStoredVibeAppearance({ themeMode, skinId: activeSkin.id });
+  }, [activeSkin.id, themeMode]);
 
   const openTerminal = useCallback(async (input: CreateTerminalSessionInput) => {
     setError(null);
@@ -1740,7 +1755,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
             )}
             {tabs.map((tab) => (
               <div
-                className={`group relative inline-flex h-full max-w-[220px] min-w-[132px] shrink-0 items-center border-r ${
+                className={`group relative inline-flex h-full max-w-[220px] min-w-[132px] shrink-0 items-center overflow-hidden border-r ${
                   activeId === tab.id
                     ? isSkin
                       ? "vibe-skin-tab-active text-[var(--vibe-text)]"
@@ -1768,7 +1783,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                   />
                 )}
                 <button
-                  className="inline-flex h-full min-w-0 flex-1 items-center gap-2 px-3 pr-1 text-[12px] font-medium"
+                  className="inline-flex h-full min-w-0 flex-1 items-center gap-2 bg-transparent px-3 pr-1 text-[12px] font-medium"
                   onClick={() => setActiveId(tab.id)}
                   type="button"
                 >
@@ -1779,10 +1794,10 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                   aria-label={t("vibe.closeTabAria", { title: tab.title })}
                   className={
                     isSkin
-                      ? "vibe-skin-tab-close mr-1.5 grid h-5 w-5 shrink-0 place-items-center opacity-70 transition group-hover:opacity-100"
+                      ? "vibe-skin-tab-close vibe-tab-close-icon inline-flex h-full shrink-0 items-center justify-center opacity-60 transition group-hover:opacity-100"
                       : isDark
-                        ? "vibe-dark-tab-close mr-1.5 grid h-5 w-5 shrink-0 place-items-center opacity-70 transition group-hover:opacity-100"
-                        : "vibe-light-tab-close mr-1.5 grid h-5 w-5 shrink-0 place-items-center opacity-70 transition group-hover:opacity-100"
+                        ? "vibe-dark-tab-close vibe-tab-close-icon inline-flex h-full shrink-0 items-center justify-center opacity-60 transition group-hover:opacity-100"
+                        : "vibe-light-tab-close vibe-tab-close-icon inline-flex h-full shrink-0 items-center justify-center opacity-60 transition group-hover:opacity-100"
                   }
                   onClick={() => void closeTab(tab)}
                   type="button"

@@ -387,18 +387,13 @@ button:disabled {
 
 .vibe-light-group-panel {
   border-color: rgba(14, 116, 144, 0.22);
-  background:
-    radial-gradient(circle at 9% 0%, rgba(56, 189, 248, 0.22), transparent 8rem),
-    linear-gradient(135deg, rgba(224, 242, 254, 0.98), rgba(204, 251, 241, 0.92) 55%, rgba(255, 247, 214, 0.9));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.96),
-    0 10px 20px rgba(14, 116, 144, 0.09);
+  background: transparent;
+  box-shadow: none;
 }
 
 .vibe-light-list-trigger {
   border: 1px solid rgba(14, 116, 144, 0.14);
-  background:
-    linear-gradient(135deg, rgba(14, 165, 233, 0.14), rgba(251, 191, 36, 0.12));
+  background: transparent;
   color: #075985;
 }
 
@@ -614,7 +609,18 @@ button:disabled {
 
 .vibe-skin-tab-close {
   color: var(--vibe-tab-close-color, var(--vibe-muted-text));
-  padding: var(--vibe-tab-close-padding);
+}
+
+.vibe-tab-close-icon {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  line-height: 1;
+  padding: 0 0.55rem;
+}
+
+.vibe-tab-close-icon:hover {
+  background: transparent;
 }
 
 .vibe-skin-terminal-shell {
@@ -2192,7 +2198,7 @@ button:disabled {
 }
 
 .vibe-skin--starship-cockpit .vibe-skin-tab-close {
-  border-radius: 999px;
+  border-radius: 0;
 }
 
 .vibe-skin--starship-cockpit .vibe-skin-tab-close:hover {

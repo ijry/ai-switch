@@ -11,7 +11,7 @@ import {
 import type { SessionMeta, TerminalSession } from "../src/lib/api/types";
 import { createQueryClient } from "../src/lib/query/queryClient";
 import { __resetTransportForTests } from "../src/lib/transport";
-import { VIBE_SKIN_STORAGE_KEY } from "../src/lib/vibeSkin";
+import { VIBE_APPEARANCE_STORAGE_KEY, VIBE_SKIN_STORAGE_KEY } from "../src/lib/vibeSkin";
 import { VibeScreen } from "../src/screens/VibeScreen";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -495,6 +495,31 @@ describe("VibeScreen", () => {
     );
     expect(document.querySelector(".vibe-skin-showcase-stage")).toBeFalsy();
     expect(screen.queryByText("皮肤区域")).not.toBeInTheDocument();
+  });
+
+  it("persists the selected Vibe skin across remounts", async () => {
+    const view = renderScreen();
+
+    await switchToSkinTheme();
+    await openAppearanceDialog();
+    await userEvent.selectOptions(screen.getByLabelText("Vibe skin"), "starship-cockpit");
+
+    await waitFor(() =>
+      expect(window.localStorage.getItem(VIBE_APPEARANCE_STORAGE_KEY)).toContain(
+        "starship-cockpit",
+      ),
+    );
+
+    view.unmount();
+    renderScreen();
+
+    expect(await screen.findByRole("button", { name: "Switch Vibe theme" })).toHaveTextContent(
+      "Skin",
+    );
+    expect(await screen.findByText("星舰驾驶舱 - Vibe 终端")).toBeInTheDocument();
+
+    await openAppearanceDialog();
+    expect(screen.getByLabelText("Vibe skin")).toHaveValue("starship-cockpit");
   });
 
   it("renders custom rescue-style decorations from a stored skin package manifest", async () => {
