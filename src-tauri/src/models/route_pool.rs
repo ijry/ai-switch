@@ -62,6 +62,29 @@ pub struct RoutePoolRouteOutcome {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoutePoolModelTestRequest {
+    pub platform: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoutePoolModelTestOutcome {
+    pub platform: String,
+    /// Selected route_credentials.id.
+    pub selected_account_id: String,
+    pub selected_account_name: String,
+    pub interface_format: String,
+    pub request_path: String,
+    pub request_body_json: String,
+    pub response_status: Option<u16>,
+    pub response_body: String,
+    pub response_text: Option<String>,
+    pub error_message: Option<String>,
+    pub success: bool,
+    pub duration_ms: i64,
+    pub stats: RoutePoolStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RoutePoolMemberAccount {
     /// route_credentials.id
     pub id: String,

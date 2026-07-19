@@ -15,10 +15,13 @@ use crate::models::route_credential::{
     CreateApiRouteCredentialInput, ImportOfficialFilesInput, ImportOfficialTextInput,
     UpdateRouteCredentialInput,
 };
-use crate::models::route_pool::{RoutePoolRouteRequest, SetRoutePoolMembersInput};
+use crate::models::route_pool::{
+    RoutePoolModelTestRequest, RoutePoolRouteRequest, SetRoutePoolMembersInput,
+};
 use crate::models::settings::AppSettings;
 use crate::services::route_config_service::RouteConfigService;
 use crate::services::route_credential_service::RouteCredentialService;
+use crate::services::route_model_test_service::RouteModelTestService;
 use crate::services::route_pool_service::RoutePoolService;
 use crate::services::route_proxy_service::RouteProxyService;
 use crate::services::tailscale_service::TailscaleService;
@@ -163,6 +166,14 @@ pub async fn dispatch_command(
             let request: RoutePoolRouteRequest = parse_arg(&args, "request")?;
             to_value(
                 RoutePoolService::route_once(&state.pool, request)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "route_pool_test_model" => {
+            let request: RoutePoolModelTestRequest = parse_arg(&args, "request")?;
+            to_value(
+                RouteModelTestService::test_model(&state.pool, request)
                     .await
                     .map_err(to_error)?,
             )

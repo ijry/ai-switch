@@ -11,6 +11,8 @@ import type {
   RouteConfigWriteOutcome,
   RouteCredential,
   RouteCredentialImportResult,
+  RoutePoolModelTestOutcome,
+  RoutePoolModelTestRequest,
   RoutePoolRouteOutcome,
   RoutePoolRouteRequest,
   RoutePoolState,
@@ -97,6 +99,10 @@ export function setRoutePoolMembers(input: {
 
 export function routePoolRouteOnce(request: RoutePoolRouteRequest): Promise<RoutePoolRouteOutcome> {
   return invoke("route_pool_route_once", { request });
+}
+
+export function routePoolTestModel(request: RoutePoolModelTestRequest): Promise<RoutePoolModelTestOutcome> {
+  return invoke("route_pool_test_model", { request });
 }
 
 export function getSettings(): Promise<AppSettings> {

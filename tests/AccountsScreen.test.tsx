@@ -12,7 +12,7 @@ import {
   importOfficialRouteCredentialsFromFiles,
   importOfficialRouteCredentialsFromText,
   listRouteCredentials,
-  routePoolRouteOnce,
+  routePoolTestModel,
   setRoutePoolMembers,
   startRouteProxy,
   stopRouteProxy,
@@ -22,7 +22,7 @@ import {
 import { recognizeApiKeysFromImageBlob } from "../src/lib/ocr/apiKeyOcr";
 import { createQueryClient } from "../src/lib/query/queryClient";
 import { AccountsScreen } from "../src/screens/AccountsScreen";
-import type { RouteCredential, RoutePoolStats } from "../src/lib/api/types";
+import type { RouteCredential, RoutePoolModelTestOutcome, RoutePoolStats } from "../src/lib/api/types";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(),
@@ -37,7 +37,7 @@ vi.mock("../src/lib/api/client", () => ({
   importOfficialRouteCredentialsFromFiles: vi.fn(),
   importOfficialRouteCredentialsFromText: vi.fn(),
   listRouteCredentials: vi.fn(),
-  routePoolRouteOnce: vi.fn(),
+  routePoolTestModel: vi.fn(),
   setRoutePoolMembers: vi.fn(),
   startRouteProxy: vi.fn(),
   stopRouteProxy: vi.fn(),
@@ -101,6 +101,41 @@ function statsFixture(overrides: Partial<RoutePoolStats> = {}): RoutePoolStats {
   };
 }
 
+function modelTestOutcomeFixture(
+  overrides: Partial<RoutePoolModelTestOutcome> = {},
+): RoutePoolModelTestOutcome {
+  return {
+    platform: "codex",
+    selected_account_id: "cred-official-1",
+    selected_account_name: "Team Account",
+    interface_format: "openai",
+    request_path: "/chat/completions",
+    request_body_json: JSON.stringify(
+      {
+        model: "gpt-5",
+        messages: [{ role: "user", content: "Reply with exactly: ai-switch-ok" }],
+        temperature: 0,
+        max_tokens: 16,
+      },
+      null,
+      2,
+    ),
+    response_status: 200,
+    response_body: "{\"choices\":[{\"message\":{\"content\":\"ai-switch-ok\"}}]}",
+    response_text: "ai-switch-ok",
+    error_message: null,
+    success: true,
+    duration_ms: 321,
+    stats: statsFixture({
+      member_count: 1,
+      request_count: 1,
+      token_count: 8,
+      cost_micros: 42,
+    }),
+    ...overrides,
+  };
+}
+
 function renderScreen(platform: "codex" | "claude" = "codex") {
   return render(
     <QueryClientProvider client={createQueryClient()}>
@@ -124,7 +159,7 @@ describe("AccountsScreen", () => {
     vi.mocked(importOfficialRouteCredentialsFromFiles).mockReset();
     vi.mocked(importOfficialRouteCredentialsFromText).mockReset();
     vi.mocked(listRouteCredentials).mockReset();
-    vi.mocked(routePoolRouteOnce).mockReset();
+    vi.mocked(routePoolTestModel).mockReset();
     vi.mocked(setRoutePoolMembers).mockReset();
     vi.mocked(startRouteProxy).mockReset();
     vi.mocked(stopRouteProxy).mockReset();
@@ -169,17 +204,7 @@ describe("AccountsScreen", () => {
         cost_micros: 2500,
       }),
     }));
-    vi.mocked(routePoolRouteOnce).mockResolvedValue({
-      platform: "codex",
-      selected_account_id: "cred-official-1",
-      selected_account_name: "Team Account",
-      stats: statsFixture({
-        member_count: 1,
-        request_count: 2,
-        token_count: 5120,
-        cost_micros: 3700,
-      }),
-    });
+    vi.mocked(routePoolTestModel).mockResolvedValue(modelTestOutcomeFixture());
     vi.mocked(startRouteProxy).mockResolvedValue({
       running: true,
       bind_host: "127.0.0.1",
@@ -475,11 +500,21 @@ describe("AccountsScreen", () => {
               amount: 1,
               unit: "count",
               metadata_json: JSON.stringify({
+                source: "ui_model_connectivity_test",
+                request_kind: "model_connectivity",
                 platform: "codex",
                 route_credential_id: "cred-official-1",
                 route_credential_name: "Team Account",
-                path: "/v1/responses",
-                status: 201,
+                interface_format: "openai",
+                path: "/chat/completions",
+                status: 200,
+                success: true,
+                duration_ms: 321,
+                request_body_json:
+                  "{\"model\":\"gpt-5\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: ai-switch-ok\"}]}",
+                response_body: "{\"choices\":[{\"message\":{\"content\":\"ai-switch-ok\"}}]}",
+                response_text: "ai-switch-ok",
+                error_message: null,
               }),
               created_at: "2026-07-17T08:00:00Z",
             },
@@ -511,8 +546,8 @@ describe("AccountsScreen", () => {
     expect(screen.getByRole("button", { name: "累计" })).toBeInTheDocument();
     expect(screen.getByText("共 42 条 · 每页 20 条")).toBeInTheDocument();
     expect(screen.getByText("第 1 / 3 页")).toBeInTheDocument();
-    expect(screen.getByText("/v1/responses")).toBeInTheDocument();
-    expect(screen.getByText("201")).toBeInTheDocument();
+    expect(screen.getByText(/\/chat\/completions/)).toBeInTheDocument();
+    expect(screen.getByText("200")).toBeInTheDocument();
     expect(screen.getAllByText("route_proxy")).toHaveLength(2);
     expect(screen.getByLabelText("查看请求 request-success 详情")).toBeInTheDocument();
 
@@ -528,8 +563,12 @@ describe("AccountsScreen", () => {
     expect(within(successDetail).getByText("cred-official-1")).toBeInTheDocument();
     expect(within(successDetail).getByText("Team Account")).toBeInTheDocument();
     expect(within(successDetail).getByText("1 count")).toBeInTheDocument();
-    expect(within(successDetail).getByText(/"path": "\/v1\/responses"/)).toBeInTheDocument();
-    expect(within(successDetail).getByText(/"status": 201/)).toBeInTheDocument();
+    expect(within(successDetail).getByText(/"path": "\/chat\/completions"/)).toBeInTheDocument();
+    expect(within(successDetail).getByText(/"status": 200/)).toBeInTheDocument();
+    expect(within(successDetail).getByText(/model_connectivity/)).toBeInTheDocument();
+    expect(within(successDetail).getByText(/request_body_json/)).toBeInTheDocument();
+    expect(within(successDetail).getByText(/response_body/)).toBeInTheDocument();
+    expect(within(successDetail).getByText(/ai-switch-ok/)).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("查看请求 request-invalid-metadata 详情"));
 
@@ -611,40 +650,58 @@ describe("AccountsScreen", () => {
     expect(getRoutePool).toHaveBeenCalledTimes(3);
   });
 
-  it("starts proxy, writes configs, and tests the credential pool route", async () => {
+  it("tests the credential pool route through the internal model connectivity check", async () => {
     renderScreen();
 
     expect(await screen.findByText("本地代理：未启动")).toBeInTheDocument();
-    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
-    await waitFor(() => expect(startRouteProxy).toHaveBeenCalled());
-    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+    expect(screen.getByLabelText("测试算力池路由")).toBeDisabled();
 
-    await userEvent.click(screen.getByLabelText("写入路由配置文件"));
-    await waitFor(() =>
-      expect(writeRouteProxyConfigs).toHaveBeenCalledWith("http://127.0.0.1:43111", "codex"),
-    );
-    expect(screen.getByText("配置写入结果")).toBeInTheDocument();
-
-    await userEvent.click(screen.getByLabelText("将 Team Account 加入算力池"));
+    await userEvent.click(await screen.findByLabelText("将 Team Account 加入算力池"));
+    await waitFor(() => expect(screen.getByLabelText("测试算力池路由")).toBeEnabled());
     await userEvent.click(screen.getByLabelText("测试算力池路由"));
+
     await waitFor(() =>
-      expect(routePoolRouteOnce).toHaveBeenCalledWith({
+      expect(routePoolTestModel).toHaveBeenCalledWith({
         platform: "codex",
-        token_count: 1024,
-        cost_micros: 1200,
-        metadata_json: JSON.stringify({
-          source: "ui_test_route",
-          path: "/__ai-switch/test-route",
-          status: "selected",
-          request_kind: "manual_pool_selection",
-        }),
       }),
     );
+    expect(startRouteProxy).not.toHaveBeenCalled();
+    expect(writeRouteProxyConfigs).not.toHaveBeenCalled();
+    expect(await screen.findByText("模型连通性：通过")).toBeInTheDocument();
+    expect(screen.getByText("模型输出")).toBeInTheDocument();
+    expect(screen.getByText("ai-switch-ok")).toBeInTheDocument();
+    expect(screen.getByText("HTTP 200 · 321 ms")).toBeInTheDocument();
+    expect(screen.getByText(/\/chat\/completions/)).toBeInTheDocument();
+    expect(screen.getByText(/Reply with exactly: ai-switch-ok/)).toBeInTheDocument();
+    expect(screen.getByText(/choices/)).toBeInTheDocument();
     expect(screen.getByText("最近路由到：Team Account")).toBeInTheDocument();
-    const proxyStatus = screen.getByText("本地代理：http://127.0.0.1:43111");
+
+    const proxyStatus = screen.getByText("本地代理：未启动");
     const recentRouteStatus = screen.getByText("最近路由到：Team Account");
     expect(proxyStatus.className).not.toContain("bg-white");
     expect(recentRouteStatus.className).not.toContain("bg-white");
+  });
+
+  it("shows model connectivity failure details from the route test", async () => {
+    vi.mocked(routePoolTestModel).mockResolvedValue(
+      modelTestOutcomeFixture({
+        response_status: 401,
+        response_body: "{\"error\":{\"message\":\"bad key\"}}",
+        response_text: null,
+        success: false,
+        duration_ms: 88,
+      }),
+    );
+
+    renderScreen();
+
+    await userEvent.click(await screen.findByLabelText("将 Team Account 加入算力池"));
+    await userEvent.click(screen.getByLabelText("测试算力池路由"));
+
+    expect(await screen.findByText("模型连通性：失败")).toBeInTheDocument();
+    expect(screen.getByText("HTTP 401 · 88 ms")).toBeInTheDocument();
+    expect(screen.getByText(/bad key/)).toBeInTheDocument();
+    expect(screen.getByText("Team Account")).toBeInTheDocument();
   });
 
   it("clears route config write results after a short delay", async () => {

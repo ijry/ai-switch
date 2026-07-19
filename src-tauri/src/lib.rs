@@ -27,7 +27,7 @@ use commands::route_credential_commands::{
     list_route_credentials, update_route_credential,
 };
 use commands::route_pool_commands::{
-    get_route_pool, route_pool_route_once, set_route_pool_members,
+    get_route_pool, route_pool_route_once, route_pool_test_model, set_route_pool_members,
 };
 use commands::route_proxy_commands::{
     get_route_proxy_status, start_route_proxy, stop_route_proxy, write_route_proxy_configs,
@@ -110,6 +110,7 @@ pub fn run() {
             get_route_pool,
             set_route_pool_members,
             route_pool_route_once,
+            route_pool_test_model,
             start_route_proxy,
             stop_route_proxy,
             get_route_proxy_status,

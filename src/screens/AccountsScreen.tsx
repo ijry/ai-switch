@@ -28,7 +28,7 @@ import {
   importOfficialRouteCredentialsFromFiles,
   importOfficialRouteCredentialsFromText,
   listRouteCredentials,
-  routePoolRouteOnce,
+  routePoolTestModel,
   setRoutePoolMembers,
   startRouteProxy,
   stopRouteProxy,
@@ -41,6 +41,7 @@ import type {
   ModelMapping,
   RouteConfigWriteOutcome,
   RouteCredential,
+  RoutePoolModelTestOutcome,
   RoutePoolUsageLog,
 } from "../lib/api/types";
 import {
@@ -436,6 +437,19 @@ function ModelMappingsEditor({ error, label, onChange, platform, value }: ModelM
   );
 }
 
+function modelTestStatusLine(outcome: RoutePoolModelTestOutcome) {
+  const status = outcome.response_status ? `HTTP ${outcome.response_status}` : "无 HTTP 状态";
+  return `${status} · ${outcome.duration_ms} ms`;
+}
+
+function prettyJsonOrText(value: string) {
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
+}
+
 export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsScreenProps) {
   const queryClient = useQueryClient();
   const activePlatform = platform;
@@ -470,6 +484,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const [editModelMappingsError, setEditModelMappingsError] = useState<string | null>(null);
   const [editPreviewJson, setEditPreviewJson] = useState("{}");
   const [lastRouteAccount, setLastRouteAccount] = useState<string | null>(null);
+  const [modelTestOutcome, setModelTestOutcome] = useState<RoutePoolModelTestOutcome | null>(null);
   const [configWriteOutcomes, setConfigWriteOutcomes] = useState<RouteConfigWriteOutcome[]>([]);
   const statsSince = useMemo(() => routeStatsSince(statsPeriod), [statsPeriod]);
 
@@ -651,17 +666,21 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       }
     },
   });
-  const routeOnceMutation = useMutation({
-    mutationFn: (request: {
-      platform: string;
-      token_count?: number | null;
-      cost_micros?: number | null;
-      metadata_json?: string | null;
-    }) => routePoolRouteOnce(request),
+  const modelTestMutation = useMutation({
+    mutationFn: (request: { platform: string }) => routePoolTestModel(request),
     onSuccess: (outcome) => {
-      void queryClient.invalidateQueries({ queryKey: ["route-pool", activePlatform] });
-      setStatsOpen(true);
+      setModelTestOutcome(outcome);
       setLastRouteAccount(outcome.selected_account_name);
+      setStatsOpen(true);
+      queryClient.setQueryData(
+        ["route-pool", activePlatform, statsSince, requestPage, routeStatsPageSize],
+        {
+          platform: outcome.platform,
+          account_ids: routePoolQuery.data?.account_ids ?? Array.from(draftPoolIds),
+          stats: outcome.stats,
+        },
+      );
+      void queryClient.invalidateQueries({ queryKey: ["route-pool", activePlatform] });
     },
   });
   const startProxyMutation = useMutation({
@@ -730,16 +749,8 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   };
 
   const testRoute = () => {
-    routeOnceMutation.mutate({
+    modelTestMutation.mutate({
       platform: activePlatform,
-      token_count: 1024,
-      cost_micros: 1200,
-      metadata_json: JSON.stringify({
-        source: "ui_test_route",
-        path: "/__ai-switch/test-route",
-        status: "selected",
-        request_kind: "manual_pool_selection",
-      }),
     });
   };
 
@@ -936,7 +947,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
               <button
                 aria-label="测试算力池路由"
                 className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-emerald-700 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-emerald-800 disabled:opacity-50"
-                disabled={draftPoolIds.size === 0 || routeOnceMutation.isPending}
+                disabled={draftPoolIds.size === 0 || modelTestMutation.isPending}
                 onClick={testRoute}
                 type="button"
               >
@@ -966,6 +977,69 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
             ))}
           </div>
         )}
+        {modelTestOutcome ? (
+          <div
+            aria-label="模型连通性测试结果"
+            className={`mx-4 mb-3 space-y-3 rounded-xl border px-3 py-2 text-[12px] ${
+              modelTestOutcome.success
+                ? "border-emerald-200 bg-emerald-50 text-emerald-950"
+                : "border-red-200 bg-red-50 text-red-950"
+            }`}
+          >
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="font-semibold">
+                  模型连通性：{modelTestOutcome.success ? "通过" : "失败"}
+                </p>
+                <p className="text-[11px] opacity-80">
+                  {modelTestOutcome.selected_account_name} · {modelTestOutcome.interface_format} · {modelTestOutcome.request_path}
+                </p>
+              </div>
+              <p className="font-mono text-[11px]">{modelTestStatusLine(modelTestOutcome)}</p>
+            </div>
+
+            {modelTestOutcome.response_text ? (
+              <div>
+                <p className="font-semibold">模型输出</p>
+                <p className="mt-1 rounded-lg bg-white/80 px-2 py-1 font-mono text-[11px] text-stone-800">
+                  {modelTestOutcome.response_text}
+                </p>
+              </div>
+            ) : null}
+
+            {modelTestOutcome.error_message ? (
+              <p className="rounded-lg bg-white/80 px-2 py-1 font-mono text-[11px] text-red-800">
+                {modelTestOutcome.error_message}
+              </p>
+            ) : null}
+
+            <details className="rounded-lg bg-white/80 px-2 py-1">
+              <summary className="cursor-pointer font-semibold">查看输入输出</summary>
+              <div className="mt-2 grid gap-2 lg:grid-cols-2">
+                <div>
+                  <p className="mb-1 font-semibold text-stone-600">请求 JSON</p>
+                  <pre className="max-h-56 overflow-auto rounded-lg border border-stone-200 bg-white p-2 font-mono text-[11px] leading-relaxed text-stone-700">
+                    {prettyJsonOrText(modelTestOutcome.request_body_json)}
+                  </pre>
+                </div>
+                <div>
+                  <p className="mb-1 font-semibold text-stone-600">响应 Body</p>
+                  <pre className="max-h-56 overflow-auto rounded-lg border border-stone-200 bg-white p-2 font-mono text-[11px] leading-relaxed text-stone-700">
+                    {prettyJsonOrText(modelTestOutcome.response_body)}
+                  </pre>
+                </div>
+              </div>
+            </details>
+          </div>
+        ) : null}
+        {modelTestMutation.isError ? (
+          <div className="mx-4 mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-800">
+            模型连通性测试失败：
+            {modelTestMutation.error instanceof Error
+              ? modelTestMutation.error.message
+              : "请检查算力池账号和网络。"}
+          </div>
+        ) : null}
         {statsOpen && (
           <div className="space-y-3 border-t border-stone-200 px-4 py-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

@@ -180,6 +180,26 @@ export type RoutePoolRouteOutcome = {
   stats: RoutePoolStats;
 };
 
+export type RoutePoolModelTestRequest = {
+  platform: string;
+};
+
+export type RoutePoolModelTestOutcome = {
+  platform: string;
+  selected_account_id: string;
+  selected_account_name: string;
+  interface_format: string;
+  request_path: string;
+  request_body_json: string;
+  response_status?: number | null;
+  response_body: string;
+  response_text?: string | null;
+  error_message?: string | null;
+  success: boolean;
+  duration_ms: number;
+  stats: RoutePoolStats;
+};
+
 export type RouteProxyStatus = {
   running: boolean;
   bind_host: string;
