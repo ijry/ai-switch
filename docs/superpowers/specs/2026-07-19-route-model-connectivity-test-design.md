@@ -29,7 +29,8 @@ model output, raw response snippet, latency, and selected account.
 
 ## User Experience
 
-In the route pool panel, replace "测试路由" with "测试模型连通性".
+In the route pool panel, keep the button label as "测试路由" so the control stays compact.
+The result card title and detail content should clarify that this is a model connectivity test.
 
 When clicked:
 
@@ -207,7 +208,7 @@ Rust tests cover:
 
 Frontend tests cover:
 
-- clicking "测试模型连通性" calls `routePoolTestModel`.
+- clicking "测试路由" calls `routePoolTestModel`.
 - success result shows account, status, latency, extracted output, request JSON, and response body.
 - failure result shows selected account and error/status details.
 - request statistics detail view displays model connectivity metadata.
