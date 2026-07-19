@@ -818,6 +818,7 @@ function SkinDecorationCard({
       card.title || card.badge || "星舰展示",
       "mx-auto",
     );
+    const cardStatus = "status" in card ? card.status : "在线";
 
     return (
       <div className="vibe-skin-right-card vibe-skin-space-card mt-3 rounded-2xl border p-3">
@@ -835,9 +836,11 @@ function SkinDecorationCard({
               <p className="mt-1 text-[11px] text-[var(--vibe-muted-text)]">{card.subtitle}</p>
             )}
           </div>
-          <span className="vibe-skin-space-led shrink-0 rounded-full border px-2 py-0.5 text-[10px]">
-            在线
-          </span>
+          {cardStatus && (
+            <span className="vibe-skin-space-led shrink-0 rounded-full border px-2 py-0.5 text-[10px]">
+              {cardStatus}
+            </span>
+          )}
         </div>
         <div className="mt-3 grid place-items-center">{templateFigure}</div>
         {card.items && card.items.length > 0 && (

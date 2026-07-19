@@ -373,8 +373,12 @@ describe("vibeSkin", () => {
     expect(builtInSkin?.regions?.composerAddon?.padding).toBe("0.3rem 0.8rem");
     expect(builtInSkin?.regions?.composerAddon?.lineHeight).toBe("1.4");
     expect(builtInSkin?.decorations?.rightCards?.[0]?.title).toBe("");
-    expect(builtInSkin?.decorations?.rightCards?.[1]?.title).toBe("舰体模拟");
-    expect(builtInSkin?.decorations?.rightCards?.[2]?.title).toBe("航线星图");
+    expect(builtInSkin?.decorations?.rightCards?.[0]?.status).toBe("近轨目标追踪");
+    expect(builtInSkin?.decorations?.rightCards?.[1]?.title).toBe("");
+    expect(builtInSkin?.decorations?.rightCards?.[1]?.subtitle).toBe("");
+    expect(builtInSkin?.decorations?.rightCards?.[1]?.status).toBe("");
+    expect(builtInSkin?.decorations?.rightCards?.[2]?.title).toBe("");
+    expect(builtInSkin?.decorations?.rightCards?.[2]?.status).toBe("航线星图");
     expect(builtInSkin?.decorations?.rightCards?.map((card) => card.template)).toEqual([
       "space-radar",
       "space-ship",

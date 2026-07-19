@@ -401,22 +401,25 @@
       {
         "template": "space-radar",
         "title": "",
-        "subtitle": "近轨目标追踪",
+        "subtitle": "",
         "badge": "SCAN",
+        "status": "近轨目标追踪",
         "footer": "三处目标已标记"
       },
       {
         "template": "space-ship",
-        "title": "舰体模拟",
-        "subtitle": "全息结构图",
+        "title": "",
+        "subtitle": "",
         "badge": "HOLO",
+        "status": "",
         "footer": "外壳线框锁定，主推进器低噪运行"
       },
       {
         "template": "space-starmap",
-        "title": "航线星图",
-        "subtitle": "下一跃迁点",
+        "title": "",
+        "subtitle": "",
         "badge": "ROUTE",
+        "status": "航线星图",
         "items": [
           {
             "label": "始发",

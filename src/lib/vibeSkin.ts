@@ -291,6 +291,7 @@ export type VibeSkinDecorationCard = {
   title?: string;
   subtitle?: string;
   badge?: string;
+  status?: string;
   footer?: string;
   template?: VibeSkinDecorationTemplate;
   figure?: string;
@@ -873,7 +874,7 @@ function normalizeDecorationCard(value: unknown): VibeSkinDecorationCard | undef
       card[key] = item;
     }
   }
-  for (const key of ["title", "subtitle"] as const) {
+  for (const key of ["title", "subtitle", "status"] as const) {
     if (key in source && typeof source[key] === "string") {
       card[key] = source[key].trim();
     }

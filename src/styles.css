@@ -2396,9 +2396,15 @@ button:disabled {
 }
 
 .vibe-skin-space-ship-webgl-canvas {
+  cursor: grab;
   display: block;
   width: 100%;
   height: 100%;
+  touch-action: none;
+}
+
+.vibe-skin-space-ship-webgl-canvas-dragging {
+  cursor: grabbing;
 }
 
 .vibe-skin-space-ship-fallback {

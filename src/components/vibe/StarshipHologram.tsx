@@ -29,6 +29,28 @@ type HologramMeshOptions = {
   scale?: Vector3Tuple;
 };
 
+const initialShipRotation = {
+  x: -0.34,
+  y: -0.72,
+  z: 0.06,
+};
+const shipAutoRotationSpeed = 0.005;
+const shipDragRotationSensitivity = 0.008;
+const minShipPitch = -1.05;
+const maxShipPitch = 0.72;
+
+type ShipDragState = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  startRotationX: number;
+  startRotationY: number;
+};
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
 function disposeObject(object: Object3D) {
   object.traverse((child) => {
     const disposable = child as DisposableSceneObject;
@@ -66,6 +88,7 @@ export function StarshipHologram({ className = "", label }: StarshipHologramProp
     let frameId = 0;
     let resizeObserver: ResizeObserver | null = null;
     let removeWindowResize: (() => void) | null = null;
+    let removePointerListeners: (() => void) | null = null;
     let cleanupScene: (() => void) | null = null;
 
     async function init() {
@@ -483,14 +506,79 @@ export function StarshipHologram({ className = "", label }: StarshipHologramProp
 
         const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
         const render = () => renderer.render(scene, camera);
-        shipGroup.rotation.set(-0.34, -0.72, 0.06);
+        let shipRotationX = initialShipRotation.x;
+        let shipRotationY = initialShipRotation.y;
+        let dragState: ShipDragState | null = null;
+        shipGroup.rotation.set(initialShipRotation.x, initialShipRotation.y, initialShipRotation.z);
+
+        const handlePointerDown = (event: PointerEvent) => {
+          if (event.pointerType === "mouse" && event.button !== 0) {
+            return;
+          }
+
+          dragState = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            startRotationX: shipRotationX,
+            startRotationY: shipRotationY,
+          };
+          renderer.domElement.classList.add("vibe-skin-space-ship-webgl-canvas-dragging");
+          renderer.domElement.setPointerCapture(event.pointerId);
+          event.preventDefault();
+        };
+
+        const handlePointerMove = (event: PointerEvent) => {
+          if (!dragState || dragState.pointerId !== event.pointerId) {
+            return;
+          }
+
+          const deltaX = (event.clientX - dragState.startX) * shipDragRotationSensitivity;
+          const deltaY = (event.clientY - dragState.startY) * shipDragRotationSensitivity;
+          shipRotationY = dragState.startRotationY + deltaX;
+          shipRotationX = clamp(dragState.startRotationX + deltaY, minShipPitch, maxShipPitch);
+          event.preventDefault();
+
+          if (reduceMotion) {
+            shipGroup.rotation.x = shipRotationX;
+            shipGroup.rotation.y = shipRotationY;
+            render();
+          }
+        };
+
+        const stopDrag = (event: PointerEvent) => {
+          if (!dragState || dragState.pointerId !== event.pointerId) {
+            return;
+          }
+
+          dragState = null;
+          renderer.domElement.classList.remove("vibe-skin-space-ship-webgl-canvas-dragging");
+          if (renderer.domElement.hasPointerCapture(event.pointerId)) {
+            renderer.domElement.releasePointerCapture(event.pointerId);
+          }
+        };
+
+        renderer.domElement.addEventListener("pointerdown", handlePointerDown);
+        renderer.domElement.addEventListener("pointermove", handlePointerMove);
+        renderer.domElement.addEventListener("pointerup", stopDrag);
+        renderer.domElement.addEventListener("pointercancel", stopDrag);
+        removePointerListeners = () => {
+          renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
+          renderer.domElement.removeEventListener("pointermove", handlePointerMove);
+          renderer.domElement.removeEventListener("pointerup", stopDrag);
+          renderer.domElement.removeEventListener("pointercancel", stopDrag);
+          renderer.domElement.classList.remove("vibe-skin-space-ship-webgl-canvas-dragging");
+        };
 
         if (!reduceMotion) {
           const animate = () => {
             const time = performance.now();
-            shipGroup.rotation.x = -0.34 + Math.sin(time * 0.00052) * 0.045;
-            shipGroup.rotation.y += 0.002;
-            shipGroup.rotation.z = 0.06 + Math.sin(time * 0.00038) * 0.035;
+            if (!dragState) {
+              shipRotationY += shipAutoRotationSpeed;
+            }
+            shipGroup.rotation.x = shipRotationX + Math.sin(time * 0.00052) * 0.045;
+            shipGroup.rotation.y = shipRotationY;
+            shipGroup.rotation.z = initialShipRotation.z + Math.sin(time * 0.00038) * 0.035;
             baseGroup.rotation.z -= 0.0025;
             particleField.rotation.z += 0.0008;
             render();
@@ -498,7 +586,7 @@ export function StarshipHologram({ className = "", label }: StarshipHologramProp
           };
           animate();
         } else {
-          shipGroup.rotation.set(-0.34, -0.72, 0.06);
+          shipGroup.rotation.set(initialShipRotation.x, initialShipRotation.y, initialShipRotation.z);
           render();
         }
 
@@ -512,6 +600,7 @@ export function StarshipHologram({ className = "", label }: StarshipHologramProp
           }
           resizeObserver?.disconnect();
           removeWindowResize?.();
+          removePointerListeners?.();
           disposeObject(scene);
           renderer.dispose();
           renderer.domElement.remove();

@@ -454,8 +454,10 @@ describe("VibeScreen", () => {
     expect(screen.queryByText("星舰主视窗")).not.toBeInTheDocument();
     expect(screen.queryByText("舰体姿态、雷达扫描与遥测输出已同步到 Vibe 工作区。")).not.toBeInTheDocument();
     expect(screen.queryByText("雷达扫描")).not.toBeInTheDocument();
-    expect(screen.getByText("舰体模拟")).toBeInTheDocument();
+    expect(screen.queryByText("舰体模拟")).not.toBeInTheDocument();
+    expect(screen.queryByText("全息结构图")).not.toBeInTheDocument();
     expect(screen.queryByText("姿态慢速旋转")).not.toBeInTheDocument();
+    expect(screen.getByText("近轨目标追踪")).toBeInTheDocument();
     const starmapTitle = screen.getByText("航线星图");
     const telemetryTitle = screen.getByText("遥测输出");
     expect(starmapTitle.compareDocumentPosition(telemetryTitle)).toBe(
