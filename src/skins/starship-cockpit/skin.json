@@ -214,7 +214,9 @@
     "composerAddon": {
       "background": "rgba(248,199,106,0.12)",
       "border": "rgba(248,199,106,0.36)",
-      "color": "#ffe4a6"
+      "color": "#ffe4a6",
+      "lineHeight": "1.4",
+      "padding": "0.3rem 0.8rem"
     },
     "rightRail": {
       "background": "linear-gradient(180deg, rgba(2,16,32,0.68), rgba(1,9,18,0.58))",
@@ -306,10 +308,10 @@
       "badge": "CORE"
     },
     "showcase": {
-      "enabled": true,
-      "title": "星舰主视窗",
+      "enabled": false,
+      "title": "",
       "subtitle": "FTL 航行模拟",
-      "body": "舰体姿态、雷达扫描与遥测输出已同步到 Vibe 工作区。",
+      "body": "",
       "badge": "驾驶舱",
       "footer": "主推进器低噪运行，外层星流已锁定"
     },
@@ -398,7 +400,7 @@
     "rightCards": [
       {
         "template": "space-radar",
-        "title": "雷达扫描",
+        "title": "",
         "subtitle": "近轨目标追踪",
         "badge": "SCAN",
         "footer": "三处目标已标记"
@@ -406,9 +408,30 @@
       {
         "template": "space-ship",
         "title": "舰体模拟",
-        "subtitle": "姿态慢速旋转",
-        "badge": "MODEL",
-        "footer": "推进器矢量锁定"
+        "subtitle": "全息结构图",
+        "badge": "HOLO",
+        "footer": "外壳线框锁定，主推进器低噪运行"
+      },
+      {
+        "template": "space-starmap",
+        "title": "航线星图",
+        "subtitle": "下一跃迁点",
+        "badge": "ROUTE",
+        "items": [
+          {
+            "label": "始发",
+            "badge": "SOL"
+          },
+          {
+            "label": "中继",
+            "badge": "NOVA-7"
+          },
+          {
+            "label": "目标",
+            "badge": "ORION"
+          }
+        ],
+        "footer": "预计抵达 T+04:18"
       },
       {
         "template": "space-telemetry",
@@ -434,27 +457,6 @@
           }
         ],
         "footer": "持续监测中"
-      },
-      {
-        "template": "space-starmap",
-        "title": "航线星图",
-        "subtitle": "下一跃迁点",
-        "badge": "ROUTE",
-        "items": [
-          {
-            "label": "始发",
-            "badge": "SOL"
-          },
-          {
-            "label": "中继",
-            "badge": "NOVA-7"
-          },
-          {
-            "label": "目标",
-            "badge": "ORION"
-          }
-        ],
-        "footer": "预计抵达 T+04:18"
       }
     ]
   },

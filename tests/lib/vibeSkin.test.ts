@@ -290,12 +290,12 @@ describe("vibeSkin", () => {
               rightCards: [
                 { title: "雷达阵列", template: "space-radar" },
                 { title: "舰体模拟", template: "space-ship" },
+                { title: "航线星图", template: "space-starmap" },
                 {
                   title: "遥测输出",
                   template: "space-telemetry",
                   items: [{ label: "跃迁核心", badge: "稳定" }],
                 },
-                { title: "航线星图", template: "space-starmap" },
               ],
             },
           }),
@@ -311,8 +311,8 @@ describe("vibeSkin", () => {
     expect(skin.decorations?.rightCards?.map((card) => card.template)).toEqual([
       "space-radar",
       "space-ship",
-      "space-telemetry",
       "space-starmap",
+      "space-telemetry",
     ]);
   });
 
@@ -365,13 +365,21 @@ describe("vibeSkin", () => {
     expect(builtInSkin?.decorations?.variant).toBe("starship-cockpit");
     expect(builtInSkin?.decorations?.avatarTemplate).toBe("space-ai-core");
     expect(builtInSkin?.decorations?.showcaseTemplate).toBe("space-ship");
+    expect(builtInSkin?.blocks?.showcase?.enabled).toBe(false);
+    expect(builtInSkin?.blocks?.showcase?.title).toBe("");
+    expect(builtInSkin?.blocks?.showcase?.body).toBe("");
     expect(builtInSkin?.blocks?.launch?.title).toBe("出发下一个星球");
     expect(builtInSkin?.blocks?.launch?.agentStripPrefix).toBe("武器选项");
+    expect(builtInSkin?.regions?.composerAddon?.padding).toBe("0.3rem 0.8rem");
+    expect(builtInSkin?.regions?.composerAddon?.lineHeight).toBe("1.4");
+    expect(builtInSkin?.decorations?.rightCards?.[0]?.title).toBe("");
+    expect(builtInSkin?.decorations?.rightCards?.[1]?.title).toBe("舰体模拟");
+    expect(builtInSkin?.decorations?.rightCards?.[2]?.title).toBe("航线星图");
     expect(builtInSkin?.decorations?.rightCards?.map((card) => card.template)).toEqual([
       "space-radar",
       "space-ship",
-      "space-telemetry",
       "space-starmap",
+      "space-telemetry",
     ]);
 
     const imported = await importVibeSkinPackage(
@@ -381,7 +389,12 @@ describe("vibeSkin", () => {
     );
 
     expect(imported.id).toBe("starship-cockpit");
+    expect(getVibeSkinBlocks(imported).showcase.title).toBe("");
+    expect(getVibeSkinBlocks(imported).showcase.body).toBe("");
     expect(getVibeSkinBlocks(imported).launch.sendLabel).toBe("跃迁启动");
+    const importedVariables = skinToCssVariables(imported) as Record<string, unknown>;
+    expect(importedVariables["--vibe-composer-addon-padding"]).toBe("0.3rem 0.8rem");
+    expect(importedVariables["--vibe-composer-addon-line-height"]).toBe("1.4");
     expect(imported.decorations).toEqual(builtInSkin?.decorations);
   });
 

@@ -46,6 +46,7 @@ import type {
   TerminalStatus,
 } from "../lib/api/types";
 import { XtermPane } from "../components/terminal/XtermPane";
+import { StarshipHologram } from "../components/vibe/StarshipHologram";
 
 const agentOptions = [
   { platform: "codex", label: "Codex" },
@@ -656,23 +657,7 @@ function renderSkinTemplateFigure(
   }
 
   if (template === "space-ship") {
-    return (
-      <div
-        aria-label={label}
-        className={`vibe-skin-showcase-figure vibe-skin-space-ship ${className}`}
-        data-testid="vibe-skin-space-ship"
-        role="img"
-      >
-        <span className="vibe-skin-space-ship-halo" />
-        <span className="vibe-skin-space-ship-model">
-          <span className="vibe-skin-space-ship-body" />
-          <span className="vibe-skin-space-ship-wing vibe-skin-space-ship-wing-left" />
-          <span className="vibe-skin-space-ship-wing vibe-skin-space-ship-wing-right" />
-          <span className="vibe-skin-space-ship-core" />
-          <span className="vibe-skin-space-ship-thruster" />
-        </span>
-      </div>
-    );
+    return <StarshipHologram className={className} label={label} />;
   }
 
   if (template === "space-radar") {
@@ -827,7 +812,7 @@ function SkinDecorationCard({
   ) {
     const templateFigure = renderSkinTemplateFigure(
       card.template,
-      card.title ?? card.badge ?? "星舰展示",
+      card.title || card.badge || "星舰展示",
       "mx-auto",
     );
 
@@ -1214,6 +1199,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const isSkin = themeMode === "skin";
   const decorations = activeSkin.decorations;
   const skinVariant = skinVariantClass(isSkin ? decorations?.variant : undefined);
+  const isStarshipSkin = Boolean(isSkin && decorations?.variant === "starship-cockpit");
   const skinStyle = useMemo(
     () => (isSkin ? skinToCssVariables(activeSkin) : undefined),
     [activeSkin, isSkin],
@@ -1231,8 +1217,11 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       ? "vibe-scrollbar-dark"
       : "vibe-scrollbar-light";
   const skinBlocks = useMemo(() => getVibeSkinBlocks(activeSkin), [activeSkin]);
-  const showSkinShowcase = Boolean(isSkin && skinBlocks.showcase.enabled);
-  const skinBodyGridClass = showSkinShowcase
+  const skinRightCards = decorations?.rightCards ?? [];
+  const showSkinRightRail = Boolean(
+    isSkin && (skinBlocks.showcase.enabled || skinRightCards.length > 0),
+  );
+  const skinBodyGridClass = showSkinRightRail
     ? "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)_260px]"
     : "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)]";
   const activeSkinRegionKeys = isSkin
@@ -1380,10 +1369,10 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       ? "mt-1 h-10 w-full min-w-0 rounded-xl border border-[#586e75]/55 bg-[#002b36] px-3 text-[12px] text-[#fdf6e3] outline-none focus:border-[#268bd2]"
       : "mt-1 h-10 w-full min-w-0 rounded-xl border border-stone-200 bg-white px-3 text-[12px] text-stone-950 outline-none focus:border-blue-400";
   const composerSendButtonClass = isSkin
-    ? "vibe-skin-composer-send-button inline-flex h-10 items-center justify-center gap-2 rounded-xl border px-4 text-[13px] font-semibold transition"
+    ? "vibe-skin-composer-send-button inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border px-4 text-[13px] font-semibold transition sm:ml-auto"
     : isDark
-      ? "inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-[#b58900] bg-[#b58900] px-4 text-[13px] font-semibold text-[#002b36] transition hover:bg-[#cb4b16] hover:text-white"
-      : "inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-stone-950 px-4 text-[13px] font-semibold text-white transition hover:bg-stone-800";
+      ? "inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-[#b58900] bg-[#b58900] px-4 text-[13px] font-semibold text-[#002b36] transition hover:bg-[#cb4b16] hover:text-white sm:ml-auto"
+      : "inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl bg-stone-950 px-4 text-[13px] font-semibold text-white transition hover:bg-stone-800 sm:ml-auto";
   const composerAddonClass = isSkin
     ? "vibe-skin-composer-addon inline-flex shrink-0 items-center gap-1 rounded-full border px-3 py-1 text-[11px] font-semibold"
     : isDark
@@ -1437,6 +1426,26 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
           </div>
         )}
         <div className={isSkin ? skinBodyGridClass : "contents"}>
+          {isStarshipSkin && (
+            <div
+              aria-hidden="true"
+              className="vibe-skin-space-planets"
+              data-testid="vibe-skin-space-planets"
+            >
+              <span
+                className="vibe-skin-space-planet vibe-skin-space-planet-large"
+                data-testid="vibe-skin-space-planet"
+              />
+              <span
+                className="vibe-skin-space-planet vibe-skin-space-planet-medium"
+                data-testid="vibe-skin-space-planet"
+              />
+              <span
+                className="vibe-skin-space-planet vibe-skin-space-planet-small"
+                data-testid="vibe-skin-space-planet"
+              />
+            </div>
+          )}
         <aside
           className={
             isSkin
@@ -1882,10 +1891,10 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                       value={launchPrompt}
                     />
                     <div className={composerMetaBarClass}>
-                      <label className="min-w-0 flex-1 text-[11px] font-semibold">
+                      <label className="min-w-0 flex-1 text-[11px] font-semibold sm:max-w-[18rem]">
                         <span>{launchFolderLabel}</span>
                         <select
-                          className={composerControlClass}
+                          className={`${composerControlClass} truncate`}
                           onChange={handleLaunchFolderChange}
                           value={createProjectDir}
                         >
@@ -1967,49 +1976,57 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
           </div>
         </div>
 
-        {showSkinShowcase && (
+        {showSkinRightRail && (
           <aside
             className={`vibe-scrollbar ${scrollbarThemeClass} vibe-scrollbar-active vibe-skin-right-rail hidden min-h-0 flex-col overflow-x-hidden overflow-y-auto border-l p-3 lg:flex`}
           >
-            <div className="vibe-skin-right-card flex shrink-0 flex-col rounded-3xl border p-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-[10px] font-semibold tracking-[0.18em] text-[var(--vibe-muted-text)]">
-                    {skinBlocks.showcase.badge}
-                  </p>
-                  <h2 className="mt-1 truncate text-lg font-semibold text-[var(--vibe-text)]">
-                    {skinBlocks.showcase.title}
-                  </h2>
-                  <p className="mt-1 text-[12px] text-[var(--vibe-muted-text)]">
-                    {skinBlocks.showcase.subtitle}
-                  </p>
+            {skinBlocks.showcase.enabled && (
+              <div className="vibe-skin-right-card flex shrink-0 flex-col rounded-3xl border p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-semibold tracking-[0.18em] text-[var(--vibe-muted-text)]">
+                      {skinBlocks.showcase.badge}
+                    </p>
+                    {skinBlocks.showcase.title && (
+                      <h2 className="mt-1 truncate text-lg font-semibold text-[var(--vibe-text)]">
+                        {skinBlocks.showcase.title}
+                      </h2>
+                    )}
+                    {skinBlocks.showcase.subtitle && (
+                      <p className="mt-1 text-[12px] text-[var(--vibe-muted-text)]">
+                        {skinBlocks.showcase.subtitle}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className="vibe-skin-showcase-stage mt-3 flex min-h-[220px] flex-col items-center justify-center rounded-3xl border p-3 text-center">
+                  {skinBlocks.showcase.figure ? (
+                    <img
+                      alt={`${skinBlocks.showcase.title || skinBlocks.showcase.badge || "skin showcase"} figure`}
+                      className="vibe-skin-showcase-figure max-h-52 w-full max-w-[168px] object-contain"
+                      src={skinBlocks.showcase.figure}
+                    />
+                  ) : (
+                    renderSkinTemplateFigure(
+                      decorations?.showcaseTemplate,
+                      skinBlocks.showcase.title || skinBlocks.showcase.badge || "皮肤展示",
+                    ) ?? <div className="vibe-skin-showcase-figure vibe-skin-showcase-orb grid h-32 w-28 place-items-center rounded-[2rem] border">
+                      <AiSwitchLogo className="h-14 w-14 rounded-2xl" />
+                    </div>
+                  )}
+                  {skinBlocks.showcase.body && (
+                    <p className="mt-3 text-[13px] leading-6 text-[var(--vibe-text)] opacity-90">
+                      {skinBlocks.showcase.body}
+                    </p>
+                  )}
+                </div>
+                <div className="vibe-skin-showcase-footer mt-3 rounded-2xl border px-3 py-2 text-[11px] text-[var(--vibe-muted-text)]">
+                  {skinBlocks.showcase.footer}
                 </div>
               </div>
-              <div className="vibe-skin-showcase-stage mt-3 flex min-h-[220px] flex-col items-center justify-center rounded-3xl border p-3 text-center">
-                {skinBlocks.showcase.figure ? (
-                  <img
-                    alt={`${skinBlocks.showcase.title} figure`}
-                    className="vibe-skin-showcase-figure max-h-52 w-full max-w-[168px] object-contain"
-                    src={skinBlocks.showcase.figure}
-                  />
-                ) : (
-                  renderSkinTemplateFigure(
-                    decorations?.showcaseTemplate,
-                    skinBlocks.showcase.title,
-                  ) ?? <div className="vibe-skin-showcase-figure vibe-skin-showcase-orb grid h-32 w-28 place-items-center rounded-[2rem] border">
-                    <AiSwitchLogo className="h-14 w-14 rounded-2xl" />
-                  </div>
-                )}
-                <p className="mt-3 text-[13px] leading-6 text-[var(--vibe-text)] opacity-90">
-                  {skinBlocks.showcase.body}
-                </p>
-              </div>
-              <div className="vibe-skin-showcase-footer mt-3 rounded-2xl border px-3 py-2 text-[11px] text-[var(--vibe-muted-text)]">
-                {skinBlocks.showcase.footer}
-              </div>
-            </div>
-            {decorations?.rightCards?.length ? (
-              decorations.rightCards.map((card, index) => (
+            )}
+            {skinRightCards.length ? (
+              skinRightCards.map((card, index) => (
                 <SkinDecorationCard
                   card={card}
                   key={`${card.template ?? "card"}-${card.title ?? index}`}
@@ -2362,7 +2379,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                     <option value="">{t("vibe.selectFolder")}</option>
                     {projectDirectories.map((directory) => (
                       <option key={directory} value={directory}>
-                        {directory}
+                        {compactDirectoryLabel(directory)}
                       </option>
                     ))}
                   </select>

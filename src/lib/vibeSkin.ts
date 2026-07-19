@@ -573,10 +573,15 @@ function normalizeShowcaseBlock(value: unknown): VibeSkinShowcaseBlock | undefin
   if (typeof source.enabled === "boolean") {
     block.enabled = source.enabled;
   }
-  for (const key of ["title", "subtitle", "body", "badge", "figure", "footer"] as const) {
+  for (const key of ["badge", "figure", "footer"] as const) {
     const item = optionalString(source[key]);
     if (item) {
       block[key] = item;
+    }
+  }
+  for (const key of ["title", "subtitle", "body"] as const) {
+    if (key in source && typeof source[key] === "string") {
+      block[key] = source[key].trim();
     }
   }
   return Object.keys(block).length > 0 ? block : undefined;
@@ -854,10 +859,15 @@ function normalizeDecorationCard(value: unknown): VibeSkinDecorationCard | undef
 
   const source = value as Record<string, unknown>;
   const card: VibeSkinDecorationCard = {};
-  for (const key of ["title", "subtitle", "badge", "footer", "figure"] as const) {
+  for (const key of ["badge", "footer", "figure"] as const) {
     const item = optionalString(source[key]);
     if (item) {
       card[key] = item;
+    }
+  }
+  for (const key of ["title", "subtitle"] as const) {
+    if (key in source && typeof source[key] === "string") {
+      card[key] = source[key].trim();
     }
   }
 

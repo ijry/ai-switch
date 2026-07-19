@@ -257,11 +257,14 @@ describe("VibeScreen", () => {
     expect(screen.getByRole("button", { name: "OpenCode" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "OpenClaw" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Hermes" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Folder")).toHaveTextContent("repo/app");
-    expect(screen.getByLabelText("Folder")).toHaveTextContent("New folder...");
+    const folderSelect = screen.getByLabelText("Folder");
+    expect(folderSelect).toHaveClass("truncate");
+    expect(folderSelect.closest("label")).toHaveClass("sm:max-w-[18rem]");
+    expect(folderSelect).toHaveTextContent("repo/app");
+    expect(folderSelect).toHaveTextContent("New folder...");
     expect(screen.getByLabelText("Model")).toHaveValue("auto");
     expect(screen.getByLabelText("Reasoning")).toHaveValue("auto");
-    expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start" })).toHaveClass("sm:ml-auto");
   });
 
   it("creates a new agent session from the empty-state launch composer", async () => {
@@ -448,12 +451,16 @@ describe("VibeScreen", () => {
     expect(screen.getByText("深空跃迁 / 指令甲板")).toBeInTheDocument();
     expect(screen.getByText("舰桥 AI 核心")).toBeInTheDocument();
     expect(screen.getByText("量子链路在线")).toBeInTheDocument();
-    expect(screen.getByText("星舰主视窗")).toBeInTheDocument();
-    expect(screen.getByText("舰体姿态、雷达扫描与遥测输出已同步到 Vibe 工作区。")).toBeInTheDocument();
-    expect(screen.getByText("雷达扫描")).toBeInTheDocument();
+    expect(screen.queryByText("星舰主视窗")).not.toBeInTheDocument();
+    expect(screen.queryByText("舰体姿态、雷达扫描与遥测输出已同步到 Vibe 工作区。")).not.toBeInTheDocument();
+    expect(screen.queryByText("雷达扫描")).not.toBeInTheDocument();
     expect(screen.getByText("舰体模拟")).toBeInTheDocument();
-    expect(screen.getByText("遥测输出")).toBeInTheDocument();
-    expect(screen.getByText("航线星图")).toBeInTheDocument();
+    expect(screen.queryByText("姿态慢速旋转")).not.toBeInTheDocument();
+    const starmapTitle = screen.getByText("航线星图");
+    const telemetryTitle = screen.getByText("遥测输出");
+    expect(starmapTitle.compareDocumentPosition(telemetryTitle)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
     expect(screen.getByText("舰桥链路已建立")).toBeInTheDocument();
     expect(screen.getByText("深空航行模式")).toBeInTheDocument();
     expect(screen.getByText("舰桥")).toBeInTheDocument();
@@ -473,6 +480,12 @@ describe("VibeScreen", () => {
     expect(screen.getByTestId("vibe-skin-space-radar")).toBeInTheDocument();
     expect(screen.getByTestId("vibe-skin-space-telemetry")).toBeInTheDocument();
     expect(screen.getByTestId("vibe-skin-space-starmap")).toBeInTheDocument();
+    expect(screen.getByTestId("vibe-skin-space-planets")).toHaveAttribute("aria-hidden", "true");
+    const planets = screen.getAllByTestId("vibe-skin-space-planet");
+    expect(planets).toHaveLength(3);
+    expect(planets[0]).toHaveClass("vibe-skin-space-planet-large");
+    expect(planets[1]).toHaveClass("vibe-skin-space-planet-medium");
+    expect(planets[2]).toHaveClass("vibe-skin-space-planet-small");
     expect(document.querySelector(".vibe-skin--starship-cockpit")).toBeTruthy();
     expect(document.querySelector(".vibe-skin-space-card")).toBeTruthy();
     expect(document.querySelector(".vibe-skin-space-telemetry-card")).toBeTruthy();
@@ -480,7 +493,7 @@ describe("VibeScreen", () => {
       "overflow-y-auto",
       "vibe-scrollbar-skin",
     );
-    expect(document.querySelector(".vibe-skin-showcase-stage")).not.toHaveClass("flex-1");
+    expect(document.querySelector(".vibe-skin-showcase-stage")).toBeFalsy();
     expect(screen.queryByText("皮肤区域")).not.toBeInTheDocument();
   });
 
@@ -913,7 +926,13 @@ describe("VibeScreen", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "New session" }));
     await screen.findByRole("dialog", { name: "Create session" });
-    await userEvent.selectOptions(screen.getByLabelText("Existing folder"), "D:/repo/app");
+    const existingFolderSelect = screen.getByLabelText("Existing folder") as HTMLSelectElement;
+    const existingFolderOption = Array.from(existingFolderSelect.options).find(
+      (option) => option.value === "D:/repo/app",
+    );
+    expect(existingFolderOption).toHaveTextContent("repo/app");
+    expect(existingFolderOption).not.toHaveTextContent("D:/repo/app");
+    await userEvent.selectOptions(existingFolderSelect, "D:/repo/app");
     await userEvent.selectOptions(screen.getByLabelText("Agent"), "claude");
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
 

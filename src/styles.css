@@ -307,31 +307,45 @@ button:disabled {
   background-position: var(--vibe-session-list-background-position, center);
   background-repeat: var(--vibe-session-list-background-repeat, no-repeat);
   background-size: var(--vibe-session-list-background-size, cover);
+  border: 1px solid var(--vibe-session-list-border, transparent);
+  border-radius: var(--vibe-session-list-border-radius);
+  box-shadow: var(--vibe-session-list-shadow);
+  color: var(--vibe-session-list-color, var(--vibe-text));
+  padding: var(--vibe-session-list-padding);
 }
 
 .vibe-dark-session-list {
   background:
-    linear-gradient(180deg, rgba(9, 34, 43, 0.76), rgba(4, 22, 30, 0.58));
-  border: 1px solid rgba(125, 211, 252, 0.12);
+    radial-gradient(circle at 20% 0%, rgba(20, 184, 166, 0.18), transparent 12rem),
+    linear-gradient(180deg, rgba(6, 35, 48, 0.88), rgba(3, 20, 34, 0.72));
+  border: 1px solid rgba(45, 212, 191, 0.16);
   border-radius: 1.35rem;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 18px 36px rgba(0, 0, 0, 0.16);
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 18px 36px rgba(0, 0, 0, 0.2);
 }
 
 .vibe-dark-group-panel {
   background:
-    linear-gradient(180deg, rgba(12, 43, 55, 0.9), rgba(7, 30, 40, 0.88));
-  border-color: rgba(125, 211, 252, 0.16);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    radial-gradient(circle at 8% 0%, rgba(94, 234, 212, 0.18), transparent 8rem),
+    linear-gradient(135deg, rgba(9, 66, 86, 0.96), rgba(4, 36, 59, 0.94) 54%, rgba(13, 54, 69, 0.92));
+  border-color: rgba(45, 212, 191, 0.26);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 12px 24px rgba(0, 0, 0, 0.16);
 }
 
 .vibe-dark-list-trigger {
+  border: 1px solid rgba(125, 211, 252, 0.14);
+  background:
+    linear-gradient(135deg, rgba(14, 116, 144, 0.34), rgba(15, 76, 117, 0.18));
   color: #dff8ff;
 }
 
 .vibe-dark-list-trigger:hover {
-  background: rgba(56, 189, 248, 0.1);
+  border-color: rgba(94, 234, 212, 0.36);
+  background:
+    linear-gradient(135deg, rgba(20, 184, 166, 0.28), rgba(56, 189, 248, 0.18));
   color: #ffffff;
 }
 
@@ -360,32 +374,39 @@ button:disabled {
 }
 
 .vibe-light-session-list {
-  border: 1px solid rgba(217, 119, 6, 0.16);
+  border: 1px solid rgba(14, 116, 144, 0.18);
   border-radius: 1.35rem;
   background:
-    radial-gradient(circle at 12% 0%, rgba(251, 191, 36, 0.18), transparent 11rem),
-    linear-gradient(180deg, rgba(255, 251, 235, 0.94), rgba(236, 253, 245, 0.76));
+    radial-gradient(circle at 12% 0%, rgba(14, 165, 233, 0.18), transparent 11rem),
+    radial-gradient(circle at 94% 6%, rgba(251, 191, 36, 0.18), transparent 9rem),
+    linear-gradient(180deg, rgba(239, 249, 255, 0.94), rgba(236, 253, 245, 0.82));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.82),
-    0 18px 36px rgba(120, 83, 20, 0.08);
+    0 18px 36px rgba(14, 116, 144, 0.08);
 }
 
 .vibe-light-group-panel {
-  border-color: rgba(13, 148, 136, 0.18);
+  border-color: rgba(14, 116, 144, 0.22);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(240, 253, 250, 0.9));
+    radial-gradient(circle at 9% 0%, rgba(56, 189, 248, 0.22), transparent 8rem),
+    linear-gradient(135deg, rgba(224, 242, 254, 0.98), rgba(204, 251, 241, 0.92) 55%, rgba(255, 247, 214, 0.9));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.96),
-    0 10px 20px rgba(15, 118, 110, 0.07);
+    0 10px 20px rgba(14, 116, 144, 0.09);
 }
 
 .vibe-light-list-trigger {
-  color: #17433e;
+  border: 1px solid rgba(14, 116, 144, 0.14);
+  background:
+    linear-gradient(135deg, rgba(14, 165, 233, 0.14), rgba(251, 191, 36, 0.12));
+  color: #075985;
 }
 
 .vibe-light-list-trigger:hover {
-  background: rgba(20, 184, 166, 0.1);
-  color: #0f2f2b;
+  border-color: rgba(14, 116, 144, 0.28);
+  background:
+    linear-gradient(135deg, rgba(14, 165, 233, 0.2), rgba(20, 184, 166, 0.16));
+  color: #0c4a6e;
 }
 
 .vibe-light-session-card {
@@ -418,8 +439,10 @@ button:disabled {
   background-repeat: var(--vibe-group-panel-background-repeat, no-repeat);
   background-size: var(--vibe-group-panel-background-size, cover);
   border-color: var(--vibe-group-panel-border, var(--vibe-border));
+  border-radius: var(--vibe-group-panel-border-radius);
   color: var(--vibe-group-panel-color, var(--vibe-text));
   box-shadow: var(--vibe-group-panel-shadow);
+  padding: var(--vibe-group-panel-padding);
 }
 
 .vibe-skin-list-trigger {
@@ -427,7 +450,8 @@ button:disabled {
   background-position: var(--vibe-list-trigger-background-position, center);
   background-repeat: var(--vibe-list-trigger-background-repeat, no-repeat);
   background-size: var(--vibe-list-trigger-background-size, cover);
-  border-color: var(--vibe-list-trigger-border, transparent);
+  border: 1px solid var(--vibe-list-trigger-border, transparent);
+  border-radius: var(--vibe-list-trigger-border-radius);
   color: var(--vibe-list-trigger-color, var(--vibe-text));
   box-shadow: var(--vibe-list-trigger-shadow);
   padding: var(--vibe-list-trigger-padding);
@@ -439,6 +463,7 @@ button:disabled {
   background-repeat: var(--vibe-session-row-background-repeat, no-repeat);
   background-size: var(--vibe-session-row-background-size, cover);
   border-color: var(--vibe-session-row-border, var(--vibe-border));
+  border-radius: var(--vibe-session-row-border-radius);
   color: var(--vibe-session-row-color, var(--vibe-text));
   box-shadow: var(--vibe-session-row-shadow);
   padding: var(--vibe-session-row-padding);
@@ -768,6 +793,7 @@ button:disabled {
   color: var(--vibe-composer-addon-color, var(--vibe-muted-text));
   font-size: var(--vibe-composer-addon-font-size);
   letter-spacing: var(--vibe-composer-addon-letter-spacing);
+  line-height: var(--vibe-composer-addon-line-height);
   padding: var(--vibe-composer-addon-padding);
 }
 
@@ -777,9 +803,11 @@ button:disabled {
   background-repeat: var(--vibe-modal-background-repeat, no-repeat);
   background-size: var(--vibe-modal-background-size, cover);
   border-color: var(--vibe-modal-border, var(--vibe-border));
+  border-radius: var(--vibe-modal-border-radius);
   color: var(--vibe-modal-color, var(--vibe-text));
   box-shadow: var(--vibe-modal-shadow);
   backdrop-filter: var(--vibe-modal-backdrop-filter);
+  padding: var(--vibe-modal-padding);
 }
 
 .vibe-skin-right-card {
@@ -1651,8 +1679,10 @@ button:disabled {
   background-repeat: var(--vibe-ghost-button-background-repeat, no-repeat);
   background-size: var(--vibe-ghost-button-background-size, cover);
   border-color: var(--vibe-ghost-button-border, var(--vibe-border));
+  border-radius: var(--vibe-ghost-button-border-radius);
   color: var(--vibe-ghost-button-color, var(--vibe-text));
   box-shadow: var(--vibe-ghost-button-shadow);
+  padding: var(--vibe-ghost-button-padding);
 }
 
 .vibe-skin-primary {
@@ -1661,8 +1691,10 @@ button:disabled {
   background-repeat: var(--vibe-button-background-repeat, no-repeat);
   background-size: var(--vibe-button-background-size, cover);
   border-color: var(--vibe-button-border, var(--vibe-border));
+  border-radius: var(--vibe-button-border-radius);
   color: var(--vibe-button-color, var(--vibe-button-text));
   box-shadow: var(--vibe-button-shadow, 0 10px 22px rgba(17, 87, 164, 0.22));
+  padding: var(--vibe-button-padding);
 }
 
 .vibe-skin-primary:hover {
@@ -1688,8 +1720,22 @@ button:disabled {
   background-repeat: var(--vibe-field-background-repeat, no-repeat);
   background-size: var(--vibe-field-background-size, cover);
   border-color: var(--vibe-field-border, var(--vibe-border));
+  border-radius: var(--vibe-field-border-radius);
   color: var(--vibe-field-color, var(--vibe-text));
   box-shadow: var(--vibe-field-shadow);
+  padding: var(--vibe-field-padding);
+}
+
+.vibe-skin-select {
+  background: var(--vibe-select-background-layer, var(--vibe-field-background-layer, var(--vibe-panel-strong)));
+  background-position: var(--vibe-select-background-position, var(--vibe-field-background-position, center));
+  background-repeat: var(--vibe-select-background-repeat, var(--vibe-field-background-repeat, no-repeat));
+  background-size: var(--vibe-select-background-size, var(--vibe-field-background-size, cover));
+  border-color: var(--vibe-select-border, var(--vibe-field-border, var(--vibe-border)));
+  border-radius: var(--vibe-select-border-radius, var(--vibe-field-border-radius));
+  color: var(--vibe-select-color, var(--vibe-field-color, var(--vibe-text)));
+  box-shadow: var(--vibe-select-shadow, var(--vibe-field-shadow));
+  padding: var(--vibe-select-padding, var(--vibe-field-padding));
 }
 
 .vibe-skin-field::placeholder {
@@ -1723,7 +1769,10 @@ button:disabled {
   background-repeat: var(--vibe-danger-background-repeat, no-repeat);
   background-size: var(--vibe-danger-background-size, cover);
   border-color: var(--vibe-danger-border, var(--vibe-border));
+  border-radius: var(--vibe-danger-border-radius);
   color: var(--vibe-danger-color, var(--vibe-danger-text));
+  box-shadow: var(--vibe-danger-shadow);
+  padding: var(--vibe-danger-padding);
 }
 
 .vibe-skin-showcase-orb {
@@ -1764,25 +1813,25 @@ button:disabled {
 
 .vibe-skin--starship-cockpit.vibe-skin::before {
   background:
-    radial-gradient(ellipse at 50% 52%, rgba(163, 251, 255, 0.2), transparent 8rem),
-    radial-gradient(circle at 18% 22%, rgba(255, 255, 255, 0.95) 0 1px, transparent 2px),
-    radial-gradient(circle at 72% 14%, rgba(163, 251, 255, 0.86) 0 1px, transparent 2px),
-    radial-gradient(circle at 46% 62%, rgba(248, 199, 106, 0.78) 0 1px, transparent 2px),
-    radial-gradient(circle at 86% 76%, rgba(255, 255, 255, 0.82) 0 1px, transparent 2px),
-    repeating-linear-gradient(112deg, transparent 0 18px, rgba(163, 251, 255, 0.14) 19px, transparent 22px),
-    repeating-linear-gradient(78deg, transparent 0 34px, rgba(255, 255, 255, 0.12) 35px, transparent 38px);
+    radial-gradient(ellipse at 50% 52%, rgba(255, 255, 255, 0.28), rgba(46, 232, 255, 0.16) 4.5rem, transparent 12rem),
+    radial-gradient(circle at 18% 22%, rgba(255, 255, 255, 0.95) 0 1px, transparent 2.4px),
+    radial-gradient(circle at 72% 14%, rgba(163, 251, 255, 0.88) 0 1.2px, transparent 2.8px),
+    radial-gradient(circle at 46% 62%, rgba(248, 199, 106, 0.74) 0 1px, transparent 2.5px),
+    radial-gradient(circle at 86% 76%, rgba(255, 255, 255, 0.86) 0 1.2px, transparent 2.8px),
+    radial-gradient(circle at 25% 84%, rgba(163, 251, 255, 0.72) 0 1.1px, transparent 2.7px),
+    radial-gradient(circle at 60% 34%, rgba(255, 255, 255, 0.68) 0 0.8px, transparent 2.2px);
   background-size:
     100% 100%,
-    320px 320px,
-    420px 420px,
-    360px 360px,
-    520px 520px,
-    100% 100%,
-    100% 100%;
-  opacity: 0.68;
+    240px 320px,
+    360px 420px,
+    300px 360px,
+    460px 520px,
+    520px 380px,
+    180px 220px;
+  opacity: 0.78;
   filter: blur(0.15px);
   transform: perspective(900px) rotateX(58deg) scale(1.28);
-  animation: vibe-space-starflow 5.8s linear infinite;
+  animation: vibe-space-starflow 3.6s linear infinite;
 }
 
 .vibe-skin--starship-cockpit.vibe-skin::after {
@@ -1837,31 +1886,131 @@ button:disabled {
   inset: -38%;
   z-index: 0;
   background:
-    repeating-conic-gradient(from 15deg at 50% 52%, transparent 0 5deg, rgba(163, 251, 255, 0.17) 5.4deg 5.9deg, transparent 6.4deg 12deg),
-    radial-gradient(ellipse at 50% 52%, transparent 0 9%, rgba(46, 232, 255, 0.12) 10% 11%, transparent 13% 27%, rgba(248, 199, 106, 0.1) 28% 29%, transparent 31% 100%);
+    radial-gradient(ellipse at 50% 52%, rgba(255, 255, 255, 0.12) 0 4%, transparent 8% 15%, rgba(46, 232, 255, 0.12) 18% 19%, transparent 22% 100%),
+    radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.54) 0 1px, transparent 2px),
+    radial-gradient(circle at 48% 54%, rgba(163, 251, 255, 0.36) 0 1px, transparent 2.4px),
+    radial-gradient(circle at 54% 46%, rgba(248, 199, 106, 0.34) 0 1px, transparent 2.4px);
+  background-size:
+    100% 100%,
+    120px 160px,
+    180px 220px,
+    260px 260px;
   -webkit-mask-image: radial-gradient(ellipse at 50% 52%, #000 0 72%, transparent 79%);
   mask-image: radial-gradient(ellipse at 50% 52%, #000 0 72%, transparent 79%);
-  opacity: 0.55;
+  opacity: 0.54;
   transform-origin: 50% 52%;
-  animation: vibe-space-warp-tunnel 6.4s linear infinite;
+  animation: vibe-space-warp-tunnel 6.5s ease-in-out infinite alternate;
 }
 
 .vibe-skin--starship-cockpit .vibe-skin-body::after {
   inset: -12%;
   z-index: 0;
   background:
-    radial-gradient(circle at 49% 49%, rgba(255, 255, 255, 0.92) 0 1px, transparent 2px),
-    radial-gradient(circle at 54% 52%, rgba(163, 251, 255, 0.78) 0 1px, transparent 2px),
-    radial-gradient(circle at 45% 57%, rgba(248, 199, 106, 0.74) 0 1px, transparent 2px),
-    linear-gradient(90deg, transparent 0 45%, rgba(163, 251, 255, 0.12) 49%, rgba(255, 255, 255, 0.28) 50%, rgba(163, 251, 255, 0.12) 51%, transparent 55%);
+    radial-gradient(ellipse at 50% 50%, rgba(255, 255, 255, 0.34) 0 0.7%, rgba(46, 232, 255, 0.14) 1.8%, transparent 11%),
+    radial-gradient(circle at 49% 49%, rgba(255, 255, 255, 0.82) 0 1px, transparent 2.2px),
+    radial-gradient(circle at 54% 52%, rgba(163, 251, 255, 0.72) 0 1px, transparent 2.4px),
+    radial-gradient(circle at 45% 57%, rgba(248, 199, 106, 0.58) 0 1px, transparent 2.3px),
+    radial-gradient(ellipse at 50% 50%, rgba(163, 251, 255, 0.18) 0 2px, transparent 5px),
+    radial-gradient(ellipse at 50% 50%, rgba(255, 255, 255, 0.16) 0 1.5px, transparent 4px);
   background-size:
-    180px 150px,
-    260px 210px,
-    340px 280px,
-    100% 100%;
+    100% 100%,
+    150px 130px,
+    230px 190px,
+    310px 260px,
+    180px 240px,
+    280px 340px;
   mix-blend-mode: screen;
-  opacity: 0.36;
-  animation: vibe-space-warp-streaks 2.2s linear infinite;
+  opacity: 0.46;
+  animation: vibe-space-warp-streaks 2.6s linear infinite;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-space-planets {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-space-planet {
+  position: absolute;
+  display: block;
+  width: var(--vibe-space-planet-size);
+  height: var(--vibe-space-planet-size);
+  border-radius: 9999px;
+  background:
+    radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.92) 0 6%, transparent 8%),
+    radial-gradient(circle at 34% 30%, var(--vibe-space-planet-glow) 0 20%, transparent 34%),
+    repeating-linear-gradient(var(--vibe-space-planet-band-angle), transparent 0 12%, var(--vibe-space-planet-band) 13% 16%, transparent 18% 28%),
+    radial-gradient(circle at 62% 68%, var(--vibe-space-planet-core) 0 58%, var(--vibe-space-planet-shadow) 78%, rgba(0, 0, 0, 0.82) 100%);
+  box-shadow:
+    0 0 calc(var(--vibe-space-planet-size) * 0.42) var(--vibe-space-planet-halo),
+    inset calc(var(--vibe-space-planet-size) * -0.16) calc(var(--vibe-space-planet-size) * -0.1) calc(var(--vibe-space-planet-size) * 0.28) rgba(0, 0, 0, 0.6),
+    inset calc(var(--vibe-space-planet-size) * 0.06) calc(var(--vibe-space-planet-size) * 0.04) calc(var(--vibe-space-planet-size) * 0.18) rgba(255, 255, 255, 0.28);
+  opacity: var(--vibe-space-planet-opacity);
+  transform: translate3d(0, 0, 0);
+  animation: vibe-space-planet-drift var(--vibe-space-planet-duration) ease-in-out infinite alternate;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-space-planet::after {
+  position: absolute;
+  inset: -18%;
+  border: 1px solid var(--vibe-space-planet-ring);
+  border-radius: 50%;
+  opacity: var(--vibe-space-planet-ring-opacity);
+  transform: rotate(-16deg) scaleY(0.36);
+  content: "";
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-space-planet-large {
+  --vibe-space-planet-size: clamp(9.5rem, 15vw, 16rem);
+  --vibe-space-planet-glow: rgba(159, 231, 255, 0.88);
+  --vibe-space-planet-core: rgba(26, 115, 176, 0.78);
+  --vibe-space-planet-shadow: rgba(3, 28, 58, 0.9);
+  --vibe-space-planet-band: rgba(163, 251, 255, 0.2);
+  --vibe-space-planet-band-angle: 18deg;
+  --vibe-space-planet-halo: rgba(46, 232, 255, 0.24);
+  --vibe-space-planet-ring: rgba(163, 251, 255, 0.42);
+  --vibe-space-planet-ring-opacity: 0.58;
+  --vibe-space-planet-opacity: 0.86;
+  --vibe-space-planet-duration: 13s;
+  top: 8%;
+  right: 3%;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-space-planet-medium {
+  --vibe-space-planet-size: clamp(5.8rem, 8.5vw, 9rem);
+  --vibe-space-planet-glow: rgba(255, 231, 163, 0.86);
+  --vibe-space-planet-core: rgba(168, 78, 37, 0.82);
+  --vibe-space-planet-shadow: rgba(51, 13, 24, 0.9);
+  --vibe-space-planet-band: rgba(248, 199, 106, 0.24);
+  --vibe-space-planet-band-angle: -10deg;
+  --vibe-space-planet-halo: rgba(248, 199, 106, 0.22);
+  --vibe-space-planet-ring: rgba(248, 199, 106, 0.36);
+  --vibe-space-planet-ring-opacity: 0.36;
+  --vibe-space-planet-opacity: 0.78;
+  --vibe-space-planet-duration: 16s;
+  bottom: 7%;
+  left: 2.5%;
+  animation-delay: -4s;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-space-planet-small {
+  --vibe-space-planet-size: clamp(3.3rem, 5vw, 5.4rem);
+  --vibe-space-planet-glow: rgba(193, 178, 255, 0.8);
+  --vibe-space-planet-core: rgba(87, 73, 178, 0.72);
+  --vibe-space-planet-shadow: rgba(19, 16, 54, 0.88);
+  --vibe-space-planet-band: rgba(194, 196, 255, 0.18);
+  --vibe-space-planet-band-angle: 34deg;
+  --vibe-space-planet-halo: rgba(185, 140, 255, 0.2);
+  --vibe-space-planet-ring: rgba(194, 196, 255, 0.3);
+  --vibe-space-planet-ring-opacity: 0;
+  --vibe-space-planet-opacity: 0.64;
+  --vibe-space-planet-duration: 11s;
+  top: 35%;
+  left: 50%;
+  filter: blur(0.2px);
+  animation-delay: -7s;
 }
 
 .vibe-skin--starship-cockpit .vibe-skin-titlebar {
@@ -2060,6 +2209,7 @@ button:disabled {
 
 .vibe-skin--starship-cockpit .vibe-skin-launch-panel {
   clip-path: polygon(1rem 0, calc(100% - 1.4rem) 0, 100% 1.1rem, 100% 100%, 0 100%, 0 1rem);
+  padding: 1rem 1.15rem 1.1rem;
   text-shadow: 0 0 10px rgba(46, 232, 255, 0.2);
 }
 
@@ -2071,7 +2221,16 @@ button:disabled {
 }
 
 .vibe-skin--starship-cockpit .vibe-skin-agent-strip {
+  padding: 0.8rem 0.9rem;
   text-transform: uppercase;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-composer {
+  padding: 0.75rem;
+}
+
+.vibe-skin--starship-cockpit .vibe-skin-composer-meta-bar {
+  padding: 0.75rem;
 }
 
 .vibe-skin--starship-cockpit .vibe-skin-agent-option:hover,
@@ -2084,6 +2243,7 @@ button:disabled {
 
 .vibe-skin--starship-cockpit .vibe-skin-composer-input {
   caret-color: #f8c76a;
+  padding: 0.9rem 1rem 1rem;
 }
 
 .vibe-skin--starship-cockpit .vibe-skin-terminal-shell .xterm-pane,
@@ -2188,95 +2348,356 @@ button:disabled {
 }
 
 .vibe-skin-space-ship {
-  perspective: 680px;
+  perspective: 760px;
+  background:
+    radial-gradient(ellipse at 50% 38%, rgba(163, 251, 255, 0.28), transparent 4.8rem),
+    radial-gradient(ellipse at 50% 78%, rgba(248, 199, 106, 0.18), transparent 4.2rem),
+    linear-gradient(180deg, rgba(3, 25, 46, 0.9), rgba(1, 7, 14, 0.78));
+  box-shadow:
+    inset 0 0 30px rgba(46, 232, 255, 0.13),
+    inset 0 -34px 48px rgba(0, 0, 0, 0.28),
+    0 18px 34px rgba(0, 0, 0, 0.28);
+}
+
+.vibe-skin-space-ship::before {
+  z-index: 0;
+}
+
+.vibe-skin-space-ship::after {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  background:
+    linear-gradient(100deg, transparent 0 28%, rgba(255, 255, 255, 0.2) 48%, transparent 66%),
+    radial-gradient(ellipse at 50% 50%, transparent 0 54%, rgba(0, 0, 0, 0.34) 100%),
+    repeating-linear-gradient(0deg, transparent 0 9px, rgba(163, 251, 255, 0.04) 10px, transparent 11px);
+  mix-blend-mode: screen;
+  opacity: 0.76;
+  pointer-events: none;
+  content: "";
+}
+
+.vibe-skin-space-ship-webgl-host {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 260ms ease;
+}
+
+.vibe-skin-space-ship-webgl-ready .vibe-skin-space-ship-webgl-host {
+  opacity: 1;
+}
+
+.vibe-skin-space-ship-webgl-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.vibe-skin-space-ship-fallback {
+  transition: opacity 220ms ease;
+}
+
+.vibe-skin-space-ship-webgl-ready .vibe-skin-space-ship-fallback {
+  opacity: 0;
+}
+
+.vibe-skin-space-ship-webgl-failed .vibe-skin-space-ship-fallback {
+  opacity: 1;
 }
 
 .vibe-skin-space-ship-halo,
 .vibe-skin-space-ship-model,
+.vibe-skin-space-ship-shadow,
 .vibe-skin-space-ship-body,
+.vibe-skin-space-ship-nose,
+.vibe-skin-space-ship-spine,
 .vibe-skin-space-ship-wing,
 .vibe-skin-space-ship-core,
+.vibe-skin-space-ship-engine,
 .vibe-skin-space-ship-thruster {
   position: absolute;
 }
 
 .vibe-skin-space-ship-halo {
-  top: 18%;
+  top: 11%;
   left: 50%;
-  width: 6rem;
-  height: 6rem;
-  border: 1px solid rgba(46, 232, 255, 0.28);
+  z-index: 1;
+  width: 8.6rem;
+  height: 8.1rem;
+  border: 1px solid rgba(46, 232, 255, 0.34);
   border-radius: 999px;
-  box-shadow: inset 0 0 22px rgba(46, 232, 255, 0.08);
-  transform: translateX(-50%) rotateX(68deg);
+  background: radial-gradient(circle, transparent 0 58%, rgba(46, 232, 255, 0.08) 59% 62%, transparent 64%);
+  box-shadow:
+    inset 0 0 22px rgba(46, 232, 255, 0.1),
+    0 0 20px rgba(46, 232, 255, 0.12);
+  transform: translateX(-50%) rotateX(68deg) rotateZ(-8deg);
+}
+
+.vibe-skin-space-ship-halo::before,
+.vibe-skin-space-ship-halo::after {
+  position: absolute;
+  border: 1px dashed rgba(163, 251, 255, 0.28);
+  border-radius: 999px;
+  content: "";
+}
+
+.vibe-skin-space-ship-halo::before {
+  inset: 12%;
+}
+
+.vibe-skin-space-ship-halo::after {
+  inset: 27%;
+  border-color: rgba(248, 199, 106, 0.24);
 }
 
 .vibe-skin-space-ship-model {
-  inset: 0;
+  inset: -2% -8% -4%;
+  z-index: 2;
   transform-style: preserve-3d;
-  transform-origin: 50% 52%;
-  animation: vibe-space-ship-orbit 15s ease-in-out infinite;
+  transform-origin: 50% 56%;
+  animation: vibe-space-ship-orbit 18s ease-in-out infinite;
+}
+
+.vibe-skin-space-ship-model::before,
+.vibe-skin-space-ship-model::after {
+  position: absolute;
+  left: 50%;
+  pointer-events: none;
+  content: "";
+}
+
+.vibe-skin-space-ship-model::before {
+  top: 1%;
+  z-index: 0;
+  width: 8.6rem;
+  height: 8.9rem;
+  border: 1.6px solid rgba(184, 252, 255, 0.72);
+  background:
+    linear-gradient(90deg, transparent 0 49%, rgba(255, 255, 255, 0.72) 49.5% 50.5%, transparent 51%),
+    radial-gradient(circle at 50% 28%, rgba(248, 199, 106, 0.42) 0 3%, transparent 4%),
+    linear-gradient(135deg, transparent 0 42%, rgba(46, 232, 255, 0.22) 43% 45%, transparent 46%),
+    linear-gradient(225deg, transparent 0 42%, rgba(46, 232, 255, 0.22) 43% 45%, transparent 46%),
+    linear-gradient(180deg, rgba(46, 232, 255, 0.12), rgba(46, 232, 255, 0.03) 58%, rgba(248, 199, 106, 0.1));
+  clip-path: polygon(50% 0, 63% 17%, 95% 59%, 69% 69%, 59% 100%, 50% 86%, 41% 100%, 31% 69%, 5% 59%, 37% 17%);
+  filter:
+    drop-shadow(0 0 10px rgba(46, 232, 255, 0.42))
+    drop-shadow(0 0 22px rgba(46, 232, 255, 0.2));
+  opacity: 0.95;
+  transform: translateX(-50%) translateZ(6px);
+}
+
+.vibe-skin-space-ship-model::after {
+  top: 19%;
+  z-index: 0;
+  width: 6.2rem;
+  height: 5.5rem;
+  background:
+    linear-gradient(90deg, transparent 0 11%, rgba(163, 251, 255, 0.58) 12% 13%, transparent 14% 86%, rgba(163, 251, 255, 0.58) 87% 88%, transparent 89%),
+    repeating-linear-gradient(180deg, transparent 0 0.68rem, rgba(184, 252, 255, 0.22) 0.72rem 0.78rem, transparent 0.82rem 1.18rem);
+  clip-path: polygon(50% 0, 91% 58%, 63% 68%, 56% 100%, 44% 100%, 37% 68%, 9% 58%);
+  mix-blend-mode: screen;
+  opacity: 0.68;
+  transform: translateX(-50%) translateZ(34px);
 }
 
 .vibe-skin-space-ship-body,
-.vibe-skin-space-ship-wing,
+.vibe-skin-space-ship-nose,
+.vibe-skin-space-ship-spine,
 .vibe-skin-space-ship-core,
+.vibe-skin-space-ship-shadow,
 .vibe-skin-space-ship-thruster {
   left: 50%;
   transform-style: preserve-3d;
 }
 
+.vibe-skin-space-ship-body::before,
+.vibe-skin-space-ship-body::after,
+.vibe-skin-space-ship-wing::before,
+.vibe-skin-space-ship-wing::after,
+.vibe-skin-space-ship-engine::before {
+  position: absolute;
+  pointer-events: none;
+  content: "";
+}
+
+.vibe-skin-space-ship-shadow {
+  top: 76%;
+  width: 8.1rem;
+  height: 1.55rem;
+  border-radius: 999px;
+  background: radial-gradient(ellipse, rgba(46, 232, 255, 0.38), rgba(46, 232, 255, 0.08) 46%, transparent 72%);
+  filter: blur(5px);
+  opacity: 0.76;
+  transform: translateX(-50%) rotateX(74deg) translateZ(-28px);
+}
+
 .vibe-skin-space-ship-body {
-  top: 28%;
-  width: 1.45rem;
-  height: 4.7rem;
-  border-radius: 1.2rem 1.2rem 0.45rem 0.45rem;
+  top: 7%;
+  width: 2.75rem;
+  height: 7.15rem;
+  border: 1.7px solid transparent;
   background:
-    linear-gradient(90deg, #09243a, #d9fbff 44%, #2ee8ff 52%, #0a5b75),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.82), transparent 28%);
-  box-shadow: 0 0 22px rgba(46, 232, 255, 0.34);
-  transform: translateX(-50%) rotateX(62deg) rotateZ(45deg);
+    linear-gradient(90deg, transparent 0 44%, rgba(184, 252, 255, 0.88) 48% 52%, transparent 56%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(46, 232, 255, 0.1) 42%, rgba(1, 12, 24, 0.08)) padding-box,
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(46, 232, 255, 0.92) 44%, rgba(248, 199, 106, 0.76)) border-box;
+  clip-path: polygon(50% 0, 78% 15%, 68% 74%, 57% 92%, 50% 100%, 43% 92%, 32% 74%, 22% 15%);
+  filter: drop-shadow(0 0 14px rgba(46, 232, 255, 0.36));
+  transform: translateX(-50%) translateZ(28px);
+}
+
+.vibe-skin-space-ship-body::before {
+  inset: 17% 28% 12%;
+  border-right: 1px solid rgba(163, 251, 255, 0.48);
+  border-left: 1px solid rgba(163, 251, 255, 0.48);
+  background: linear-gradient(90deg, transparent 0 47%, rgba(255, 255, 255, 0.72) 49% 51%, transparent 53%);
+  opacity: 0.72;
+}
+
+.vibe-skin-space-ship-body::after {
+  top: 31%;
+  right: 18%;
+  left: 18%;
+  height: 54%;
+  background: repeating-linear-gradient(
+    180deg,
+    transparent 0 0.58rem,
+    rgba(163, 251, 255, 0.42) 0.62rem 0.68rem,
+    transparent 0.72rem 1.05rem
+  );
+  opacity: 0.72;
+}
+
+.vibe-skin-space-ship-nose {
+  top: 2.5%;
+  width: 0.78rem;
+  height: 1.26rem;
+  border: 1px solid rgba(255, 255, 255, 0.86);
+  border-bottom: 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(46, 232, 255, 0.08));
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  box-shadow: 0 0 12px rgba(163, 251, 255, 0.46);
+  transform: translateX(-50%) translateZ(30px);
+}
+
+.vibe-skin-space-ship-spine {
+  top: 16%;
+  width: 1px;
+  height: 5.7rem;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(46, 232, 255, 0.74), rgba(248, 199, 106, 0.62));
+  box-shadow:
+    0 0 10px rgba(163, 251, 255, 0.62),
+    0 0 18px rgba(46, 232, 255, 0.32);
+  transform: translateX(-50%) translateZ(36px);
 }
 
 .vibe-skin-space-ship-wing {
-  top: 52%;
-  width: 3.15rem;
-  height: 1.05rem;
-  border-radius: 0.2rem 1.05rem 1.05rem 0.2rem;
-  background: linear-gradient(90deg, rgba(46, 232, 255, 0.82), rgba(216, 251, 255, 0.96));
-  box-shadow: 0 0 14px rgba(46, 232, 255, 0.28);
-  transform-origin: center left;
+  top: 33%;
+  width: 4.85rem;
+  height: 3.9rem;
+  border: 1.55px solid transparent;
+  background:
+    linear-gradient(138deg, rgba(46, 232, 255, 0.14), rgba(46, 232, 255, 0.02) 46%, rgba(248, 199, 106, 0.06)) padding-box,
+    linear-gradient(132deg, rgba(255, 255, 255, 0.88), rgba(46, 232, 255, 0.84) 52%, rgba(248, 199, 106, 0.6)) border-box;
+  clip-path: polygon(5% 2%, 100% 28%, 74% 100%, 16% 70%);
+  filter: drop-shadow(0 0 12px rgba(46, 232, 255, 0.28));
+  transform-origin: 100% 28%;
 }
 
 .vibe-skin-space-ship-wing-left {
-  margin-left: -3.35rem;
-  transform: rotateZ(-18deg) skewX(-18deg);
+  left: -0.08rem;
+  transform: rotateZ(-4deg) translateZ(16px);
 }
 
 .vibe-skin-space-ship-wing-right {
-  margin-left: 0.25rem;
-  transform: rotateZ(198deg) skewX(-18deg);
+  right: -0.08rem;
+  transform: scaleX(-1) rotateZ(-4deg) translateZ(16px);
+}
+
+.vibe-skin-space-ship-wing::before {
+  inset: 20% 19% 19% 24%;
+  border-top: 1px solid rgba(163, 251, 255, 0.5);
+  border-left: 1px solid rgba(163, 251, 255, 0.42);
+  transform: skewY(18deg);
+}
+
+.vibe-skin-space-ship-wing::after {
+  top: 58%;
+  left: 14%;
+  width: 74%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7), rgba(46, 232, 255, 0.28));
+  transform: rotate(13deg);
 }
 
 .vibe-skin-space-ship-core {
-  top: 48%;
-  width: 0.82rem;
-  height: 0.82rem;
-  border-radius: 999px;
-  background: #f8c76a;
-  box-shadow: 0 0 18px rgba(248, 199, 106, 0.82);
-  transform: translateX(-50%);
+  top: 30%;
+  width: 1rem;
+  height: 1.22rem;
+  border: 1px solid rgba(248, 199, 106, 0.82);
+  border-radius: 999px 999px 0.65rem 0.65rem;
+  background: radial-gradient(circle at 50% 34%, rgba(255, 255, 255, 0.98) 0 16%, #f8c76a 17% 44%, rgba(46, 232, 255, 0.16) 45% 100%);
+  box-shadow:
+    0 0 18px rgba(248, 199, 106, 0.72),
+    inset 0 0 10px rgba(255, 255, 255, 0.28);
+  transform: translateX(-50%) translateZ(42px);
+}
+
+.vibe-skin-space-ship-engine {
+  top: 69%;
+  width: 0.78rem;
+  height: 1.38rem;
+  border: 1px solid rgba(163, 251, 255, 0.62);
+  border-radius: 0.24rem 0.24rem 0.44rem 0.44rem;
+  background:
+    linear-gradient(180deg, rgba(46, 232, 255, 0.1), rgba(46, 232, 255, 0.24)),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.54), transparent 28% 72%, rgba(255, 255, 255, 0.42));
+  box-shadow:
+    inset 0 0 10px rgba(46, 232, 255, 0.18),
+    0 0 10px rgba(46, 232, 255, 0.22);
+}
+
+.vibe-skin-space-ship-engine::before {
+  right: 18%;
+  bottom: 0.16rem;
+  left: 18%;
+  height: 1px;
+  background: rgba(248, 199, 106, 0.72);
+  box-shadow: 0 0 8px rgba(248, 199, 106, 0.62);
+}
+
+.vibe-skin-space-ship-engine-left {
+  left: 38%;
+  transform: translateX(-50%) rotateZ(4deg) translateZ(18px);
+}
+
+.vibe-skin-space-ship-engine-right {
+  left: 62%;
+  transform: translateX(-50%) rotateZ(-4deg) translateZ(18px);
 }
 
 .vibe-skin-space-ship-thruster {
-  top: 68%;
-  width: 0.58rem;
-  height: 2.35rem;
+  top: 80%;
+  width: 0.56rem;
+  height: 2.25rem;
   border-radius: 999px;
-  background: linear-gradient(180deg, rgba(46, 232, 255, 0.95), rgba(248, 199, 106, 0.42), transparent);
-  filter: blur(0.5px);
-  transform: translateX(-50%);
+  background:
+    radial-gradient(ellipse at 50% 0, rgba(255, 255, 255, 0.98) 0 10%, transparent 18%),
+    linear-gradient(180deg, rgba(46, 232, 255, 0.95), rgba(248, 199, 106, 0.54), transparent);
+  filter: blur(0.45px);
+  opacity: 0.88;
+  transform: translateX(-50%) scaleY(0.92);
   animation: vibe-space-thruster 1.8s ease-in-out infinite;
+}
+
+.vibe-skin-space-ship-thruster-left {
+  left: 38%;
+  animation-delay: -0.25s;
+}
+
+.vibe-skin-space-ship-thruster-right {
+  left: 62%;
 }
 
 .vibe-skin-space-radar-grid,
@@ -2430,10 +2851,10 @@ button:disabled {
 
 @keyframes vibe-space-warp-tunnel {
   from {
-    transform: scale(0.92) rotate(0deg);
+    transform: scale(0.96) rotate(0deg);
   }
   to {
-    transform: scale(1.16) rotate(18deg);
+    transform: scale(1.08) rotate(3deg);
   }
 }
 
@@ -2443,16 +2864,29 @@ button:disabled {
       0 0,
       0 0,
       0 0,
-      0 0;
-    transform: scale(0.95);
+      0 0,
+      40px 60px,
+      -30px -50px;
+    transform: scale(0.98);
   }
   to {
     background-position:
-      0 460px,
-      -140px 560px,
-      180px 680px,
-      0 0;
-    transform: scale(1.12);
+      0 0,
+      0 360px,
+      -120px 420px,
+      160px 520px,
+      260px 600px,
+      -220px 560px;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes vibe-space-planet-drift {
+  from {
+    transform: translate3d(-0.35rem, 0.25rem, 0) scale(0.98);
+  }
+  to {
+    transform: translate3d(0.55rem, -0.45rem, 0) scale(1.02);
   }
 }
 
@@ -2465,12 +2899,12 @@ button:disabled {
 @keyframes vibe-space-ship-orbit {
   0%,
   100% {
-    filter: drop-shadow(0 0 12px rgba(46, 232, 255, 0.34));
-    transform: rotateX(62deg) rotateY(-28deg) rotateZ(-8deg) translateY(0);
+    filter: drop-shadow(0 0 16px rgba(46, 232, 255, 0.42));
+    transform: rotateX(42deg) rotateY(-14deg) rotateZ(-8deg) translateY(0) scale(1.02);
   }
   50% {
-    filter: drop-shadow(0 0 24px rgba(248, 199, 106, 0.32));
-    transform: rotateX(58deg) rotateY(32deg) rotateZ(8deg) translateY(-0.25rem);
+    filter: drop-shadow(0 0 28px rgba(248, 199, 106, 0.36));
+    transform: rotateX(38deg) rotateY(16deg) rotateZ(8deg) translateY(-0.25rem) scale(1.06);
   }
 }
 
@@ -2527,6 +2961,7 @@ button:disabled {
   .vibe-skin-space-radar-sweep,
   .vibe-skin-space-ship-model,
   .vibe-skin-space-ship-thruster,
+  .vibe-skin-space-planet,
   .vibe-skin-space-starmap-route,
   .vibe-skin-space-telemetry-line:last-child::after {
     animation-duration: 60s;
