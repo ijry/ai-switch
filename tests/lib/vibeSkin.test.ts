@@ -422,8 +422,8 @@ describe("vibeSkin", () => {
     expect(builtInSkin?.blocks?.showcase?.body).toBe("");
     expect(builtInSkin?.blocks?.launch?.title).toBe("出发下一个星球");
     expect(builtInSkin?.blocks?.launch?.agentStripPrefix).toBe("武器选项");
-    expect(builtInSkin?.regions?.composerAddon?.padding).toBe("0.3rem 0.8rem");
-    expect(builtInSkin?.regions?.composerAddon?.lineHeight).toBe("1.4");
+    expect(builtInSkin?.regions?.composerAddon?.padding).toBe("0.16rem 0.38rem");
+    expect(builtInSkin?.regions?.composerAddon?.lineHeight).toBe("1");
     expect(builtInSkin?.decorations?.rightCards?.[0]?.title).toBe("");
     expect(builtInSkin?.decorations?.rightCards?.[0]?.status).toBe("近轨目标追踪");
     expect(builtInSkin?.decorations?.rightCards?.[1]?.title).toBe("");
@@ -449,8 +449,8 @@ describe("vibeSkin", () => {
     expect(getVibeSkinBlocks(imported).showcase.body).toBe("");
     expect(getVibeSkinBlocks(imported).launch.sendLabel).toBe("跃迁启动");
     const importedVariables = skinToCssVariables(imported) as Record<string, unknown>;
-    expect(importedVariables["--vibe-composer-addon-padding"]).toBe("0.3rem 0.8rem");
-    expect(importedVariables["--vibe-composer-addon-line-height"]).toBe("1.4");
+    expect(importedVariables["--vibe-composer-addon-padding"]).toBe("0.16rem 0.38rem");
+    expect(importedVariables["--vibe-composer-addon-line-height"]).toBe("1");
     expect(imported.decorations).toEqual(builtInSkin?.decorations);
   });
 
