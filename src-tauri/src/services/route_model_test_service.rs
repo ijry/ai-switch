@@ -325,7 +325,22 @@ fn model_mappings(config: &Value) -> Vec<ModelMapping> {
         .get("model_mappings")
         .cloned()
         .and_then(|value| serde_json::from_value::<Vec<ModelMapping>>(value).ok())
+        .map(remove_placeholder_model_mappings)
         .unwrap_or_default()
+}
+
+fn remove_placeholder_model_mappings(mappings: Vec<ModelMapping>) -> Vec<ModelMapping> {
+    mappings
+        .into_iter()
+        .filter(|mapping| {
+            !is_placeholder_model(&mapping.from) && !is_placeholder_model(&mapping.to)
+        })
+        .collect()
+}
+
+fn is_placeholder_model(value: &str) -> bool {
+    let value = value.trim();
+    value.is_empty() || value == "upstream-model"
 }
 
 fn interface_format_for(credential: &SelectedCredential, platform: &str, config: &Value) -> String {
@@ -804,6 +819,24 @@ mod tests {
                 .and_then(Value::as_i64),
             Some(16),
         );
+    }
+
+    #[test]
+    fn builds_gemini_test_request_ignores_placeholder_mapping_target() {
+        let mut credential = api_credential("gemini");
+        credential.config_json = json!({
+            "base_url": "https://api.example.com/v1",
+            "interface_format": "gemini",
+            "model_mappings": [{"from":"gpt-5","to":"upstream-model"}]
+        })
+        .to_string();
+        let request = build_model_test_request(&credential, "gemini").expect("request");
+
+        assert_eq!(
+            request.request_path,
+            "/v1beta/models/gemini-2.5-flash:generateContent"
+        );
+        assert!(!request.request_path.contains("upstream-model"));
     }
 
     #[test]

@@ -229,6 +229,16 @@ fn validate_model_mappings(value: &str) -> Result<(), AppError> {
             recoverable: true,
         });
     }
+    if mappings.iter().any(|mapping| {
+        mapping.from.trim() == "upstream-model" || mapping.to.trim() == "upstream-model"
+    }) {
+        return Err(AppError::Validation {
+            code: "validation.model_mapping",
+            message: "Model mapping uses the upstream-model placeholder".to_string(),
+            details: Some(value.to_string()),
+            recoverable: true,
+        });
+    }
     Ok(())
 }
 
@@ -243,4 +253,28 @@ fn normalize_platform(platform: &str) -> Result<String, AppError> {
         });
     }
     Ok(platform.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_empty_model_mappings() {
+        assert!(validate_model_mappings("[]").is_ok());
+    }
+
+    #[test]
+    fn rejects_placeholder_model_mapping() {
+        let error = validate_model_mappings(r#"[{"from":"gpt-5","to":"upstream-model"}]"#)
+            .expect_err("placeholder should be rejected");
+
+        match error {
+            AppError::Validation { code, message, .. } => {
+                assert_eq!(code, "validation.model_mapping");
+                assert!(message.contains("upstream-model"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
 }

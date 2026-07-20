@@ -572,7 +572,22 @@ fn model_mappings(config: &Value) -> Vec<ModelMapping> {
         .get("model_mappings")
         .cloned()
         .and_then(|value| serde_json::from_value::<Vec<ModelMapping>>(value).ok())
+        .map(remove_placeholder_model_mappings)
         .unwrap_or_default()
+}
+
+fn remove_placeholder_model_mappings(mappings: Vec<ModelMapping>) -> Vec<ModelMapping> {
+    mappings
+        .into_iter()
+        .filter(|mapping| {
+            !is_placeholder_model(&mapping.from) && !is_placeholder_model(&mapping.to)
+        })
+        .collect()
+}
+
+fn is_placeholder_model(value: &str) -> bool {
+    let value = value.trim();
+    value.is_empty() || value == "upstream-model"
 }
 
 fn insert_header(headers: &mut HeaderMap, name: &'static str, value: &str) -> Result<(), String> {
@@ -783,6 +798,33 @@ mod tests {
         assert_eq!(
             value.pointer("/nested/model").and_then(Value::as_str),
             Some("up-gpt")
+        );
+    }
+
+    #[test]
+    fn build_upstream_request_ignores_placeholder_model_mapping() {
+        let mut credential = api_credential("placeholder", "openai");
+        credential.config_json = serde_json::json!({
+            "base_url": "https://api.example.com/v1",
+            "interface_format": "openai",
+            "model_mappings": [{"from":"gpt-5","to":"upstream-model"}]
+        })
+        .to_string();
+
+        let (_, _, body) = build_upstream_request(
+            &credential,
+            "codex",
+            "/chat/completions",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5"}"#,
+        )
+        .expect("openai request");
+        let value: Value = serde_json::from_slice(&body).expect("json");
+
+        assert_eq!(
+            value.pointer("/model").and_then(Value::as_str),
+            Some("gpt-5")
         );
     }
 

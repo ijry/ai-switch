@@ -273,11 +273,8 @@ function apiKeyLines(value: string) {
     .filter(Boolean);
 }
 
-function defaultModelMappings(platform: PlatformKey): ModelMapping[] {
-  if (platform === "claude") {
-    return [];
-  }
-  return [{ from: "gpt-5", to: "upstream-model" }];
+function defaultModelMappings(_platform: PlatformKey): ModelMapping[] {
+  return [];
 }
 
 function parseModelMappingsFromConfig(configJson: string): ModelMapping[] {
@@ -315,6 +312,12 @@ function normalizeModelMappings(mappings: ModelMapping[]) {
     if (!from || !to) {
       return {
         error: "模型映射需要同时填写请求模型和上游模型。",
+        mappings: [],
+      };
+    }
+    if (from === "upstream-model" || to === "upstream-model") {
+      return {
+        error: "upstream-model 只是示例占位，请填写真实上游模型名或删除该映射。",
         mappings: [],
       };
     }
@@ -382,6 +385,9 @@ function ModelMappingsEditor({ error, label, onChange, platform, value }: ModelM
           新增映射
         </button>
       </div>
+      <p className="text-[11px] font-medium leading-5 text-stone-500">
+        留空表示不改写模型；只有上游不支持默认请求模型时，才填写真实模型映射。
+      </p>
 
       <div className="space-y-2 rounded-xl border border-stone-200 bg-stone-50/70 p-2">
         {rows.map((mapping, index) => (
@@ -417,7 +423,7 @@ function ModelMappingsEditor({ error, label, onChange, platform, value }: ModelM
               aria-label={`上游模型 ${index + 1}`}
               className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
               onChange={(event) => updateRow(index, { to: event.target.value })}
-              placeholder="upstream-model"
+              placeholder="例如：gpt-4o"
               value={mapping.to}
             />
             <button

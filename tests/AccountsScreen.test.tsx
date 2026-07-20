@@ -310,6 +310,7 @@ describe("AccountsScreen", () => {
     await userEvent.clear(screen.getByLabelText("Base URL"));
     await userEvent.type(screen.getByLabelText("Base URL"), "https://api.upstream.test/v1");
     await userEvent.selectOptions(screen.getByLabelText("接口格式"), "openai-responses");
+    await userEvent.type(screen.getByLabelText("请求模型 1"), "gpt-5");
     fireEvent.change(screen.getByLabelText("上游模型 1"), {
       target: { value: "up-gpt" },
     });
@@ -327,6 +328,40 @@ describe("AccountsScreen", () => {
         batch_id: null,
       }),
     );
+  });
+
+  it("creates an API route credential without placeholder model mappings by default", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Plain API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-plain");
+    await userEvent.clear(screen.getByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://api.upstream.test/v1");
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() =>
+      expect(createApiRouteCredential).toHaveBeenCalledWith(
+        expect.objectContaining({
+          display_name: "Plain API",
+          model_mappings_json: "[]",
+        }),
+      ),
+    );
+  });
+
+  it("rejects the placeholder upstream model mapping before saving", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Bad API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-bad");
+    await userEvent.type(screen.getByLabelText("请求模型 1"), "gpt-5");
+    await userEvent.type(screen.getByLabelText("上游模型 1"), "upstream-model");
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    expect((await screen.findAllByText(/upstream-model 只是示例占位/)).length).toBeGreaterThan(0);
+    expect(createApiRouteCredential).not.toHaveBeenCalled();
   });
 
   it("creates multiple API keys as one batch", async () => {
