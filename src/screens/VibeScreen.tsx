@@ -1019,6 +1019,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const startMenuRef = useRef<HTMLDivElement | null>(null);
   const sessionListScrollTimeout = useRef<number | null>(null);
   const ambientAudioRef = useRef<AmbientAudioHandle[]>([]);
+  const closingTabIdsRef = useRef(new Set<string>());
 
   const sessionsQuery = useQuery({
     queryKey: ["sessions"],
@@ -1175,6 +1176,10 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   };
 
   const closeTab = async (session: TerminalSession) => {
+    if (closingTabIdsRef.current.has(session.id)) {
+      return;
+    }
+    closingTabIdsRef.current.add(session.id);
     setError(null);
     try {
       if (session.status === "running") {
@@ -1192,6 +1197,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       });
     } catch (caught) {
       setError(formatError(caught));
+    } finally {
+      closingTabIdsRef.current.delete(session.id);
     }
   };
 
@@ -1896,7 +1903,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                   />
                 )}
                 <button
-                  className="inline-flex h-full min-w-0 flex-1 items-center gap-2 bg-transparent px-3 pr-1 text-[12px] font-medium"
+                  className="vibe-tab-trigger inline-flex h-full min-w-0 flex-1 items-center gap-2 bg-transparent px-3 pr-1 text-[12px] font-medium"
                   onClick={() => setActiveId(tab.id)}
                   type="button"
                 >

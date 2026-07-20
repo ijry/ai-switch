@@ -381,6 +381,7 @@ describe("VibeScreen", () => {
     await userEvent.click(resumableSession);
 
     const tabButton = await screen.findByRole("button", { name: "Fix terminal bug" });
+    expect(tabButton).toHaveClass("vibe-tab-trigger");
     expect(tabButton.parentElement).toHaveClass("vibe-dark-tab-active");
     const closeButton = screen.getByRole("button", { name: "Close Fix terminal bug" });
     expect(closeButton).toHaveClass("vibe-dark-tab-close");
@@ -409,6 +410,7 @@ describe("VibeScreen", () => {
     await userEvent.click(resumableSession);
 
     const tabButton = await screen.findByRole("button", { name: "Fix terminal bug" });
+    expect(tabButton).toHaveClass("vibe-tab-trigger");
     expect(tabButton.parentElement).toHaveClass("vibe-light-tab-active");
     const closeButton = screen.getByRole("button", { name: "Close Fix terminal bug" });
     expect(closeButton).toHaveClass("vibe-light-tab-close");

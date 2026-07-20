@@ -658,7 +658,27 @@ button:disabled {
   color: var(--vibe-tab-close-color, var(--vibe-muted-text));
 }
 
+.vibe-tab-trigger {
+  -webkit-appearance: none;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  line-height: 1;
+  outline: none;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.vibe-tab-trigger:hover {
+  background: transparent;
+  color: inherit;
+}
+
 .vibe-tab-close-icon {
+  -webkit-appearance: none;
+  appearance: none;
   border: 0;
   background: transparent;
   box-shadow: none;

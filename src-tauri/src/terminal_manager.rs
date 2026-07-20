@@ -2,7 +2,7 @@ use chrono::Utc;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
@@ -318,6 +318,7 @@ impl TerminalManager {
             .ok_or_else(|| format!("Unknown terminal session: {session_id}"))?;
         match process.killer.kill() {
             Ok(()) => Ok(()),
+            Err(error) if is_missing_process_error(&error) => Ok(()),
             Err(error) => Err(format!("Failed to kill terminal: {error}")),
         }
     }
@@ -330,6 +331,10 @@ impl TerminalManager {
             .map(|process| process.meta.clone())
             .collect()
     }
+}
+
+fn is_missing_process_error(error: &std::io::Error) -> bool {
+    error.kind() == ErrorKind::NotFound || error.raw_os_error().is_some_and(|code| code == 3)
 }
 
 fn default_shell_command() -> ResolvedCommand {
@@ -429,5 +434,15 @@ mod tests {
     fn list_sessions_starts_empty() {
         let manager = TerminalManager::default();
         assert!(manager.list_sessions().is_empty());
+    }
+
+    #[test]
+    fn treats_missing_process_as_already_closed() {
+        assert!(is_missing_process_error(&std::io::Error::from(
+            ErrorKind::NotFound,
+        )));
+        assert!(is_missing_process_error(&std::io::Error::from_raw_os_error(
+            3,
+        )));
     }
 }
