@@ -1,3 +1,4 @@
+pub mod http_client;
 pub mod batch_service;
 pub mod cpa_import_service;
 pub mod import_service;

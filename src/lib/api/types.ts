@@ -16,7 +16,7 @@ export type Batch = {
   updated_at: string;
 };
 
-export type AccountStatus = "ok" | "warning" | "error";
+export type AccountStatus = "ok" | "warning" | "error" | "revoked";
 
 export type RouteCredentialKind = "official" | "api";
 

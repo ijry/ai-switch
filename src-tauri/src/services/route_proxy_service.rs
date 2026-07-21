@@ -2,6 +2,7 @@ use crate::database::repositories::route_credential_repository::RouteCredentialR
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
 use crate::error::AppError;
+use crate::services::http_client::build_outbound_http_client;
 use crate::models::route_credential::{
     normalize_anthropic_api_key_field, ModelMapping, ANTHROPIC_API_KEY_FIELD,
     ANTHROPIC_AUTH_TOKEN_FIELD,
@@ -14,7 +15,7 @@ use axum::routing::any;
 use axum::Router;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -27,6 +28,10 @@ use uuid::Uuid;
 
 const BIND_HOST: &str = "127.0.0.1";
 const ROUTE_PROXY_KEY_CACHE_TTL: Duration = Duration::from_secs(30);
+/// Public xAI Grok CLI OAuth client ID (CLIProxyAPI / Grok CLI).
+const XAI_OAUTH_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
+/// Refresh a short time before wall-clock expiry to avoid edge 401s.
+const OAUTH_REFRESH_LEAD: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteProxyStatus {
@@ -222,9 +227,10 @@ async fn forward_request(
     let cursor = RoutePoolRepository::next_cursor_index(pool, &platform)
         .await
         .map_err(|err| err.to_string())?;
-    let credential = pick_credential(&credentials, cursor)
+    let selected = pick_credential(&credentials, cursor)
         .ok_or_else(|| "No enabled route credentials in pool".to_string())?;
     let next_index = (cursor.rem_euclid(credentials.len() as i64) + 1) % credentials.len() as i64;
+    let credential = maybe_refresh_official_credential(pool, selected).await?;
 
     let body_bytes = axum::body::to_bytes(body, 32 * 1024 * 1024)
         .await
@@ -239,7 +245,7 @@ async fn forward_request(
     }
 
     let (target_url, outbound_headers, outbound_body) = build_upstream_request(
-        credential,
+        &credential,
         &platform,
         &path,
         query.as_deref(),
@@ -247,7 +253,7 @@ async fn forward_request(
         &body_bytes,
     )?;
 
-    let client = reqwest::Client::new();
+    let client = build_outbound_http_client(None)?;
     let request = client
         .request(
             reqwest::Method::from_bytes(method.as_str().as_bytes())
@@ -352,6 +358,10 @@ fn should_mark_proxy_account_unavailable(status: StatusCode) -> bool {
 
 async fn mark_route_credential_unavailable(pool: &SqlitePool, credential_id: &str) {
     let _ = RouteCredentialRepository::update_status(pool, credential_id, "error").await;
+}
+
+async fn mark_route_credential_revoked(pool: &SqlitePool, credential_id: &str) {
+    let _ = RouteCredentialRepository::update_status(pool, credential_id, "revoked").await;
 }
 
 fn json_error(status: StatusCode, message: &str) -> Response {
@@ -703,6 +713,7 @@ pub fn build_upstream_request(
             &mut headers,
             body,
             &secret,
+            &config,
         )
     }
 }
@@ -776,25 +787,402 @@ fn build_official_upstream_request(
     headers: &mut HeaderMap,
     body: &[u8],
     secret: &Value,
+    config: &Value,
 ) -> Result<(String, HeaderMap, Vec<u8>), String> {
-    let access_token = string_value(secret, "access_token").ok_or_else(|| {
-        if string_value(secret, "refresh_token").is_some() {
-            "route_credential.refresh_only_unsupported".to_string()
-        } else {
-            format!(
-                "Route credential {} is missing access_token",
-                credential.display_name
-            )
-        }
-    })?;
+    // Apply credential-provided headers first (CPA may ship User-Agent / X-Client-Name).
+    apply_config_headers(headers, config)?;
+
+    let access_token = resolve_official_access_token(credential, secret, config)?;
     insert_header(headers, "authorization", &format!("Bearer {access_token}"))?;
     if platform == "claude" {
         headers
             .entry(HeaderName::from_static("anthropic-version"))
             .or_insert(HeaderValue::from_static("2023-06-01"));
     }
-    let target_url = build_target_url(default_official_base_url(platform), path, query);
+    let base_url = string_value(config, "base_url").unwrap_or_else(|| default_official_base_url(platform));
+    let target_url = build_target_url(base_url, path, query);
     Ok((target_url, headers.clone(), body.to_vec()))
+}
+
+fn apply_config_headers(headers: &mut HeaderMap, config: &Value) -> Result<(), String> {
+    let Some(Value::Object(extra)) = config.get("headers") else {
+        return Ok(());
+    };
+    for (name, value) in extra {
+        let Some(value) = value.as_str().map(str::trim).filter(|item| !item.is_empty()) else {
+            continue;
+        };
+        let header_name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|err| format!("Invalid credential header name {name}: {err}"))?;
+        let header_value = HeaderValue::from_str(value)
+            .map_err(|err| format!("Invalid credential header value for {name}: {err}"))?;
+        // Only fill missing headers so inbound request values still win when present.
+        headers.entry(header_name).or_insert(header_value);
+    }
+    Ok(())
+}
+
+fn resolve_official_access_token(
+    credential: &SelectedCredential,
+    secret: &Value,
+    _config: &Value,
+) -> Result<String, String> {
+    // Token refresh happens in maybe_refresh_official_credential before build.
+    if let Some(access_token) = string_value(secret, "access_token") {
+        return Ok(access_token.to_string());
+    }
+
+    if string_value(secret, "refresh_token").is_some() {
+        return Err("route_credential.refresh_only_unsupported".to_string());
+    }
+
+    Err(format!(
+        "Route credential {} is missing access_token",
+        credential.display_name
+    ))
+}
+
+fn access_token_is_expired(config: &Value) -> bool {
+    access_token_is_expired_with_secret(config, None)
+}
+
+fn access_token_is_expired_with_secret(config: &Value, secret: Option<&Value>) -> bool {
+    if let Some(raw) = config.get("expired") {
+        match raw {
+            Value::String(value) => {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(trimmed) {
+                        return dt.with_timezone(&Utc)
+                            <= Utc::now() + chrono::Duration::from_std(OAUTH_REFRESH_LEAD).unwrap_or_default();
+                    }
+                }
+            }
+            Value::Number(number) => {
+                if let Some(ts) = number.as_i64() {
+                    // Accept unix seconds.
+                    return Utc::now().timestamp() + OAUTH_REFRESH_LEAD.as_secs() as i64 >= ts;
+                }
+            }
+            Value::Bool(true) => return true,
+            _ => {}
+        }
+    }
+
+    // Fallback: parse access JWT `exp` when config.expired is missing/unusable.
+    if let Some(secret) = secret {
+        if let Some(access_token) = string_value(secret, "access_token") {
+            if let Some(exp) = jwt_claim_i64(access_token, "exp") {
+                return Utc::now().timestamp() + OAUTH_REFRESH_LEAD.as_secs() as i64 >= exp;
+            }
+        }
+    }
+
+    false
+}
+
+/// Refresh an official OAuth access token when missing/expired and a token_endpoint exists.
+/// Returns updated secret/config JSON when refresh succeeds.
+pub async fn maybe_refresh_official_credential(
+    pool: &SqlitePool,
+    credential: &SelectedCredential,
+) -> Result<SelectedCredential, String> {
+    if credential.kind != "official" {
+        return Ok(credential.clone());
+    }
+
+    let secret = parse_json_object(&credential.secret_payload_json, "secret")?;
+    let config = parse_json_object(&credential.config_json, "config")?;
+    let has_access = string_value(&secret, "access_token").is_some()
+        && !access_token_is_expired_with_secret(&config, Some(&secret));
+    if has_access {
+        return Ok(credential.clone());
+    }
+
+    let refresh_token = match string_value(&secret, "refresh_token") {
+        Some(value) => value.to_string(),
+        None => return Ok(credential.clone()),
+    };
+    let Some(token_endpoint) = string_value(&config, "token_endpoint").map(str::to_string) else {
+        return Ok(credential.clone());
+    };
+    let client_id = resolve_oauth_client_id(&credential.platform, &config, &secret);
+
+    let refreshed = match refresh_oauth_access_token(
+        &token_endpoint,
+        &refresh_token,
+        client_id.as_deref(),
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(err) => {
+            if is_permanent_oauth_refresh_failure(&err) {
+                mark_route_credential_revoked(pool, &credential.id).await;
+            }
+            return Err(format_oauth_refresh_failure(&err));
+        }
+    };
+    let mut secret_obj = secret
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "Route credential secret JSON must be an object".to_string())?;
+    let mut config_obj = config
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "Route credential config JSON must be an object".to_string())?;
+
+    secret_obj.insert("access_token".to_string(), Value::String(refreshed.access_token.clone()));
+    if let Some(refresh) = refreshed.refresh_token {
+        secret_obj.insert("refresh_token".to_string(), Value::String(refresh));
+    }
+    if let Some(id_token) = refreshed.id_token {
+        secret_obj.insert("id_token".to_string(), Value::String(id_token));
+    }
+    if let Some(token_type) = refreshed.token_type {
+        config_obj.insert("token_type".to_string(), Value::String(token_type));
+    }
+    if let Some(expires_in) = refreshed.expires_in {
+        config_obj.insert("expires_in".to_string(), json!(expires_in));
+        if let Some(expired_at) = Utc::now().checked_add_signed(chrono::Duration::seconds(expires_in)) {
+            config_obj.insert(
+                "expired".to_string(),
+                Value::String(expired_at.to_rfc3339()),
+            );
+        }
+    } else if let Some(exp) = jwt_claim_i64(&refreshed.access_token, "exp") {
+        if let Some(expired_at) = chrono::DateTime::<Utc>::from_timestamp(exp, 0) {
+            config_obj.insert(
+                "expired".to_string(),
+                Value::String(expired_at.to_rfc3339()),
+            );
+        }
+    }
+    config_obj.insert("last_refresh".to_string(), Value::String(Utc::now().to_rfc3339()));
+
+    let secret_payload_json = Value::Object(secret_obj).to_string();
+    let config_json = Value::Object(config_obj).to_string();
+
+    // Best-effort persistence; request can still proceed with in-memory tokens.
+    let _ = RouteCredentialRepository::update_secret_and_config(
+        pool,
+        &credential.id,
+        &secret_payload_json,
+        &config_json,
+    )
+    .await;
+
+    Ok(SelectedCredential {
+        secret_payload_json,
+        config_json,
+        ..credential.clone()
+    })
+}
+
+#[derive(Debug, Clone)]
+struct OAuthRefreshResult {
+    access_token: String,
+    refresh_token: Option<String>,
+    id_token: Option<String>,
+    token_type: Option<String>,
+    expires_in: Option<i64>,
+}
+
+async fn refresh_oauth_access_token(
+    token_endpoint: &str,
+    refresh_token: &str,
+    client_id: Option<&str>,
+) -> Result<OAuthRefreshResult, String> {
+    let client = build_outbound_http_client(Some(Duration::from_secs(20)))?;
+    let mut form = format!(
+        "grant_type=refresh_token&refresh_token={}",
+        urlencoding_encode(refresh_token)
+    );
+    if let Some(client_id) = client_id.map(str::trim).filter(|item| !item.is_empty()) {
+        form.push_str("&client_id=");
+        form.push_str(&urlencoding_encode(client_id));
+    }
+    let response = client
+        .post(token_endpoint)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("accept", "application/json")
+        .body(form)
+        .send()
+        .await
+        .map_err(|err| format!("OAuth refresh request failed: {err}"))?;
+
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|err| format!("OAuth refresh response read failed: {err}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "OAuth refresh failed with status {}: {}",
+            status.as_u16(),
+            body.chars().take(240).collect::<String>()
+        ));
+    }
+
+    let value = serde_json::from_str::<Value>(&body)
+        .map_err(|err| format!("OAuth refresh JSON invalid: {err}"))?;
+    let access_token = value
+        .get("access_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .ok_or_else(|| "OAuth refresh response missing access_token".to_string())?
+        .to_string();
+
+    Ok(OAuthRefreshResult {
+        access_token,
+        refresh_token: value
+            .get("refresh_token")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_string),
+        id_token: value
+            .get("id_token")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_string),
+        token_type: value
+            .get("token_type")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_string),
+        expires_in: value.get("expires_in").and_then(|item| {
+            item.as_i64()
+                .or_else(|| item.as_f64().map(|n| n as i64))
+                .or_else(|| item.as_str().and_then(|s| s.parse::<i64>().ok()))
+        }),
+    })
+}
+
+
+
+fn is_permanent_oauth_refresh_failure(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("invalid_grant")
+        || lower.contains("refresh token has been revoked")
+        || lower.contains("token has been revoked")
+        || lower.contains("invalid_client")
+        || lower.contains("unauthorized_client")
+}
+
+fn format_oauth_refresh_failure(message: &str) -> String {
+    if is_permanent_oauth_refresh_failure(message) {
+        format!(
+            "官方 OAuth 凭证已失效（revoked），请重新导入 CPA 授权文件。原始错误：{message}"
+        )
+    } else {
+        message.to_string()
+    }
+}
+
+fn resolve_oauth_client_id(platform: &str, config: &Value, secret: &Value) -> Option<String> {
+    if let Some(value) = string_value(config, "client_id").map(str::to_string) {
+        return Some(value);
+    }
+    if let Some(value) = string_value(secret, "client_id").map(str::to_string) {
+        return Some(value);
+    }
+    if let Some(access_token) = string_value(secret, "access_token") {
+        if let Some(value) = jwt_claim_string(access_token, "client_id") {
+            return Some(value);
+        }
+        if let Some(value) = jwt_claim_string(access_token, "azp") {
+            return Some(value);
+        }
+    }
+
+    let platform = platform.trim().to_ascii_lowercase();
+    let endpoint = string_value(config, "token_endpoint").unwrap_or("");
+    let endpoint_lower = endpoint.to_ascii_lowercase();
+    if platform == "grok"
+        || platform == "xai"
+        || endpoint_lower.contains("auth.x.ai")
+        || endpoint_lower.contains("x.ai")
+    {
+        return Some(XAI_OAUTH_CLIENT_ID.to_string());
+    }
+    None
+}
+
+fn jwt_claim_string(token: &str, claim: &str) -> Option<String> {
+    jwt_payload(token)?
+        .get(claim)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+}
+
+fn jwt_claim_i64(token: &str, claim: &str) -> Option<i64> {
+    let payload = jwt_payload(token)?;
+    let value = payload.get(claim)?;
+    value
+        .as_i64()
+        .or_else(|| value.as_f64().map(|n| n as i64))
+        .or_else(|| value.as_str().and_then(|s| s.parse::<i64>().ok()))
+}
+
+fn jwt_payload(token: &str) -> Option<Value> {
+    let mut parts = token.split('.');
+    let _header = parts.next()?;
+    let payload = parts.next()?;
+    if payload.is_empty() {
+        return None;
+    }
+    let decoded = decode_base64url_nopad(payload)?;
+    serde_json::from_slice::<Value>(&decoded).ok()
+}
+
+fn decode_base64url_nopad(input: &str) -> Option<Vec<u8>> {
+    fn decode_table(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'-' => Some(62),
+            b'_' => Some(63),
+            _ => None,
+        }
+    }
+
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() * 3 / 4 + 2);
+    let mut buffer = 0u32;
+    let mut bits = 0u32;
+    for &byte in bytes {
+        if byte == b'=' {
+            break;
+        }
+        let value = decode_table(byte)?;
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buffer >> bits) & 0xff) as u8);
+        }
+    }
+    Some(out)
+}
+
+fn urlencoding_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 fn parse_json_object(raw: &str, label: &str) -> Result<Value, String> {
@@ -1301,4 +1689,121 @@ mod tests {
             .expect("fallback");
         assert_eq!(fallback, "codex");
     }
+
+    #[test]
+    fn build_upstream_request_uses_official_cpa_base_url_and_headers() {
+        let credential = SelectedCredential {
+            id: "official-grok".to_string(),
+            platform: "grok".to_string(),
+            kind: "official".to_string(),
+            display_name: "Grok OAuth".to_string(),
+            secret_payload_json: r#"{"access_token":"at-xai","refresh_token":"rt-xai"}"#.to_string(),
+            config_json: serde_json::json!({
+                "base_url": "https://cli-chat-proxy.grok.com/v1",
+                "token_endpoint": "https://auth.x.ai/oauth2/token",
+                "headers": {
+                    "User-Agent": "grok-cli",
+                    "X-Client-Name": "grok-cli"
+                }
+            })
+            .to_string(),
+        };
+
+        let (url, headers, _) = build_upstream_request(
+            &credential,
+            "grok",
+            "/chat/completions",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"grok-3"}"#,
+        )
+        .expect("official grok request");
+
+        assert_eq!(
+            url,
+            "https://cli-chat-proxy.grok.com/v1/chat/completions"
+        );
+        assert_eq!(
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer at-xai")
+        );
+        assert_eq!(
+            headers
+                .get("user-agent")
+                .and_then(|value| value.to_str().ok()),
+            Some("grok-cli")
+        );
+        assert_eq!(
+            headers
+                .get("x-client-name")
+                .and_then(|value| value.to_str().ok()),
+            Some("grok-cli")
+        );
+    }
+
+    #[test]
+    fn access_token_is_expired_parses_rfc3339() {
+        let future = serde_json::json!({
+            "expired": (Utc::now() + chrono::Duration::hours(1)).to_rfc3339()
+        });
+        let past = serde_json::json!({
+            "expired": (Utc::now() - chrono::Duration::hours(1)).to_rfc3339()
+        });
+        assert!(!access_token_is_expired(&future));
+        assert!(access_token_is_expired(&past));
+    }
+
+    #[test]
+    fn is_permanent_oauth_refresh_failure_detects_revoked_refresh_token() {
+        assert!(is_permanent_oauth_refresh_failure(
+            r#"OAuth refresh failed with status 400: {"error":"invalid_grant","error_description":"Refresh token has been revoked"}"#
+        ));
+        assert!(!is_permanent_oauth_refresh_failure(
+            "OAuth refresh request failed: error sending request"
+        ));
+        assert!(format_oauth_refresh_failure("invalid_grant").contains("重新导入"));
+    }
+
+    #[test]
+    fn resolve_oauth_client_id_uses_xai_public_client_for_grok() {
+        let config = serde_json::json!({
+            "token_endpoint": "https://auth.x.ai/oauth2/token"
+        });
+        let secret = serde_json::json!({});
+        assert_eq!(
+            resolve_oauth_client_id("grok", &config, &secret).as_deref(),
+            Some(XAI_OAUTH_CLIENT_ID)
+        );
+        assert_eq!(
+            resolve_oauth_client_id("xai", &config, &secret).as_deref(),
+            Some(XAI_OAUTH_CLIENT_ID)
+        );
+    }
+
+    #[test]
+    fn resolve_oauth_client_id_prefers_config_value() {
+        let config = serde_json::json!({
+            "client_id": "custom-client",
+            "token_endpoint": "https://auth.x.ai/oauth2/token"
+        });
+        let secret = serde_json::json!({});
+        assert_eq!(
+            resolve_oauth_client_id("grok", &config, &secret).as_deref(),
+            Some("custom-client")
+        );
+    }
+
+    #[test]
+    fn jwt_claim_helpers_parse_payload() {
+        // {"alg":"none"}.{"exp":1893456000,"client_id":"cid-from-jwt"}.sig
+        let token = "eyJhbGciOiJub25lIn0.eyJleHAiOjE4OTM0NTYwMDAsImNsaWVudF9pZCI6ImNpZC1mcm9tLWp3dCJ9.sig";
+        assert_eq!(jwt_claim_i64(token, "exp"), Some(1893456000));
+        assert_eq!(
+            jwt_claim_string(token, "client_id").as_deref(),
+            Some("cid-from-jwt")
+        );
+    }
+
 }

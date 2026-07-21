@@ -97,6 +97,22 @@ fn parse_cpa_object(
 
     let last_refresh = value_field(object, &["last_refresh", "lastRefresh"]);
     let expired = value_field(object, &["expired"]);
+    let base_url = string_field(object, &["base_url", "baseUrl"]);
+    let token_endpoint = string_field(object, &["token_endpoint", "tokenEndpoint"]);
+    let auth_kind = string_field(object, &["auth_kind", "authKind"]);
+    let sub = string_field(object, &["sub"]);
+    let token_type = string_field(object, &["token_type", "tokenType"]);
+    let redirect_uri = string_field(object, &["redirect_uri", "redirectUri"]);
+    let expires_in = value_field(object, &["expires_in", "expiresIn"]);
+    let disabled = value_field(object, &["disabled"]);
+    let headers = object
+        .get("headers")
+        .cloned()
+        .filter(|value| value.is_object())
+        .unwrap_or(Value::Null);
+
+    // Keep the original CPA object for lossless re-export / future fields.
+    let raw = Value::Object(object.clone());
 
     let secret_payload_json = json!({
         "id_token": id_token,
@@ -106,14 +122,39 @@ fn parse_cpa_object(
     })
     .to_string();
 
-    let config_json = json!({
-        "type": platform,
-        "account_id": account_id,
-        "last_refresh": last_refresh,
-        "expired": expired,
-        "raw_type": raw_type,
-    })
-    .to_string();
+    let mut config = Map::new();
+    config.insert("type".to_string(), json!(platform));
+    config.insert("raw_type".to_string(), json!(raw_type));
+    config.insert("account_id".to_string(), json!(account_id));
+    config.insert("last_refresh".to_string(), last_refresh);
+    config.insert("expired".to_string(), expired);
+    config.insert("expires_in".to_string(), expires_in);
+    config.insert("disabled".to_string(), disabled);
+    config.insert("raw".to_string(), raw);
+
+    if let Some(base_url) = base_url {
+        config.insert("base_url".to_string(), json!(base_url));
+    }
+    if let Some(token_endpoint) = token_endpoint {
+        config.insert("token_endpoint".to_string(), json!(token_endpoint));
+    }
+    if let Some(auth_kind) = auth_kind {
+        config.insert("auth_kind".to_string(), json!(auth_kind));
+    }
+    if let Some(sub) = sub {
+        config.insert("sub".to_string(), json!(sub));
+    }
+    if let Some(token_type) = token_type {
+        config.insert("token_type".to_string(), json!(token_type));
+    }
+    if let Some(redirect_uri) = redirect_uri {
+        config.insert("redirect_uri".to_string(), json!(redirect_uri));
+    }
+    if !headers.is_null() {
+        config.insert("headers".to_string(), headers);
+    }
+
+    let config_json = Value::Object(config).to_string();
 
     Ok(ParsedOfficialCredential {
         display_name,
@@ -283,13 +324,43 @@ mod tests {
           "type":"xai",
           "email":"g@example.com",
           "access_token":"at-xai",
-          "refresh_token":"rt-xai"
+          "refresh_token":"rt-xai",
+          "id_token":"id-xai",
+          "token_type":"Bearer",
+          "expires_in":null,
+          "expired":"2026-07-21T10:31:25Z",
+          "last_refresh":"2026-07-21T04:31:26Z",
+          "auth_kind":"oauth",
+          "sub":"2835da8c-3bdf-4096-9920-0af2a8dc325b",
+          "redirect_uri":"",
+          "token_endpoint":"https://auth.x.ai/oauth2/token",
+          "base_url":"https://cli-chat-proxy.grok.com/v1",
+          "disabled":false,
+          "headers":{
+            "User-Agent":"grok-cli",
+            "X-Client-Name":"grok-cli"
+          }
         }"#;
         let parsed = parse_cpa_text("grok", text).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].email.as_deref(), Some("g@example.com"));
         assert!(parsed[0].secret_payload_json.contains("at-xai"));
+        assert!(parsed[0].secret_payload_json.contains("rt-xai"));
+        assert!(parsed[0].secret_payload_json.contains("id-xai"));
         assert!(parsed[0].config_json.contains("\"type\":\"grok\""));
+        assert!(parsed[0].config_json.contains("\"raw_type\":\"xai\""));
+        assert!(parsed[0]
+            .config_json
+            .contains("https://cli-chat-proxy.grok.com/v1"));
+        assert!(parsed[0]
+            .config_json
+            .contains("https://auth.x.ai/oauth2/token"));
+        assert!(parsed[0].config_json.contains("grok-cli"));
+        assert!(parsed[0].config_json.contains("\"auth_kind\":\"oauth\""));
+        assert!(parsed[0]
+            .config_json
+            .contains("2835da8c-3bdf-4096-9920-0af2a8dc325b"));
+        assert!(parsed[0].config_json.contains("\"raw\""));
     }
 
     #[test]

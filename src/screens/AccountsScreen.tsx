@@ -60,6 +60,69 @@ import {
 type PlatformKey = "codex" | "claude" | "grok" | "gemini" | "opencode" | "openclaw" | "hermes";
 type CreateMode = "api" | "official";
 
+function formatApiError(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+  if (error && typeof error === "object") {
+    const record = error as {
+      message?: unknown;
+      details?: unknown;
+      code?: unknown;
+    };
+    const message =
+      typeof record.message === "string" ? record.message.trim() : "";
+    const details =
+      typeof record.details === "string" ? record.details.trim() : "";
+    if (message && details) {
+      return `${message} (${details})`;
+    }
+    if (message) {
+      return message;
+    }
+    if (details) {
+      return details;
+    }
+    if (typeof record.code === "string" && record.code.trim()) {
+      return record.code;
+    }
+  }
+  if (typeof error === "string" && error.trim()) {
+    return error;
+  }
+  return fallback;
+}
+
+function accountStatusLabel(status: string): string {
+  switch (status) {
+    case "ok":
+      return "正常";
+    case "warning":
+      return "警告";
+    case "error":
+      return "异常";
+    case "revoked":
+      return "revoked";
+    default:
+      return status || "未知";
+  }
+}
+
+function accountStatusClass(status: string): string {
+  switch (status) {
+    case "ok":
+      return "bg-emerald-50 text-emerald-800";
+    case "warning":
+      return "bg-amber-50 text-amber-800";
+    case "error":
+      return "bg-red-50 text-red-800";
+    case "revoked":
+      return "bg-rose-100 text-rose-900 ring-1 ring-rose-200";
+    default:
+      return "bg-stone-100 text-stone-600";
+  }
+}
+
 const routeStatsPeriods = [
   { key: "today", label: "当日" },
   { key: "week", label: "本周" },
@@ -925,6 +988,9 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const credentialsQuery = useQuery({
     queryKey: ["route-credentials", activePlatform],
     queryFn: () => listRouteCredentials(activePlatform),
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
   });
   const routePoolQuery = useQuery({
     queryKey: ["route-pool", activePlatform, statsSince, requestPage, routeStatsPageSize],
@@ -1072,9 +1138,41 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
 
   const invalidateAccountData = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["route-credentials", activePlatform] }),
-      queryClient.invalidateQueries({ queryKey: ["route-pool", activePlatform] }),
+      queryClient.invalidateQueries({
+        queryKey: ["route-credentials", activePlatform],
+        refetchType: "active",
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["route-pool", activePlatform],
+        refetchType: "active",
+      }),
     ]);
+    // Force network refetch so status/import changes show immediately.
+    await Promise.all([
+      queryClient.refetchQueries({ queryKey: ["route-credentials", activePlatform], type: "active" }),
+      queryClient.refetchQueries({ queryKey: ["route-pool", activePlatform], type: "active" }),
+    ]);
+  };
+
+  const mergeCredentialsIntoCache = (imported: RouteCredential[]) => {
+    if (!imported.length) {
+      return;
+    }
+    queryClient.setQueryData<RouteCredential[]>(
+      ["route-credentials", activePlatform],
+      (current) => {
+        const byId = new Map((current ?? []).map((item) => [item.id, item]));
+        for (const item of imported) {
+          byId.set(item.id, item);
+        }
+        return Array.from(byId.values()).sort((left, right) => {
+          if (left.sort_order !== right.sort_order) {
+            return left.sort_order - right.sort_order;
+          }
+          return right.created_at.localeCompare(left.created_at);
+        });
+      },
+    );
   };
 
   const createModelsFetchRequest = (): RouteModelsFetchRequest => {
@@ -1122,7 +1220,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       setApiFetchModelsError(null);
     },
     onError: (error) => {
-      setApiFetchModelsError(error instanceof Error ? error.message : "获取模型列表失败。");
+      setApiFetchModelsError(formatApiError(error, "获取模型列表失败。"));
     },
   });
 
@@ -1136,7 +1234,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       setEditFetchModelsError(null);
     },
     onError: (error) => {
-      setEditFetchModelsError(error instanceof Error ? error.message : "获取模型列表失败。");
+      setEditFetchModelsError(formatApiError(error, "获取模型列表失败。"));
     },
   });
 
@@ -1202,8 +1300,12 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       }
       return { imported, failed: [] };
     },
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       setCreateOpen(false);
+      if (result && typeof result === "object" && "imported" in result) {
+        const imported = (result as { imported?: RouteCredential[] }).imported ?? [];
+        mergeCredentialsIntoCache(imported);
+      }
       await invalidateAccountData();
     },
   });
@@ -1233,11 +1335,11 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
           stats: outcome.stats,
         },
       );
-      void queryClient.invalidateQueries({ queryKey: ["route-pool", activePlatform] });
-      void queryClient.invalidateQueries({ queryKey: ["route-credentials", activePlatform] });
     },
     onSettled: () => {
       setTestingAccountId(null);
+      // Refresh even on OAuth refresh failures so revoked/error badges update.
+      void invalidateAccountData();
     },
   });
   const startProxyMutation = useMutation({
@@ -1342,6 +1444,8 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const submitModelTest = () => {
     const accountId = modelTestAccount?.id ?? null;
     setTestingAccountId(accountId);
+    setModelTestOutcome(null);
+    modelTestMutation.reset();
     modelTestMutation.mutate({
       platform: activePlatform,
       ...(accountId ? { account_id: accountId } : {}),
@@ -1354,7 +1458,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     try {
       apiFetchModelsMutation.mutate(createModelsFetchRequest());
     } catch (error) {
-      setApiFetchModelsError(error instanceof Error ? error.message : "获取模型列表失败。");
+      setApiFetchModelsError(formatApiError(error, "获取模型列表失败。"));
     }
   };
 
@@ -1362,7 +1466,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     try {
       editFetchModelsMutation.mutate(editModelsFetchRequest());
     } catch (error) {
-      setEditFetchModelsError(error instanceof Error ? error.message : "获取模型列表失败。");
+      setEditFetchModelsError(formatApiError(error, "获取模型列表失败。"));
     }
   };
 
@@ -1662,6 +1766,32 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
             ))}
           </div>
         )}
+        {modelTestMutation.isPending ? (
+          <div
+            aria-label="真实生成测试进行中"
+            aria-live="polite"
+            className="mx-4 mb-3 mt-3 rounded-xl border border-sky-200 bg-sky-50 px-3 py-3 text-[12px] text-sky-950"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="flex items-center gap-2 font-semibold">
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                  真实生成测试：正在请求中...
+                </p>
+                <p className="mt-1 text-[11px] opacity-80">
+                  {(modelTestAccount?.display_name ?? "算力池路由")}
+                  {routeTestModel.trim() ? ` · 模型 ${routeTestModel.trim()}` : " · 默认测试模型"}
+                </p>
+                <p className="mt-1 text-[11px] text-sky-800/80">
+                  请求已发出，等待上游响应；完成后会显示在此区域。
+                </p>
+              </div>
+              <span className="shrink-0 rounded-full bg-white/80 px-2 py-0.5 font-mono text-[11px] text-sky-800">
+                pending
+              </span>
+            </div>
+          </div>
+        ) : null}
         {modelTestOutcome ? (
           <div
             aria-label="真实生成测试结果"
@@ -1731,9 +1861,10 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
           <div className="mx-4 mb-3 flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-800">
             <p>
               真实生成测试失败：
-              {modelTestMutation.error instanceof Error
-                ? modelTestMutation.error.message
-                : "请检查算力池账号和网络。"}
+              {formatApiError(
+                modelTestMutation.error,
+                "请检查算力池账号和网络。",
+              )}
             </p>
             <button
               aria-label="关闭真实生成测试错误"
@@ -1868,9 +1999,23 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
           <div>
             <h2 className="text-[15px] font-semibold text-stone-950">{platformLabels[activePlatform]} 账号</h2>
           </div>
-          <span className="rounded-full bg-stone-100 px-2.5 py-1 text-[12px] font-semibold text-stone-600">
-            {credentials.length} 个
-          </span>
+          <div className="flex items-center gap-2">
+            <button
+              aria-label="刷新账号列表"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50 disabled:opacity-50"
+              disabled={credentialsQuery.isFetching}
+              onClick={() => {
+                void invalidateAccountData();
+              }}
+              type="button"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${credentialsQuery.isFetching ? "animate-spin" : ""}`} />
+              刷新
+            </button>
+            <span className="rounded-full bg-stone-100 px-2.5 py-1 text-[12px] font-semibold text-stone-600">
+              {credentials.length} 个
+            </span>
+          </div>
         </div>
 
         <div className="space-y-3 p-3">
@@ -1905,8 +2050,11 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                         <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
                           {kindLabel(credential.kind)}
                         </span>
-                        <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[11px] font-medium text-stone-600">
-                          {credential.status}
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${accountStatusClass(credential.status)}`}
+                          title={credential.status}
+                        >
+                          {accountStatusLabel(credential.status)}
                         </span>
                       </div>
                       <p className="mt-0.5 truncate text-[12px] text-stone-500">
@@ -2300,7 +2448,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
 
             {createMutation.error && (
               <p className="mt-4 rounded-xl bg-red-50 p-3 text-[13px] font-semibold text-red-700">
-                {(createMutation.error as Error).message || "新增账号失败。"}
+                {formatApiError(createMutation.error, "新增账号失败。")}
               </p>
             )}
 
@@ -2375,9 +2523,10 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                   onChange={(event) => setEditStatus(event.target.value as AccountStatus)}
                   value={editStatus}
                 >
-                  <option value="ok">ok</option>
-                  <option value="warning">warning</option>
-                  <option value="error">error</option>
+                  <option value="ok">正常 (ok)</option>
+                  <option value="warning">警告 (warning)</option>
+                  <option value="error">异常 (error)</option>
+                  <option value="revoked">revoked</option>
                 </select>
               </label>
               {editingCredential.kind === "api" ? (

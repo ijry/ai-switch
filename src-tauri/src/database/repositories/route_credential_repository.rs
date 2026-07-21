@@ -128,6 +128,43 @@ impl RouteCredentialRepository {
         Self::get(pool, id).await
     }
 
+    pub async fn update_secret_and_config(
+        pool: &SqlitePool,
+        id: &str,
+        secret_payload_json: &str,
+        config_json: &str,
+    ) -> Result<(), AppError> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE route_credentials
+             SET secret_payload_json = ?, config_json = ?, updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(secret_payload_json)
+        .bind(config_json)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_credential_secret_update",
+            message: "Could not update route credential tokens".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+
+        if result.rows_affected() == 0 {
+            return Err(AppError::Validation {
+                code: "validation.route_credential_not_found",
+                message: "Route credential does not exist".to_string(),
+                details: Some(id.to_string()),
+                recoverable: true,
+            });
+        }
+
+        Ok(())
+    }
+
     pub async fn update_status(pool: &SqlitePool, id: &str, status: &str) -> Result<(), AppError> {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(

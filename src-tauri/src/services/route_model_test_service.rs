@@ -3,9 +3,11 @@ use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::error::AppError;
 use crate::models::route_credential::ModelMapping;
 use crate::models::route_pool::{RoutePoolModelTestOutcome, RoutePoolModelTestRequest};
+use crate::services::http_client::build_outbound_http_client;
 use crate::services::route_pool_service::normalize_platform;
 use crate::services::route_proxy_service::{
-    build_upstream_request, extract_cost_micros, extract_token_count, SelectedCredential,
+    build_upstream_request, extract_cost_micros, extract_token_count,
+    maybe_refresh_official_credential, SelectedCredential,
 };
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
@@ -70,6 +72,14 @@ impl RouteModelTestService {
             let next_index = (selected_index + 1) as i64 % credentials.len() as i64;
             (credentials[selected_index].clone(), next_index)
         };
+        let credential = maybe_refresh_official_credential(pool, &credential)
+            .await
+            .map_err(|error| AppError::Validation {
+                code: "validation.route_credential_refresh",
+                message: error,
+                details: Some(credential.id.clone()),
+                recoverable: true,
+            })?;
         let start = Instant::now();
 
         let parts =
@@ -141,10 +151,7 @@ impl RouteModelTestService {
             ..parts
         };
 
-        let client = match reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-        {
+        let client = match build_outbound_http_client(Some(Duration::from_secs(30))) {
             Ok(client) => client,
             Err(error) => {
                 return finish_outcome(
@@ -156,7 +163,7 @@ impl RouteModelTestService {
                     None,
                     String::new(),
                     None,
-                    Some(format!("Could not create model test HTTP client: {error}")),
+                    Some(error),
                     false,
                     elapsed_ms(start),
                     None,
@@ -538,7 +545,15 @@ async fn send_model_test_request(
         .body(body)
         .send()
         .await
-        .map_err(|err| format!("Upstream model test request failed: {err}"))?;
+        .map_err(|err| {
+            let mut message = format!("Upstream model test request failed: {err}");
+            if err.is_connect() || err.is_timeout() {
+                message.push_str(
+                    " (check network/proxy; Windows system proxy is applied when configured)",
+                );
+            }
+            message
+        })?;
     let status = upstream.status();
     let body = upstream
         .bytes()
@@ -670,11 +685,17 @@ fn should_mark_model_test_account_unavailable(
     response_status: Option<u16>,
     error_message: Option<&str>,
 ) -> bool {
-    matches!(response_status, Some(401 | 403))
-        || (response_status.is_none()
-            && error_message
-                .map(|message| message.contains("Upstream model test request failed"))
-                .unwrap_or(false))
+    if matches!(response_status, Some(401 | 403)) {
+        return true;
+    }
+    let Some(message) = error_message else {
+        return false;
+    };
+    let lower = message.to_ascii_lowercase();
+    lower.contains("upstream model test request failed")
+        || lower.contains("invalid_grant")
+        || lower.contains("refresh token has been revoked")
+        || lower.contains("官方 oauth 凭证已失效")
 }
 
 fn metadata_json(
