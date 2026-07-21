@@ -265,6 +265,8 @@ pub fn normalize_platform(platform: &str) -> Result<String, AppError> {
 
     if normalized.contains("claude") {
         Ok("claude".to_string())
+    } else if normalized.contains("grok") || normalized.contains("xai") || normalized.contains("x.ai") {
+        Ok("grok".to_string())
     } else if normalized.contains("gemini") {
         Ok("gemini".to_string())
     } else if normalized.contains("opencode") {
@@ -285,6 +287,13 @@ mod tests {
     use crate::database::{create_memory_pool, run_migrations};
     use sqlx::SqlitePool;
     use uuid::Uuid;
+
+    #[test]
+    fn normalizes_grok_platform_aliases() {
+        assert_eq!(normalize_platform("grok").unwrap(), "grok");
+        assert_eq!(normalize_platform("xai").unwrap(), "grok");
+        assert_eq!(normalize_platform("x.ai").unwrap(), "grok");
+    }
 
     async fn account(pool: &SqlitePool, platform: &str, name: &str) -> String {
         credential(pool, platform, name, "ok").await

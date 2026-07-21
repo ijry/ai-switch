@@ -114,6 +114,7 @@ pub fn resolve_launch_command(
             let program = match platform {
                 "codex" => "codex",
                 "claude" => "claude",
+                "grok" => "grok",
                 "gemini" => "gemini",
                 "opencode" => "opencode",
                 "openclaw" => "openclaw",
@@ -441,8 +442,8 @@ mod tests {
         assert!(is_missing_process_error(&std::io::Error::from(
             ErrorKind::NotFound,
         )));
-        assert!(is_missing_process_error(&std::io::Error::from_raw_os_error(
-            3,
-        )));
+        assert!(is_missing_process_error(
+            &std::io::Error::from_raw_os_error(3,)
+        ));
     }
 }

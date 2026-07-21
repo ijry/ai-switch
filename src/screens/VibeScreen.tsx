@@ -55,6 +55,7 @@ import { StarshipHologram } from "../components/vibe/StarshipHologram";
 const agentOptions = [
   { platform: "codex", label: "Codex" },
   { platform: "claude", label: "Claude" },
+  { platform: "grok", label: "Grok" },
   { platform: "gemini", label: "Gemini" },
   { platform: "opencode", label: "OpenCode" },
   { platform: "openclaw", label: "OpenClaw" },
@@ -65,6 +66,7 @@ const launchModelOptions = [
   { value: "auto", label: "Auto" },
   { value: "gpt-5", label: "GPT-5" },
   { value: "claude-sonnet-4", label: "Claude Sonnet 4" },
+  { value: "grok-3", label: "Grok 3" },
   { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
 ] as const;
 
@@ -352,6 +354,25 @@ function ClaudeAgentSvg({ size = "100%" }: AgentSvgProps) {
   );
 }
 
+function GrokAgentSvg({ size = "100%" }: AgentSvgProps) {
+  return (
+    <svg
+      height={size}
+      style={baseAgentSvgStyle}
+      viewBox="0 0 24 24"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <rect fill="#0B0F14" height="24" rx="5" width="24" />
+      <path
+        d="M6.2 7.4h2.1l2.1 5.2 2.1-5.2h2.1l-3.4 8.1H9.6L6.2 7.4zm10.1 0H18v8.1h-1.7V7.4z"
+        fill="#F8FAFC"
+      />
+      <circle cx="18.4" cy="16.8" fill="#22D3EE" r="1.1" />
+    </svg>
+  );
+}
+
 function GeminiAgentSvg({ size = "100%" }: AgentSvgProps) {
   const gradientId = useSvgGradientId("gemini-agent");
   return (
@@ -489,6 +510,8 @@ function AgentIcon({ platform, className }: AgentIconProps) {
       <CodexAgentSvg />
     ) : platform === "claude" ? (
       <ClaudeAgentSvg />
+    ) : platform === "grok" ? (
+      <GrokAgentSvg />
     ) : platform === "gemini" ? (
       <GeminiAgentSvg />
     ) : platform === "opencode" ? (

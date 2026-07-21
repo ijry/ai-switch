@@ -57,7 +57,7 @@ import {
   recognizeApiKeysFromImageBlob,
 } from "../lib/ocr/apiKeyOcr";
 
-type PlatformKey = "codex" | "claude" | "gemini" | "opencode" | "openclaw" | "hermes";
+type PlatformKey = "codex" | "claude" | "grok" | "gemini" | "opencode" | "openclaw" | "hermes";
 type CreateMode = "api" | "official";
 
 const routeStatsPeriods = [
@@ -213,6 +213,7 @@ type AccountsScreenProps = {
 const platformLabels: Record<PlatformKey, string> = {
   codex: "Codex",
   claude: "Claude",
+  grok: "Grok",
   gemini: "Gemini",
   opencode: "OpenCode",
   openclaw: "OpenClaw",
@@ -311,6 +312,10 @@ function defaultInterfaceFormat(platform: PlatformKey): InterfaceFormat {
   if (platform === "gemini") {
     return "gemini";
   }
+  // CLIProxyAPI xAI Grok uses OpenAI-compatible endpoints under api.x.ai/v1.
+  if (platform === "grok") {
+    return "openai";
+  }
   return "openai";
 }
 
@@ -351,6 +356,9 @@ function defaultRequestedModel(platform: PlatformKey, interfaceFormat?: Interfac
   }
   if (platform === "gemini" || interfaceFormat === "gemini") {
     return "gemini-2.5-flash";
+  }
+  if (platform === "grok") {
+    return "grok-3";
   }
   return "gpt-5";
 }
@@ -396,6 +404,13 @@ function pickGeneralModel(platform: PlatformKey, models: FetchedRouteModel[]) {
   }
   if (platform === "gemini") {
     return pickModelByKeywords(models, ["gemini", "flash", "pro"]) ?? ids[0];
+  }
+  if (platform === "grok") {
+    return (
+      pickModelByKeywords(models, ["grok-3", "grok-2", "grok"]) ??
+      ids.find((id) => !id.toLowerCase().includes("embedding")) ??
+      ids[0]
+    );
   }
   return (
     pickModelByKeywords(models, ["gpt-5", "gpt-4o", "gpt", "claude", "sonnet"]) ??
@@ -563,7 +578,7 @@ function apiPreviewJsonFromPayloads(platform: PlatformKey, secretJson: string, c
     );
   }
 
-  if (platform === "claude" || platform === "gemini") {
+  if (platform === "claude" || platform === "gemini" || platform === "grok") {
     const apiKeyField = stringFromRecord(config, "api_key_field") || null;
     return JSON.stringify(
       {
@@ -864,7 +879,9 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const [apiKeyOcrError, setApiKeyOcrError] = useState<string | null>(null);
   const [apiKeyOcrRecognizing, setApiKeyOcrRecognizing] = useState(false);
   const apiKeyOcrFileInputRef = useRef<HTMLInputElement | null>(null);
-  const [apiBaseUrl, setApiBaseUrl] = useState("https://api.example.com/v1");
+  const [apiBaseUrl, setApiBaseUrl] = useState(() =>
+    activePlatform === "grok" ? "https://api.x.ai/v1" : "https://api.example.com/v1",
+  );
   const [apiInterfaceFormat, setApiInterfaceFormat] = useState<InterfaceFormat>(() =>
     defaultInterfaceFormat(activePlatform),
   );
@@ -938,6 +955,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     setOfficialText(defaultOfficialJson(activePlatform));
     setOfficialFilePaths([]);
     setApiInterfaceFormat(nextInterfaceFormat);
+    setApiBaseUrl(activePlatform === "grok" ? "https://api.x.ai/v1" : "https://api.example.com/v1");
     setApiKeyField(defaultAnthropicApiKeyFieldForCreate(activePlatform));
     setApiMappings(defaultModelMappings(activePlatform));
     setApiMappingsError(null);

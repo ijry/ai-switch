@@ -27,6 +27,7 @@ const queryClient = createQueryClient();
 const agentScreens = new Set([
   "Codex",
   "Claude",
+  "Grok",
   "Gemini",
   "OpenCode",
   "OpenClaw",

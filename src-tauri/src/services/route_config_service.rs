@@ -85,6 +85,11 @@ fn route_config_target(home: &Path, target_key: &str) -> Result<RouteConfigTarge
             path: home.join(".gemini").join("settings.json"),
             render: render_gemini_config,
         }),
+        "grok" => Ok(RouteConfigTarget {
+            key: "grok",
+            path: home.join(".grok").join("settings.json"),
+            render: render_grok_config,
+        }),
         other => Err(AppError::Validation {
             code: "validation.route_config_target_unsupported",
             message: "Route config writing is not supported for this target".to_string(),
@@ -151,6 +156,26 @@ pub fn render_gemini_config(base_url: &str, route_proxy_key: &str) -> String {
     .to_string()
 }
 
+pub fn render_grok_config(base_url: &str, route_proxy_key: &str) -> String {
+    serde_json::json!({
+        "aiSwitch": {
+            "routeProxy": {
+                "enabled": true,
+                "baseUrl": base_url,
+                "platform": "grok",
+                "apiKey": route_proxy_key
+            }
+        },
+        "env": {
+            "XAI_API_BASE_URL": base_url,
+            "GROK_API_BASE_URL": base_url,
+            "AI_SWITCH_ROUTE_PROXY": base_url,
+            "AI_SWITCH_ROUTE_PROXY_API_KEY": route_proxy_key
+        }
+    })
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +185,14 @@ mod tests {
         let rendered = render_codex_config("http://127.0.0.1:43111", "sk-ai-switch-test");
         assert!(rendered.contains("model_provider = \"ai-switch\""));
         assert!(rendered.contains("base_url = \"http://127.0.0.1:43111\""));
+    }
+
+    #[test]
+    fn render_grok_includes_route_metadata() {
+        let grok = render_grok_config("http://127.0.0.1:43111", "sk-ai-switch-test");
+        assert!(grok.contains("XAI_API_BASE_URL"));
+        assert!(grok.contains("\"platform\":\"grok\""));
+        assert!(grok.contains("\"apiKey\":\"sk-ai-switch-test\""));
     }
 
     #[test]

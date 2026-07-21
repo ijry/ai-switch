@@ -6,6 +6,7 @@ import { supportedLanguages, useI18n, type Language } from "../../lib/i18n";
 export type AgentPlatform =
   | "codex"
   | "claude"
+  | "grok"
   | "gemini"
   | "opencode"
   | "openclaw"
@@ -14,6 +15,7 @@ export type AgentPlatform =
 export const agentPlatforms: AgentPlatform[] = [
   "codex",
   "claude",
+  "grok",
   "gemini",
   "opencode",
   "openclaw",
@@ -23,6 +25,7 @@ export const agentPlatforms: AgentPlatform[] = [
 export const agentScreenByPlatform: Record<AgentPlatform, string> = {
   codex: "Codex",
   claude: "Claude",
+  grok: "Grok",
   gemini: "Gemini",
   opencode: "OpenCode",
   openclaw: "OpenClaw",
@@ -32,6 +35,7 @@ export const agentScreenByPlatform: Record<AgentPlatform, string> = {
 export const platformByAgentScreen: Record<string, AgentPlatform> = {
   Codex: "codex",
   Claude: "claude",
+  Grok: "grok",
   Gemini: "gemini",
   OpenCode: "opencode",
   OpenClaw: "openclaw",
@@ -59,6 +63,7 @@ type AgentNavItem = {
   labelKey:
     | "nav.agent.codex"
     | "nav.agent.claude"
+    | "nav.agent.grok"
     | "nav.agent.gemini"
     | "nav.agent.opencode"
     | "nav.agent.openclaw"
@@ -68,6 +73,7 @@ type AgentNavItem = {
 const agentItems: AgentNavItem[] = [
   { screen: "Codex", platform: "codex", labelKey: "nav.agent.codex" },
   { screen: "Claude", platform: "claude", labelKey: "nav.agent.claude" },
+  { screen: "Grok", platform: "grok", labelKey: "nav.agent.grok" },
   { screen: "Gemini", platform: "gemini", labelKey: "nav.agent.gemini" },
   { screen: "OpenCode", platform: "opencode", labelKey: "nav.agent.opencode" },
   { screen: "OpenClaw", platform: "openclaw", labelKey: "nav.agent.openclaw" },

@@ -351,6 +351,9 @@ pub fn detect_platform(path: &str, headers: &HeaderMap) -> String {
     {
         return "gemini".to_string();
     }
+    if path_lower.contains("grok") || path_lower.contains("xai") || path_lower.contains("x.ai") {
+        return "grok".to_string();
+    }
     "codex".to_string()
 }
 
@@ -358,6 +361,8 @@ pub fn normalize_route_platform(value: &str) -> String {
     let normalized = value.trim().to_lowercase();
     if normalized.contains("claude") || normalized.contains("anthropic") {
         "claude".to_string()
+    } else if normalized.contains("grok") || normalized.contains("xai") || normalized.contains("x.ai") {
+        "grok".to_string()
     } else if normalized.contains("gemini") || normalized.contains("google") {
         "gemini".to_string()
     } else {
@@ -676,6 +681,8 @@ fn insert_header(headers: &mut HeaderMap, name: &'static str, value: &str) -> Re
 fn default_official_base_url(platform: &str) -> &'static str {
     match platform {
         "claude" => "https://api.anthropic.com",
+        // CLIProxyAPI xAI official API base for Grok.
+        "grok" => "https://api.x.ai/v1",
         "gemini" => "https://generativelanguage.googleapis.com",
         _ => "https://api.openai.com",
     }
@@ -1045,5 +1052,11 @@ mod tests {
         headers.insert("x-ai-switch-platform", HeaderValue::from_static("gemini"));
         assert_eq!(detect_platform("/v1/chat/completions", &headers), "gemini");
         assert_eq!(detect_platform("/v1/messages", &HeaderMap::new()), "claude");
+
+        let mut grok_headers = HeaderMap::new();
+        grok_headers.insert("x-ai-switch-platform", HeaderValue::from_static("xai"));
+        assert_eq!(detect_platform("/v1/chat/completions", &grok_headers), "grok");
+        assert_eq!(detect_platform("/v1/grok/chat/completions", &HeaderMap::new()), "grok");
+        assert_eq!(normalize_route_platform("Grok"), "grok");
     }
 }

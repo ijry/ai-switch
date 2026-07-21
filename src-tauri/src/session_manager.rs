@@ -116,6 +116,15 @@ fn provider_specs() -> Vec<ProviderSpec> {
             extensions: &["jsonl"],
         },
         ProviderSpec {
+            id: "grok",
+            roots: vec![
+                home.join(".grok").join("sessions"),
+                home.join(".xai").join("sessions"),
+                home.join(".cache").join("grok").join("sessions"),
+            ],
+            extensions: &["json", "jsonl"],
+        },
+        ProviderSpec {
             id: "gemini",
             roots: vec![
                 home.join(".gemini").join("tmp"),
@@ -392,6 +401,7 @@ fn resume_command(provider_id: &str, session_id: &str) -> Option<String> {
     let command = match provider_id {
         "codex" => format!("codex resume {session_id}"),
         "claude" => format!("claude --resume {session_id}"),
+        "grok" => format!("grok resume {session_id}"),
         "gemini" => format!("gemini --resume {session_id}"),
         "opencode" => format!("opencode session {session_id}"),
         "openclaw" => format!("openclaw resume {session_id}"),

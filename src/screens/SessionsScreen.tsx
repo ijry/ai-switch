@@ -27,6 +27,7 @@ type ListMode = "flat" | "grouped";
 const platformLabels: Record<AgentPlatform, string> = {
   codex: "Codex",
   claude: "Claude",
+  grok: "Grok",
   gemini: "Gemini",
   opencode: "OpenCode",
   openclaw: "OpenClaw",

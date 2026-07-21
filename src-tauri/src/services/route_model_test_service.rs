@@ -228,7 +228,7 @@ pub fn build_model_test_request(
     let interface_format = interface_format_for(credential, platform, &config);
     let base_url = string_value(&config, "base_url").map(str::to_string);
     let mappings = model_mappings(&config);
-    let model = request_model(&interface_format, &mappings, requested_model);
+    let model = request_model(platform, &interface_format, &mappings, requested_model);
 
     let (request_path, request_body) = match interface_format.as_str() {
         "openai" => (
@@ -382,6 +382,8 @@ fn interface_format_for(credential: &SelectedCredential, platform: &str, config:
     match platform {
         "codex" => "openai-responses".to_string(),
         "claude" => "anthropic".to_string(),
+        // Grok/xAI defaults to OpenAI-compatible chat completions.
+        "grok" => "openai".to_string(),
         "gemini" => "gemini".to_string(),
         _ => "openai".to_string(),
     }
@@ -395,7 +397,15 @@ fn default_model_for(interface_format: &str) -> &'static str {
     }
 }
 
+fn default_model_for_platform(platform: &str, interface_format: &str) -> String {
+    if platform == "grok" {
+        return "grok-3".to_string();
+    }
+    default_model_for(interface_format).to_string()
+}
+
 fn request_model(
+    platform: &str,
     interface_format: &str,
     mappings: &[ModelMapping],
     requested_model: Option<&str>,
@@ -411,8 +421,8 @@ fn request_model(
         .first()
         .map(|mapping| mapping.from.trim())
         .filter(|model| !model.is_empty())
-        .unwrap_or_else(|| default_model_for(interface_format))
-        .to_string()
+        .map(str::to_string)
+        .unwrap_or_else(|| default_model_for_platform(platform, interface_format))
 }
 
 fn gemini_path_model(mappings: &[ModelMapping], requested_model: Option<&str>) -> String {
@@ -903,6 +913,16 @@ mod tests {
             body.pointer("/input").and_then(Value::as_str),
             Some(MODEL_TEST_PROMPT)
         );
+    }
+
+    #[test]
+    fn builds_openai_test_request_for_official_grok() {
+        let request = build_model_test_request(&official_credential("grok"), "grok", None)
+            .expect("request");
+        assert_eq!(request.interface_format, "openai");
+        assert_eq!(request.request_path, "/chat/completions");
+        assert!(request.request_body_json.contains("\"model\": \"grok-3\"")
+            || request.request_body_json.contains("\"model\":\"grok-3\""));
     }
 
     #[test]
