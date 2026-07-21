@@ -592,6 +592,13 @@ function officialSubscriptionType(credential: RouteCredential): string | null {
   if (credential.kind !== "official") {
     return null;
   }
+  const direct =
+    typeof credential.subscription_type === "string"
+      ? credential.subscription_type.trim()
+      : "";
+  if (direct) {
+    return direct;
+  }
   const config = parseJsonObject(credential.config_json);
   const value = stringFromRecord(config, "subscription_type");
   return value || null;
@@ -601,12 +608,23 @@ function officialQuotaRemainingLabel(credential: RouteCredential): string | null
   if (credential.kind !== "official") {
     return null;
   }
-  const config = parseJsonObject(credential.config_json);
-  const remaining = numberFromRecord(config, "quota_remaining");
+  const remaining =
+    typeof credential.quota_remaining === "number" && Number.isFinite(credential.quota_remaining)
+      ? credential.quota_remaining
+      : (() => {
+          const config = parseJsonObject(credential.config_json);
+          return numberFromRecord(config, "quota_remaining");
+        })();
   if (remaining == null) {
     return null;
   }
-  const limit = numberFromRecord(config, "quota_limit");
+  const limit =
+    typeof credential.quota_limit === "number" && Number.isFinite(credential.quota_limit)
+      ? credential.quota_limit
+      : (() => {
+          const config = parseJsonObject(credential.config_json);
+          return numberFromRecord(config, "quota_limit");
+        })();
   if (limit != null && limit > 0) {
     return `${remaining}/${limit}`;
   }

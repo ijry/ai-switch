@@ -575,7 +575,10 @@ async fn load_pool_credentials(
         "SELECT c.id, c.platform, c.kind, c.display_name, c.secret_payload_json, c.config_json
          FROM route_pool_members rpm
          INNER JOIN route_credentials c ON c.id = rpm.route_credential_id
-         WHERE rpm.platform = ? AND rpm.enabled = 1 AND c.status = 'ok'
+         WHERE rpm.platform = ?
+           AND rpm.enabled = 1
+           AND c.status = 'ok'
+           AND (c.quota_remaining IS NULL OR c.quota_remaining > 0)
          ORDER BY rpm.sort_order ASC, rpm.created_at ASC",
     )
     .bind(platform)

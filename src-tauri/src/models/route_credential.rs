@@ -17,6 +17,11 @@ pub struct RouteCredential {
     pub secret_payload_json: String,
     pub config_json: String,
     pub preview_json: String,
+    pub subscription_type: Option<String>,
+    pub quota_remaining: Option<i64>,
+    pub quota_limit: Option<i64>,
+    pub quota_used: Option<i64>,
+    pub quota_updated_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

@@ -123,6 +123,11 @@ export type RouteCredential = {
   secret_payload_json: string;
   config_json: string;
   preview_json: string;
+  subscription_type?: string | null;
+  quota_remaining?: number | null;
+  quota_limit?: number | null;
+  quota_used?: number | null;
+  quota_updated_at?: string | null;
   created_at: string;
   updated_at: string;
 };

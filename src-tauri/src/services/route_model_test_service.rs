@@ -471,7 +471,10 @@ async fn load_pool_credentials(
         "SELECT c.id, c.platform, c.kind, c.display_name, c.secret_payload_json, c.config_json
          FROM route_pool_members rpm
          INNER JOIN route_credentials c ON c.id = rpm.route_credential_id
-         WHERE rpm.platform = ? AND rpm.enabled = 1 AND c.status = 'ok'
+         WHERE rpm.platform = ?
+           AND rpm.enabled = 1
+           AND c.status = 'ok'
+           AND (c.quota_remaining IS NULL OR c.quota_remaining > 0)
          ORDER BY rpm.sort_order ASC, rpm.created_at ASC",
     )
     .bind(platform)
@@ -1328,6 +1331,11 @@ mod tests {
         assert!(credential.config_json.contains("\"quota_remaining\":0"));
         assert!(credential.config_json.contains("\"quota_used\":1177205"));
         assert!(credential.config_json.contains("\"quota_limit\":1000000"));
+        assert_eq!(credential.subscription_type.as_deref(), Some("free"));
+        assert_eq!(credential.quota_remaining, Some(0));
+        assert_eq!(credential.quota_used, Some(1_177_205));
+        assert_eq!(credential.quota_limit, Some(1_000_000));
+        assert!(credential.quota_updated_at.is_some());
     }
 
     #[tokio::test]
