@@ -7,8 +7,8 @@ use crate::services::http_client::build_outbound_http_client;
 use crate::services::route_pool_service::normalize_platform;
 use crate::services::route_proxy_service::{
     build_upstream_request, extract_cost_micros, extract_token_count,
-    maybe_persist_official_quota_from_response, maybe_refresh_official_credential,
-    SelectedCredential,
+    is_route_credential_quota_available, maybe_persist_official_quota_from_response,
+    maybe_refresh_official_credential, SelectedCredential,
 };
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
@@ -494,6 +494,8 @@ async fn load_pool_credentials(
             secret_payload_json: row.get("secret_payload_json"),
             config_json: row.get("config_json"),
         })
+        // Pool routing/testing should not keep hitting free-usage exhausted accounts.
+        .filter(|credential| is_route_credential_quota_available(&credential.config_json))
         .collect())
 }
 
@@ -1199,7 +1201,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pool_model_test_skips_accounts_with_zero_quota_remaining() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let base_url = start_json_test_server(
+            axum::http::StatusCode::OK,
+            json!({
+                "choices": [{"message": {"content": "ai-switch-ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+            }),
+        )
+        .await;
+
+        let exhausted = RouteCredentialRepository::create(
+            &pool,
+            "grok",
+            "official",
+            "Exhausted Free",
+            Some("exhausted@example.com".to_string()),
+            "ok",
+            None,
+            r#"{"access_token":"at-exhausted"}"#,
+            &json!({
+                "base_url": format!("{base_url}/exhausted"),
+                "type": "grok",
+                "subscription_type": "free",
+                "quota_remaining": 0
+            })
+            .to_string(),
+            r#"{"auth_json":"{}","config_toml":""}"#,
+        )
+        .await
+        .expect("exhausted");
+
+        let available = RouteCredentialRepository::create(
+            &pool,
+            "grok",
+            "official",
+            "Available Free",
+            Some("available@example.com".to_string()),
+            "ok",
+            None,
+            r#"{"access_token":"at-available"}"#,
+            &json!({
+                "base_url": base_url,
+                "type": "grok"
+            })
+            .to_string(),
+            r#"{"auth_json":"{}","config_toml":""}"#,
+        )
+        .await
+        .expect("available");
+
+        RoutePoolService::set_members(
+            &pool,
+            SetRoutePoolMembersInput {
+                platform: "grok".to_string(),
+                account_ids: vec![exhausted.id.clone(), available.id.clone()],
+            },
+        )
+        .await
+        .expect("members");
+
+        let outcome = RouteModelTestService::test_model(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "grok".to_string(),
+                account_id: None,
+                model: Some("grok-4.5".to_string()),
+            },
+        )
+        .await
+        .expect("outcome");
+
+        assert!(outcome.success);
+        assert_eq!(outcome.selected_account_id, available.id);
+        assert_ne!(outcome.selected_account_id, exhausted.id);
+    }
+
+    #[tokio::test]
     async fn persists_official_free_usage_exhausted_quota() {
+
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
         let body = json!({

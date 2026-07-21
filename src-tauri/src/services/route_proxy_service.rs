@@ -598,6 +598,8 @@ async fn load_pool_credentials(
             secret_payload_json: row.get("secret_payload_json"),
             config_json: row.get("config_json"),
         })
+        // Skip official accounts already known to have zero remaining quota.
+        .filter(|credential| is_route_credential_quota_available(&credential.config_json))
         .collect())
 }
 
@@ -1228,6 +1230,23 @@ pub struct OfficialQuotaSnapshot {
     pub quota_remaining: Option<i64>,
     pub quota_limit: Option<i64>,
     pub quota_used: Option<i64>,
+}
+
+pub fn is_route_credential_quota_available(config_json: &str) -> bool {
+    // Unknown/missing remaining means "not known exhausted" — keep selectable.
+    let Ok(config) = parse_json_object(config_json, "config") else {
+        return true;
+    };
+    match config.get("quota_remaining") {
+        None | Some(Value::Null) => true,
+        Some(Value::Number(value)) => value.as_i64().map(|remaining| remaining > 0).unwrap_or(true),
+        Some(Value::String(value)) => value
+            .trim()
+            .parse::<i64>()
+            .map(|remaining| remaining > 0)
+            .unwrap_or(true),
+        Some(_) => true,
+    }
 }
 
 pub fn parse_official_quota_snapshot(response_body: &str) -> Option<OfficialQuotaSnapshot> {
@@ -1950,7 +1969,18 @@ mod tests {
     }
 
     #[test]
+    fn is_route_credential_quota_available_filters_zero_remaining() {
+        assert!(is_route_credential_quota_available("{}"));
+        assert!(is_route_credential_quota_available(r#"{"quota_remaining":12}"#));
+        assert!(!is_route_credential_quota_available(r#"{"quota_remaining":0}"#));
+        assert!(!is_route_credential_quota_available(r#"{"quota_remaining":-1}"#));
+        assert!(!is_route_credential_quota_available(r#"{"quota_remaining":"0"}"#));
+        assert!(is_route_credential_quota_available(r#"{"quota_remaining":"5"}"#));
+    }
+
+    #[test]
     fn parse_official_quota_snapshot_from_free_usage_exhausted() {
+
         let body = r#"{
   "code": "subscription:free-usage-exhausted",
   "error": "You've used all the included free usage for model grok-4.5-build-free for now. Usage resets over a rolling 24-hour window — tokens (actual/limit): 1177205/1000000. Upgrade to a Grok subscription for higher limits: https://grok.com/supergrok"
