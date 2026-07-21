@@ -3,6 +3,7 @@ import type {
   AppSettings,
   Batch,
   BatchGroup,
+  FetchedRouteModel,
   ImportJob,
   CreateApiRouteCredentialInput,
   CreateTerminalSessionInput,
@@ -11,6 +12,7 @@ import type {
   RouteConfigWriteOutcome,
   RouteCredential,
   RouteCredentialImportResult,
+  RouteModelsFetchRequest,
   RoutePoolModelTestOutcome,
   RoutePoolModelTestRequest,
   RoutePoolRouteOutcome,
@@ -103,6 +105,10 @@ export function routePoolRouteOnce(request: RoutePoolRouteRequest): Promise<Rout
 
 export function routePoolTestModel(request: RoutePoolModelTestRequest): Promise<RoutePoolModelTestOutcome> {
   return invoke("route_pool_test_model", { request });
+}
+
+export function fetchRouteModels(request: RouteModelsFetchRequest): Promise<FetchedRouteModel[]> {
+  return invoke("fetch_route_models", { request });
 }
 
 export function getSettings(): Promise<AppSettings> {

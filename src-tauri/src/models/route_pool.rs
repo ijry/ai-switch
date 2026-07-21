@@ -64,6 +64,10 @@ pub struct RoutePoolRouteOutcome {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RoutePoolModelTestRequest {
     pub platform: String,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -74,6 +78,8 @@ pub struct RoutePoolModelTestOutcome {
     pub selected_account_name: String,
     pub interface_format: String,
     pub request_path: String,
+    pub base_url: Option<String>,
+    pub target_url: Option<String>,
     pub request_body_json: String,
     pub response_status: Option<u16>,
     pub response_body: String,
@@ -82,6 +88,25 @@ pub struct RoutePoolModelTestOutcome {
     pub success: bool,
     pub duration_ms: i64,
     pub stats: RoutePoolStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteModelsFetchRequest {
+    pub base_url: String,
+    pub api_key: String,
+    #[serde(default)]
+    pub interface_format: Option<String>,
+    #[serde(default)]
+    pub api_key_field: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FetchedRouteModel {
+    pub id: String,
+    #[serde(default)]
+    pub owned_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_1m: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

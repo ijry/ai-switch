@@ -128,6 +128,37 @@ impl RouteCredentialRepository {
         Self::get(pool, id).await
     }
 
+    pub async fn update_status(pool: &SqlitePool, id: &str, status: &str) -> Result<(), AppError> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE route_credentials
+             SET status = ?, updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(status)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_credential_status_update",
+            message: "Could not update route credential status".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+
+        if result.rows_affected() == 0 {
+            return Err(AppError::Validation {
+                code: "validation.route_credential_not_found",
+                message: "Route credential does not exist".to_string(),
+                details: Some(id.to_string()),
+                recoverable: true,
+            });
+        }
+
+        Ok(())
+    }
+
     pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
         let result = sqlx::query("DELETE FROM route_credentials WHERE id = ?")
             .bind(id)

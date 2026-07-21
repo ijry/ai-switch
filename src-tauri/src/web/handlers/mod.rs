@@ -16,11 +16,13 @@ use crate::models::route_credential::{
     UpdateRouteCredentialInput,
 };
 use crate::models::route_pool::{
-    RoutePoolModelTestRequest, RoutePoolRouteRequest, SetRoutePoolMembersInput,
+    RouteModelsFetchRequest, RoutePoolModelTestRequest, RoutePoolRouteRequest,
+    SetRoutePoolMembersInput,
 };
 use crate::models::settings::AppSettings;
 use crate::services::route_config_service::RouteConfigService;
 use crate::services::route_credential_service::RouteCredentialService;
+use crate::services::route_model_fetch_service::RouteModelFetchService;
 use crate::services::route_model_test_service::RouteModelTestService;
 use crate::services::route_pool_service::RoutePoolService;
 use crate::services::route_proxy_service::RouteProxyService;
@@ -174,6 +176,14 @@ pub async fn dispatch_command(
             let request: RoutePoolModelTestRequest = parse_arg(&args, "request")?;
             to_value(
                 RouteModelTestService::test_model(&state.pool, request)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "fetch_route_models" => {
+            let request: RouteModelsFetchRequest = parse_arg(&args, "request")?;
+            to_value(
+                RouteModelFetchService::fetch(request)
                     .await
                     .map_err(to_error)?,
             )

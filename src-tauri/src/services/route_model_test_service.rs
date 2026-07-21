@@ -1,3 +1,4 @@
+use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::error::AppError;
 use crate::models::route_credential::ModelMapping;
@@ -23,6 +24,8 @@ const ROUTE_MODEL_TEST_SOURCE: &str = "route_pool_model_test";
 pub struct ModelTestRequestParts {
     pub interface_format: String,
     pub request_path: String,
+    pub base_url: Option<String>,
+    pub target_url: Option<String>,
     pub request_body_json: String,
 }
 
@@ -32,45 +35,66 @@ impl RouteModelTestService {
         request: RoutePoolModelTestRequest,
     ) -> Result<RoutePoolModelTestOutcome, AppError> {
         let platform = normalize_platform(&request.platform)?;
-        let credentials = load_pool_credentials(pool, &platform).await?;
-
-        if credentials.is_empty() {
-            return Err(AppError::Validation {
-                code: "validation.route_pool_empty",
-                message: "Route pool has no enabled accounts".to_string(),
-                details: Some(platform),
-                recoverable: true,
-            });
-        }
-
+        let requested_model = request
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(str::to_string);
+        let requested_account_id = request
+            .account_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|account_id| !account_id.is_empty())
+            .map(str::to_string);
         let cursor = RoutePoolRepository::next_cursor_index(pool, &platform).await?;
-        let selected_index = cursor.rem_euclid(credentials.len() as i64) as usize;
-        let next_index = (selected_index + 1) as i64 % credentials.len() as i64;
-        let credential = credentials[selected_index].clone();
+
+        let (credential, next_index) = if let Some(account_id) = requested_account_id {
+            (
+                load_account_credential(pool, &platform, &account_id).await?,
+                cursor,
+            )
+        } else {
+            let credentials = load_pool_credentials(pool, &platform).await?;
+
+            if credentials.is_empty() {
+                return Err(AppError::Validation {
+                    code: "validation.route_pool_empty",
+                    message: "Route pool has no enabled accounts".to_string(),
+                    details: Some(platform),
+                    recoverable: true,
+                });
+            }
+
+            let selected_index = cursor.rem_euclid(credentials.len() as i64) as usize;
+            let next_index = (selected_index + 1) as i64 % credentials.len() as i64;
+            (credentials[selected_index].clone(), next_index)
+        };
         let start = Instant::now();
 
-        let parts = match build_model_test_request(&credential, &platform) {
-            Ok(parts) => parts,
-            Err(error) => {
-                let fallback_parts = fallback_request_parts(&credential, &platform);
-                return finish_outcome(
-                    pool,
-                    &platform,
-                    credential,
-                    fallback_parts,
-                    next_index,
-                    None,
-                    String::new(),
-                    None,
-                    Some(error),
-                    false,
-                    elapsed_ms(start),
-                    None,
-                    None,
-                )
-                .await;
-            }
-        };
+        let parts =
+            match build_model_test_request(&credential, &platform, requested_model.as_deref()) {
+                Ok(parts) => parts,
+                Err(error) => {
+                    let fallback_parts = fallback_request_parts(&credential, &platform);
+                    return finish_outcome(
+                        pool,
+                        &platform,
+                        credential,
+                        fallback_parts,
+                        next_index,
+                        None,
+                        String::new(),
+                        None,
+                        Some(error),
+                        false,
+                        elapsed_ms(start),
+                        None,
+                        None,
+                    )
+                    .await;
+                }
+            };
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -113,6 +137,7 @@ impl RouteModelTestService {
 
         let parts = ModelTestRequestParts {
             request_body_json: pretty_json_bytes(&upstream_body),
+            target_url: Some(target_url.clone()),
             ..parts
         };
 
@@ -197,11 +222,13 @@ impl RouteModelTestService {
 pub fn build_model_test_request(
     credential: &SelectedCredential,
     platform: &str,
+    requested_model: Option<&str>,
 ) -> Result<ModelTestRequestParts, String> {
     let config = parse_json_object(&credential.config_json, "config")?;
     let interface_format = interface_format_for(credential, platform, &config);
+    let base_url = string_value(&config, "base_url").map(str::to_string);
     let mappings = model_mappings(&config);
-    let model = request_model(&interface_format, &mappings);
+    let model = request_model(&interface_format, &mappings, requested_model);
 
     let (request_path, request_body) = match interface_format.as_str() {
         "openai" => (
@@ -233,7 +260,7 @@ pub fn build_model_test_request(
         "gemini" => (
             format!(
                 "/v1beta/models/{}:generateContent",
-                gemini_path_model(&mappings)
+                gemini_path_model(&mappings, requested_model)
             ),
             json!({
                 "contents": [{
@@ -252,6 +279,8 @@ pub fn build_model_test_request(
     Ok(ModelTestRequestParts {
         interface_format,
         request_path,
+        base_url,
+        target_url: None,
         request_body_json: serde_json::to_string_pretty(&request_body)
             .map_err(|err| format!("Could not serialize test request body: {err}"))?,
     })
@@ -366,7 +395,18 @@ fn default_model_for(interface_format: &str) -> &'static str {
     }
 }
 
-fn request_model(interface_format: &str, mappings: &[ModelMapping]) -> String {
+fn request_model(
+    interface_format: &str,
+    mappings: &[ModelMapping],
+    requested_model: Option<&str>,
+) -> String {
+    if let Some(model) = requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        return model.to_string();
+    }
+
     mappings
         .first()
         .map(|mapping| mapping.from.trim())
@@ -375,7 +415,20 @@ fn request_model(interface_format: &str, mappings: &[ModelMapping]) -> String {
         .to_string()
 }
 
-fn gemini_path_model(mappings: &[ModelMapping]) -> String {
+fn gemini_path_model(mappings: &[ModelMapping], requested_model: Option<&str>) -> String {
+    if let Some(model) = requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        return mappings
+            .iter()
+            .find(|mapping| mapping.from.trim() == model)
+            .map(|mapping| mapping.to.trim())
+            .filter(|target| !target.is_empty())
+            .unwrap_or(model)
+            .to_string();
+    }
+
     mappings
         .first()
         .map(|mapping| mapping.to.trim())
@@ -424,6 +477,43 @@ async fn load_pool_credentials(
             config_json: row.get("config_json"),
         })
         .collect())
+}
+
+async fn load_account_credential(
+    pool: &SqlitePool,
+    platform: &str,
+    account_id: &str,
+) -> Result<SelectedCredential, AppError> {
+    let row = sqlx::query(
+        "SELECT id, platform, kind, display_name, secret_payload_json, config_json
+         FROM route_credentials
+         WHERE id = ? AND platform = ?",
+    )
+    .bind(account_id)
+    .bind(platform)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| AppError::Database {
+        code: "database.route_model_test_account",
+        message: "Could not load route credential for model test".to_string(),
+        details: Some(err.to_string()),
+        recoverable: true,
+    })?;
+
+    row.map(|row| SelectedCredential {
+        id: row.get("id"),
+        platform: row.get("platform"),
+        kind: row.get("kind"),
+        display_name: row.get("display_name"),
+        secret_payload_json: row.get("secret_payload_json"),
+        config_json: row.get("config_json"),
+    })
+    .ok_or_else(|| AppError::Validation {
+        code: "validation.route_model_test_account_not_found",
+        message: "Route credential does not exist for this platform".to_string(),
+        details: Some(account_id.to_string()),
+        recoverable: true,
+    })
 }
 
 async fn send_model_test_request(
@@ -478,6 +568,12 @@ async fn finish_outcome(
     token_count: Option<i64>,
     cost_micros: Option<i64>,
 ) -> Result<RoutePoolModelTestOutcome, AppError> {
+    if !success
+        && should_mark_model_test_account_unavailable(response_status, error_message.as_deref())
+    {
+        RouteCredentialRepository::update_status(pool, &credential.id, "error").await?;
+    }
+
     let error_message = error_message.map(|value| sanitize_for_storage(&credential, &value));
     let metadata = metadata_json(
         platform,
@@ -540,6 +636,8 @@ async fn finish_outcome(
         selected_account_name: credential.display_name,
         interface_format: parts.interface_format,
         request_path: parts.request_path,
+        base_url: parts.base_url,
+        target_url: parts.target_url,
         request_body_json: parts.request_body_json,
         response_status,
         response_body,
@@ -556,6 +654,17 @@ async fn finish_outcome(
         )
         .await?,
     })
+}
+
+fn should_mark_model_test_account_unavailable(
+    response_status: Option<u16>,
+    error_message: Option<&str>,
+) -> bool {
+    matches!(response_status, Some(401 | 403))
+        || (response_status.is_none()
+            && error_message
+                .map(|message| message.contains("Upstream model test request failed"))
+                .unwrap_or(false))
 }
 
 fn metadata_json(
@@ -577,6 +686,8 @@ fn metadata_json(
         "route_credential_name": credential.display_name,
         "interface_format": parts.interface_format,
         "path": parts.request_path,
+        "base_url": parts.base_url,
+        "target_url": parts.target_url,
         "status": response_status,
         "success": success,
         "duration_ms": duration_ms,
@@ -599,6 +710,8 @@ fn fallback_request_parts(
     ModelTestRequestParts {
         interface_format: interface_format_for(credential, platform, &config),
         request_path: String::new(),
+        base_url: string_value(&config, "base_url").map(str::to_string),
+        target_url: None,
         request_body_json: String::new(),
     }
 }
@@ -725,7 +838,7 @@ mod tests {
     #[test]
     fn builds_openai_chat_test_request() {
         let request =
-            build_model_test_request(&api_credential("openai"), "codex").expect("request");
+            build_model_test_request(&api_credential("openai"), "codex", None).expect("request");
         let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
 
         assert_eq!(request.interface_format, "openai");
@@ -745,8 +858,20 @@ mod tests {
     }
 
     #[test]
+    fn builds_openai_chat_test_request_with_explicit_model() {
+        let request = build_model_test_request(&api_credential("openai"), "codex", Some("gpt-4o"))
+            .expect("request");
+        let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
+
+        assert_eq!(
+            body.pointer("/model").and_then(Value::as_str),
+            Some("gpt-4o")
+        );
+    }
+
+    #[test]
     fn builds_openai_responses_test_request() {
-        let request = build_model_test_request(&api_credential("openai-responses"), "codex")
+        let request = build_model_test_request(&api_credential("openai-responses"), "codex", None)
             .expect("request");
         let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
 
@@ -768,8 +893,8 @@ mod tests {
 
     #[test]
     fn builds_openai_responses_test_request_for_official_codex() {
-        let request =
-            build_model_test_request(&official_credential("codex"), "codex").expect("request");
+        let request = build_model_test_request(&official_credential("codex"), "codex", None)
+            .expect("request");
         let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
 
         assert_eq!(request.interface_format, "openai-responses");
@@ -782,8 +907,8 @@ mod tests {
 
     #[test]
     fn builds_anthropic_test_request_for_official_claude() {
-        let request =
-            build_model_test_request(&official_credential("claude"), "claude").expect("request");
+        let request = build_model_test_request(&official_credential("claude"), "claude", None)
+            .expect("request");
         let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
 
         assert_eq!(request.interface_format, "anthropic");
@@ -801,7 +926,7 @@ mod tests {
     #[test]
     fn builds_gemini_test_request_and_uses_mapping_target_in_path() {
         let request =
-            build_model_test_request(&api_credential("gemini"), "gemini").expect("request");
+            build_model_test_request(&api_credential("gemini"), "gemini", None).expect("request");
         let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
 
         assert_eq!(request.interface_format, "gemini");
@@ -822,6 +947,29 @@ mod tests {
     }
 
     #[test]
+    fn builds_gemini_test_request_with_explicit_model_path() {
+        let request =
+            build_model_test_request(&api_credential("gemini"), "gemini", Some("gemini-1.5-pro"))
+                .expect("request");
+
+        assert_eq!(
+            request.request_path,
+            "/v1beta/models/gemini-1.5-pro:generateContent"
+        );
+    }
+
+    #[test]
+    fn builds_gemini_test_request_with_explicit_mapping_target_path() {
+        let request = build_model_test_request(&api_credential("gemini"), "gemini", Some("gpt-5"))
+            .expect("request");
+
+        assert_eq!(
+            request.request_path,
+            "/v1beta/models/up-gpt:generateContent"
+        );
+    }
+
+    #[test]
     fn builds_gemini_test_request_ignores_placeholder_mapping_target() {
         let mut credential = api_credential("gemini");
         credential.config_json = json!({
@@ -830,7 +978,7 @@ mod tests {
             "model_mappings": [{"from":"gpt-5","to":"upstream-model"}]
         })
         .to_string();
-        let request = build_model_test_request(&credential, "gemini").expect("request");
+        let request = build_model_test_request(&credential, "gemini", None).expect("request");
 
         assert_eq!(
             request.request_path,
@@ -912,16 +1060,24 @@ mod tests {
             &pool,
             RoutePoolModelTestRequest {
                 platform: "codex".to_string(),
+                account_id: None,
+                model: None,
             },
         )
         .await
         .expect("outcome");
+        let expected_target_url = format!("{base_url}/chat/completions");
 
         assert!(outcome.success);
         assert_eq!(outcome.selected_account_id, credential_id);
         assert_eq!(outcome.selected_account_name, "API Account");
         assert_eq!(outcome.interface_format, "openai");
         assert_eq!(outcome.request_path, "/chat/completions");
+        assert_eq!(outcome.base_url.as_deref(), Some(base_url.as_str()));
+        assert_eq!(
+            outcome.target_url.as_deref(),
+            Some(expected_target_url.as_str())
+        );
         assert_eq!(outcome.response_status, Some(200));
         assert_eq!(outcome.response_text.as_deref(), Some("ai-switch-ok"));
         assert!(outcome.request_body_json.contains("up-gpt"));
@@ -953,12 +1109,47 @@ mod tests {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .contains(MODEL_TEST_PROMPT));
+        assert_eq!(
+            metadata.pointer("/target_url").and_then(Value::as_str),
+            Some(expected_target_url.as_str())
+        );
         assert!(metadata
             .pointer("/response_body")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .contains("ai-switch-ok"));
         assert!(!outcome.stats.requests[0].metadata_json.contains("sk-test"));
+    }
+
+    #[tokio::test]
+    async fn test_model_can_target_single_account_without_pool_membership() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let base_url = start_json_test_server(
+            axum::http::StatusCode::OK,
+            json!({
+                "choices": [{"message": {"content": "ai-switch-ok"}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1}
+            }),
+        )
+        .await;
+        let credential_id = create_api_credential(&pool, &base_url).await;
+
+        let outcome = RouteModelTestService::test_model(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "codex".to_string(),
+                account_id: Some(credential_id.clone()),
+                model: Some("gpt-4o".to_string()),
+            },
+        )
+        .await
+        .expect("outcome");
+
+        assert!(outcome.success);
+        assert_eq!(outcome.selected_account_id, credential_id);
+        assert!(outcome.request_body_json.contains("gpt-4o"));
+        assert_eq!(outcome.stats.request_count, 1);
     }
 
     #[tokio::test]
@@ -976,7 +1167,7 @@ mod tests {
             &pool,
             SetRoutePoolMembersInput {
                 platform: "codex".to_string(),
-                account_ids: vec![credential_id],
+                account_ids: vec![credential_id.clone()],
             },
         )
         .await
@@ -986,6 +1177,8 @@ mod tests {
             &pool,
             RoutePoolModelTestRequest {
                 platform: "codex".to_string(),
+                account_id: None,
+                model: None,
             },
         )
         .await
@@ -997,6 +1190,11 @@ mod tests {
         assert_eq!(outcome.error_message, None);
         assert_eq!(outcome.stats.request_count, 1);
         assert_eq!(outcome.stats.token_count, 0);
+
+        let credential = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("credential");
+        assert_eq!(credential.status, "error");
     }
 
     #[tokio::test]
@@ -1008,6 +1206,8 @@ mod tests {
             &pool,
             RoutePoolModelTestRequest {
                 platform: "codex".to_string(),
+                account_id: None,
+                model: None,
             },
         )
         .await

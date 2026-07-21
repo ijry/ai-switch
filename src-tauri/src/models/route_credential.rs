@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
+pub const ANTHROPIC_API_KEY_FIELD: &str = "ANTHROPIC_API_KEY";
+pub const ANTHROPIC_AUTH_TOKEN_FIELD: &str = "ANTHROPIC_AUTH_TOKEN";
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
 pub struct RouteCredential {
     pub id: String,
@@ -26,6 +29,8 @@ pub struct CreateApiRouteCredentialInput {
     pub base_url: String,
     pub interface_format: String,
     pub model_mappings_json: String, // JSON array
+    #[serde(default)]
+    pub api_key_field: Option<String>,
     pub preview_json: Option<String>,
     pub batch_id: Option<String>,
 }
@@ -72,4 +77,17 @@ pub struct ModelMapping {
     pub to: String,
     #[serde(default)]
     pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_1m: Option<bool>,
+}
+
+pub fn normalize_anthropic_api_key_field(value: Option<&str>) -> Result<&'static str, String> {
+    match value.map(str::trim).filter(|item| !item.is_empty()) {
+        None => Ok(ANTHROPIC_API_KEY_FIELD),
+        Some(ANTHROPIC_API_KEY_FIELD) => Ok(ANTHROPIC_API_KEY_FIELD),
+        Some(ANTHROPIC_AUTH_TOKEN_FIELD) => Ok(ANTHROPIC_AUTH_TOKEN_FIELD),
+        Some(other) => Err(format!(
+            "Unsupported Anthropic api_key_field: {other}. Expected {ANTHROPIC_API_KEY_FIELD} or {ANTHROPIC_AUTH_TOKEN_FIELD}"
+        )),
+    }
 }

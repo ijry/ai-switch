@@ -27,6 +27,8 @@ export type InterfaceFormat =
   | "anthropic-messages"
   | "gemini";
 
+export type AnthropicApiKeyField = "ANTHROPIC_API_KEY" | "ANTHROPIC_AUTH_TOKEN";
+
 export type BatchChild = {
   item_type: "provider" | "official_account";
   id: string;
@@ -93,6 +95,20 @@ export type ModelMapping = {
   from: string;
   to: string;
   label?: string | null;
+  supports_1m?: boolean | null;
+};
+
+export type RouteModelsFetchRequest = {
+  base_url: string;
+  api_key: string;
+  interface_format?: InterfaceFormat | string | null;
+  api_key_field?: AnthropicApiKeyField | string | null;
+};
+
+export type FetchedRouteModel = {
+  id: string;
+  owned_by?: string | null;
+  supports_1m?: boolean | null;
 };
 
 export type RouteCredential = {
@@ -118,6 +134,7 @@ export type CreateApiRouteCredentialInput = {
   base_url: string;
   interface_format: InterfaceFormat;
   model_mappings_json: string;
+  api_key_field?: AnthropicApiKeyField | string | null;
   preview_json?: string | null;
   batch_id?: string | null;
 };
@@ -182,6 +199,8 @@ export type RoutePoolRouteOutcome = {
 
 export type RoutePoolModelTestRequest = {
   platform: string;
+  account_id?: string | null;
+  model?: string | null;
 };
 
 export type RoutePoolModelTestOutcome = {
@@ -190,6 +209,8 @@ export type RoutePoolModelTestOutcome = {
   selected_account_name: string;
   interface_format: string;
   request_path: string;
+  base_url?: string | null;
+  target_url?: string | null;
   request_body_json: string;
   response_status?: number | null;
   response_body: string;

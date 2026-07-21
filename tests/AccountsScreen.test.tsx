@@ -7,6 +7,7 @@ import {
   createBatch,
   createApiRouteCredential,
   deleteRouteCredential,
+  fetchRouteModels,
   getRoutePool,
   getRouteProxyStatus,
   importOfficialRouteCredentialsFromFiles,
@@ -32,6 +33,7 @@ vi.mock("../src/lib/api/client", () => ({
   createBatch: vi.fn(),
   createApiRouteCredential: vi.fn(),
   deleteRouteCredential: vi.fn(),
+  fetchRouteModels: vi.fn(),
   getRoutePool: vi.fn(),
   getRouteProxyStatus: vi.fn(),
   importOfficialRouteCredentialsFromFiles: vi.fn(),
@@ -110,6 +112,8 @@ function modelTestOutcomeFixture(
     selected_account_name: "Team Account",
     interface_format: "openai",
     request_path: "/chat/completions",
+    base_url: "https://api.example.com/v1",
+    target_url: "https://api.example.com/v1/chat/completions",
     request_body_json: JSON.stringify(
       {
         model: "gpt-5",
@@ -154,6 +158,7 @@ describe("AccountsScreen", () => {
     vi.mocked(createBatch).mockReset();
     vi.mocked(createApiRouteCredential).mockReset();
     vi.mocked(deleteRouteCredential).mockReset();
+    vi.mocked(fetchRouteModels).mockReset();
     vi.mocked(getRoutePool).mockReset();
     vi.mocked(getRouteProxyStatus).mockReset();
     vi.mocked(importOfficialRouteCredentialsFromFiles).mockReset();
@@ -239,6 +244,10 @@ describe("AccountsScreen", () => {
       display_name: "Updated Team Account",
     });
     vi.mocked(deleteRouteCredential).mockResolvedValue(undefined);
+    vi.mocked(fetchRouteModels).mockResolvedValue([
+      { id: "gpt-4o", owned_by: "openai" },
+      { id: "gpt-5", owned_by: "openai" },
+    ]);
   });
 
   it("renders route credentials under the selected first-level agent tab and toggles pool membership", async () => {
@@ -310,6 +319,7 @@ describe("AccountsScreen", () => {
     await userEvent.clear(screen.getByLabelText("Base URL"));
     await userEvent.type(screen.getByLabelText("Base URL"), "https://api.upstream.test/v1");
     await userEvent.selectOptions(screen.getByLabelText("接口格式"), "openai-responses");
+    await userEvent.click(screen.getByRole("button", { name: "新增映射" }));
     await userEvent.type(screen.getByLabelText("请求模型 1"), "gpt-5");
     fireEvent.change(screen.getByLabelText("上游模型 1"), {
       target: { value: "up-gpt" },
@@ -350,12 +360,45 @@ describe("AccountsScreen", () => {
     );
   });
 
+  it("fetches upstream models and one-click sets a model mapping", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Fetched API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-fetch");
+    await userEvent.clear(screen.getByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://api.fetch.test/v1");
+    await userEvent.click(screen.getByRole("button", { name: "获取模型列表" }));
+
+    await waitFor(() =>
+      expect(fetchRouteModels).toHaveBeenCalledWith({
+        base_url: "https://api.fetch.test/v1",
+        api_key: "sk-fetch",
+        interface_format: "openai",
+      }),
+    );
+    expect(await screen.findByText(/已获取 2 个模型/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "一键设置" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() =>
+      expect(createApiRouteCredential).toHaveBeenCalledWith(
+        expect.objectContaining({
+          display_name: "Fetched API",
+          model_mappings_json: "[{\"from\":\"gpt-5\",\"to\":\"gpt-5\"}]",
+        }),
+      ),
+    );
+  });
+
   it("rejects the placeholder upstream model mapping before saving", async () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
     await userEvent.type(screen.getByLabelText("API 账号名称"), "Bad API");
     await userEvent.type(screen.getByLabelText("API Key"), "sk-bad");
+    await userEvent.click(screen.getByRole("button", { name: "新增映射" }));
     await userEvent.type(screen.getByLabelText("请求模型 1"), "gpt-5");
     await userEvent.type(screen.getByLabelText("上游模型 1"), "upstream-model");
     await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
@@ -443,7 +486,7 @@ describe("AccountsScreen", () => {
     expect(screen.getByLabelText("API Key")).toHaveValue("sk-from-file-123456");
   });
 
-  it("uses fixed source model options for Claude model mappings", async () => {
+  it("shows Claude role templates without saving empty mappings", async () => {
     renderScreen("claude");
 
     await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
@@ -453,8 +496,12 @@ describe("AccountsScreen", () => {
     await userEvent.clear(screen.getByLabelText("Base URL"));
     await userEvent.type(screen.getByLabelText("Base URL"), "https://api.anthropic.test");
     await userEvent.selectOptions(screen.getByLabelText("接口格式"), "anthropic");
-    await userEvent.selectOptions(screen.getByLabelText("请求模型 1"), "claude-sonnet");
+    expect(screen.getByLabelText("显示名称 1")).toHaveValue("Sonnet");
+    expect(screen.getByLabelText("显示名称 2")).toHaveValue("Opus");
+    expect(screen.getByLabelText("显示名称 3")).toHaveValue("Fable");
+    expect(screen.getByLabelText("显示名称 4")).toHaveValue("Haiku");
     await userEvent.type(screen.getByLabelText("上游模型 1"), "provider-sonnet");
+    expect(screen.getByLabelText("声明支持 1M 1")).not.toBeChecked();
     await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
 
     await waitFor(() =>
@@ -464,10 +511,94 @@ describe("AccountsScreen", () => {
         api_key: "sk-claude",
         base_url: "https://api.anthropic.test",
         interface_format: "anthropic",
-        model_mappings_json: "[{\"from\":\"claude-sonnet\",\"to\":\"provider-sonnet\"}]",
+        api_key_field: "ANTHROPIC_AUTH_TOKEN",
+        model_mappings_json: "[{\"from\":\"claude-sonnet-5\",\"to\":\"provider-sonnet\",\"label\":\"Sonnet\"}]",
         preview_json: null,
         batch_id: null,
       }),
+    );
+  });
+
+  it("saves the selected Claude API key field and uses it when fetching models", async () => {
+    renderScreen("claude");
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Claude x-api-key API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-claude");
+    await userEvent.clear(screen.getByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://api.anthropic.test");
+
+    expect(screen.getByLabelText("Claude 鉴权字段")).toHaveValue("ANTHROPIC_AUTH_TOKEN");
+    await userEvent.selectOptions(screen.getByLabelText("Claude 鉴权字段"), "ANTHROPIC_API_KEY");
+    await userEvent.click(screen.getByRole("button", { name: "获取模型列表" }));
+
+    await waitFor(() =>
+      expect(fetchRouteModels).toHaveBeenCalledWith({
+        base_url: "https://api.anthropic.test",
+        api_key: "sk-claude",
+        interface_format: "anthropic",
+        api_key_field: "ANTHROPIC_API_KEY",
+      }),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() =>
+      expect(createApiRouteCredential).toHaveBeenCalledWith(
+        expect.objectContaining({
+          display_name: "Claude x-api-key API",
+          api_key_field: "ANTHROPIC_API_KEY",
+        }),
+      ),
+    );
+  });
+
+  it("saves Claude 1M support only when the role mapping is checked", async () => {
+    renderScreen("claude");
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Claude 1M API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-claude");
+    await userEvent.clear(screen.getByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://api.anthropic.test");
+    await userEvent.selectOptions(screen.getByLabelText("接口格式"), "anthropic");
+    await userEvent.type(screen.getByLabelText("上游模型 1"), "provider-sonnet-1m");
+    await userEvent.click(screen.getByLabelText("声明支持 1M 1"));
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() =>
+      expect(createApiRouteCredential).toHaveBeenCalledWith(
+        expect.objectContaining({
+          display_name: "Claude 1M API",
+          model_mappings_json:
+            "[{\"from\":\"claude-sonnet-5\",\"to\":\"provider-sonnet-1m\",\"label\":\"Sonnet\",\"supports_1m\":true}]",
+        }),
+      ),
+    );
+  });
+
+  it("does not persist Claude role templates when the upstream models are empty", async () => {
+    renderScreen("claude");
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Claude Empty API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-claude");
+    await userEvent.clear(screen.getByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://api.anthropic.test");
+    await userEvent.selectOptions(screen.getByLabelText("接口格式"), "anthropic");
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() =>
+      expect(createApiRouteCredential).toHaveBeenCalledWith(
+        expect.objectContaining({
+          display_name: "Claude Empty API",
+          api_key_field: "ANTHROPIC_AUTH_TOKEN",
+          model_mappings_json: "[]",
+        }),
+      ),
     );
   });
 
@@ -485,6 +616,90 @@ describe("AccountsScreen", () => {
     expect(JSON.parse(updateInput.config_json).model_mappings).toEqual([
       { from: "gpt-5", to: "new-upstream" },
     ]);
+  });
+
+  it("edits API credential base URL through structured fields without showing email", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+
+    expect(screen.queryByLabelText("编辑邮箱")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("编辑 API Key")).toHaveValue("sk-test");
+    expect(screen.getByLabelText("编辑 Base URL")).toHaveValue("https://api.example.com/v1");
+
+    await userEvent.clear(screen.getByLabelText("编辑 Base URL"));
+    await userEvent.type(screen.getByLabelText("编辑 Base URL"), "https://api.changed.test/v1");
+    await userEvent.selectOptions(screen.getByLabelText("编辑接口格式"), "openai-responses");
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const updateInput = vi.mocked(updateRouteCredential).mock.calls[0][1];
+    expect(updateInput.email).toBeNull();
+    expect(JSON.parse(updateInput.secret_payload_json).api_key).toBe("sk-test");
+    expect(JSON.parse(updateInput.config_json)).toMatchObject({
+      base_url: "https://api.changed.test/v1",
+      interface_format: "openai-responses",
+      model_mappings: [{ from: "gpt-5", to: "old-upstream" }],
+    });
+    expect(JSON.parse(updateInput.preview_json).config_toml).toContain("https://api.changed.test/v1");
+  });
+
+  it("edits the Claude API key field through structured API fields", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await userEvent.selectOptions(screen.getByLabelText("编辑接口格式"), "anthropic");
+    await userEvent.selectOptions(screen.getByLabelText("编辑 Claude 鉴权字段"), "ANTHROPIC_AUTH_TOKEN");
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const updateInput = vi.mocked(updateRouteCredential).mock.calls[0][1];
+    expect(JSON.parse(updateInput.config_json)).toMatchObject({
+      interface_format: "anthropic",
+      api_key_field: "ANTHROPIC_AUTH_TOKEN",
+    });
+  });
+
+  it("syncs the API edit JSON preview when decoding a Base64 API key", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await userEvent.clear(screen.getByLabelText("编辑 API Key"));
+    await userEvent.type(screen.getByLabelText("编辑 API Key"), "c2stZWRpdA==");
+    await userEvent.click(screen.getByLabelText("编辑 Base64 解码 API Key"));
+
+    expect(screen.getByLabelText("编辑 API Key")).toHaveValue("sk-edit");
+    expect((screen.getByLabelText("编辑 Preview JSON") as HTMLTextAreaElement).value).toContain("sk-edit");
+
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const updateInput = vi.mocked(updateRouteCredential).mock.calls[0][1];
+    expect(JSON.parse(updateInput.secret_payload_json).api_key).toBe("sk-edit");
+    expect(JSON.parse(updateInput.preview_json).auth_json.api_key).toBe("sk-edit");
+  });
+
+  it("recognizes an API key from a clipboard image while editing an API credential", async () => {
+    const imageBlob = new Blob(["fake"], { type: "image/png" });
+    const clipboardItem = {
+      getType: vi.fn().mockResolvedValue(imageBlob),
+      types: ["image/png"],
+    };
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        read: vi.fn().mockResolvedValue([clipboardItem]),
+      },
+    });
+    vi.mocked(recognizeApiKeysFromImageBlob).mockResolvedValue("sk-edit-ocr-123456");
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await userEvent.click(screen.getByRole("button", { name: "编辑 OCR识别 API Key" }));
+
+    await waitFor(() => expect(recognizeApiKeysFromImageBlob).toHaveBeenCalledWith(imageBlob));
+    expect(screen.getByLabelText("编辑 API Key")).toHaveValue("sk-edit-ocr-123456");
+    expect((screen.getByLabelText("编辑 Preview JSON") as HTMLTextAreaElement).value).toContain("sk-edit-ocr-123456");
   });
 
   it("edits route credential details from the right-side drawer", async () => {
@@ -689,32 +904,121 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     expect(await screen.findByText("本地代理：未启动")).toBeInTheDocument();
-    expect(screen.getByLabelText("测试算力池路由")).toBeDisabled();
+    expect(screen.getByLabelText("真实生成测试算力池路由")).toBeDisabled();
 
     await userEvent.click(await screen.findByLabelText("将 Team Account 加入算力池"));
-    await waitFor(() => expect(screen.getByLabelText("测试算力池路由")).toBeEnabled());
-    await userEvent.click(screen.getByLabelText("测试算力池路由"));
+    await waitFor(() => expect(screen.getByLabelText("真实生成测试算力池路由")).toBeEnabled());
+    await userEvent.click(screen.getByLabelText("真实生成测试算力池路由"));
+    expect(await screen.findByLabelText("真实生成测试弹窗")).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("开始真实生成测试"));
 
     await waitFor(() =>
       expect(routePoolTestModel).toHaveBeenCalledWith({
         platform: "codex",
+        model: null,
       }),
     );
     expect(startRouteProxy).not.toHaveBeenCalled();
     expect(writeRouteProxyConfigs).not.toHaveBeenCalled();
-    expect(await screen.findByText("模型连通性：通过")).toBeInTheDocument();
+    expect(await screen.findByText("真实生成测试：通过")).toBeInTheDocument();
     expect(screen.getByText("模型输出")).toBeInTheDocument();
     expect(screen.getByText("ai-switch-ok")).toBeInTheDocument();
     expect(screen.getByText("HTTP 200 · 321 ms")).toBeInTheDocument();
-    expect(screen.getByText(/\/chat\/completions/)).toBeInTheDocument();
+    expect(screen.getByText(/https:\/\/api\.example\.com\/v1\/chat\/completions/)).toBeInTheDocument();
     expect(screen.getByText(/Reply with exactly: ai-switch-ok/)).toBeInTheDocument();
     expect(screen.getByText(/choices/)).toBeInTheDocument();
     expect(screen.getByText("最近路由到：Team Account")).toBeInTheDocument();
+    expect(screen.queryByText("请求统计")).not.toBeInTheDocument();
 
     const proxyStatus = screen.getByText("本地代理：未启动");
     const recentRouteStatus = screen.getByText("最近路由到：Team Account");
     expect(proxyStatus.className).not.toContain("bg-white");
     expect(recentRouteStatus.className).not.toContain("bg-white");
+  });
+
+  it("tests the credential pool route with a user-specified model", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByLabelText("将 Team Account 加入算力池"));
+    await userEvent.click(screen.getByLabelText("真实生成测试算力池路由"));
+    await userEvent.type(await screen.findByLabelText("弹窗测试模型"), "gpt-4o");
+    await userEvent.click(screen.getByLabelText("开始真实生成测试"));
+
+    await waitFor(() =>
+      expect(routePoolTestModel).toHaveBeenCalledWith({
+        platform: "codex",
+        model: "gpt-4o",
+      }),
+    );
+  });
+
+  it("tests a single credential from the account row action", async () => {
+    renderScreen();
+
+    expect(await screen.findByLabelText("测试 API Account")).toBeEnabled();
+    await userEvent.click(screen.getByLabelText("测试 API Account"));
+    expect(await screen.findByLabelText("真实生成测试弹窗")).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("开始真实生成测试"));
+
+    await waitFor(() =>
+      expect(routePoolTestModel).toHaveBeenCalledWith({
+        platform: "codex",
+        account_id: "cred-api-1",
+        model: null,
+      }),
+    );
+    expect(await screen.findByText("真实生成测试：通过")).toBeInTheDocument();
+  });
+
+  it("keeps the optional test model separately for each agent tab", async () => {
+    const client = createQueryClient();
+    const view = render(
+      <QueryClientProvider client={client}>
+        <AccountsScreen platform="codex" />
+      </QueryClientProvider>,
+    );
+
+    await userEvent.click(await screen.findByLabelText("测试 API Account"));
+    await userEvent.type(await screen.findByLabelText("弹窗测试模型"), "gpt-4o");
+    await userEvent.click(screen.getByLabelText("关闭真实生成测试弹窗"));
+
+    await userEvent.click(screen.getByLabelText("测试 API Account"));
+    expect(await screen.findByLabelText("弹窗测试模型")).toHaveValue("gpt-4o");
+    await userEvent.click(screen.getByLabelText("关闭真实生成测试弹窗"));
+
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <AccountsScreen platform="claude" />
+      </QueryClientProvider>,
+    );
+    await userEvent.click(await screen.findByLabelText("测试 API Account"));
+    const claudeInput = await screen.findByLabelText("弹窗测试模型");
+    expect(claudeInput).toHaveValue("");
+    await userEvent.type(claudeInput, "claude-opus-4-8");
+    await userEvent.click(screen.getByLabelText("关闭真实生成测试弹窗"));
+
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <AccountsScreen platform="codex" />
+      </QueryClientProvider>,
+    );
+    await userEvent.click(await screen.findByLabelText("测试 API Account"));
+    expect(await screen.findByLabelText("弹窗测试模型")).toHaveValue("gpt-4o");
+  });
+
+  it("closes the model connectivity result panel", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByLabelText("将 Team Account 加入算力池"));
+    await userEvent.click(screen.getByLabelText("真实生成测试算力池路由"));
+    await userEvent.click(await screen.findByLabelText("开始真实生成测试"));
+    expect(await screen.findByLabelText("真实生成测试结果")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("关闭真实生成测试结果"));
+
+    await waitFor(() =>
+      expect(screen.queryByLabelText("真实生成测试结果")).not.toBeInTheDocument(),
+    );
   });
 
   it("shows model connectivity failure details from the route test", async () => {
@@ -731,9 +1035,10 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByLabelText("将 Team Account 加入算力池"));
-    await userEvent.click(screen.getByLabelText("测试算力池路由"));
+    await userEvent.click(screen.getByLabelText("真实生成测试算力池路由"));
+    await userEvent.click(await screen.findByLabelText("开始真实生成测试"));
 
-    expect(await screen.findByText("模型连通性：失败")).toBeInTheDocument();
+    expect(await screen.findByText("真实生成测试：失败")).toBeInTheDocument();
     expect(screen.getByText("HTTP 401 · 88 ms")).toBeInTheDocument();
     expect(screen.getByText(/bad key/)).toBeInTheDocument();
     expect(screen.getByText("Team Account")).toBeInTheDocument();

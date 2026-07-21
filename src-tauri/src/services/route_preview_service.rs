@@ -24,6 +24,7 @@ impl RoutePreviewService {
                         "kind": kind,
                         "baseUrl": config.get("base_url").and_then(Value::as_str),
                         "interfaceFormat": config.get("interface_format").and_then(Value::as_str),
+                        "apiKeyField": config.get("api_key_field").and_then(Value::as_str),
                     }
                 }).to_string()
             })

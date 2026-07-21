@@ -3,9 +3,9 @@ use crate::database::repositories::route_credential_repository::RouteCredentialR
 use crate::error::AppError;
 use crate::models::batch::NewBatch;
 use crate::models::route_credential::{
-    CreateApiRouteCredentialInput, ImportOfficialFilesInput, ImportOfficialTextInput, ModelMapping,
-    RouteCredential, RouteCredentialImportFailure, RouteCredentialImportResult,
-    UpdateRouteCredentialInput,
+    normalize_anthropic_api_key_field, CreateApiRouteCredentialInput, ImportOfficialFilesInput,
+    ImportOfficialTextInput, ModelMapping, RouteCredential, RouteCredentialImportFailure,
+    RouteCredentialImportResult, UpdateRouteCredentialInput,
 };
 use crate::services::cpa_import_service::{parse_cpa_file, parse_cpa_text};
 use crate::services::route_preview_service::RoutePreviewService;
@@ -36,14 +36,19 @@ impl RouteCredentialService {
         validate_required("base_url", &input.base_url)?;
         validate_interface_format(&input.interface_format)?;
         validate_model_mappings(&input.model_mappings_json)?;
+        let api_key_field =
+            validate_api_key_field(input.api_key_field.as_deref(), &input.interface_format)?;
 
         let secret_payload_json = json!({ "api_key": input.api_key.trim() }).to_string();
-        let config_json = json!({
+        let mut config = json!({
             "base_url": input.base_url.trim(),
             "interface_format": input.interface_format,
             "model_mappings": serde_json::from_str::<serde_json::Value>(&input.model_mappings_json)?,
-        })
-        .to_string();
+        });
+        if let Some(api_key_field) = api_key_field {
+            config["api_key_field"] = json!(api_key_field);
+        }
+        let config_json = config.to_string();
         let preview_json = input.preview_json.unwrap_or_else(|| {
             RoutePreviewService::generate(&platform, "api", &secret_payload_json, &config_json)
         });
@@ -216,6 +221,35 @@ fn validate_interface_format(value: &str) -> Result<(), AppError> {
     }
 }
 
+fn validate_api_key_field(
+    value: Option<&str>,
+    interface_format: &str,
+) -> Result<Option<&'static str>, AppError> {
+    let Some(value) = value.map(str::trim).filter(|item| !item.is_empty()) else {
+        return Ok(None);
+    };
+    if !is_anthropic_interface_format(interface_format) {
+        return Err(AppError::Validation {
+            code: "validation.api_key_field",
+            message: "api_key_field is only supported for Anthropic interface formats".to_string(),
+            details: Some(value.to_string()),
+            recoverable: true,
+        });
+    }
+    normalize_anthropic_api_key_field(Some(value))
+        .map(Some)
+        .map_err(|err| AppError::Validation {
+            code: "validation.api_key_field",
+            message: err,
+            details: Some(value.to_string()),
+            recoverable: true,
+        })
+}
+
+fn is_anthropic_interface_format(value: &str) -> bool {
+    matches!(value, "anthropic" | "anthropic-messages")
+}
+
 fn validate_model_mappings(value: &str) -> Result<(), AppError> {
     let mappings: Vec<ModelMapping> = serde_json::from_str(value)?;
     if mappings
@@ -276,5 +310,15 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn validates_anthropic_api_key_field() {
+        assert_eq!(
+            validate_api_key_field(Some("ANTHROPIC_AUTH_TOKEN"), "anthropic").unwrap(),
+            Some("ANTHROPIC_AUTH_TOKEN")
+        );
+        assert!(validate_api_key_field(Some("ANTHROPIC_AUTH_TOKEN"), "openai").is_err());
+        assert!(validate_api_key_field(Some("bad"), "anthropic").is_err());
     }
 }

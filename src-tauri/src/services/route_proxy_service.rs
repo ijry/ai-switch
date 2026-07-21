@@ -1,6 +1,10 @@
+use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::error::AppError;
-use crate::models::route_credential::ModelMapping;
+use crate::models::route_credential::{
+    normalize_anthropic_api_key_field, ModelMapping, ANTHROPIC_API_KEY_FIELD,
+    ANTHROPIC_AUTH_TOKEN_FIELD,
+};
 use axum::body::Body;
 use axum::extract::State as AxumState;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
@@ -211,13 +215,19 @@ async fn forward_request(
         .headers(map_to_reqwest_headers(&outbound_headers))
         .body(outbound_body);
 
-    let upstream = request
-        .send()
-        .await
-        .map_err(|err| format!("Upstream request failed: {err}"))?;
+    let upstream = match request.send().await {
+        Ok(response) => response,
+        Err(err) => {
+            mark_route_credential_unavailable(pool, &credential.id).await;
+            return Err(format!("Upstream request failed: {err}"));
+        }
+    };
 
     let status =
         StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    if should_mark_proxy_account_unavailable(status) {
+        mark_route_credential_unavailable(pool, &credential.id).await;
+    }
     let upstream_headers = upstream.headers().clone();
     let response_bytes = upstream
         .bytes()
@@ -292,6 +302,14 @@ fn map_to_reqwest_headers(headers: &HeaderMap) -> reqwest::header::HeaderMap {
         }
     }
     mapped
+}
+
+fn should_mark_proxy_account_unavailable(status: StatusCode) -> bool {
+    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+}
+
+async fn mark_route_credential_unavailable(pool: &SqlitePool, credential_id: &str) {
+    let _ = RouteCredentialRepository::update_status(pool, credential_id, "error").await;
 }
 
 fn json_error(status: StatusCode, message: &str) -> Response {
@@ -419,7 +437,10 @@ fn rewrite_model_value(value: &mut Value, mappings: &[ModelMapping]) {
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned)
             {
-                if let Some(mapping) = mappings.iter().find(|mapping| mapping.from == model) {
+                if let Some(mapping) = mappings
+                    .iter()
+                    .find(|mapping| model_mapping_matches(&mapping.from, &model))
+                {
                     object.insert("model".to_string(), Value::String(mapping.to.clone()));
                 }
             }
@@ -434,6 +455,49 @@ fn rewrite_model_value(value: &mut Value, mappings: &[ModelMapping]) {
         }
         _ => {}
     }
+}
+
+fn model_mapping_matches(mapping_from: &str, requested_model: &str) -> bool {
+    let mapping_from = mapping_from.trim();
+    let requested_model = requested_model.trim();
+    if mapping_from == requested_model {
+        return true;
+    }
+
+    match (
+        claude_route_lookup_model(mapping_from),
+        claude_route_lookup_model(requested_model),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn claude_route_lookup_model(model: &str) -> Option<&str> {
+    let stripped = strip_one_m_suffix_for_route_lookup(model);
+    if is_claude_route_model(stripped) {
+        Some(stripped)
+    } else {
+        None
+    }
+}
+
+fn strip_one_m_suffix_for_route_lookup(model: &str) -> &str {
+    const ONE_M_CONTEXT_MARKER: &str = "[1m]";
+    let trimmed = model.trim();
+    let marker = ONE_M_CONTEXT_MARKER.as_bytes();
+    let bytes = trimmed.as_bytes();
+    if bytes.len() >= marker.len()
+        && bytes[bytes.len() - marker.len()..].eq_ignore_ascii_case(marker)
+    {
+        return trimmed[..trimmed.len() - marker.len()].trim_end();
+    }
+    trimmed
+}
+
+fn is_claude_route_model(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    lower.starts_with("claude-") || lower.starts_with("anthropic/claude-")
 }
 
 pub fn build_upstream_request(
@@ -500,7 +564,19 @@ fn build_api_upstream_request(
 
     match interface_format {
         "anthropic" | "anthropic-messages" => {
-            insert_header(headers, "x-api-key", api_key)?;
+            match normalize_anthropic_api_key_field(string_value(config, "api_key_field"))
+                .map_err(|err| format!("Route credential {} {err}", credential.display_name))?
+            {
+                ANTHROPIC_AUTH_TOKEN_FIELD => {
+                    headers.remove("x-api-key");
+                    insert_header(headers, "authorization", &format!("Bearer {api_key}"))?;
+                }
+                ANTHROPIC_API_KEY_FIELD => {
+                    headers.remove("authorization");
+                    insert_header(headers, "x-api-key", api_key)?;
+                }
+                _ => unreachable!("normalize_anthropic_api_key_field returns known constants"),
+            }
             headers
                 .entry(HeaderName::from_static("anthropic-version"))
                 .or_insert(HeaderValue::from_static("2023-06-01"));
@@ -787,6 +863,7 @@ mod tests {
                 from: "gpt-5".to_string(),
                 to: "up-gpt".to_string(),
                 label: None,
+                supports_1m: None,
             }],
         );
         let value: Value = serde_json::from_slice(&mapped).expect("json");
@@ -798,6 +875,56 @@ mod tests {
         assert_eq!(
             value.pointer("/nested/model").and_then(Value::as_str),
             Some("up-gpt")
+        );
+    }
+
+    #[test]
+    fn apply_model_mappings_strips_claude_one_m_suffix_for_lookup() {
+        let mapped = apply_model_mappings(
+            br#"{"model":"claude-sonnet-5 [1M]","nested":{"model":"claude-opus-4-8[1m]"}}"#,
+            &[
+                ModelMapping {
+                    from: "claude-sonnet-5".to_string(),
+                    to: "provider-sonnet".to_string(),
+                    label: Some("Sonnet".to_string()),
+                    supports_1m: Some(true),
+                },
+                ModelMapping {
+                    from: "claude-opus-4-8".to_string(),
+                    to: "provider-opus".to_string(),
+                    label: Some("Opus".to_string()),
+                    supports_1m: Some(true),
+                },
+            ],
+        );
+        let value: Value = serde_json::from_slice(&mapped).expect("json");
+
+        assert_eq!(
+            value.pointer("/model").and_then(Value::as_str),
+            Some("provider-sonnet")
+        );
+        assert_eq!(
+            value.pointer("/nested/model").and_then(Value::as_str),
+            Some("provider-opus")
+        );
+    }
+
+    #[test]
+    fn apply_model_mappings_does_not_strip_one_m_suffix_from_non_claude_models() {
+        let mapped = apply_model_mappings(
+            br#"{"model":"gpt-5[1M]"}"#,
+            &[ModelMapping {
+                from: "gpt-5".to_string(),
+                to: "up-gpt".to_string(),
+                label: None,
+                supports_1m: None,
+            }],
+        );
+        let value: Value = serde_json::from_slice(&mapped).expect("json");
+
+        assert_eq!(
+            value.pointer("/model").and_then(Value::as_str),
+            Some("gpt-5[1M]")
         );
     }
 
@@ -864,6 +991,32 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("sk-test")
         );
+        assert!(headers.get("authorization").is_none());
+
+        let mut anthropic_bearer = api_credential("anthropic-bearer", "anthropic");
+        anthropic_bearer.config_json = serde_json::json!({
+            "base_url": "https://api.example.com/v1",
+            "interface_format": "anthropic",
+            "api_key_field": "ANTHROPIC_AUTH_TOKEN",
+            "model_mappings": []
+        })
+        .to_string();
+        let (_, headers, _) = build_upstream_request(
+            &anthropic_bearer,
+            "claude",
+            "/v1/messages",
+            None,
+            HeaderMap::new(),
+            br#"{}"#,
+        )
+        .expect("anthropic bearer request");
+        assert_eq!(
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer sk-test")
+        );
+        assert!(headers.get("x-api-key").is_none());
 
         let gemini = api_credential("gemini", "gemini");
         let (url, _, _) = build_upstream_request(

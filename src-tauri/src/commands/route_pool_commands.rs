@@ -1,9 +1,11 @@
 use crate::app_state::AppState;
 use crate::error::ApiError;
 use crate::models::route_pool::{
-    RoutePoolModelTestOutcome, RoutePoolModelTestRequest, RoutePoolRouteOutcome,
-    RoutePoolRouteRequest, RoutePoolState, SetRoutePoolMembersInput,
+    FetchedRouteModel, RouteModelsFetchRequest, RoutePoolModelTestOutcome,
+    RoutePoolModelTestRequest, RoutePoolRouteOutcome, RoutePoolRouteRequest, RoutePoolState,
+    SetRoutePoolMembersInput,
 };
+use crate::services::route_model_fetch_service::RouteModelFetchService;
 use crate::services::route_model_test_service::RouteModelTestService;
 use crate::services::route_pool_service::RoutePoolService;
 use tauri::State;
@@ -53,6 +55,15 @@ pub async fn route_pool_test_model(
     request: RoutePoolModelTestRequest,
 ) -> Result<RoutePoolModelTestOutcome, ApiError> {
     RouteModelTestService::test_model(&state.pool, request)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn fetch_route_models(
+    request: RouteModelsFetchRequest,
+) -> Result<Vec<FetchedRouteModel>, ApiError> {
+    RouteModelFetchService::fetch(request)
         .await
         .map_err(ApiError::from)
 }

@@ -27,7 +27,8 @@ use commands::route_credential_commands::{
     list_route_credentials, update_route_credential,
 };
 use commands::route_pool_commands::{
-    get_route_pool, route_pool_route_once, route_pool_test_model, set_route_pool_members,
+    fetch_route_models, get_route_pool, route_pool_route_once, route_pool_test_model,
+    set_route_pool_members,
 };
 use commands::route_proxy_commands::{
     get_route_proxy_status, start_route_proxy, stop_route_proxy, write_route_proxy_configs,
@@ -41,17 +42,17 @@ use commands::terminal_commands::{
 };
 use commands::web_service_commands::{
     disconnect_tailscale, get_tailscale_status, get_web_server_status, get_web_service_config,
-    save_web_service_config, start_tailscale_login, start_tailscale_with_auth_key, start_web_server,
-    stop_web_server,
+    save_web_service_config, start_tailscale_login, start_tailscale_with_auth_key,
+    start_web_server, stop_web_server,
 };
 use database::open_migrated_pool;
 use paths::AppPaths;
 use services::route_proxy_service::RouteProxyRuntimeState;
 use services::tailscale_service::TailscaleRuntimeState;
 use services::web_service::{WebService, WebServiceRuntimeState};
-use terminal_manager::TerminalManager;
 use std::sync::Arc;
 use tauri::Manager;
+use terminal_manager::TerminalManager;
 use web::event_bridge::WebEventBroadcaster;
 
 pub fn run() {
@@ -111,6 +112,7 @@ pub fn run() {
             set_route_pool_members,
             route_pool_route_once,
             route_pool_test_model,
+            fetch_route_models,
             start_route_proxy,
             stop_route_proxy,
             get_route_proxy_status,
