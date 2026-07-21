@@ -7,7 +7,8 @@ use crate::services::http_client::build_outbound_http_client;
 use crate::services::route_pool_service::normalize_platform;
 use crate::services::route_proxy_service::{
     build_upstream_request, extract_cost_micros, extract_token_count,
-    maybe_refresh_official_credential, SelectedCredential,
+    maybe_persist_official_quota_from_response, maybe_refresh_official_credential,
+    SelectedCredential,
 };
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
@@ -593,6 +594,10 @@ async fn finish_outcome(
     token_count: Option<i64>,
     cost_micros: Option<i64>,
 ) -> Result<RoutePoolModelTestOutcome, AppError> {
+    // Official accounts may report free/quota exhaustion in response bodies.
+    if !response_body.trim().is_empty() {
+        let _ = maybe_persist_official_quota_from_response(pool, &credential, &response_body).await;
+    }
     if !success
         && should_mark_model_test_account_unavailable(response_status, error_message.as_deref())
     {
@@ -1191,6 +1196,56 @@ mod tests {
         assert_eq!(outcome.selected_account_id, credential_id);
         assert!(outcome.request_body_json.contains("gpt-4o"));
         assert_eq!(outcome.stats.request_count, 1);
+    }
+
+    #[tokio::test]
+    async fn persists_official_free_usage_exhausted_quota() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let body = json!({
+            "code": "subscription:free-usage-exhausted",
+            "error": "You've used all the included free usage for model grok-4.5-build-free for now. Usage resets over a rolling 24-hour window — tokens (actual/limit): 1177205/1000000."
+        });
+        let base_url = start_json_test_server(axum::http::StatusCode::TOO_MANY_REQUESTS, body).await;
+        let created = RouteCredentialRepository::create(
+            &pool,
+            "grok",
+            "official",
+            "Grok Free",
+            Some("free@example.com".to_string()),
+            "ok",
+            None,
+            r#"{"access_token":"at-test"}"#,
+            &json!({
+                "base_url": base_url,
+                "type": "grok",
+                "auth_kind": "oauth"
+            })
+            .to_string(),
+            r#"{"auth_json":"{}","config_toml":""}"#,
+        )
+        .await
+        .expect("create official");
+
+        let outcome = RouteModelTestService::test_model(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "grok".to_string(),
+                account_id: Some(created.id.clone()),
+                model: Some("grok-4.5".to_string()),
+            },
+        )
+        .await
+        .expect("outcome");
+
+        assert!(!outcome.success);
+        let credential = RouteCredentialRepository::get(&pool, &created.id)
+            .await
+            .expect("credential");
+        assert!(credential.config_json.contains("\"subscription_type\":\"free\""));
+        assert!(credential.config_json.contains("\"quota_remaining\":0"));
+        assert!(credential.config_json.contains("\"quota_used\":1177205"));
+        assert!(credential.config_json.contains("\"quota_limit\":1000000"));
     }
 
     #[tokio::test]

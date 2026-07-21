@@ -30,6 +30,10 @@ const BIND_HOST: &str = "127.0.0.1";
 const ROUTE_PROXY_KEY_CACHE_TTL: Duration = Duration::from_secs(30);
 /// Public xAI Grok CLI OAuth client ID (CLIProxyAPI / Grok CLI).
 const XAI_OAUTH_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
+// Keep in sync with CLIProxyAPI xai_executor (cli-chat-proxy identity headers).
+const GROK_CLI_CLIENT_VERSION: &str = "0.2.93";
+const GROK_CLI_TOKEN_AUTH_VALUE: &str = "xai-grok-cli";
+const GROK_CLI_CHAT_PROXY_MARKER: &str = "cli-chat-proxy.grok.com";
 /// Refresh a short time before wall-clock expiry to avoid edge 401s.
 const OAUTH_REFRESH_LEAD: Duration = Duration::from_secs(5 * 60);
 
@@ -281,6 +285,12 @@ async fn forward_request(
         .bytes()
         .await
         .map_err(|err| format!("Could not read upstream response: {err}"))?;
+    // Capture official subscription/quota signals (e.g. Grok free-usage-exhausted).
+    if credential.kind == "official" {
+        if let Ok(body_text) = std::str::from_utf8(&response_bytes) {
+            let _ = maybe_persist_official_quota_from_response(pool, &credential, body_text).await;
+        }
+    }
 
     let token_count = extract_token_count(&response_bytes);
     let cost_micros = extract_cost_micros(&response_bytes);
@@ -789,7 +799,7 @@ fn build_official_upstream_request(
     secret: &Value,
     config: &Value,
 ) -> Result<(String, HeaderMap, Vec<u8>), String> {
-    // Apply credential-provided headers first (CPA may ship User-Agent / X-Client-Name).
+    // Apply credential-provided headers first (CPA may ship extra headers).
     apply_config_headers(headers, config)?;
 
     let access_token = resolve_official_access_token(credential, secret, config)?;
@@ -800,8 +810,35 @@ fn build_official_upstream_request(
             .or_insert(HeaderValue::from_static("2023-06-01"));
     }
     let base_url = string_value(config, "base_url").unwrap_or_else(|| default_official_base_url(platform));
+    // cli-chat-proxy rejects unversioned clients with HTTP 426 (version = none).
+    if is_official_grok_platform(platform) && is_grok_cli_chat_proxy_base_url(base_url) {
+        apply_official_grok_cli_headers(headers)?;
+    }
     let target_url = build_target_url(base_url, path, query);
     Ok((target_url, headers.clone(), body.to_vec()))
+}
+
+fn is_official_grok_platform(platform: &str) -> bool {
+    matches!(platform, "grok" | "xai")
+}
+
+fn is_grok_cli_chat_proxy_base_url(base_url: &str) -> bool {
+    base_url
+        .to_ascii_lowercase()
+        .contains(GROK_CLI_CHAT_PROXY_MARKER)
+}
+
+fn apply_official_grok_cli_headers(headers: &mut HeaderMap) -> Result<(), String> {
+    // Force-set so outdated CPA exports (User-Agent: grok-cli) cannot win.
+    insert_header(headers, "x-xai-token-auth", GROK_CLI_TOKEN_AUTH_VALUE)?;
+    insert_header(headers, "x-grok-client-version", GROK_CLI_CLIENT_VERSION)?;
+    insert_header(
+        headers,
+        "user-agent",
+        &format!("xai-grok-workspace/{GROK_CLI_CLIENT_VERSION}"),
+    )?;
+    headers.remove("x-client-name");
+    Ok(())
 }
 
 fn apply_config_headers(headers: &mut HeaderMap, config: &Value) -> Result<(), String> {
@@ -1183,6 +1220,139 @@ fn urlencoding_encode(value: &str) -> String {
         }
     }
     out
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfficialQuotaSnapshot {
+    pub subscription_type: Option<String>,
+    pub quota_remaining: Option<i64>,
+    pub quota_limit: Option<i64>,
+    pub quota_used: Option<i64>,
+}
+
+pub fn parse_official_quota_snapshot(response_body: &str) -> Option<OfficialQuotaSnapshot> {
+    let lower = response_body.to_ascii_lowercase();
+    let exhausted = lower.contains("subscription:free-usage-exhausted")
+        || lower.contains("free-usage-exhausted")
+        || lower.contains("used all the included free usage");
+    if !exhausted {
+        return None;
+    }
+
+    let mut quota_used = None;
+    let mut quota_limit = None;
+    if let Some((used, limit)) = parse_tokens_actual_limit(response_body) {
+        quota_used = Some(used);
+        quota_limit = Some(limit);
+    }
+
+    Some(OfficialQuotaSnapshot {
+        subscription_type: Some("free".to_string()),
+        quota_remaining: Some(0),
+        quota_limit,
+        quota_used,
+    })
+}
+
+fn parse_tokens_actual_limit(text: &str) -> Option<(i64, i64)> {
+    let marker = "tokens (actual/limit):";
+    let lower = text.to_ascii_lowercase();
+    let start = lower.find(marker)?;
+    let tail = text[start + marker.len()..].trim_start();
+    let mut digits = String::new();
+    let mut slash_seen = false;
+    let mut left = String::new();
+    let mut right = String::new();
+    for ch in tail.chars() {
+        if ch.is_ascii_digit() {
+            digits.push(ch);
+            continue;
+        }
+        if ch == '/' && !slash_seen && !digits.is_empty() {
+            left = std::mem::take(&mut digits);
+            slash_seen = true;
+            continue;
+        }
+        if !digits.is_empty() {
+            if slash_seen {
+                right = std::mem::take(&mut digits);
+            } else {
+                left = std::mem::take(&mut digits);
+            }
+            break;
+        }
+        if !left.is_empty() {
+            break;
+        }
+    }
+    if slash_seen && right.is_empty() && !digits.is_empty() {
+        right = digits;
+    }
+    if left.is_empty() || right.is_empty() {
+        return None;
+    }
+    let used = left.parse::<i64>().ok()?;
+    let limit = right.parse::<i64>().ok()?;
+    Some((used, limit))
+}
+
+pub fn apply_official_quota_snapshot(config_json: &str, snapshot: &OfficialQuotaSnapshot) -> Result<String, String> {
+    let mut config = parse_json_object(config_json, "config")?;
+    let Some(object) = config.as_object_mut() else {
+        return Err("Route credential config JSON must be an object".to_string());
+    };
+    if let Some(subscription_type) = &snapshot.subscription_type {
+        object.insert(
+            "subscription_type".to_string(),
+            json!(subscription_type),
+        );
+    }
+    if let Some(quota_remaining) = snapshot.quota_remaining {
+        object.insert("quota_remaining".to_string(), json!(quota_remaining));
+    }
+    if let Some(quota_limit) = snapshot.quota_limit {
+        object.insert("quota_limit".to_string(), json!(quota_limit));
+    }
+    if let Some(quota_used) = snapshot.quota_used {
+        object.insert("quota_used".to_string(), json!(quota_used));
+    }
+    object.insert(
+        "quota_updated_at".to_string(),
+        json!(Utc::now().to_rfc3339()),
+    );
+    Ok(config.to_string())
+}
+
+pub async fn maybe_persist_official_quota_from_response(
+    pool: &SqlitePool,
+    credential: &SelectedCredential,
+    response_body: &str,
+) -> Result<bool, AppError> {
+    if credential.kind != "official" {
+        return Ok(false);
+    }
+    let Some(snapshot) = parse_official_quota_snapshot(response_body) else {
+        return Ok(false);
+    };
+    let next_config = apply_official_quota_snapshot(&credential.config_json, &snapshot).map_err(
+        |message| AppError::Validation {
+            code: "validation.route_credential_quota",
+            message,
+            details: Some(credential.id.clone()),
+            recoverable: true,
+        },
+    )?;
+    if next_config == credential.config_json {
+        return Ok(false);
+    }
+    RouteCredentialRepository::update_secret_and_config(
+        pool,
+        &credential.id,
+        &credential.secret_payload_json,
+        &next_config,
+    )
+    .await?;
+    Ok(true)
 }
 
 fn parse_json_object(raw: &str, label: &str) -> Result<Value, String> {
@@ -1729,18 +1899,74 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("Bearer at-xai")
         );
+        // Outdated CPA User-Agent/X-Client-Name must be upgraded to CLIProxyAPI identity.
         assert_eq!(
             headers
                 .get("user-agent")
                 .and_then(|value| value.to_str().ok()),
-            Some("grok-cli")
+            Some("xai-grok-workspace/0.2.93")
         );
         assert_eq!(
             headers
-                .get("x-client-name")
+                .get("x-grok-client-version")
                 .and_then(|value| value.to_str().ok()),
-            Some("grok-cli")
+            Some("0.2.93")
         );
+        assert_eq!(
+            headers
+                .get("x-xai-token-auth")
+                .and_then(|value| value.to_str().ok()),
+            Some("xai-grok-cli")
+        );
+        assert!(headers.get("x-client-name").is_none());
+    }
+
+    #[test]
+    fn build_upstream_request_skips_cli_headers_for_official_xai_api() {
+        let credential = SelectedCredential {
+            id: "official-grok-api".to_string(),
+            platform: "grok".to_string(),
+            kind: "official".to_string(),
+            display_name: "Grok API".to_string(),
+            secret_payload_json: r#"{"access_token":"at-xai"}"#.to_string(),
+            config_json: serde_json::json!({
+                "base_url": "https://api.x.ai/v1"
+            })
+            .to_string(),
+        };
+
+        let (_, headers, _) = build_upstream_request(
+            &credential,
+            "grok",
+            "/chat/completions",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"grok-3"}"#,
+        )
+        .expect("official api.x.ai request");
+
+        assert!(headers.get("x-grok-client-version").is_none());
+        assert!(headers.get("x-xai-token-auth").is_none());
+    }
+
+    #[test]
+    fn parse_official_quota_snapshot_from_free_usage_exhausted() {
+        let body = r#"{
+  "code": "subscription:free-usage-exhausted",
+  "error": "You've used all the included free usage for model grok-4.5-build-free for now. Usage resets over a rolling 24-hour window — tokens (actual/limit): 1177205/1000000. Upgrade to a Grok subscription for higher limits: https://grok.com/supergrok"
+}"#;
+        let snapshot = parse_official_quota_snapshot(body).expect("snapshot");
+        assert_eq!(snapshot.subscription_type.as_deref(), Some("free"));
+        assert_eq!(snapshot.quota_remaining, Some(0));
+        assert_eq!(snapshot.quota_used, Some(1_177_205));
+        assert_eq!(snapshot.quota_limit, Some(1_000_000));
+
+        let next = apply_official_quota_snapshot("{}", &snapshot).expect("config");
+        assert!(next.contains("\"subscription_type\":\"free\""));
+        assert!(next.contains("\"quota_remaining\":0"));
+        assert!(next.contains("\"quota_used\":1177205"));
+        assert!(next.contains("\"quota_limit\":1000000"));
+        assert!(next.contains("quota_updated_at"));
     }
 
     #[test]

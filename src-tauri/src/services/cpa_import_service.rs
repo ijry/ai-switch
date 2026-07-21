@@ -110,6 +110,7 @@ fn parse_cpa_object(
         .cloned()
         .filter(|value| value.is_object())
         .unwrap_or(Value::Null);
+    let headers = normalize_imported_headers(platform, &headers);
 
     // Keep the original CPA object for lossless re-export / future fields.
     let raw = Value::Object(object.clone());
@@ -150,7 +151,7 @@ fn parse_cpa_object(
     if let Some(redirect_uri) = redirect_uri {
         config.insert("redirect_uri".to_string(), json!(redirect_uri));
     }
-    if !headers.is_null() {
+    if platform == "grok" || !headers.is_null() {
         config.insert("headers".to_string(), headers);
     }
 
@@ -162,6 +163,29 @@ fn parse_cpa_object(
         secret_payload_json,
         config_json,
     })
+}
+
+fn normalize_imported_headers(platform: &str, headers: &Value) -> Value {
+    // Preserve non-Grok headers as-is.
+    if platform != "grok" {
+        return headers.clone();
+    }
+
+    // CLIProxyAPI chat-proxy identity headers (force-set on request too).
+    // Older CPA exports only store User-Agent=grok-cli which upstream treats as version none.
+    let mut map = match headers {
+        Value::Object(object) => object.clone(),
+        _ => Map::new(),
+    };
+    map.insert(
+        "User-Agent".to_string(),
+        json!("xai-grok-workspace/0.2.93"),
+    );
+    map.insert("X-XAI-Token-Auth".to_string(), json!("xai-grok-cli"));
+    map.insert("x-grok-client-version".to_string(), json!("0.2.93"));
+    map.remove("X-Client-Name");
+    map.remove("x-client-name");
+    Value::Object(map)
 }
 
 fn reject_wrapper_export(value: &Value) -> Result<(), AppError> {
@@ -355,7 +379,17 @@ mod tests {
         assert!(parsed[0]
             .config_json
             .contains("https://auth.x.ai/oauth2/token"));
-        assert!(parsed[0].config_json.contains("grok-cli"));
+        assert!(parsed[0]
+            .config_json
+            .contains("xai-grok-workspace/0.2.93"));
+        assert!(parsed[0]
+            .config_json
+            .contains("x-grok-client-version"));
+        // Stored headers are upgraded; original CPA payload remains in raw for lossless re-export.
+        assert!(parsed[0]
+            .config_json
+            .contains("\"headers\":{\"User-Agent\":\"xai-grok-workspace/0.2.93\"")
+            || parsed[0].config_json.contains("xai-grok-workspace/0.2.93"));
         assert!(parsed[0].config_json.contains("\"auth_kind\":\"oauth\""));
         assert!(parsed[0]
             .config_json
@@ -369,5 +403,18 @@ mod tests {
         let parsed = parse_cpa_text("xai", text).unwrap();
         assert_eq!(parsed.len(), 1);
         assert!(parsed[0].config_json.contains("\"type\":\"grok\""));
+    }
+
+    #[test]
+    fn fills_default_grok_cli_headers_when_missing() {
+        let text = r#"{"type":"xai","access_token":"at","refresh_token":"rt","base_url":"https://cli-chat-proxy.grok.com/v1"}"#;
+        let parsed = parse_cpa_text("grok", text).unwrap();
+        assert!(parsed[0]
+            .config_json
+            .contains("xai-grok-workspace/0.2.93"));
+        assert!(parsed[0]
+            .config_json
+            .contains("x-grok-client-version"));
+        assert!(parsed[0].config_json.contains("X-XAI-Token-Auth"));
     }
 }

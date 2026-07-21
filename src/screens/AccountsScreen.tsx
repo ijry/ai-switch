@@ -575,6 +575,44 @@ function normalizeModelMappings(mappings: ModelMapping[], platform: PlatformKey)
   return { error: null, mappings: normalized };
 }
 
+
+function numberFromRecord(record: Record<string, unknown>, key: string): number | null {
+  const value = record[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function officialSubscriptionType(credential: RouteCredential): string | null {
+  if (credential.kind !== "official") {
+    return null;
+  }
+  const config = parseJsonObject(credential.config_json);
+  const value = stringFromRecord(config, "subscription_type");
+  return value || null;
+}
+
+function officialQuotaRemainingLabel(credential: RouteCredential): string | null {
+  if (credential.kind !== "official") {
+    return null;
+  }
+  const config = parseJsonObject(credential.config_json);
+  const remaining = numberFromRecord(config, "quota_remaining");
+  if (remaining == null) {
+    return null;
+  }
+  const limit = numberFromRecord(config, "quota_limit");
+  if (limit != null && limit > 0) {
+    return `${remaining}/${limit}`;
+  }
+  return String(remaining);
+}
+
 function parseJsonObject(value: string) {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -2034,7 +2072,10 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                 <p className="text-[11px] font-medium text-stone-500">{group.items.length} 个账号</p>
               </div>
               <div className="divide-y divide-stone-100">
-                {group.items.map((credential) => (
+                {group.items.map((credential) => {
+                  const subscriptionType = officialSubscriptionType(credential);
+                  const quotaRemainingLabel = officialQuotaRemainingLabel(credential);
+                  return (
                   <div className="grid gap-2 px-3 py-2.5 lg:grid-cols-[auto_1fr_auto] lg:items-center" key={credential.id}>
                     <input
                       aria-label={`将 ${credential.display_name} 加入算力池`}
@@ -2056,6 +2097,22 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                         >
                           {accountStatusLabel(credential.status)}
                         </span>
+                        {subscriptionType && (
+                          <span
+                            className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-800"
+                            title="订阅类型"
+                          >
+                            订阅 {subscriptionType}
+                          </span>
+                        )}
+                        {quotaRemainingLabel != null && (
+                          <span
+                            className="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-800"
+                            title="余量"
+                          >
+                            余量 {quotaRemainingLabel}
+                          </span>
+                        )}
                       </div>
                       <p className="mt-0.5 truncate text-[12px] text-stone-500">
                         {credential.email ?? credential.platform} · {shortId(credential.id)}
@@ -2087,7 +2144,8 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                       </button>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           ))}
