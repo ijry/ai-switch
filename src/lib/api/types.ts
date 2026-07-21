@@ -124,6 +124,10 @@ export type RouteCredential = {
   config_json: string;
   preview_json: string;
   subscription_type?: string | null;
+  primary_remain?: number | null;
+  weekly_remain?: number | null;
+  reset_primary?: string | null;
+  reset_weekly?: string | null;
   quota_remaining?: number | null;
   quota_limit?: number | null;
   quota_used?: number | null;

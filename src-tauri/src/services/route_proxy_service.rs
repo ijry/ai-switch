@@ -578,7 +578,8 @@ async fn load_pool_credentials(
          WHERE rpm.platform = ?
            AND rpm.enabled = 1
            AND c.status = 'ok'
-           AND (c.quota_remaining IS NULL OR c.quota_remaining > 0)
+           AND (c.primary_remain IS NULL OR c.primary_remain > 0)
+           AND (c.weekly_remain IS NULL OR c.weekly_remain > 0)
          ORDER BY rpm.sort_order ASC, rpm.created_at ASC",
     )
     .bind(platform)
@@ -1230,9 +1231,34 @@ fn urlencoding_encode(value: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OfficialQuotaSnapshot {
     pub subscription_type: Option<String>,
+    pub primary_remain: Option<i64>,
+    pub weekly_remain: Option<i64>,
+    pub reset_primary: Option<String>,
+    pub reset_weekly: Option<String>,
+    // Legacy detail fields retained in config_json only.
     pub quota_remaining: Option<i64>,
     pub quota_limit: Option<i64>,
     pub quota_used: Option<i64>,
+}
+
+fn config_remain_positive(config: &Value, keys: &[&str]) -> bool {
+    for key in keys {
+        match config.get(*key) {
+            None | Some(Value::Null) => continue,
+            Some(Value::Number(value)) => {
+                return value.as_i64().map(|remaining| remaining > 0).unwrap_or(true);
+            }
+            Some(Value::String(value)) => {
+                return value
+                    .trim()
+                    .parse::<i64>()
+                    .map(|remaining| remaining > 0)
+                    .unwrap_or(true);
+            }
+            Some(_) => return true,
+        }
+    }
+    true
 }
 
 pub fn is_route_credential_quota_available(config_json: &str) -> bool {
@@ -1240,16 +1266,9 @@ pub fn is_route_credential_quota_available(config_json: &str) -> bool {
     let Ok(config) = parse_json_object(config_json, "config") else {
         return true;
     };
-    match config.get("quota_remaining") {
-        None | Some(Value::Null) => true,
-        Some(Value::Number(value)) => value.as_i64().map(|remaining| remaining > 0).unwrap_or(true),
-        Some(Value::String(value)) => value
-            .trim()
-            .parse::<i64>()
-            .map(|remaining| remaining > 0)
-            .unwrap_or(true),
-        Some(_) => true,
-    }
+    let primary_ok = config_remain_positive(&config, &["primary_remain", "quota_remaining"]);
+    let weekly_ok = config_remain_positive(&config, &["weekly_remain"]);
+    primary_ok && weekly_ok
 }
 
 pub fn parse_official_quota_snapshot(response_body: &str) -> Option<OfficialQuotaSnapshot> {
@@ -1270,6 +1289,10 @@ pub fn parse_official_quota_snapshot(response_body: &str) -> Option<OfficialQuot
 
     Some(OfficialQuotaSnapshot {
         subscription_type: Some("free".to_string()),
+        primary_remain: Some(0),
+        weekly_remain: None,
+        reset_primary: None,
+        reset_weekly: None,
         quota_remaining: Some(0),
         quota_limit,
         quota_used,
@@ -1329,8 +1352,22 @@ pub fn apply_official_quota_snapshot(config_json: &str, snapshot: &OfficialQuota
             json!(subscription_type),
         );
     }
-    if let Some(quota_remaining) = snapshot.quota_remaining {
+    if let Some(primary_remain) = snapshot.primary_remain {
+        object.insert("primary_remain".to_string(), json!(primary_remain));
+        // Keep legacy key dual-written for older readers/filters.
+        object.insert("quota_remaining".to_string(), json!(primary_remain));
+    } else if let Some(quota_remaining) = snapshot.quota_remaining {
         object.insert("quota_remaining".to_string(), json!(quota_remaining));
+        object.insert("primary_remain".to_string(), json!(quota_remaining));
+    }
+    if let Some(weekly_remain) = snapshot.weekly_remain {
+        object.insert("weekly_remain".to_string(), json!(weekly_remain));
+    }
+    if let Some(reset_primary) = &snapshot.reset_primary {
+        object.insert("reset_primary".to_string(), json!(reset_primary));
+    }
+    if let Some(reset_weekly) = &snapshot.reset_weekly {
+        object.insert("reset_weekly".to_string(), json!(reset_weekly));
     }
     if let Some(quota_limit) = snapshot.quota_limit {
         object.insert("quota_limit".to_string(), json!(quota_limit));
@@ -1338,10 +1375,14 @@ pub fn apply_official_quota_snapshot(config_json: &str, snapshot: &OfficialQuota
     if let Some(quota_used) = snapshot.quota_used {
         object.insert("quota_used".to_string(), json!(quota_used));
     }
-    object.insert(
-        "quota_updated_at".to_string(),
-        json!(Utc::now().to_rfc3339()),
-    );
+    let now = Utc::now().to_rfc3339();
+    object.insert("quota_updated_at".to_string(), json!(now.clone()));
+    if snapshot.reset_primary.is_none() && snapshot.primary_remain.is_some() {
+        // Without an exact vendor reset timestamp, stamp primary reset to update time.
+        object
+            .entry("reset_primary".to_string())
+            .or_insert_with(|| json!(now));
+    }
     Ok(config.to_string())
 }
 
@@ -1975,7 +2016,10 @@ mod tests {
     fn is_route_credential_quota_available_filters_zero_remaining() {
         assert!(is_route_credential_quota_available("{}"));
         assert!(is_route_credential_quota_available(r#"{"quota_remaining":12}"#));
+        assert!(is_route_credential_quota_available(r#"{"primary_remain":12}"#));
         assert!(!is_route_credential_quota_available(r#"{"quota_remaining":0}"#));
+        assert!(!is_route_credential_quota_available(r#"{"primary_remain":0}"#));
+        assert!(!is_route_credential_quota_available(r#"{"primary_remain":5,"weekly_remain":0}"#));
         assert!(!is_route_credential_quota_available(r#"{"quota_remaining":-1}"#));
         assert!(!is_route_credential_quota_available(r#"{"quota_remaining":"0"}"#));
         assert!(is_route_credential_quota_available(r#"{"quota_remaining":"5"}"#));
@@ -1983,23 +2027,25 @@ mod tests {
 
     #[test]
     fn parse_official_quota_snapshot_from_free_usage_exhausted() {
-
         let body = r#"{
   "code": "subscription:free-usage-exhausted",
   "error": "You've used all the included free usage for model grok-4.5-build-free for now. Usage resets over a rolling 24-hour window — tokens (actual/limit): 1177205/1000000. Upgrade to a Grok subscription for higher limits: https://grok.com/supergrok"
 }"#;
         let snapshot = parse_official_quota_snapshot(body).expect("snapshot");
         assert_eq!(snapshot.subscription_type.as_deref(), Some("free"));
+        assert_eq!(snapshot.primary_remain, Some(0));
         assert_eq!(snapshot.quota_remaining, Some(0));
         assert_eq!(snapshot.quota_used, Some(1_177_205));
         assert_eq!(snapshot.quota_limit, Some(1_000_000));
 
         let next = apply_official_quota_snapshot("{}", &snapshot).expect("config");
         assert!(next.contains("\"subscription_type\":\"free\""));
+        assert!(next.contains("\"primary_remain\":0"));
         assert!(next.contains("\"quota_remaining\":0"));
         assert!(next.contains("\"quota_used\":1177205"));
         assert!(next.contains("\"quota_limit\":1000000"));
         assert!(next.contains("quota_updated_at"));
+        assert!(next.contains("reset_primary"));
     }
 
     #[test]

@@ -604,31 +604,52 @@ function officialSubscriptionType(credential: RouteCredential): string | null {
   return value || null;
 }
 
-function officialQuotaRemainingLabel(credential: RouteCredential): string | null {
+function officialPrimaryRemain(credential: RouteCredential): number | null {
   if (credential.kind !== "official") {
     return null;
   }
-  const remaining =
-    typeof credential.quota_remaining === "number" && Number.isFinite(credential.quota_remaining)
-      ? credential.quota_remaining
-      : (() => {
-          const config = parseJsonObject(credential.config_json);
-          return numberFromRecord(config, "quota_remaining");
-        })();
-  if (remaining == null) {
+  if (typeof credential.primary_remain === "number" && Number.isFinite(credential.primary_remain)) {
+    return credential.primary_remain;
+  }
+  if (typeof credential.quota_remaining === "number" && Number.isFinite(credential.quota_remaining)) {
+    return credential.quota_remaining;
+  }
+  const config = parseJsonObject(credential.config_json);
+  return numberFromRecord(config, "primary_remain") ?? numberFromRecord(config, "quota_remaining");
+}
+
+function officialWeeklyRemain(credential: RouteCredential): number | null {
+  if (credential.kind !== "official") {
     return null;
   }
-  const limit =
-    typeof credential.quota_limit === "number" && Number.isFinite(credential.quota_limit)
-      ? credential.quota_limit
-      : (() => {
-          const config = parseJsonObject(credential.config_json);
-          return numberFromRecord(config, "quota_limit");
-        })();
-  if (limit != null && limit > 0) {
-    return `${remaining}/${limit}`;
+  if (typeof credential.weekly_remain === "number" && Number.isFinite(credential.weekly_remain)) {
+    return credential.weekly_remain;
   }
-  return String(remaining);
+  const config = parseJsonObject(credential.config_json);
+  return numberFromRecord(config, "weekly_remain");
+}
+
+function officialLatestResetLabel(credential: RouteCredential): string | null {
+  if (credential.kind !== "official") {
+    return null;
+  }
+  const config = parseJsonObject(credential.config_json);
+  const candidates = [
+    typeof credential.reset_primary === "string" ? credential.reset_primary : null,
+    typeof credential.reset_weekly === "string" ? credential.reset_weekly : null,
+    typeof credential.quota_updated_at === "string" ? credential.quota_updated_at : null,
+    stringFromRecord(config, "reset_primary") || null,
+    stringFromRecord(config, "reset_weekly") || null,
+    stringFromRecord(config, "quota_updated_at") || null,
+  ]
+    .map((value) => (value ? value.trim() : ""))
+    .filter(Boolean);
+  if (candidates.length === 0) {
+    return null;
+  }
+  // RFC3339 strings compare lexicographically for latest time.
+  const latest = candidates.reduce((best, current) => (current > best ? current : best));
+  return latest;
 }
 
 function parseJsonObject(value: string) {
@@ -2092,7 +2113,9 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
               <div className="divide-y divide-stone-100">
                 {group.items.map((credential) => {
                   const subscriptionType = officialSubscriptionType(credential);
-                  const quotaRemainingLabel = officialQuotaRemainingLabel(credential);
+                  const primaryRemain = officialPrimaryRemain(credential);
+                  const weeklyRemain = officialWeeklyRemain(credential);
+                  const latestReset = officialLatestResetLabel(credential);
                   return (
                   <div className="grid gap-2 px-3 py-2.5 lg:grid-cols-[auto_1fr_auto] lg:items-center" key={credential.id}>
                     <input
@@ -2123,12 +2146,28 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                             订阅 {subscriptionType}
                           </span>
                         )}
-                        {quotaRemainingLabel != null && (
+                        {primaryRemain != null && (
                           <span
                             className="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-800"
-                            title="余量"
+                            title="主额度剩余"
                           >
-                            余量 {quotaRemainingLabel}
+                            主额度 {primaryRemain}
+                          </span>
+                        )}
+                        {weeklyRemain != null && (
+                          <span
+                            className="rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-semibold text-indigo-800"
+                            title="周额度剩余"
+                          >
+                            周额度 {weeklyRemain}
+                          </span>
+                        )}
+                        {latestReset && (
+                          <span
+                            className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700"
+                            title="最近重置时间"
+                          >
+                            重置 {latestReset}
                           </span>
                         )}
                       </div>

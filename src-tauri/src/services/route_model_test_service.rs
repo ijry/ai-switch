@@ -474,7 +474,8 @@ async fn load_pool_credentials(
          WHERE rpm.platform = ?
            AND rpm.enabled = 1
            AND c.status = 'ok'
-           AND (c.quota_remaining IS NULL OR c.quota_remaining > 0)
+           AND (c.primary_remain IS NULL OR c.primary_remain > 0)
+           AND (c.weekly_remain IS NULL OR c.weekly_remain > 0)
          ORDER BY rpm.sort_order ASC, rpm.created_at ASC",
     )
     .bind(platform)
@@ -1229,7 +1230,7 @@ mod tests {
                 "base_url": format!("{base_url}/exhausted"),
                 "type": "grok",
                 "subscription_type": "free",
-                "quota_remaining": 0
+                "primary_remain": 0
             })
             .to_string(),
             r#"{"auth_json":"{}","config_toml":""}"#,
@@ -1328,14 +1329,17 @@ mod tests {
             .await
             .expect("credential");
         assert!(credential.config_json.contains("\"subscription_type\":\"free\""));
+        assert!(credential.config_json.contains("\"primary_remain\":0"));
         assert!(credential.config_json.contains("\"quota_remaining\":0"));
         assert!(credential.config_json.contains("\"quota_used\":1177205"));
         assert!(credential.config_json.contains("\"quota_limit\":1000000"));
         assert_eq!(credential.subscription_type.as_deref(), Some("free"));
+        assert_eq!(credential.primary_remain, Some(0));
         assert_eq!(credential.quota_remaining, Some(0));
         assert_eq!(credential.quota_used, Some(1_177_205));
         assert_eq!(credential.quota_limit, Some(1_000_000));
         assert!(credential.quota_updated_at.is_some());
+        assert!(credential.reset_primary.is_some());
     }
 
     #[tokio::test]

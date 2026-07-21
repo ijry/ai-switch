@@ -10,6 +10,11 @@ pub struct RouteCredentialRepository;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct QuotaColumns {
     subscription_type: Option<String>,
+    primary_remain: Option<i64>,
+    weekly_remain: Option<i64>,
+    reset_primary: Option<String>,
+    reset_weekly: Option<String>,
+    // Legacy single-window columns kept in sync for older readers.
     quota_remaining: Option<i64>,
     quota_limit: Option<i64>,
     quota_used: Option<i64>,
@@ -30,18 +35,38 @@ fn quota_columns_from_config_json(config_json: &str) -> QuotaColumns {
         .map(str::trim)
         .filter(|item| !item.is_empty())
         .map(str::to_string);
-    let quota_remaining = json_i64(object.get("quota_remaining"));
+    let primary_remain = json_i64(object.get("primary_remain"))
+        .or_else(|| json_i64(object.get("quota_remaining")));
+    let weekly_remain = json_i64(object.get("weekly_remain"));
+    let reset_primary = json_string(object.get("reset_primary"))
+        .or_else(|| json_string(object.get("quota_updated_at")));
+    let reset_weekly = json_string(object.get("reset_weekly"));
+    // Dual-write legacy remaining from the primary window when present.
+    let quota_remaining = json_i64(object.get("quota_remaining")).or(primary_remain);
     let quota_limit = json_i64(object.get("quota_limit"));
     let quota_used = json_i64(object.get("quota_used"));
-    let quota_updated_at = object
-        .get("quota_updated_at")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-        .map(str::to_string);
+    let quota_updated_at = json_string(object.get("quota_updated_at")).or_else(|| {
+        // Prefer the latest known reset time for legacy "updated at" display.
+        match (&reset_primary, &reset_weekly) {
+            (Some(primary), Some(weekly)) => {
+                if primary.as_str() >= weekly.as_str() {
+                    Some(primary.clone())
+                } else {
+                    Some(weekly.clone())
+                }
+            }
+            (Some(primary), None) => Some(primary.clone()),
+            (None, Some(weekly)) => Some(weekly.clone()),
+            (None, None) => None,
+        }
+    });
 
     QuotaColumns {
         subscription_type,
+        primary_remain,
+        weekly_remain,
+        reset_primary,
+        reset_weekly,
         quota_remaining,
         quota_limit,
         quota_used,
@@ -55,6 +80,14 @@ fn json_i64(value: Option<&Value>) -> Option<i64> {
         Value::String(text) => text.trim().parse::<i64>().ok(),
         _ => None,
     }
+}
+
+fn json_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
 }
 
 impl RouteCredentialRepository {
@@ -78,10 +111,11 @@ impl RouteCredentialRepository {
             "INSERT INTO route_credentials (
                 id, platform, kind, display_name, email, status, sort_order, batch_id,
                 secret_payload_json, config_json, preview_json,
-                subscription_type, quota_remaining, quota_limit, quota_used, quota_updated_at,
+                subscription_type, primary_remain, weekly_remain, reset_primary, reset_weekly,
+                quota_remaining, quota_limit, quota_used, quota_updated_at,
                 created_at, updated_at
              )
-             VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(platform)
@@ -94,6 +128,10 @@ impl RouteCredentialRepository {
         .bind(config_json)
         .bind(preview_json)
         .bind(quota.subscription_type)
+        .bind(quota.primary_remain)
+        .bind(quota.weekly_remain)
+        .bind(quota.reset_primary)
+        .bind(quota.reset_weekly)
         .bind(quota.quota_remaining)
         .bind(quota.quota_limit)
         .bind(quota.quota_used)
@@ -157,7 +195,9 @@ impl RouteCredentialRepository {
             "UPDATE route_credentials
              SET display_name = ?, email = ?, status = ?, secret_payload_json = ?,
                  config_json = ?, preview_json = ?,
-                 subscription_type = ?, quota_remaining = ?, quota_limit = ?,
+                 subscription_type = ?, primary_remain = ?, weekly_remain = ?,
+                 reset_primary = ?, reset_weekly = ?,
+                 quota_remaining = ?, quota_limit = ?,
                  quota_used = ?, quota_updated_at = ?, updated_at = ?
              WHERE id = ?",
         )
@@ -168,6 +208,10 @@ impl RouteCredentialRepository {
         .bind(&input.config_json)
         .bind(&input.preview_json)
         .bind(quota.subscription_type)
+        .bind(quota.primary_remain)
+        .bind(quota.weekly_remain)
+        .bind(quota.reset_primary)
+        .bind(quota.reset_weekly)
         .bind(quota.quota_remaining)
         .bind(quota.quota_limit)
         .bind(quota.quota_used)
@@ -206,13 +250,19 @@ impl RouteCredentialRepository {
         let result = sqlx::query(
             "UPDATE route_credentials
              SET secret_payload_json = ?, config_json = ?,
-                 subscription_type = ?, quota_remaining = ?, quota_limit = ?,
+                 subscription_type = ?, primary_remain = ?, weekly_remain = ?,
+                 reset_primary = ?, reset_weekly = ?,
+                 quota_remaining = ?, quota_limit = ?,
                  quota_used = ?, quota_updated_at = ?, updated_at = ?
              WHERE id = ?",
         )
         .bind(secret_payload_json)
         .bind(config_json)
         .bind(quota.subscription_type)
+        .bind(quota.primary_remain)
+        .bind(quota.weekly_remain)
+        .bind(quota.reset_primary)
+        .bind(quota.reset_weekly)
         .bind(quota.quota_remaining)
         .bind(quota.quota_limit)
         .bind(quota.quota_used)
@@ -360,33 +410,51 @@ mod tests {
             "ok",
             None,
             r#"{"access_token":"at"}"#,
-            r#"{"subscription_type":"free","quota_remaining":0,"quota_limit":1000000,"quota_used":1177205,"quota_updated_at":"2026-07-22T00:00:00Z"}"#,
+            r#"{"subscription_type":"free","primary_remain":0,"weekly_remain":12,"reset_primary":"2026-07-22T00:00:00Z","reset_weekly":"2026-07-28T00:00:00Z","quota_limit":1000000,"quota_used":1177205}"#,
             r#"{"auth_json":"{}","config_toml":""}"#,
         )
         .await
         .unwrap();
         assert_eq!(created.subscription_type.as_deref(), Some("free"));
+        assert_eq!(created.primary_remain, Some(0));
+        assert_eq!(created.weekly_remain, Some(12));
+        assert_eq!(created.reset_primary.as_deref(), Some("2026-07-22T00:00:00Z"));
+        assert_eq!(created.reset_weekly.as_deref(), Some("2026-07-28T00:00:00Z"));
         assert_eq!(created.quota_remaining, Some(0));
         assert_eq!(created.quota_limit, Some(1_000_000));
         assert_eq!(created.quota_used, Some(1_177_205));
         assert_eq!(
             created.quota_updated_at.as_deref(),
-            Some("2026-07-22T00:00:00Z")
+            Some("2026-07-28T00:00:00Z")
         );
     }
 
     #[test]
     fn quota_columns_from_config_json_reads_values() {
         let quota = quota_columns_from_config_json(
-            r#"{"subscription_type":"free","quota_remaining":0,"quota_limit":1000000,"quota_used":1177205,"quota_updated_at":"2026-07-22T00:00:00Z"}"#,
+            r#"{"subscription_type":"free","primary_remain":0,"weekly_remain":12,"reset_primary":"2026-07-22T00:00:00Z","reset_weekly":"2026-07-28T00:00:00Z","quota_limit":1000000,"quota_used":1177205}"#,
         );
         assert_eq!(quota.subscription_type.as_deref(), Some("free"));
+        assert_eq!(quota.primary_remain, Some(0));
+        assert_eq!(quota.weekly_remain, Some(12));
+        assert_eq!(quota.reset_primary.as_deref(), Some("2026-07-22T00:00:00Z"));
+        assert_eq!(quota.reset_weekly.as_deref(), Some("2026-07-28T00:00:00Z"));
         assert_eq!(quota.quota_remaining, Some(0));
         assert_eq!(quota.quota_limit, Some(1_000_000));
         assert_eq!(quota.quota_used, Some(1_177_205));
         assert_eq!(
             quota.quota_updated_at.as_deref(),
-            Some("2026-07-22T00:00:00Z")
+            Some("2026-07-28T00:00:00Z")
         );
+    }
+
+    #[test]
+    fn quota_columns_from_config_json_falls_back_to_legacy_remaining() {
+        let quota = quota_columns_from_config_json(
+            r#"{"subscription_type":"free","quota_remaining":3,"quota_updated_at":"2026-07-22T00:00:00Z"}"#,
+        );
+        assert_eq!(quota.primary_remain, Some(3));
+        assert_eq!(quota.quota_remaining, Some(3));
+        assert_eq!(quota.reset_primary.as_deref(), Some("2026-07-22T00:00:00Z"));
     }
 }

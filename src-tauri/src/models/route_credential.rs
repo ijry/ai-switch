@@ -18,6 +18,11 @@ pub struct RouteCredential {
     pub config_json: String,
     pub preview_json: String,
     pub subscription_type: Option<String>,
+    pub primary_remain: Option<i64>,
+    pub weekly_remain: Option<i64>,
+    pub reset_primary: Option<String>,
+    pub reset_weekly: Option<String>,
+    // Legacy single-window fields kept for existing DBs/migrations.
     pub quota_remaining: Option<i64>,
     pub quota_limit: Option<i64>,
     pub quota_used: Option<i64>,
