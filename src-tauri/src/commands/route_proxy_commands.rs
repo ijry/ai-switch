@@ -51,7 +51,7 @@ pub async fn write_route_proxy_configs(
             })
         })?;
 
-    RouteConfigService::write_configs(&state.paths, &resolved, &platform)
+    RouteConfigService::write_configs(&state.paths, &state.pool, &resolved, &platform)
         .await
         .map_err(ApiError::from)
 }

@@ -1,9 +1,11 @@
 use crate::config_writer::ConfigWriter;
+use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
 use crate::error::AppError;
 use crate::paths::AppPaths;
 use crate::services::route_pool_service::normalize_platform;
 use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -28,6 +30,7 @@ pub struct RouteConfigService;
 impl RouteConfigService {
     pub async fn write_configs(
         paths: &AppPaths,
+        pool: &SqlitePool,
         base_url: &str,
         platform: &str,
     ) -> Result<Vec<RouteConfigWriteOutcome>, AppError> {
@@ -55,7 +58,13 @@ impl RouteConfigService {
 
         let target_key = normalize_platform(platform)?;
         let target = route_config_target(&home, &target_key)?;
-        let route_proxy_key = generate_route_proxy_key();
+        // Stable per-platform local key so the shared proxy can resolve agent pools by API key.
+        let route_proxy_key = RouteProxyKeyRepository::ensure_platform_key(
+            pool,
+            &target_key,
+            &generate_route_proxy_key(),
+        )
+        .await?;
         let content = (target.render)(base_url, &route_proxy_key);
         let write = ConfigWriter::write_atomic(&target.path, &content).await?;
 
@@ -179,6 +188,7 @@ pub fn render_grok_config(base_url: &str, route_proxy_key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::{create_memory_pool, run_migrations};
 
     #[test]
     fn render_codex_config_points_model_provider_to_proxy() {
@@ -236,9 +246,12 @@ mod tests {
     async fn write_configs_rejects_unsupported_platform_without_writing_all_targets() {
         let temp = tempfile::tempdir().expect("temp dir");
         let paths = AppPaths::from_data_dir(temp.path().to_path_buf());
-        let error = RouteConfigService::write_configs(&paths, "http://127.0.0.1:43111", "opencode")
-            .await
-            .expect_err("unsupported target");
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let error =
+            RouteConfigService::write_configs(&paths, &pool, "http://127.0.0.1:43111", "opencode")
+                .await
+                .expect_err("unsupported target");
 
         match error {
             AppError::Validation { code, details, .. } => {
@@ -247,5 +260,38 @@ mod tests {
             }
             other => panic!("expected validation error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn ensure_platform_key_is_stable_across_generations() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+
+        let first = RouteProxyKeyRepository::ensure_platform_key(
+            &pool,
+            "grok",
+            &generate_route_proxy_key(),
+        )
+        .await
+        .expect("first");
+        let second = RouteProxyKeyRepository::ensure_platform_key(
+            &pool,
+            "grok",
+            &generate_route_proxy_key(),
+        )
+        .await
+        .expect("second");
+
+        assert_eq!(first, second);
+        assert!(first.starts_with("sk-ai-switch-"));
+        assert_eq!(
+            RouteProxyKeyRepository::get_platform_by_key(&pool, &first)
+                .await
+                .expect("lookup")
+                .as_deref(),
+            Some("grok")
+        );
     }
 }

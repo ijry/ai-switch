@@ -222,7 +222,7 @@ pub async fn dispatch_command(
                     })
                 })?;
             to_value(
-                RouteConfigService::write_configs(&state.paths, &resolved, &platform)
+                RouteConfigService::write_configs(&state.paths, &state.pool, &resolved, &platform)
                     .await
                     .map_err(to_error)?,
             )

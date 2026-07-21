@@ -68,7 +68,7 @@ fn parse_cpa_object(
 ) -> Result<ParsedOfficialCredential, AppError> {
     let raw_type = string_field(object, &["type"]);
     if let Some(raw_type) = raw_type.as_deref() {
-        if raw_type != platform {
+        if !cpa_types_match(platform, raw_type) {
             return Err(validation_error(
                 "validation.cpa_platform_mismatch",
                 "CPA credential type does not match the selected platform",
@@ -183,7 +183,24 @@ fn normalize_platform(platform: &str) -> Result<String, AppError> {
         ));
     }
 
-    Ok(platform.to_string())
+    Ok(canonicalize_cpa_platform(platform))
+}
+
+fn canonicalize_cpa_platform(platform: &str) -> String {
+    let normalized = platform.trim().to_lowercase();
+    // CLIProxyAPI xAI exports may use type "xai" while the app platform id is "grok".
+    if normalized.contains("grok")
+        || normalized == "xai"
+        || normalized.contains("x.ai")
+        || normalized == "x-ai"
+    {
+        return "grok".to_string();
+    }
+    platform.trim().to_string()
+}
+
+fn cpa_types_match(expected_platform: &str, raw_type: &str) -> bool {
+    canonicalize_cpa_platform(expected_platform) == canonicalize_cpa_platform(raw_type)
 }
 
 fn validation_error(code: &'static str, message: &str, details: Option<String>) -> AppError {
@@ -258,5 +275,28 @@ mod tests {
     fn rejects_platform_mismatch() {
         let text = r#"{"type":"claude","access_token":"a","refresh_token":"b"}"#;
         assert!(parse_cpa_text("codex", text).is_err());
+    }
+
+    #[test]
+    fn accepts_xai_type_alias_for_grok_platform() {
+        let text = r#"{
+          "type":"xai",
+          "email":"g@example.com",
+          "access_token":"at-xai",
+          "refresh_token":"rt-xai"
+        }"#;
+        let parsed = parse_cpa_text("grok", text).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].email.as_deref(), Some("g@example.com"));
+        assert!(parsed[0].secret_payload_json.contains("at-xai"));
+        assert!(parsed[0].config_json.contains("\"type\":\"grok\""));
+    }
+
+    #[test]
+    fn accepts_grok_platform_when_import_target_is_xai_alias() {
+        let text = r#"{"type":"grok","access_token":"at","refresh_token":"rt"}"#;
+        let parsed = parse_cpa_text("xai", text).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed[0].config_json.contains("\"type\":\"grok\""));
     }
 }

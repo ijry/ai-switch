@@ -1,5 +1,6 @@
 use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
+use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
 use crate::error::AppError;
 use crate::models::route_credential::{
     normalize_anthropic_api_key_field, ModelMapping, ANTHROPIC_API_KEY_FIELD,
@@ -15,14 +16,17 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{Row, SqlitePool};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 const BIND_HOST: &str = "127.0.0.1";
+const ROUTE_PROXY_KEY_CACHE_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteProxyStatus {
@@ -49,6 +53,37 @@ struct RouteProxyInner {
 #[derive(Clone)]
 struct ProxyAppState {
     pool: SqlitePool,
+    key_cache: Arc<Mutex<RouteProxyKeyCache>>,
+}
+
+#[derive(Default)]
+struct RouteProxyKeyCache {
+    loaded_at: Option<Instant>,
+    // proxy_key -> platform
+    by_key: HashMap<String, String>,
+}
+
+impl RouteProxyKeyCache {
+    fn get_if_fresh(&self, proxy_key: &str) -> Option<Option<String>> {
+        let loaded_at = self.loaded_at?;
+        if loaded_at.elapsed() > ROUTE_PROXY_KEY_CACHE_TTL {
+            return None;
+        }
+        Some(self.by_key.get(proxy_key).cloned())
+    }
+
+    fn replace(&mut self, rows: Vec<(String, String)>) {
+        self.by_key = rows.into_iter().collect();
+        self.loaded_at = Some(Instant::now());
+    }
+
+    fn upsert(&mut self, proxy_key: String, platform: String) {
+        // Keep cache coherent immediately after write_configs without waiting for TTL.
+        if self.loaded_at.is_none() {
+            self.loaded_at = Some(Instant::now());
+        }
+        self.by_key.insert(proxy_key, platform);
+    }
 }
 
 pub struct RouteProxyService;
@@ -96,7 +131,10 @@ impl RouteProxyService {
         let port = addr.port();
         let base_url = format!("http://{BIND_HOST}:{port}");
 
-        let app_state = ProxyAppState { pool };
+        let app_state = ProxyAppState {
+            pool,
+            key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
+        };
         let app = Router::new()
             .fallback(any(proxy_handler))
             .with_state(app_state);
@@ -158,22 +196,26 @@ async fn proxy_handler(
     uri: axum::http::Uri,
     body: Body,
 ) -> Response {
-    match forward_request(&state.pool, method, headers, uri, body).await {
+    match forward_request(&state, method, headers, uri, body).await {
         Ok(response) => response,
         Err(err) => json_error(StatusCode::BAD_GATEWAY, &err),
     }
 }
 
 async fn forward_request(
-    pool: &SqlitePool,
+    state: &ProxyAppState,
     method: Method,
     headers: HeaderMap,
     uri: axum::http::Uri,
     body: Body,
 ) -> Result<Response, String> {
+    let pool = &state.pool;
     let path = uri.path().to_string();
     let query = uri.query().map(|value| value.to_string());
-    let platform = detect_platform(&path, &headers);
+    let inbound_key = extract_inbound_api_key(&headers, query.as_deref());
+    let platform = resolve_platform(state, &path, &headers, inbound_key.as_deref())
+        .await
+        .map_err(|err| err.to_string())?;
     let credentials = load_pool_credentials(pool, &platform)
         .await
         .map_err(|err| err.to_string())?;
@@ -327,6 +369,131 @@ fn json_error(status: StatusCode, message: &str) -> Response {
     })
     .to_string();
     (status, [("content-type", "application/json")], body).into_response()
+}
+
+async fn resolve_platform(
+    state: &ProxyAppState,
+    path: &str,
+    headers: &HeaderMap,
+    inbound_key: Option<&str>,
+) -> Result<String, AppError> {
+    // Preferred: stable per-platform local proxy key written into CLI configs.
+    // Keys are cached in memory and refreshed at most every 30s.
+    if let Some(key) = inbound_key {
+        if let Some(platform) = lookup_platform_by_proxy_key(state, key).await? {
+            return Ok(normalize_route_platform(&platform));
+        }
+    }
+    Ok(detect_platform(path, headers))
+}
+
+async fn lookup_platform_by_proxy_key(
+    state: &ProxyAppState,
+    proxy_key: &str,
+) -> Result<Option<String>, AppError> {
+    let key = proxy_key.trim();
+    if key.is_empty() {
+        return Ok(None);
+    }
+
+    let fresh_hit = {
+        let cache = state.key_cache.lock().await;
+        cache.get_if_fresh(key)
+    };
+    if let Some(Some(platform)) = fresh_hit {
+        return Ok(Some(platform));
+    }
+    // Fresh negative cache hit: still re-check DB so newly written keys work before TTL.
+    if matches!(fresh_hit, Some(None)) {
+        if let Some(platform) =
+            RouteProxyKeyRepository::get_platform_by_key(&state.pool, key).await?
+        {
+            let mut cache = state.key_cache.lock().await;
+            cache.upsert(key.to_string(), platform.clone());
+            return Ok(Some(platform));
+        }
+        return Ok(None);
+    }
+
+    let rows = RouteProxyKeyRepository::list_all(&state.pool).await?;
+    let mut cache = state.key_cache.lock().await;
+    cache.replace(rows);
+    Ok(cache.by_key.get(key).cloned())
+}
+
+pub fn extract_inbound_api_key(headers: &HeaderMap, query: Option<&str>) -> Option<String> {
+    if let Some(value) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+    {
+        let trimmed = value.trim();
+        if let Some(token) = trimmed
+            .strip_prefix("Bearer ")
+            .or_else(|| trimmed.strip_prefix("bearer "))
+        {
+            let token = token.trim();
+            if !token.is_empty() {
+                return Some(token.to_string());
+            }
+        }
+    }
+
+    for name in ["x-api-key", "api-key", "x-goog-api-key"] {
+        if let Some(value) = headers.get(name).and_then(|value| value.to_str().ok()) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    if let Some(query) = query {
+        for pair in query.split('&') {
+            let mut parts = pair.splitn(2, '=');
+            let key = parts.next().unwrap_or_default();
+            let value = parts.next().unwrap_or_default();
+            if matches!(key, "key" | "api_key" | "apiKey") {
+                let decoded = urlencoding_decode(value);
+                if !decoded.is_empty() {
+                    return Some(decoded);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn urlencoding_decode(value: &str) -> String {
+    // Minimal percent-decoding for query api keys (hex digits only).
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (from_hex(bytes[i + 1]), from_hex(bytes[i + 2])) {
+                out.push((h << 4) | l);
+                i += 3;
+                continue;
+            }
+        }
+        if bytes[i] == b'+' {
+            out.push(b' ');
+        } else {
+            out.push(bytes[i]);
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn from_hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 pub fn detect_platform(path: &str, headers: &HeaderMap) -> String {
@@ -1058,5 +1225,80 @@ mod tests {
         assert_eq!(detect_platform("/v1/chat/completions", &grok_headers), "grok");
         assert_eq!(detect_platform("/v1/grok/chat/completions", &HeaderMap::new()), "grok");
         assert_eq!(normalize_route_platform("Grok"), "grok");
+    }
+
+    #[test]
+    fn extract_inbound_api_key_from_bearer_x_api_key_and_query() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer sk-ai-switch-bearer"),
+        );
+        assert_eq!(
+            extract_inbound_api_key(&headers, None).as_deref(),
+            Some("sk-ai-switch-bearer")
+        );
+
+        let mut key_headers = HeaderMap::new();
+        key_headers.insert("x-api-key", HeaderValue::from_static("sk-ai-switch-xkey"));
+        assert_eq!(
+            extract_inbound_api_key(&key_headers, None).as_deref(),
+            Some("sk-ai-switch-xkey")
+        );
+
+        assert_eq!(
+            extract_inbound_api_key(&HeaderMap::new(), Some("key=sk-ai-switch-query&x=1"))
+                .as_deref(),
+            Some("sk-ai-switch-query")
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_platform_prefers_proxy_key_over_path_default() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        RouteProxyKeyRepository::ensure_platform_key(&pool, "grok", "sk-ai-switch-grok")
+            .await
+            .expect("store key");
+
+        let state = ProxyAppState {
+            pool,
+            key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
+        };
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer sk-ai-switch-grok"),
+        );
+        // Same OpenAI path would default to codex without key mapping.
+        let platform = resolve_platform(
+            &state,
+            "/v1/chat/completions",
+            &headers,
+            Some("sk-ai-switch-grok"),
+        )
+        .await
+        .expect("resolve");
+        assert_eq!(platform, "grok");
+
+        // Second lookup should hit the in-memory cache (still within 30s TTL).
+        let cached = resolve_platform(
+            &state,
+            "/v1/chat/completions",
+            &headers,
+            Some("sk-ai-switch-grok"),
+        )
+        .await
+        .expect("cached resolve");
+        assert_eq!(cached, "grok");
+
+        let fallback = resolve_platform(&state, "/v1/chat/completions", &HeaderMap::new(), None)
+            .await
+            .expect("fallback");
+        assert_eq!(fallback, "codex");
     }
 }

@@ -286,6 +286,11 @@ fn normalize_platform(platform: &str) -> Result<String, AppError> {
             recoverable: true,
         });
     }
+    // Accept CLIProxyAPI xAI aliases when storing/listing route credentials.
+    let lower = platform.to_lowercase();
+    if lower.contains("grok") || lower == "xai" || lower.contains("x.ai") || lower == "x-ai" {
+        return Ok("grok".to_string());
+    }
     Ok(platform.to_string())
 }
 
