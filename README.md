@@ -2,6 +2,9 @@
 
 AI Switch is a desktop and self-hosted Web app for AI provider and official account switching.
 
+<img width="2360" height="1520" alt="ai-switch" src="https://github.com/user-attachments/assets/fbd3932e-29a7-4e3f-a980-e93fb093b643" />
+
+
 Current foundation includes:
 
 - Tauri 2 + React + TypeScript desktop shell
