@@ -12,6 +12,7 @@ import type {
   RouteConfigWriteOutcome,
   RouteCredential,
   RouteCredentialImportResult,
+  QuotaRefreshOutcome,
   RouteModelsFetchRequest,
   RoutePoolModelTestOutcome,
   RoutePoolModelTestRequest,
@@ -171,6 +172,14 @@ export function updateRouteCredential(
 
 export function deleteRouteCredential(id: string): Promise<void> {
   return invoke("delete_route_credential", { id });
+}
+
+export function refreshRouteCredentialQuota(id: string): Promise<QuotaRefreshOutcome> {
+  return invoke("refresh_route_credential_quota", { id });
+}
+
+export function refreshRouteCredentialsQuota(platform: string): Promise<QuotaRefreshOutcome[]> {
+  return invoke("refresh_route_credentials_quota", { platform });
 }
 
 export function listSessions(platform?: string | null): Promise<SessionMeta[]> {

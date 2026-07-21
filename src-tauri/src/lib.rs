@@ -24,7 +24,8 @@ use commands::import_commands::import_example_json;
 use commands::route_credential_commands::{
     create_api_route_credential, delete_route_credential, get_route_credential,
     import_official_route_credentials_from_files, import_official_route_credentials_from_text,
-    list_route_credentials, update_route_credential,
+    list_route_credentials, refresh_route_credential_quota, refresh_route_credentials_quota,
+    update_route_credential,
 };
 use commands::route_pool_commands::{
     fetch_route_models, get_route_pool, route_pool_route_once, route_pool_test_model,
@@ -107,6 +108,8 @@ pub fn run() {
             import_official_route_credentials_from_files,
             update_route_credential,
             delete_route_credential,
+            refresh_route_credential_quota,
+            refresh_route_credentials_quota,
             import_example_json,
             get_route_pool,
             set_route_pool_members,

@@ -31,6 +31,8 @@ import {
   importOfficialRouteCredentialsFromFiles,
   importOfficialRouteCredentialsFromText,
   listRouteCredentials,
+  refreshRouteCredentialQuota,
+  refreshRouteCredentialsQuota,
   routePoolTestModel,
   setRoutePoolMembers,
   startRouteProxy,
@@ -45,6 +47,7 @@ import type {
   InterfaceFormat,
   ModelMapping,
   RouteConfigWriteOutcome,
+  QuotaRefreshOutcome,
   RouteCredential,
   RouteModelsFetchRequest,
   RoutePoolModelTestOutcome,
@@ -1057,6 +1060,9 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const [modelTestDialogOpen, setModelTestDialogOpen] = useState(false);
   const [modelTestAccount, setModelTestAccount] = useState<RouteCredential | null>(null);
   const [testingAccountId, setTestingAccountId] = useState<string | null>(null);
+  const [refreshingQuotaId, setRefreshingQuotaId] = useState<string | null>(null);
+  const [quotaRefreshMessage, setQuotaRefreshMessage] = useState<string | null>(null);
+  const autoQuotaRefreshedPlatform = useRef<string | null>(null);
   const [modelTestOutcome, setModelTestOutcome] = useState<RoutePoolModelTestOutcome | null>(null);
   const [configWriteOutcomes, setConfigWriteOutcomes] = useState<RouteConfigWriteOutcome[]>([]);
   const routeTestModel = routeTestModelsByPlatform[activePlatform] ?? "";
@@ -1069,6 +1075,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     refetchOnMount: "always",
     refetchOnWindowFocus: true,
   });
+
   const routePoolQuery = useQuery({
     queryKey: ["route-pool", activePlatform, statsSince, requestPage, routeStatsPageSize],
     queryFn: () => getRoutePool(activePlatform, statsSince, requestPage, routeStatsPageSize),
@@ -1252,6 +1259,34 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     );
   };
 
+  useEffect(() => {
+    if (credentialsQuery.isLoading || credentialsQuery.isFetching) {
+      return;
+    }
+    if (autoQuotaRefreshedPlatform.current === activePlatform) {
+      return;
+    }
+    const officialIds = (credentialsQuery.data ?? [])
+      .filter((item) => item.kind === "official" && item.status === "ok")
+      .map((item) => item.id);
+    if (!officialIds.length) {
+      autoQuotaRefreshedPlatform.current = activePlatform;
+      return;
+    }
+    autoQuotaRefreshedPlatform.current = activePlatform;
+    void refreshRouteCredentialsQuota(activePlatform)
+      .then(async (outcomes: QuotaRefreshOutcome[]) => {
+        const next = outcomes.map((item) => item.credential).filter((item) => item.id);
+        if (next.length) {
+          mergeCredentialsIntoCache(next);
+          await invalidateAccountData();
+        }
+      })
+      .catch(() => {
+        // Keep page usable when vendor usage endpoints are unavailable.
+      });
+  }, [activePlatform, credentialsQuery.data, credentialsQuery.isFetching, credentialsQuery.isLoading]);
+
   const createModelsFetchRequest = (): RouteModelsFetchRequest => {
     const firstKey = apiKeyLines(apiKey)[0] ?? "";
     if (!firstKey) {
@@ -1419,6 +1454,59 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       void invalidateAccountData();
     },
   });
+
+  const quotaRefreshMutation = useMutation({
+    mutationFn: (id: string) => refreshRouteCredentialQuota(id),
+    onMutate: (id) => {
+      setRefreshingQuotaId(id);
+      setQuotaRefreshMessage(null);
+    },
+    onSuccess: async (outcome) => {
+      mergeCredentialsIntoCache([outcome.credential]);
+      await invalidateAccountData();
+      if (outcome.message) {
+        setQuotaRefreshMessage(outcome.message);
+      } else if (outcome.updated) {
+        setQuotaRefreshMessage(`已更新额度（${outcome.source}）`);
+      } else {
+        setQuotaRefreshMessage(outcome.source === 'none' ? '暂无可用额度数据' : '额度未变化');
+      }
+    },
+    onError: (error) => {
+      setQuotaRefreshMessage(formatApiError(error, '刷新额度失败'));
+    },
+    onSettled: () => {
+      setRefreshingQuotaId(null);
+    },
+  });
+
+  const quotaRefreshPlatformMutation = useMutation({
+    mutationFn: () => refreshRouteCredentialsQuota(activePlatform),
+    onMutate: () => {
+      setRefreshingQuotaId('__platform__');
+      setQuotaRefreshMessage(null);
+    },
+    onSuccess: async (outcomes) => {
+      const credentials = outcomes.map((item) => item.credential).filter((item) => item.id);
+      if (credentials.length) {
+        mergeCredentialsIntoCache(credentials);
+      }
+      await invalidateAccountData();
+      const updated = outcomes.filter((item) => item.updated).length;
+      const failed = outcomes.filter((item) => item.source === 'error').length;
+      const parts = [`官方账号 ${outcomes.length} 个`];
+      if (updated) parts.push(`更新 ${updated}`);
+      if (failed) parts.push(`失败 ${failed}`);
+      setQuotaRefreshMessage(parts.join(' · '));
+    },
+    onError: (error) => {
+      setQuotaRefreshMessage(formatApiError(error, '批量刷新额度失败'));
+    },
+    onSettled: () => {
+      setRefreshingQuotaId(null);
+    },
+  });
+
   const startProxyMutation = useMutation({
     mutationFn: startRouteProxy,
     onSuccess: (status) => queryClient.setQueryData(["route-proxy-status"], status),
@@ -2089,6 +2177,16 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
               <RefreshCw className={`h-3.5 w-3.5 ${credentialsQuery.isFetching ? "animate-spin" : ""}`} />
               刷新
             </button>
+            <button
+              aria-label="刷新官方账号额度"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-violet-700 transition-colors hover:bg-violet-50 disabled:opacity-50"
+              disabled={quotaRefreshPlatformMutation.isPending || credentialsQuery.isFetching}
+              onClick={() => quotaRefreshPlatformMutation.mutate()}
+              type="button"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${quotaRefreshPlatformMutation.isPending ? "animate-spin" : ""}`} />
+              刷新额度
+            </button>
             <span className="rounded-full bg-stone-100 px-2.5 py-1 text-[12px] font-semibold text-stone-600">
               {credentials.length} 个
             </span>
@@ -2096,6 +2194,11 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
         </div>
 
         <div className="space-y-3 p-3">
+          {quotaRefreshMessage && (
+            <p className="rounded-xl bg-violet-50 px-3 py-2 text-[12px] font-medium text-violet-800">
+              {quotaRefreshMessage}
+            </p>
+          )}
           {credentialsQuery.isLoading && <p className="rounded-xl bg-stone-50 p-4 text-sm text-stone-500">正在加载账号...</p>}
           {credentialsQuery.error && <p className="rounded-xl bg-red-50 p-4 text-sm text-red-700">账号加载失败。</p>}
           {!credentialsQuery.isLoading && credentials.length === 0 && (
@@ -2176,6 +2279,18 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                       </p>
                     </div>
                     <div className="flex items-center justify-end gap-2">
+                      {credential.kind === "official" && (
+                        <button
+                          aria-label={`刷新 ${credential.display_name} 额度`}
+                          className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-violet-200 px-2.5 py-1.5 text-[12px] font-semibold text-violet-700 transition-colors hover:bg-violet-50 disabled:opacity-50"
+                          disabled={quotaRefreshMutation.isPending || quotaRefreshPlatformMutation.isPending}
+                          onClick={() => quotaRefreshMutation.mutate(credential.id)}
+                          type="button"
+                        >
+                          <RefreshCw className={`h-3.5 w-3.5 ${refreshingQuotaId === credential.id ? "animate-spin" : ""}`} />
+                          {refreshingQuotaId === credential.id ? "刷新中" : "额度"}
+                        </button>
+                      )}
                       <button
                         aria-label={`测试 ${credential.display_name}`}
                         className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 px-2.5 py-1.5 text-[12px] font-semibold text-emerald-700 transition-colors hover:bg-emerald-50 disabled:opacity-50"

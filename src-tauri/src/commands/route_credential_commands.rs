@@ -5,6 +5,7 @@ use crate::models::route_credential::{
     RouteCredential, RouteCredentialImportResult, UpdateRouteCredentialInput,
 };
 use crate::services::route_credential_service::RouteCredentialService;
+use crate::services::route_quota_service::{QuotaRefreshOutcome, RouteQuotaService};
 use tauri::State;
 
 #[tauri::command]
@@ -74,6 +75,26 @@ pub async fn delete_route_credential(
     id: String,
 ) -> Result<(), ApiError> {
     RouteCredentialService::delete(&state.pool, id)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn refresh_route_credential_quota(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<QuotaRefreshOutcome, ApiError> {
+    RouteQuotaService::refresh_one(&state.pool, id)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn refresh_route_credentials_quota(
+    state: State<'_, AppState>,
+    platform: String,
+) -> Result<Vec<QuotaRefreshOutcome>, ApiError> {
+    RouteQuotaService::refresh_platform(&state.pool, platform)
         .await
         .map_err(ApiError::from)
 }

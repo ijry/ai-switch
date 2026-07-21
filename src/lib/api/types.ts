@@ -136,6 +136,13 @@ export type RouteCredential = {
   updated_at: string;
 };
 
+export type QuotaRefreshOutcome = {
+  credential: RouteCredential;
+  updated: boolean;
+  source: string;
+  message?: string | null;
+};
+
 export type CreateApiRouteCredentialInput = {
   platform: string;
   display_name: string;
