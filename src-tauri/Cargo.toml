@@ -37,6 +37,7 @@ directories = "5"
 keyring = "3"
 sha2 = "0.10"
 tempfile = "3"
+url = "2"
 axum = { version = "0.7", features = ["ws"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "system-proxy"] }
 async-trait = "0.1"

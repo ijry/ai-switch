@@ -1,6 +1,7 @@
 pub mod http_client;
 pub mod batch_service;
 pub mod cpa_import_service;
+pub mod deeplink_service;
 pub mod import_service;
 pub mod route_config_service;
 pub mod route_credential_service;
