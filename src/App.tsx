@@ -1,8 +1,11 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { useCallback, useEffect, useState } from "react";
+import { DeepLinkImportDialog } from "./components/deeplink/DeepLinkImportDialog";
 import {
   AppLayout,
+  agentScreenByPlatform,
   platformByAgentScreen,
+  type AgentPlatform,
 } from "./components/layout/AppLayout";
 import { WebAuthGate } from "./components/auth/WebAuthGate";
 import { I18nProvider } from "./lib/i18n";
@@ -77,9 +80,17 @@ export function App() {
     setScreen("Sessions");
   };
 
+  const handleDeepLinkImported = useCallback((platform: string) => {
+    const nextScreen = agentScreenByPlatform[platform as AgentPlatform];
+    if (nextScreen) {
+      setScreen(nextScreen);
+    }
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <I18nProvider>
+        <DeepLinkImportDialog onImported={handleDeepLinkImported} />
         {!webReady ? (
           <WebAuthGate onAuthenticated={handleWebAuthenticated} />
         ) : screen === "Vibe" ? (
