@@ -48,6 +48,14 @@
         "https://github.com/ijry/ai-switch/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVBNjZBRjAyRjA0MzNGN0UKUldSK1AwUHdBcTltNnFSbmQybDJjeUJEcGJ4OVRrbXZLWEZJNWRSd0Rud0tpdENkWDQ2RldwK24K"
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "ccswitch",
+          "aiswitch"
+        ]
+      }
     }
   }
 }

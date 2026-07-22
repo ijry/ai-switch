@@ -52,9 +52,48 @@ use services::route_proxy_service::RouteProxyRuntimeState;
 use services::tailscale_service::TailscaleRuntimeState;
 use services::web_service::{WebService, WebServiceRuntimeState};
 use std::sync::Arc;
-use tauri::Manager;
+use services::deeplink_service::{parse_deeplink_url, DeepLinkErrorPayload};
+use tauri::{Emitter, Manager};
+use tauri_plugin_deep_link::DeepLinkExt;
 use terminal_manager::TerminalManager;
 use web::event_bridge::WebEventBroadcaster;
+
+fn is_deeplink_url(value: &str) -> bool {
+    value.starts_with("ccswitch://") || value.starts_with("aiswitch://")
+}
+
+fn focus_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn handle_deeplink_url(app: &tauri::AppHandle, url_str: &str, source: &str) -> bool {
+    if !is_deeplink_url(url_str) {
+        return false;
+    }
+
+    match parse_deeplink_url(url_str) {
+        Ok(payload) => {
+            let _ = app.emit("deeplink-import", payload);
+            focus_main_window(app);
+        }
+        Err(message) => {
+            let _ = app.emit(
+                "deeplink-error",
+                DeepLinkErrorPayload {
+                    message,
+                    source: source.to_string(),
+                },
+            );
+            focus_main_window(app);
+        }
+    }
+
+    true
+}
 
 pub fn run() {
     let paths = AppPaths::resolve().expect("failed to resolve app paths");
@@ -65,11 +104,26 @@ pub fn run() {
             .expect("failed to open database after migration repair")
     });
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            for arg in &args {
+                if handle_deeplink_url(app, arg, "single_instance") {
+                    break;
+                }
+            }
+            focus_main_window(app);
+        }));
+    }
+
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_deep_link::init())
         .manage(AppState {
             paths,
             pool,
@@ -90,6 +144,31 @@ pub fn run() {
                 }
                 let _ = WebService::start(Arc::new(state), config).await;
             });
+
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            {
+                if let Err(err) = app.deep_link().register_all() {
+                    eprintln!("failed to register deep link schemes: {err}");
+                }
+            }
+
+            app.deep_link().on_open_url({
+                let app_handle = app.handle().clone();
+                move |event| {
+                    for url in event.urls() {
+                        if handle_deeplink_url(&app_handle, url.as_str(), "on_open_url") {
+                            break;
+                        }
+                    }
+                }
+            });
+
+            for arg in std::env::args().skip(1) {
+                if handle_deeplink_url(&app.handle(), &arg, "argv") {
+                    break;
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
