@@ -117,7 +117,15 @@ async function switchToSkinTheme() {
 describe("VibeScreen", () => {
   beforeEach(() => {
     window.localStorage.clear();
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & {
+      __TAURI_INTERNALS__?: {
+        invoke?: ReturnType<typeof vi.fn>;
+        transformCallback?: ReturnType<typeof vi.fn>;
+      };
+    }).__TAURI_INTERNALS__ = {
+      invoke: vi.fn().mockResolvedValue(1),
+      transformCallback: vi.fn(() => 1),
+    };
     MockAudioElement.instances = [];
     vi.stubGlobal("Audio", MockAudioElement);
     __resetTransportForTests();

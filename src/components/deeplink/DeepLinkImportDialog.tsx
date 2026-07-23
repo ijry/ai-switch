@@ -58,35 +58,40 @@ export function DeepLinkImportDialog({ onImported }: DeepLinkImportDialogProps) 
     let unsubs: Array<() => void> = [];
 
     void (async () => {
-      const unlistenImport = await transport.subscribe<DeepLinkProviderImportPayload>(
-        "deeplink-import",
-        (next) => {
-          if (!active) {
-            return;
-          }
-          setPayload(next);
-          setError(null);
-          setBannerError(null);
-        },
-      );
-      const unlistenError = await transport.subscribe<DeepLinkErrorPayload>(
-        "deeplink-error",
-        (next) => {
-          if (!active) {
-            return;
-          }
-          setPayload(null);
-          setBannerError(next.message || "深链接解析失败");
-        },
-      );
+      try {
+        const unlistenImport = await transport.subscribe<DeepLinkProviderImportPayload>(
+          "deeplink-import",
+          (next) => {
+            if (!active) {
+              return;
+            }
+            setPayload(next);
+            setError(null);
+            setBannerError(null);
+          },
+        );
+        const unlistenError = await transport.subscribe<DeepLinkErrorPayload>(
+          "deeplink-error",
+          (next) => {
+            if (!active) {
+              return;
+            }
+            setPayload(null);
+            setBannerError(next.message || "深链接解析失败");
+          },
+        );
 
-      if (!active) {
-        unlistenImport();
-        unlistenError();
-        return;
+        if (!active) {
+          unlistenImport();
+          unlistenError();
+          return;
+        }
+
+        unsubs = [unlistenImport, unlistenError];
+      } catch {
+        // Incomplete Tauri mocks / non-desktop shells may lack event IPC.
+        // Deep-link import is optional here; never leave an unhandled rejection.
       }
-
-      unsubs = [unlistenImport, unlistenError];
     })();
 
     return () => {
