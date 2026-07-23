@@ -3,6 +3,10 @@ use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
 use crate::error::AppError;
 use crate::services::http_client::build_outbound_http_client;
+use crate::services::official_agent_identity_service::{
+    is_official_agent_identity_credential, resolve_agent_identity_headers,
+    CODEX_AGENT_IDENTITY_BASE_URL,
+};
 use crate::models::route_credential::{
     normalize_anthropic_api_key_field, ModelMapping, ANTHROPIC_API_KEY_FIELD,
     ANTHROPIC_AUTH_TOKEN_FIELD,
@@ -36,6 +40,10 @@ const GROK_CLI_TOKEN_AUTH_VALUE: &str = "xai-grok-cli";
 const GROK_CLI_CHAT_PROXY_MARKER: &str = "cli-chat-proxy.grok.com";
 /// Refresh a short time before wall-clock expiry to avoid edge 401s.
 const OAUTH_REFRESH_LEAD: Duration = Duration::from_secs(5 * 60);
+const CUSTOM_TOOL_INPUT_FIELD: &str = "input";
+const CUSTOM_TOOL_INPUT_DESCRIPTION: &str =
+    "Raw string input for the original custom tool. Preserve formatting exactly and follow the original tool definition embedded in the description.";
+const CUSTOM_TOOL_PRESERVED_METADATA_HEADING: &str = "Original tool definition:";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteProxyStatus {
@@ -248,6 +256,7 @@ async fn forward_request(
         outbound_headers.append(name.clone(), value.clone());
     }
 
+    let custom_tool_names = collect_custom_tool_names(&body_bytes);
     let (target_url, outbound_headers, outbound_body) = build_upstream_request(
         &credential,
         &platform,
@@ -281,10 +290,14 @@ async fn forward_request(
         mark_route_credential_unavailable(pool, &credential.id).await;
     }
     let upstream_headers = upstream.headers().clone();
-    let response_bytes = upstream
+    let mut response_bytes = upstream
         .bytes()
         .await
         .map_err(|err| format!("Could not read upstream response: {err}"))?;
+    if !custom_tool_names.is_empty() {
+        response_bytes =
+            restore_custom_tools_in_responses_payload(&response_bytes, &custom_tool_names).into();
+    }
     // Capture official subscription/quota signals (e.g. Grok free-usage-exhausted).
     if credential.kind == "official" {
         if let Ok(body_text) = std::str::from_utf8(&response_bytes) {
@@ -563,6 +576,7 @@ pub struct SelectedCredential {
     pub platform: String,
     pub kind: String,
     pub display_name: String,
+    pub status: String,
     pub secret_payload_json: String,
     pub config_json: String,
 }
@@ -572,7 +586,7 @@ async fn load_pool_credentials(
     platform: &str,
 ) -> Result<Vec<SelectedCredential>, AppError> {
     let rows = sqlx::query(
-        "SELECT c.id, c.platform, c.kind, c.display_name, c.secret_payload_json, c.config_json
+        "SELECT c.id, c.platform, c.kind, c.display_name, c.status, c.secret_payload_json, c.config_json
          FROM route_pool_members rpm
          INNER JOIN route_credentials c ON c.id = rpm.route_credential_id
          WHERE rpm.platform = ?
@@ -599,6 +613,7 @@ async fn load_pool_credentials(
             platform: row.get("platform"),
             kind: row.get("kind"),
             display_name: row.get("display_name"),
+            status: row.get("status"),
             secret_payload_json: row.get("secret_payload_json"),
             config_json: row.get("config_json"),
         })
@@ -613,6 +628,16 @@ pub fn pick_credential(items: &[SelectedCredential], cursor: i64) -> Option<&Sel
     }
     let index = cursor.rem_euclid(items.len() as i64) as usize;
     items.get(index)
+}
+
+/// Third-party Responses gateways often reject Codex `tools[].type = "custom"`.
+/// Keep model mapping independent so callers can compose both rewrites.
+pub fn apply_responses_custom_tool_compat(body: &[u8]) -> Vec<u8> {
+    let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
+        return body.to_vec();
+    };
+    let _ = rewrite_custom_tools_in_responses_request(&mut value);
+    serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec())
 }
 
 pub fn apply_model_mappings(body: &[u8], mappings: &[ModelMapping]) -> Vec<u8> {
@@ -758,7 +783,13 @@ fn build_api_upstream_request(
     })?;
     let interface_format = string_value(config, "interface_format").unwrap_or("openai");
     let mappings = model_mappings(config);
-    let rewritten_body = apply_model_mappings(body, &mappings);
+    let mut rewritten_body = apply_model_mappings(body, &mappings);
+    // API relays (e.g. Xiaomi) commonly lack Codex custom-tool support on Responses.
+    if responses_custom_tool_compat_enabled(config)
+        && should_rewrite_custom_tools_for_api(interface_format, path)
+    {
+        rewritten_body = apply_responses_custom_tool_compat(&rewritten_body);
+    }
     let mut target_url = build_target_url(base_url, path, query);
 
     match interface_format {
@@ -808,14 +839,32 @@ fn build_official_upstream_request(
     // Apply credential-provided headers first (CPA may ship extra headers).
     apply_config_headers(headers, config)?;
 
-    let access_token = resolve_official_access_token(credential, secret, config)?;
-    insert_header(headers, "authorization", &format!("Bearer {access_token}"))?;
+    if let Some(agent_identity) = resolve_agent_identity_headers(secret, config)? {
+        insert_header(headers, "authorization", &agent_identity.authorization)?;
+        insert_header(
+            headers,
+            "chatgpt-account-id",
+            &agent_identity.chatgpt_account_id,
+        )?;
+        if agent_identity.is_fedramp_account {
+            insert_header(headers, "x-openai-fedramp", "true")?;
+        }
+    } else {
+        let access_token = resolve_official_access_token(credential, secret, config)?;
+        insert_header(headers, "authorization", &format!("Bearer {access_token}"))?;
+    }
     if platform == "claude" {
         headers
             .entry(HeaderName::from_static("anthropic-version"))
             .or_insert(HeaderValue::from_static("2023-06-01"));
     }
-    let base_url = string_value(config, "base_url").unwrap_or_else(|| default_official_base_url(platform));
+    let base_url = string_value(config, "base_url").unwrap_or_else(|| {
+        if platform == "codex" && is_official_agent_identity_credential(secret, config) {
+            CODEX_AGENT_IDENTITY_BASE_URL
+        } else {
+            default_official_base_url(platform)
+        }
+    });
     // cli-chat-proxy rejects unversioned clients with HTTP 426 (version = none).
     if is_official_grok_platform(platform) && is_grok_cli_chat_proxy_base_url(base_url) {
         apply_official_grok_cli_headers(headers)?;
@@ -1436,6 +1485,290 @@ fn string_value<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
         .filter(|item| !item.is_empty())
 }
 
+fn should_rewrite_custom_tools_for_api(interface_format: &str, path: &str) -> bool {
+    interface_format == "openai-responses" || is_responses_path(path)
+}
+
+fn responses_custom_tool_compat_enabled(config: &Value) -> bool {
+    config
+        .get("responses_custom_tool_compat")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn is_responses_path(path: &str) -> bool {
+    let normalized = path.trim().trim_end_matches('/');
+    normalized.ends_with("/responses") || normalized == "responses"
+}
+
+fn collect_custom_tool_names(body: &[u8]) -> std::collections::HashSet<String> {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return std::collections::HashSet::new();
+    };
+    let mut names = std::collections::HashSet::new();
+    if let Some(tools) = value.get("tools").and_then(Value::as_array) {
+        for tool in tools {
+            if tool_type(tool) == Some("custom") {
+                if let Some(name) = responses_tool_name(tool) {
+                    names.insert(name);
+                }
+            }
+        }
+    }
+    if let Some(input) = value.get("input").and_then(Value::as_array) {
+        for item in input {
+            if tool_type(item) == Some("custom_tool_call") {
+                if let Some(name) = item
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    names.insert(name.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
+fn rewrite_custom_tools_in_responses_request(
+    value: &mut Value,
+) -> std::collections::HashSet<String> {
+    let mut custom_names = std::collections::HashSet::new();
+    if let Some(tools) = value.get_mut("tools").and_then(Value::as_array_mut) {
+        for tool in tools.iter_mut() {
+            if tool_type(tool) != Some("custom") {
+                continue;
+            }
+            if let Some(name) = responses_tool_name(tool) {
+                custom_names.insert(name.clone());
+                *tool = custom_tool_to_function_tool(tool, &name);
+            }
+        }
+    }
+
+    if let Some(input) = value.get_mut("input").and_then(Value::as_array_mut) {
+        for item in input.iter_mut() {
+            match tool_type(item) {
+                Some("custom_tool_call") => {
+                    if let Some(name) = item
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                    {
+                        custom_names.insert(name);
+                    }
+                    *item = custom_tool_call_to_function_call(item);
+                }
+                Some("custom_tool_call_output") => {
+                    *item = custom_tool_call_output_to_function_call_output(item);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    custom_names
+}
+
+fn restore_custom_tools_in_responses_payload(
+    body: &[u8],
+    custom_tool_names: &std::collections::HashSet<String>,
+) -> Vec<u8> {
+    if custom_tool_names.is_empty() {
+        return body.to_vec();
+    }
+
+    if let Ok(mut value) = serde_json::from_slice::<Value>(body) {
+        restore_custom_tools_in_value(&mut value, custom_tool_names);
+        return serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec());
+    }
+
+    // SSE Responses streams are line-delimited `data: {...}` payloads.
+    let Ok(text) = std::str::from_utf8(body) else {
+        return body.to_vec();
+    };
+    if !text.contains("data:") {
+        return body.to_vec();
+    }
+
+    let mut rewritten = String::with_capacity(text.len() + 64);
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        let ends_with_crlf = line.ends_with("\r\n");
+        let ends_with_lf = line.ends_with('\n');
+        if let Some(payload) = trimmed.strip_prefix("data:") {
+            let payload = payload.trim_start();
+            if payload != "[DONE]" {
+                if let Ok(mut value) = serde_json::from_str::<Value>(payload) {
+                    restore_custom_tools_in_value(&mut value, custom_tool_names);
+                    if let Ok(serialized) = serde_json::to_string(&value) {
+                        rewritten.push_str("data: ");
+                        rewritten.push_str(&serialized);
+                        if ends_with_crlf {
+                            rewritten.push_str("\r\n");
+                        } else if ends_with_lf {
+                            rewritten.push('\n');
+                        }
+                        continue;
+                    }
+                }
+            }
+        }
+        rewritten.push_str(line);
+    }
+    rewritten.into_bytes()
+}
+
+fn restore_custom_tools_in_value(
+    value: &mut Value,
+    custom_tool_names: &std::collections::HashSet<String>,
+) {
+    if tool_type(value) == Some("function_call") {
+        if let Some(name) = value
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(ToOwned::to_owned)
+        {
+            if custom_tool_names.contains(&name) {
+                *value = function_call_to_custom_tool_call(value);
+                return;
+            }
+        }
+    }
+
+    match value {
+        Value::Object(object) => {
+            for child in object.values_mut() {
+                restore_custom_tools_in_value(child, custom_tool_names);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                restore_custom_tools_in_value(child, custom_tool_names);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn custom_tool_to_function_tool(tool: &Value, name: &str) -> Value {
+    let description = tool
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            format!(
+                "{CUSTOM_TOOL_PRESERVED_METADATA_HEADING}\n```json\n{}\n```",
+                tool
+            )
+        });
+
+    json!({
+        "type": "function",
+        "name": name,
+        "description": description,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                CUSTOM_TOOL_INPUT_FIELD: {
+                    "type": "string",
+                    "description": CUSTOM_TOOL_INPUT_DESCRIPTION
+                }
+            },
+            "required": [CUSTOM_TOOL_INPUT_FIELD],
+            "additionalProperties": false
+        }
+    })
+}
+
+fn custom_tool_call_to_function_call(item: &Value) -> Value {
+    let mut object = serde_json::Map::new();
+    object.insert("type".to_string(), json!("function_call"));
+    if let Some(id) = item.get("id").cloned() {
+        object.insert("id".to_string(), id);
+    }
+    if let Some(call_id) = item.get("call_id").cloned() {
+        object.insert("call_id".to_string(), call_id);
+    }
+    if let Some(status) = item.get("status").cloned() {
+        object.insert("status".to_string(), status);
+    }
+    if let Some(name) = item.get("name").cloned() {
+        object.insert("name".to_string(), name);
+    }
+    let input = item.get("input").cloned().unwrap_or_else(|| json!(""));
+    let arguments = serde_json::to_string(&json!({ CUSTOM_TOOL_INPUT_FIELD: input }))
+        .unwrap_or_else(|_| format!(r#"{{"{CUSTOM_TOOL_INPUT_FIELD}":""}}"#));
+    object.insert("arguments".to_string(), json!(arguments));
+    Value::Object(object)
+}
+
+fn custom_tool_call_output_to_function_call_output(item: &Value) -> Value {
+    let mut object = serde_json::Map::new();
+    object.insert("type".to_string(), json!("function_call_output"));
+    if let Some(call_id) = item.get("call_id").cloned() {
+        object.insert("call_id".to_string(), call_id);
+    }
+    if let Some(id) = item.get("id").cloned() {
+        object.insert("id".to_string(), id);
+    }
+    if let Some(output) = item.get("output").cloned() {
+        object.insert("output".to_string(), output);
+    } else if let Some(input) = item.get("input").cloned() {
+        // Some clients reuse `input` for custom tool outputs.
+        object.insert("output".to_string(), input);
+    }
+    Value::Object(object)
+}
+
+fn function_call_to_custom_tool_call(item: &Value) -> Value {
+    let mut object = serde_json::Map::new();
+    object.insert("type".to_string(), json!("custom_tool_call"));
+    if let Some(id) = item.get("id").cloned() {
+        object.insert("id".to_string(), id);
+    }
+    if let Some(call_id) = item.get("call_id").cloned() {
+        object.insert("call_id".to_string(), call_id);
+    }
+    if let Some(status) = item.get("status").cloned() {
+        object.insert("status".to_string(), status);
+    }
+    if let Some(name) = item.get("name").cloned() {
+        object.insert("name".to_string(), name);
+    }
+
+    let input = item
+        .get("arguments")
+        .and_then(Value::as_str)
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|value| value.get(CUSTOM_TOOL_INPUT_FIELD).cloned())
+        .or_else(|| item.get("arguments").cloned())
+        .unwrap_or_else(|| json!(""));
+    object.insert("input".to_string(), input);
+    Value::Object(object)
+}
+
+fn tool_type(value: &Value) -> Option<&str> {
+    value.get("type").and_then(Value::as_str)
+}
+
+fn responses_tool_name(tool: &Value) -> Option<String> {
+    tool.get("name")
+        .or_else(|| tool.get("function").and_then(|function| function.get("name")))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn model_mappings(config: &Value) -> Vec<ModelMapping> {
     config
         .get("model_mappings")
@@ -1611,6 +1944,7 @@ mod tests {
             platform: "codex".to_string(),
             kind: "api".to_string(),
             display_name: name.to_string(),
+            status: "ok".to_string(),
             secret_payload_json: r#"{"api_key":"sk-test"}"#.to_string(),
             config_json: serde_json::json!({
                 "base_url": "https://api.example.com/v1",
@@ -1930,6 +2264,7 @@ mod tests {
             platform: "grok".to_string(),
             kind: "official".to_string(),
             display_name: "Grok OAuth".to_string(),
+            status: "ok".to_string(),
             secret_payload_json: r#"{"access_token":"at-xai","refresh_token":"rt-xai"}"#.to_string(),
             config_json: serde_json::json!({
                 "base_url": "https://cli-chat-proxy.grok.com/v1",
@@ -1991,6 +2326,7 @@ mod tests {
             platform: "grok".to_string(),
             kind: "official".to_string(),
             display_name: "Grok API".to_string(),
+            status: "ok".to_string(),
             secret_payload_json: r#"{"access_token":"at-xai"}"#.to_string(),
             config_json: serde_json::json!({
                 "base_url": "https://api.x.ai/v1"
@@ -2010,6 +2346,66 @@ mod tests {
 
         assert!(headers.get("x-grok-client-version").is_none());
         assert!(headers.get("x-xai-token-auth").is_none());
+    }
+
+    #[test]
+    fn build_upstream_request_uses_agent_identity_for_sub2api_codex() {
+        use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+        use base64::Engine as _;
+        use ed25519_dalek::pkcs8::EncodePrivateKey;
+        use ed25519_dalek::SigningKey;
+
+        let signing_key = SigningKey::from_bytes(&[9u8; 32]);
+        let private_key = signing_key.to_pkcs8_der().expect("encode key");
+        let credential = SelectedCredential {
+            id: "official-k12".to_string(),
+            platform: "codex".to_string(),
+            kind: "official".to_string(),
+            display_name: "K12 Agent".to_string(),
+            status: "ok".to_string(),
+            secret_payload_json: serde_json::json!({
+                "agent_runtime_id": "agent-runtime-1",
+                "agent_private_key": BASE64_STANDARD.encode(private_key.as_bytes()),
+                "task_id": "task-run-1",
+                "account_id": "account-1"
+            })
+            .to_string(),
+            config_json: serde_json::json!({
+                "auth_mode": "agentIdentity",
+                "chatgpt_account_is_fedramp": true
+            })
+            .to_string(),
+        };
+
+        let (url, headers, _) = build_upstream_request(
+            &credential,
+            "codex",
+            "/responses",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5"}"#,
+        )
+        .expect("agent identity request");
+
+        assert_eq!(url, "https://chatgpt.com/backend-api/codex/responses");
+        assert!(
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("AgentAssertion "))
+        );
+        assert_eq!(
+            headers
+                .get("chatgpt-account-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("account-1")
+        );
+        assert_eq!(
+            headers
+                .get("x-openai-fedramp")
+                .and_then(|value| value.to_str().ok()),
+            Some("true")
+        );
     }
 
     #[test]
@@ -2109,6 +2505,238 @@ mod tests {
             jwt_claim_string(token, "client_id").as_deref(),
             Some("cid-from-jwt")
         );
+    }
+
+    #[test]
+    fn apply_responses_custom_tool_compat_rewrites_custom_tools_and_calls() {
+        let body = br#"{
+            "model":"gpt-5",
+            "tools":[
+                {"type":"function","name":"shell","parameters":{"type":"object"}},
+                {"type":"custom","name":"apply_patch","description":"patch files"}
+            ],
+            "input":[
+                {
+                    "type":"custom_tool_call",
+                    "id":"call_1",
+                    "call_id":"call_1",
+                    "name":"apply_patch",
+                    "input":"*** Begin Patch"
+                }
+            ]
+        }"#;
+        let rewritten = apply_responses_custom_tool_compat(body);
+        let value: Value = serde_json::from_slice(&rewritten).expect("json");
+
+        assert_eq!(
+            value.pointer("/tools/1/type").and_then(Value::as_str),
+            Some("function")
+        );
+        assert_eq!(
+            value.pointer("/tools/1/name").and_then(Value::as_str),
+            Some("apply_patch")
+        );
+        assert_eq!(
+            value
+                .pointer("/tools/1/parameters/properties/input/type")
+                .and_then(Value::as_str),
+            Some("string")
+        );
+        assert_eq!(
+            value.pointer("/input/0/type").and_then(Value::as_str),
+            Some("function_call")
+        );
+        let args = value
+            .pointer("/input/0/arguments")
+            .and_then(Value::as_str)
+            .expect("arguments");
+        let args_value: Value = serde_json::from_str(args).expect("args json");
+        assert_eq!(
+            args_value.pointer("/input").and_then(Value::as_str),
+            Some("*** Begin Patch")
+        );
+    }
+
+    #[test]
+    fn build_upstream_request_rewrites_custom_tools_for_responses_api_relays() {
+        let mut credential = api_credential("xiaomi", "openai-responses");
+        credential.config_json = serde_json::json!({
+            "base_url": "https://api.xiaomi.example/v1",
+            "interface_format": "openai-responses",
+            "model_mappings": [{"from":"gpt-5","to":"mi-model"}],
+            "responses_custom_tool_compat": true
+        })
+        .to_string();
+
+        let body = br#"{
+            "model":"gpt-5",
+            "tools":[{"type":"custom","name":"apply_patch","description":"patch files"}]
+        }"#;
+        let (_, _, rewritten) = build_upstream_request(
+            &credential,
+            "codex",
+            "/responses",
+            None,
+            HeaderMap::new(),
+            body,
+        )
+        .expect("request");
+        let value: Value = serde_json::from_slice(&rewritten).expect("json");
+
+        assert_eq!(
+            value.pointer("/model").and_then(Value::as_str),
+            Some("mi-model")
+        );
+        assert_eq!(
+            value.pointer("/tools/0/type").and_then(Value::as_str),
+            Some("function")
+        );
+        assert_eq!(
+            value.pointer("/tools/0/name").and_then(Value::as_str),
+            Some("apply_patch")
+        );
+    }
+
+    #[test]
+    fn build_upstream_request_skips_custom_tool_rewrite_when_switch_off() {
+        let mut credential = api_credential("xiaomi", "openai-responses");
+        credential.config_json = serde_json::json!({
+            "base_url": "https://api.xiaomi.example/v1",
+            "interface_format": "openai-responses",
+            "model_mappings": [{"from":"gpt-5","to":"mi-model"}],
+            "responses_custom_tool_compat": false
+        })
+        .to_string();
+
+        let body = br#"{
+            "model":"gpt-5",
+            "tools":[{"type":"custom","name":"apply_patch","description":"patch files"}]
+        }"#;
+        let (_, _, rewritten) = build_upstream_request(
+            &credential,
+            "codex",
+            "/responses",
+            None,
+            HeaderMap::new(),
+            body,
+        )
+        .expect("request");
+        let value: Value = serde_json::from_slice(&rewritten).expect("json");
+
+        assert_eq!(
+            value.pointer("/model").and_then(Value::as_str),
+            Some("mi-model")
+        );
+        assert_eq!(
+            value.pointer("/tools/0/type").and_then(Value::as_str),
+            Some("custom")
+        );
+    }
+
+    #[test]
+    fn build_upstream_request_rewrites_custom_tools_when_switch_on() {
+        let mut credential = api_credential("xiaomi", "openai-responses");
+        credential.config_json = serde_json::json!({
+            "base_url": "https://api.xiaomi.example/v1",
+            "interface_format": "openai-responses",
+            "model_mappings": [{"from":"gpt-5","to":"mi-model"}],
+            "responses_custom_tool_compat": true
+        })
+        .to_string();
+
+        let body = br#"{
+            "model":"gpt-5",
+            "tools":[{"type":"custom","name":"apply_patch","description":"patch files"}]
+        }"#;
+        let (_, _, rewritten) = build_upstream_request(
+            &credential,
+            "codex",
+            "/responses",
+            None,
+            HeaderMap::new(),
+            body,
+        )
+        .expect("request");
+        let value: Value = serde_json::from_slice(&rewritten).expect("json");
+
+        assert_eq!(
+            value.pointer("/tools/0/type").and_then(Value::as_str),
+            Some("function")
+        );
+    }
+
+    #[test]
+    fn build_upstream_request_skips_custom_tool_rewrite_when_switch_missing() {
+        let mut credential = api_credential("xiaomi", "openai-responses");
+        credential.config_json = serde_json::json!({
+            "base_url": "https://api.xiaomi.example/v1",
+            "interface_format": "openai-responses",
+            "model_mappings": []
+        })
+        .to_string();
+
+        let body = br#"{"tools":[{"type":"custom","name":"apply_patch"}]}"#;
+        let (_, _, rewritten) = build_upstream_request(
+            &credential,
+            "codex",
+            "/responses",
+            None,
+            HeaderMap::new(),
+            body,
+        )
+        .expect("request");
+        let value: Value = serde_json::from_slice(&rewritten).expect("json");
+        assert_eq!(
+            value.pointer("/tools/0/type").and_then(Value::as_str),
+            Some("custom")
+        );
+    }
+
+    #[test]
+    fn build_upstream_request_skips_custom_tool_rewrite_on_non_responses_path_even_when_on() {
+        let mut credential = api_credential("xiaomi", "openai");
+        credential.config_json = serde_json::json!({
+            "base_url": "https://api.xiaomi.example/v1",
+            "interface_format": "openai",
+            "model_mappings": [],
+            "responses_custom_tool_compat": true
+        })
+        .to_string();
+
+        let body = br#"{"tools":[{"type":"custom","name":"apply_patch"}]}"#;
+        let (_, _, rewritten) = build_upstream_request(
+            &credential,
+            "codex",
+            "/chat/completions",
+            None,
+            HeaderMap::new(),
+            body,
+        )
+        .expect("request");
+        let value: Value = serde_json::from_slice(&rewritten).expect("json");
+        assert_eq!(
+            value.pointer("/tools/0/type").and_then(Value::as_str),
+            Some("custom")
+        );
+    }
+
+    #[test]
+    fn restore_custom_tools_in_sse_payload_rewrites_function_calls() {
+        let names = std::collections::HashSet::from(["apply_patch".to_string()]);
+        let body = concat!(
+            r#"data: {"type":"response.output_item.done","item":{"type":"function_call","name":"apply_patch","arguments":"{\"input\":\"patch\"}","call_id":"c1"}}"#,
+            "\n",
+            "data: [DONE]\n"
+        );
+        let restored = restore_custom_tools_in_responses_payload(body.as_bytes(), &names);
+        let text = String::from_utf8(restored).expect("utf8");
+        assert!(text.contains("custom_tool_call"), "restored={text}");
+        assert!(
+            text.contains(r#""input":"patch""#) || text.contains(r#""input": "patch""#),
+            "restored={text}"
+        );
+        assert!(text.contains("data: [DONE]"), "restored={text}");
+        assert!(!text.contains("function_call"), "restored={text}");
     }
 
 }
