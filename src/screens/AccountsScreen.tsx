@@ -682,17 +682,23 @@ function apiSecretJsonWithKey(secretJson: string, apiKey: string) {
   return JSON.stringify(secret, null, 2);
 }
 
+function responsesCustomToolCompatFromConfig(config: Record<string, unknown>): boolean {
+  return config.responses_custom_tool_compat === true;
+}
+
 function apiConfigJsonWithFields(
   configJson: string,
   baseUrl: string,
   interfaceFormat: InterfaceFormat,
   mappings: ModelMapping[],
   apiKeyField: AnthropicApiKeyField,
+  responsesCustomToolCompat = false,
 ) {
   const config = parseJsonObject(configJson);
   config.base_url = baseUrl.trim();
   config.interface_format = interfaceFormat;
   config.model_mappings = mappings;
+  config.responses_custom_tool_compat = responsesCustomToolCompat;
   if (isAnthropicInterfaceFormat(interfaceFormat)) {
     config.api_key_field = apiKeyField;
   } else {
@@ -751,11 +757,19 @@ function apiPreviewJsonWithFields(
   interfaceFormat: InterfaceFormat,
   mappings: ModelMapping[],
   apiKeyField: AnthropicApiKeyField,
+  responsesCustomToolCompat = false,
 ) {
   return apiPreviewJsonFromPayloads(
     platform,
     apiSecretJsonWithKey(secretJson, apiKey),
-    apiConfigJsonWithFields(configJson, baseUrl, interfaceFormat, mappings, apiKeyField),
+    apiConfigJsonWithFields(
+      configJson,
+      baseUrl,
+      interfaceFormat,
+      mappings,
+      apiKeyField,
+      responsesCustomToolCompat,
+    ),
   );
 }
 
@@ -1028,6 +1042,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const [apiInterfaceFormat, setApiInterfaceFormat] = useState<InterfaceFormat>(() =>
     defaultInterfaceFormat(activePlatform),
   );
+  const [apiResponsesCustomToolCompat, setApiResponsesCustomToolCompat] = useState(false);
   const [apiKeyField, setApiKeyField] = useState<AnthropicApiKeyField>(() =>
     defaultAnthropicApiKeyFieldForCreate(activePlatform),
   );
@@ -1047,6 +1062,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const editApiKeyOcrFileInputRef = useRef<HTMLInputElement | null>(null);
   const [editApiBaseUrl, setEditApiBaseUrl] = useState("");
   const [editApiInterfaceFormat, setEditApiInterfaceFormat] = useState<InterfaceFormat>("openai");
+  const [editResponsesCustomToolCompat, setEditResponsesCustomToolCompat] = useState(false);
   const [editApiKeyField, setEditApiKeyField] = useState<AnthropicApiKeyField>("ANTHROPIC_API_KEY");
   const [editSecretJson, setEditSecretJson] = useState("{}");
   const [editConfigJson, setEditConfigJson] = useState("{}");
@@ -1105,6 +1121,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     setOfficialText(defaultOfficialJson(activePlatform));
     setOfficialFilePaths([]);
     setApiInterfaceFormat(nextInterfaceFormat);
+    setApiResponsesCustomToolCompat(false);
     setApiBaseUrl(activePlatform === "grok" ? "https://api.x.ai/v1" : "https://api.example.com/v1");
     setApiKeyField(defaultAnthropicApiKeyFieldForCreate(activePlatform));
     setApiMappings(defaultModelMappings(activePlatform));
@@ -1131,6 +1148,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       setEditApiBaseUrl(stringFromRecord(config, "base_url"));
       setEditApiInterfaceFormat(interfaceFormat);
       setEditApiKeyField(anthropicApiKeyFieldFromConfig(config, "ANTHROPIC_API_KEY"));
+      setEditResponsesCustomToolCompat(responsesCustomToolCompatFromConfig(config));
       setEditApiKeyDecodeError(null);
       setEditApiKeyOcrError(null);
     } else {
@@ -1138,6 +1156,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       setEditApiBaseUrl("");
       setEditApiInterfaceFormat("openai");
       setEditApiKeyField("ANTHROPIC_API_KEY");
+      setEditResponsesCustomToolCompat(false);
       setEditApiKeyDecodeError(null);
       setEditApiKeyOcrError(null);
     }
@@ -1206,6 +1225,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       editApiInterfaceFormat,
       editModelMappings,
       editApiKeyField,
+      editResponsesCustomToolCompat,
     );
   }, [
     activePlatform,
@@ -1216,6 +1236,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     editConfigJson,
     editModelMappings,
     editPreviewJson,
+    editResponsesCustomToolCompat,
     editSecretJson,
     editingCredential?.kind,
   ]);
@@ -1403,6 +1424,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
           model_mappings_json: JSON.stringify(normalizedMappings.mappings),
           preview_json: apiPreviewJson.trim() || null,
           batch_id: batch?.id ?? null,
+          responses_custom_tool_compat: apiResponsesCustomToolCompat,
         };
         imported.push(
           await createApiRouteCredential(
@@ -1553,6 +1575,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
               editApiInterfaceFormat,
               normalizedMappings.mappings,
               editApiKeyField,
+              editResponsesCustomToolCompat,
             )
           : editConfigJson.trim() || "{}";
       const nextPreviewJson =
@@ -2231,7 +2254,12 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                     />
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <p className="truncate text-[13px] font-semibold text-stone-950">{credential.display_name}</p>
+                        <p
+                          className="w-[36ch] max-w-full shrink-0 truncate text-[13px] font-semibold text-stone-950"
+                          title={credential.display_name}
+                        >
+                          {credential.display_name}
+                        </p>
                         <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
                           {kindLabel(credential.kind)}
                         </span>
@@ -2548,6 +2576,21 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                     </span>
                   </label>
                 ) : null}
+                <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
+                  <input
+                    aria-label="兼容 custom 工具（Responses 中转）"
+                    checked={apiResponsesCustomToolCompat}
+                    className="mt-0.5"
+                    onChange={(event) => setApiResponsesCustomToolCompat(event.target.checked)}
+                    type="checkbox"
+                  />
+                  <span className="grid gap-1">
+                    <span>兼容 custom 工具（Responses 中转）</span>
+                    <span className="text-[11px] font-medium text-stone-500">
+                      把 custom 工具改写成 function，给不支持 custom 的中转站用。默认关闭。
+                    </span>
+                  </span>
+                </label>
                 <ModelMappingsEditor
                   error={apiMappingsError}
                   fetchError={apiFetchModelsError}
@@ -2864,6 +2907,21 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                       </span>
                     </label>
                   ) : null}
+                  <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
+                    <input
+                      aria-label="兼容 custom 工具（Responses 中转）"
+                      checked={editResponsesCustomToolCompat}
+                      className="mt-0.5"
+                      onChange={(event) => setEditResponsesCustomToolCompat(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span className="grid gap-1">
+                      <span>兼容 custom 工具（Responses 中转）</span>
+                      <span className="text-[11px] font-medium text-stone-500">
+                        把 custom 工具改写成 function，给不支持 custom 的中转站用。默认关闭。
+                      </span>
+                    </span>
+                  </label>
                   <ModelMappingsEditor
                     error={editModelMappingsError}
                     fetchError={editFetchModelsError}

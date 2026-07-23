@@ -13,6 +13,7 @@ import {
   importOfficialRouteCredentialsFromFiles,
   importOfficialRouteCredentialsFromText,
   listRouteCredentials,
+  refreshRouteCredentialsQuota,
   routePoolTestModel,
   setRoutePoolMembers,
   startRouteProxy,
@@ -39,6 +40,7 @@ vi.mock("../src/lib/api/client", () => ({
   importOfficialRouteCredentialsFromFiles: vi.fn(),
   importOfficialRouteCredentialsFromText: vi.fn(),
   listRouteCredentials: vi.fn(),
+  refreshRouteCredentialsQuota: vi.fn(),
   routePoolTestModel: vi.fn(),
   setRoutePoolMembers: vi.fn(),
   startRouteProxy: vi.fn(),
@@ -164,6 +166,7 @@ describe("AccountsScreen", () => {
     vi.mocked(importOfficialRouteCredentialsFromFiles).mockReset();
     vi.mocked(importOfficialRouteCredentialsFromText).mockReset();
     vi.mocked(listRouteCredentials).mockReset();
+    vi.mocked(refreshRouteCredentialsQuota).mockReset();
     vi.mocked(routePoolTestModel).mockReset();
     vi.mocked(setRoutePoolMembers).mockReset();
     vi.mocked(startRouteProxy).mockReset();
@@ -188,6 +191,7 @@ describe("AccountsScreen", () => {
       updated_at: "2026-07-13T00:00:00Z",
     });
     vi.mocked(listRouteCredentials).mockResolvedValue(credentialsFixture);
+    vi.mocked(refreshRouteCredentialsQuota).mockResolvedValue([]);
     vi.mocked(getRoutePool).mockResolvedValue({
       platform: "codex",
       account_ids: [],
@@ -336,6 +340,7 @@ describe("AccountsScreen", () => {
         model_mappings_json: "[{\"from\":\"gpt-5\",\"to\":\"up-gpt\"}]",
         preview_json: null,
         batch_id: null,
+        responses_custom_tool_compat: false,
       }),
     );
   });
@@ -515,6 +520,7 @@ describe("AccountsScreen", () => {
         model_mappings_json: "[{\"from\":\"claude-sonnet-5\",\"to\":\"provider-sonnet\",\"label\":\"Sonnet\"}]",
         preview_json: null,
         batch_id: null,
+        responses_custom_tool_compat: false,
       }),
     );
   });
@@ -600,6 +606,57 @@ describe("AccountsScreen", () => {
         }),
       ),
     );
+  });
+
+  it("creates API account with responses custom tool compat enabled when checked", async () => {
+    renderScreen();
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Compat API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-compat");
+    await userEvent.clear(screen.getByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://api.upstream.test/v1");
+    await userEvent.selectOptions(screen.getByLabelText("接口格式"), "openai-responses");
+    await userEvent.click(screen.getByLabelText("兼容 custom 工具（Responses 中转）"));
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() =>
+      expect(createApiRouteCredential).toHaveBeenCalledWith(
+        expect.objectContaining({
+          display_name: "Compat API",
+          responses_custom_tool_compat: true,
+        }),
+      ),
+    );
+  });
+
+  it("loads and saves responses custom tool compat from API account config", async () => {
+    const api = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://api.example.com/v1",
+        interface_format: "openai-responses",
+        model_mappings: [],
+        responses_custom_tool_compat: true,
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([api]);
+    vi.mocked(updateRouteCredential).mockResolvedValue({
+      ...api,
+      display_name: "API Account Updated",
+    });
+
+    renderScreen();
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    const checkbox = await screen.findByLabelText("兼容 custom 工具（Responses 中转）");
+    expect(checkbox).toBeChecked();
+    await userEvent.click(checkbox);
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const payload = vi.mocked(updateRouteCredential).mock.calls[0][1];
+    const config = JSON.parse(payload.config_json);
+    expect(config.responses_custom_tool_compat).toBe(false);
   });
 
   it("edits API credential model mappings through the visual editor", async () => {
