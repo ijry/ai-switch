@@ -1,3 +1,6 @@
+use self::sub2api_import_service::{
+    is_sub2api_shape_error, parse_sub2api_file, parse_sub2api_text,
+};
 use crate::database::repositories::batch_repository::BatchRepository;
 use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::error::AppError;
@@ -7,10 +10,15 @@ use crate::models::route_credential::{
     ImportOfficialTextInput, ModelMapping, RouteCredential, RouteCredentialImportFailure,
     RouteCredentialImportResult, UpdateRouteCredentialInput,
 };
-use crate::services::cpa_import_service::{parse_cpa_file, parse_cpa_text};
+use crate::services::cpa_import_service::{
+    parse_cpa_file, parse_cpa_text, ParsedOfficialCredential,
+};
 use crate::services::route_preview_service::RoutePreviewService;
 use serde_json::json;
 use sqlx::SqlitePool;
+
+#[path = "sub2api_import_service.rs"]
+mod sub2api_import_service;
 
 pub struct RouteCredentialService;
 
@@ -44,6 +52,7 @@ impl RouteCredentialService {
             "base_url": input.base_url.trim(),
             "interface_format": input.interface_format,
             "model_mappings": serde_json::from_str::<serde_json::Value>(&input.model_mappings_json)?,
+            "responses_custom_tool_compat": input.responses_custom_tool_compat.unwrap_or(false),
         });
         if let Some(api_key_field) = api_key_field {
             config["api_key_field"] = json!(api_key_field);
@@ -74,7 +83,7 @@ impl RouteCredentialService {
     ) -> Result<RouteCredentialImportResult, AppError> {
         let platform = normalize_platform(&input.platform)?;
         let batch_id = ensure_optional_batch(pool, input.batch_name).await?;
-        let parsed = parse_cpa_text(&platform, &input.text)?;
+        let parsed = parse_official_credentials_text(&platform, &input.text)?;
         let mut imported = Vec::with_capacity(parsed.len());
 
         for credential in parsed {
@@ -118,7 +127,7 @@ impl RouteCredentialService {
 
         for path in input.file_paths {
             match tokio::fs::read_to_string(&path).await {
-                Ok(content) => match parse_cpa_file(&platform, &path, &content) {
+                Ok(content) => match parse_official_credentials_file(&platform, &path, &content) {
                     Ok(credentials) => {
                         for credential in credentials {
                             let preview_json = RoutePreviewService::generate(
@@ -250,6 +259,29 @@ fn is_anthropic_interface_format(value: &str) -> bool {
     matches!(value, "anthropic" | "anthropic-messages")
 }
 
+fn parse_official_credentials_text(
+    platform: &str,
+    text: &str,
+) -> Result<Vec<ParsedOfficialCredential>, AppError> {
+    match parse_sub2api_text(platform, text) {
+        Ok(credentials) => Ok(credentials),
+        Err(err) if is_sub2api_shape_error(&err) => parse_cpa_text(platform, text),
+        Err(err) => Err(err),
+    }
+}
+
+fn parse_official_credentials_file(
+    platform: &str,
+    path: &str,
+    content: &str,
+) -> Result<Vec<ParsedOfficialCredential>, AppError> {
+    match parse_sub2api_file(platform, path, content) {
+        Ok(credentials) => Ok(credentials),
+        Err(err) if is_sub2api_shape_error(&err) => parse_cpa_file(platform, path, content),
+        Err(err) => Err(err),
+    }
+}
+
 fn validate_model_mappings(value: &str) -> Result<(), AppError> {
     let mappings: Vec<ModelMapping> = serde_json::from_str(value)?;
     if mappings
@@ -325,5 +357,164 @@ mod tests {
         );
         assert!(validate_api_key_field(Some("ANTHROPIC_AUTH_TOKEN"), "openai").is_err());
         assert!(validate_api_key_field(Some("bad"), "anthropic").is_err());
+    }
+
+    #[test]
+    fn official_import_parser_accepts_sub2api_k12_codex() {
+        let text = r#"{
+          "name": "tallisbisaccia737@hotmail.com",
+          "type": "oauth",
+          "platform": "openai",
+          "credentials": {
+            "type": "oauth",
+            "email": "tallisbisaccia737@hotmail.com",
+            "id_token": "id-token",
+            "auth_mode": "agentIdentity",
+            "plan_type": "k12",
+            "account_id": "7fbe4da7-1fab-4f6d-8210-a1eba367f805",
+            "workspace_id": "7fbe4da7-1fab-4f6d-8210-a1eba367f805",
+            "agent_private_key": "private-key"
+          }
+        }"#;
+
+        let parsed = parse_official_credentials_text("codex", text).unwrap();
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(
+            parsed[0].email.as_deref(),
+            Some("tallisbisaccia737@hotmail.com")
+        );
+        assert!(parsed[0].secret_payload_json.contains("private-key"));
+        assert!(parsed[0]
+            .config_json
+            .contains("\"subscription_type\":\"k12\""));
+    }
+
+    #[test]
+    fn official_import_parser_falls_back_to_cpa() {
+        let text = r#"{"type":"codex","access_token":"at","refresh_token":"rt"}"#;
+
+        let parsed = parse_official_credentials_text("codex", text).unwrap();
+
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed[0]
+            .secret_payload_json
+            .contains("\"access_token\":\"at\""));
+        assert!(parsed[0].config_json.contains("\"raw_type\":\"codex\""));
+    }
+
+    #[tokio::test]
+    async fn official_text_import_accepts_sub2api_through_existing_entry() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let text = r#"{
+          "name": "tallisbisaccia737@hotmail.com",
+          "type": "oauth",
+          "platform": "openai",
+          "credentials": {
+            "type": "oauth",
+            "email": "tallisbisaccia737@hotmail.com",
+            "id_token": "id-token",
+            "auth_mode": "agentIdentity",
+            "plan_type": "k12",
+            "account_id": "7fbe4da7-1fab-4f6d-8210-a1eba367f805",
+            "workspace_id": "7fbe4da7-1fab-4f6d-8210-a1eba367f805",
+            "agent_private_key": "private-key"
+          }
+        }"#;
+
+        let result = RouteCredentialService::import_official_text(
+            &pool,
+            ImportOfficialTextInput {
+                platform: "codex".to_string(),
+                text: text.to_string(),
+                batch_name: None,
+            },
+        )
+        .await
+        .expect("import");
+
+        assert!(result.failed.is_empty());
+        assert_eq!(result.imported.len(), 1);
+        let imported = &result.imported[0];
+        assert_eq!(imported.platform, "codex");
+        assert_eq!(imported.kind, "official");
+        assert_eq!(
+            imported.email.as_deref(),
+            Some("tallisbisaccia737@hotmail.com")
+        );
+        assert_eq!(imported.subscription_type.as_deref(), Some("k12"));
+        assert!(imported.secret_payload_json.contains("private-key"));
+        assert!(imported
+            .config_json
+            .contains("\"import_format\":\"sub2api\""));
+    }
+
+    #[tokio::test]
+    async fn create_api_credential_persists_responses_custom_tool_compat() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+
+        let created = RouteCredentialService::create_api(
+            &pool,
+            CreateApiRouteCredentialInput {
+                platform: "codex".into(),
+                display_name: "Xiaomi Relay".into(),
+                api_key: "sk-test".into(),
+                base_url: "https://api.xiaomi.example/v1".into(),
+                interface_format: "openai-responses".into(),
+                model_mappings_json: "[]".into(),
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: Some(true),
+            },
+        )
+        .await
+        .expect("create");
+
+        let config: serde_json::Value =
+            serde_json::from_str(&created.config_json).expect("config");
+        assert_eq!(
+            config["responses_custom_tool_compat"],
+            serde_json::json!(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn create_api_credential_defaults_responses_custom_tool_compat_off() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+
+        let created = RouteCredentialService::create_api(
+            &pool,
+            CreateApiRouteCredentialInput {
+                platform: "codex".into(),
+                display_name: "Default Relay".into(),
+                api_key: "sk-test".into(),
+                base_url: "https://api.example.com/v1".into(),
+                interface_format: "openai-responses".into(),
+                model_mappings_json: "[]".into(),
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: None,
+            },
+        )
+        .await
+        .expect("create");
+
+        let config: serde_json::Value =
+            serde_json::from_str(&created.config_json).expect("config");
+        assert_eq!(
+            config["responses_custom_tool_compat"],
+            serde_json::json!(false)
+        );
     }
 }

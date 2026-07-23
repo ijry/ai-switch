@@ -90,6 +90,7 @@ pub fn to_create_api_input(parsed: &DeepLinkProviderImport) -> CreateApiRouteCre
         api_key_field: None,
         preview_json: None,
         batch_id: None,
+        responses_custom_tool_compat: None,
     }
 }
 

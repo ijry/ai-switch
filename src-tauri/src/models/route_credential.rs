@@ -43,6 +43,8 @@ pub struct CreateApiRouteCredentialInput {
     pub api_key_field: Option<String>,
     pub preview_json: Option<String>,
     pub batch_id: Option<String>,
+    #[serde(default)]
+    pub responses_custom_tool_compat: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

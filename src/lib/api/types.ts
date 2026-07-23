@@ -153,6 +153,7 @@ export type CreateApiRouteCredentialInput = {
   api_key_field?: AnthropicApiKeyField | string | null;
   preview_json?: string | null;
   batch_id?: string | null;
+  responses_custom_tool_compat?: boolean | null;
 };
 
 export type UpdateRouteCredentialInput = {
