@@ -77,7 +77,9 @@ pub async fn start_web_server(state: State<'_, AppState>) -> Result<WebServerSta
         .await
         .map_err(ApiError::from)?;
     let app_state = Arc::new(state.inner().clone());
-    WebService::start(app_state, config).await.map_err(ApiError::from)
+    WebService::start(app_state, config)
+        .await
+        .map_err(ApiError::from)
 }
 
 #[tauri::command]
@@ -94,13 +96,7 @@ pub async fn get_tailscale_status(state: State<'_, AppState>) -> Result<Tailscal
         .await
         .map_err(ApiError::from)?;
     let web_status = WebService::status(&state.web_service, &config).await;
-    Ok(TailscaleService::status(
-        &state.tailscale,
-        &state.paths,
-        &config,
-        Some(&web_status),
-    )
-    .await)
+    Ok(TailscaleService::status(&state.tailscale, &state.paths, &config, Some(&web_status)).await)
 }
 
 #[tauri::command]
@@ -110,13 +106,9 @@ pub async fn start_tailscale_login(
 ) -> Result<TailscaleLogin, ApiError> {
     // Remote proxy only works when the local web backend is listening.
     let (config, web_status) = ensure_web_running(state.inner()).await?;
-    let mut login = TailscaleService::start_login(
-        &state.tailscale,
-        &state.paths,
-        &config,
-        Some(&web_status),
-    )
-    .await;
+    let mut login =
+        TailscaleService::start_login(&state.tailscale, &state.paths, &config, Some(&web_status))
+            .await;
 
     if let Some(login_url) = login
         .login_url

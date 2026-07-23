@@ -26,12 +26,12 @@ pub fn parse_cpa_text(
     }
 
     let value: Value = serde_json::from_str(trimmed)?;
-    reject_wrapper_export(&value)?;
 
     match value {
-        Value::Object(object) => {
-            parse_cpa_object(&platform, &object).map(|credential| vec![credential])
-        }
+        Value::Object(object) => match object.get("accounts") {
+            Some(accounts) => parse_cpa_accounts_wrapper(&platform, accounts),
+            None => parse_cpa_object(&platform, &object).map(|credential| vec![credential]),
+        },
         Value::Array(items) => items
             .iter()
             .enumerate()
@@ -78,8 +78,8 @@ fn parse_cpa_object(
     }
 
     let email = string_field(object, &["email"]);
-    let display_name = email
-        .clone()
+    let display_name = string_field(object, &["display_name", "displayName", "name", "label"])
+        .or_else(|| email.clone())
         .unwrap_or_else(|| "Official account".to_string());
 
     let id_token = token_field(object, "id_token", "idToken");
@@ -165,6 +165,55 @@ fn parse_cpa_object(
     })
 }
 
+fn parse_cpa_accounts_wrapper(
+    platform: &str,
+    accounts: &Value,
+) -> Result<Vec<ParsedOfficialCredential>, AppError> {
+    let accounts = accounts.as_array().ok_or_else(|| {
+        validation_error(
+            "validation.cpa_accounts_array",
+            "CPA accounts wrapper must contain an accounts array",
+            None,
+        )
+    })?;
+
+    accounts
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let object = item.as_object().ok_or_else(|| {
+                validation_error(
+                    "validation.cpa_entry_object",
+                    "CPA accounts wrapper entries must be objects",
+                    Some(format!("Entry {index} is not an object")),
+                )
+            })?;
+            let normalized = normalize_cpa_wrapper_account(object);
+            parse_cpa_object(platform, &normalized)
+        })
+        .collect()
+}
+
+fn normalize_cpa_wrapper_account(object: &Map<String, Value>) -> Map<String, Value> {
+    let mut normalized = object.clone();
+
+    if !normalized.contains_key("type") {
+        if let Some(provider) = value_field_option(object, &["provider", "platform", "app"]) {
+            normalized.insert("type".to_string(), provider);
+        }
+    }
+
+    if let Some(credentials) = object.get("credentials").and_then(Value::as_object) {
+        for (key, value) in credentials {
+            normalized
+                .entry(key.clone())
+                .or_insert_with(|| value.clone());
+        }
+    }
+
+    normalized
+}
+
 fn normalize_imported_headers(platform: &str, headers: &Value) -> Value {
     // Preserve non-Grok headers as-is.
     if platform != "grok" {
@@ -188,30 +237,6 @@ fn normalize_imported_headers(platform: &str, headers: &Value) -> Value {
     Value::Object(map)
 }
 
-fn reject_wrapper_export(value: &Value) -> Result<(), AppError> {
-    let Some(accounts) = value
-        .as_object()
-        .and_then(|object| object.get("accounts"))
-        .and_then(Value::as_array)
-    else {
-        return Ok(());
-    };
-
-    if accounts.iter().any(|account| {
-        account
-            .as_object()
-            .is_some_and(|object| object.contains_key("credentials"))
-    }) {
-        return Err(validation_error(
-            "validation.cpa_wrapper_unsupported",
-            "CPA accounts wrapper export is not supported",
-            None,
-        ));
-    }
-
-    Ok(())
-}
-
 fn token_field(object: &Map<String, Value>, snake_case: &str, camel_case: &str) -> Option<String> {
     string_field(object, &[snake_case, camel_case]).or_else(|| {
         object
@@ -233,9 +258,11 @@ fn string_field(object: &Map<String, Value>, keys: &[&str]) -> Option<String> {
 }
 
 fn value_field(object: &Map<String, Value>, keys: &[&str]) -> Value {
-    keys.iter()
-        .find_map(|key| object.get(*key).cloned())
-        .unwrap_or(Value::Null)
+    value_field_option(object, keys).unwrap_or(Value::Null)
+}
+
+fn value_field_option(object: &Map<String, Value>, keys: &[&str]) -> Option<Value> {
+    keys.iter().find_map(|key| object.get(*key).cloned())
 }
 
 fn normalize_platform(platform: &str) -> Result<String, AppError> {
@@ -253,15 +280,14 @@ fn normalize_platform(platform: &str) -> Result<String, AppError> {
 
 fn canonicalize_cpa_platform(platform: &str) -> String {
     let normalized = platform.trim().to_lowercase();
-    // CLIProxyAPI xAI exports may use type "xai" while the app platform id is "grok".
-    if normalized.contains("grok")
-        || normalized == "xai"
-        || normalized.contains("x.ai")
-        || normalized == "x-ai"
-    {
-        return "grok".to_string();
+    match normalized.as_str() {
+        "anthropic" | "claude" => "claude".to_string(),
+        "openai" | "chatgpt" | "codex" => "codex".to_string(),
+        "gemini" | "google" => "gemini".to_string(),
+        "xai" | "x-ai" => "grok".to_string(),
+        _ if normalized.contains("grok") || normalized.contains("x.ai") => "grok".to_string(),
+        _ => normalized,
     }
-    platform.trim().to_string()
 }
 
 fn cpa_types_match(expected_platform: &str, raw_type: &str) -> bool {
@@ -327,13 +353,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_accounts_wrapper_export() {
+    fn parses_accounts_wrapper_export() {
         let text = r#"{"accounts":[{"provider":"anthropic","email":"x@example.com","credentials":{"access_token":"a","refresh_token":"b"}}]}"#;
-        let err = parse_cpa_text("claude", text).unwrap_err();
-        assert!(
-            format!("{err:?}").contains("cpa_wrapper_unsupported")
-                || format!("{err}").contains("wrapper")
-        );
+        let parsed = parse_cpa_text("claude", text).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].email.as_deref(), Some("x@example.com"));
+        assert!(parsed[0].secret_payload_json.contains("\"access_token\":\"a\""));
+        assert!(parsed[0].secret_payload_json.contains("\"refresh_token\":\"b\""));
+        assert!(parsed[0].config_json.contains("\"raw\""));
     }
 
     #[test]

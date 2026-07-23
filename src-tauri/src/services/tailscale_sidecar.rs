@@ -1,6 +1,4 @@
-use crate::services::tailscale_types::{
-    TailscaleLogin, TailscaleStartRequest, TailscaleStatus,
-};
+use crate::services::tailscale_types::{TailscaleLogin, TailscaleStartRequest, TailscaleStatus};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -153,7 +151,6 @@ impl SidecarControlClient for FakeSidecarControlClient {
     }
 }
 
-
 #[derive(Debug)]
 pub struct SidecarProcess {
     child: Mutex<Option<tokio::process::Child>>,
@@ -264,20 +261,19 @@ impl HttpSidecarControlClient {
             .ok_or_else(|| "secure network component produced no output".to_string())?;
         let mut reader = tokio::io::BufReader::new(stdout).lines();
 
-        let control_addr = tokio::time::timeout(std::time::Duration::from_secs(8), async {
-            while let Some(line) = reader
-                .next_line()
-                .await
-                .map_err(|error| format!("Could not read secure network startup output: {error}"))?
-            {
-                if let Some(addr) = parse_control_addr_line(&line) {
-                    return Ok(addr);
+        let control_addr =
+            tokio::time::timeout(std::time::Duration::from_secs(8), async {
+                while let Some(line) = reader.next_line().await.map_err(|error| {
+                    format!("Could not read secure network startup output: {error}")
+                })? {
+                    if let Some(addr) = parse_control_addr_line(&line) {
+                        return Ok(addr);
+                    }
                 }
-            }
-            Err("Secure network component did not publish a control address".to_string())
-        })
-        .await
-        .map_err(|_| "Secure network component startup timed out".to_string())??;
+                Err("Secure network component did not publish a control address".to_string())
+            })
+            .await
+            .map_err(|_| "Secure network component startup timed out".to_string())??;
 
         {
             let mut child_slot = self
@@ -342,10 +338,9 @@ impl HttpSidecarControlClient {
             match build(base).await {
                 Ok(response) => {
                     let status = response.status();
-                    let text = response
-                        .text()
-                        .await
-                        .map_err(|error| format!("Secure network control response failed: {error}"))?;
+                    let text = response.text().await.map_err(|error| {
+                        format!("Secure network control response failed: {error}")
+                    })?;
                     if !status.is_success() {
                         return Err(format!("Secure network control error ({status}): {text}"));
                     }
@@ -456,7 +451,8 @@ pub fn parse_control_addr_line(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_control_addr_line, resolve_sidecar_path, FakeSidecarControlClient, HttpSidecarControlClient, SidecarControlClient,
+        parse_control_addr_line, resolve_sidecar_path, FakeSidecarControlClient,
+        HttpSidecarControlClient, SidecarControlClient,
     };
     use crate::services::tailscale_types::{TailscaleStartRequest, TailscaleStatus};
     use std::path::PathBuf;

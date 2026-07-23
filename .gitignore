@@ -8,3 +8,5 @@ src-tauri/target/
 .env.*
 !.env.example
 .tauri/
+src-tauri/target-codex-test/
+.codex-run/

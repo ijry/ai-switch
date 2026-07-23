@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::IntoResponse;
-use axum::extract::State;
 
 use crate::app_state::AppState;
 use crate::web::auth::{is_authorized, is_query_token_authorized};

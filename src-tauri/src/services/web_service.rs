@@ -91,13 +91,22 @@ impl WebService {
         Ok(normalized)
     }
 
-    pub async fn status(runtime: &WebServiceRuntimeState, config: &WebServiceConfig) -> WebServerStatus {
-        runtime.inner.lock().await.status.clone().unwrap_or(WebServerStatus {
-            running: false,
-            host: config.host.clone(),
-            port: None,
-            base_url: None,
-        })
+    pub async fn status(
+        runtime: &WebServiceRuntimeState,
+        config: &WebServiceConfig,
+    ) -> WebServerStatus {
+        runtime
+            .inner
+            .lock()
+            .await
+            .status
+            .clone()
+            .unwrap_or(WebServerStatus {
+                running: false,
+                host: config.host.clone(),
+                port: None,
+                base_url: None,
+            })
     }
 
     pub async fn start(
@@ -119,12 +128,14 @@ impl WebService {
                 details: Some(error.to_string()),
                 recoverable: true,
             })?;
-        let addr = listener.local_addr().map_err(|error| AppError::Filesystem {
-            code: "web_service.addr",
-            message: "Could not read web service address".to_string(),
-            details: Some(error.to_string()),
-            recoverable: true,
-        })?;
+        let addr = listener
+            .local_addr()
+            .map_err(|error| AppError::Filesystem {
+                code: "web_service.addr",
+                message: "Could not read web service address".to_string(),
+                details: Some(error.to_string()),
+                recoverable: true,
+            })?;
         let host = advertised_host(addr, &config.host);
         let port = addr.port();
         let base_url = format!("http://{host}:{port}");

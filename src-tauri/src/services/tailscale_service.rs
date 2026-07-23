@@ -227,7 +227,9 @@ impl TailscaleService {
 
         // Prefer rebinding an already-connected session so starting web after OAuth works.
         if let Ok(existing) = client.status().await {
-            if existing.state == "connected" || auth_key.is_some() || config.tailscale_auth_key_present
+            if existing.state == "connected"
+                || auth_key.is_some()
+                || config.tailscale_auth_key_present
             {
                 let request = Self::build_start_request(paths, config, web_status, auth_key);
                 return match client.start(request).await {
@@ -343,7 +345,9 @@ impl TailscaleService {
             auth_key,
             backend_addr: format!("{backend_host}:{port}"),
             serve_port: port,
-            public: config.tailscale_exposure_mode.eq_ignore_ascii_case("public"),
+            public: config
+                .tailscale_exposure_mode
+                .eq_ignore_ascii_case("public"),
         }
     }
 
@@ -361,7 +365,9 @@ impl TailscaleService {
                 let port = web_status
                     .and_then(|status| status.port)
                     .unwrap_or(config.port);
-                let public = config.tailscale_exposure_mode.eq_ignore_ascii_case("public")
+                let public = config
+                    .tailscale_exposure_mode
+                    .eq_ignore_ascii_case("public")
                     || status.public
                     || status
                         .exposure_mode
@@ -577,13 +583,9 @@ mod tests {
         let runtime = TailscaleRuntimeState::default();
         let (_dir, paths) = test_paths();
         let config = WebServiceConfig::default();
-        let status = TailscaleService::status_with_client(
-            &runtime,
-            &paths,
-            &config,
-            None,
-            || panic!("factory should not run when disabled"),
-        )
+        let status = TailscaleService::status_with_client(&runtime, &paths, &config, None, || {
+            panic!("factory should not run when disabled")
+        })
         .await;
         assert_eq!(status.state, "disabled");
     }

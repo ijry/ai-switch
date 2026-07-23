@@ -70,7 +70,10 @@ async fn static_fallback(State(context): State<WebServerContext>, uri: Uri) -> R
                 .header(header::CONTENT_TYPE, content_type)
                 .body(Body::from(bytes))
                 .unwrap_or_else(|_| {
-                    error_response(StatusCode::INTERNAL_SERVER_ERROR, "Could not build response")
+                    error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Could not build response",
+                    )
                 })
         }
         Err(_) => error_response(StatusCode::NOT_FOUND, "AI Switch web assets not found"),

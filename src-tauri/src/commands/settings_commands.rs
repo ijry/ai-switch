@@ -6,7 +6,9 @@ use tauri::State;
 
 #[tauri::command]
 pub async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, ApiError> {
-    get_settings_core(&state.paths).await.map_err(ApiError::from)
+    get_settings_core(&state.paths)
+        .await
+        .map_err(ApiError::from)
 }
 
 #[tauri::command]

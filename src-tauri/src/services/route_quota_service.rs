@@ -2,6 +2,9 @@ use crate::database::repositories::route_credential_repository::RouteCredentialR
 use crate::error::AppError;
 use crate::models::route_credential::RouteCredential;
 use crate::services::http_client::build_outbound_http_client;
+use crate::services::official_agent_identity_service::{
+    resolve_agent_identity_headers, AgentIdentityHeaders,
+};
 use crate::services::route_proxy_service::{
     apply_official_quota_snapshot, maybe_refresh_official_credential, OfficialQuotaSnapshot,
     SelectedCredential,
@@ -13,6 +16,17 @@ use sqlx::SqlitePool;
 use std::time::Duration;
 
 const QUOTA_HTTP_TIMEOUT: Duration = Duration::from_secs(20);
+const QUOTA_BODY_SNIPPET_CHARS: usize = 240;
+const CODEX_QUOTA_CLI_ORIGINATOR: &str = "codex_cli_rs";
+const CODEX_QUOTA_AGENT_IDENTITY_ORIGINATOR: &str = "Codex Desktop";
+const CODEX_QUOTA_CLI_USER_AGENT: &str = "codex_cli_rs/0.1.0";
+const CODEX_QUOTA_AGENT_IDENTITY_USER_AGENT: &str = "Codex Desktop/0.1.0";
+const CODEX_QUOTA_OPENAI_BETA: &str = "codex-1";
+const CODEX_QUOTA_LANGUAGE: &str = "zh-CN";
+const CODEX_QUOTA_SEC_FETCH_SITE: &str = "none";
+const CODEX_QUOTA_SEC_FETCH_MODE: &str = "no-cors";
+const CODEX_QUOTA_SEC_FETCH_DEST: &str = "empty";
+const CODEX_QUOTA_PRIORITY: &str = "u=4, i";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QuotaRefreshOutcome {
@@ -76,6 +90,7 @@ async fn refresh_credential(
         platform: credential.platform.clone(),
         kind: credential.kind.clone(),
         display_name: credential.display_name.clone(),
+        status: credential.status.clone(),
         secret_payload_json: credential.secret_payload_json.clone(),
         config_json: credential.config_json.clone(),
     };
@@ -96,7 +111,7 @@ async fn refresh_credential(
     )
     .await?;
 
-    let Some((snapshot, source)) = fetch else {
+    let Some((snapshot, source)) = fetch.snapshot else {
         // Token refresh may still have updated secret/config.
         let latest = RouteCredentialRepository::get(pool, &credential.id).await?;
         return Ok(QuotaRefreshOutcome {
@@ -105,7 +120,9 @@ async fn refresh_credential(
                 || latest.config_json != credential.config_json,
             credential: latest,
             source: "none".to_string(),
-            message: Some("No official quota endpoint returned usable remaining data".to_string()),
+            message: Some(fetch.message.unwrap_or_else(|| {
+                "No official quota endpoint returned usable remaining data".to_string()
+            })),
         });
     };
 
@@ -148,26 +165,28 @@ async fn refresh_credential(
     })
 }
 
+#[derive(Debug, Clone)]
+struct QuotaFetchResult {
+    snapshot: Option<(OfficialQuotaSnapshot, String)>,
+    message: Option<String>,
+}
+
 async fn fetch_official_quota_snapshot(
     platform: &str,
     secret_payload_json: &str,
     config_json: &str,
-) -> Result<Option<(OfficialQuotaSnapshot, String)>, AppError> {
+) -> Result<QuotaFetchResult, AppError> {
     let secret = parse_json_object(secret_payload_json, "secret")?;
     let config = parse_json_object(config_json, "config")?;
-    let access_token = string_value(&secret, "access_token")
-        .ok_or_else(|| AppError::Validation {
-            code: "validation.route_quota_access_token",
-            message: "Official account is missing access_token for quota refresh".to_string(),
-            details: None,
-            recoverable: true,
-        })?
-        .to_string();
+    let auth = quota_request_auth(&secret, &config)?;
 
     let platform_key = normalize_platform(platform)?;
     let candidates = quota_endpoint_candidates(&platform_key, &config);
     if candidates.is_empty() {
-        return Ok(None);
+        return Ok(QuotaFetchResult {
+            snapshot: None,
+            message: Some("No official quota endpoint is configured for this platform".to_string()),
+        });
     }
 
     let client = build_outbound_http_client(Some(QUOTA_HTTP_TIMEOUT)).map_err(|message| {
@@ -179,24 +198,29 @@ async fn fetch_official_quota_snapshot(
         }
     })?;
 
-    let mut last_error: Option<String> = None;
+    let mut diagnostics: Vec<String> = Vec::new();
     for candidate in candidates {
-        match request_quota_snapshot(&client, &platform_key, &access_token, &secret, &candidate)
+        match request_quota_snapshot(&client, &platform_key, &auth, &secret, &candidate)
             .await
         {
-            Ok(Some(snapshot)) => return Ok(Some((snapshot, candidate.source))),
+            Ok(Some(snapshot)) => {
+                return Ok(QuotaFetchResult {
+                    snapshot: Some((snapshot, candidate.source)),
+                    message: None,
+                });
+            }
             Ok(None) => continue,
             Err(err) => {
-                last_error = Some(err);
+                diagnostics.push(err);
             }
         }
     }
 
     // Endpoint may be unavailable/unknown for this account shape; keep remain NULL.
-    if last_error.is_some() {
-        return Ok(None);
-    }
-    Ok(None)
+    Ok(QuotaFetchResult {
+        snapshot: None,
+        message: quota_fetch_failure_message(&diagnostics),
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -213,15 +237,48 @@ enum QuotaEndpointStyle {
     GrokStatus,
 }
 
+#[derive(Debug, Clone)]
+enum QuotaRequestAuth {
+    Bearer(String),
+    AgentIdentity(AgentIdentityHeaders),
+}
+
+fn quota_request_auth(secret: &Value, config: &Value) -> Result<QuotaRequestAuth, AppError> {
+    if let Some(agent_identity) =
+        resolve_agent_identity_headers(secret, config).map_err(|message| AppError::Validation {
+            code: "validation.route_quota_agent_identity",
+            message,
+            details: None,
+            recoverable: true,
+        })?
+    {
+        return Ok(QuotaRequestAuth::AgentIdentity(agent_identity));
+    }
+
+    string_value(secret, "access_token")
+        .map(|value| QuotaRequestAuth::Bearer(value.to_string()))
+        .ok_or_else(|| AppError::Validation {
+            code: "validation.route_quota_access_token",
+            message: "Official account is missing access_token for quota refresh".to_string(),
+            details: None,
+            recoverable: true,
+        })
+}
+
 fn quota_endpoint_candidates(platform: &str, config: &Value) -> Vec<QuotaEndpointCandidate> {
     let mut out = Vec::new();
     match platform {
         "codex" => {
-            out.push(QuotaEndpointCandidate {
-                url: "https://chatgpt.com/backend-api/wham/usage".to_string(),
-                source: "codex.wham_usage".to_string(),
-                style: QuotaEndpointStyle::CodexWham,
-            });
+            if let Some(base_url) = string_value(config, "base_url") {
+                push_codex_usage_candidate(&mut out, base_url, "codex.config_usage");
+            } else {
+                push_quota_candidate(
+                    &mut out,
+                    "https://chatgpt.com/backend-api/wham/usage".to_string(),
+                    "codex.default_wham_usage",
+                    QuotaEndpointStyle::CodexWham,
+                );
+            }
         }
         "claude" => {
             out.push(QuotaEndpointCandidate {
@@ -265,24 +322,96 @@ fn quota_endpoint_candidates(platform: &str, config: &Value) -> Vec<QuotaEndpoin
     out
 }
 
+fn push_codex_usage_candidate(
+    out: &mut Vec<QuotaEndpointCandidate>,
+    base_url: &str,
+    source: &str,
+) {
+    let base = base_url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return;
+    }
+    let lower = base.to_ascii_lowercase();
+    let url = if lower.contains("/backend-api") {
+        let prefix = backend_api_prefix(base).unwrap_or(base);
+        format!("{prefix}/wham/usage")
+    } else if lower.starts_with("https://chatgpt.com")
+        || lower.starts_with("https://chat.openai.com")
+    {
+        format!("{base}/backend-api/wham/usage")
+    } else {
+        format!("{base}/api/codex/usage")
+    };
+    push_quota_candidate(out, url, source, QuotaEndpointStyle::CodexWham);
+}
+
+fn backend_api_prefix(base: &str) -> Option<&str> {
+    let lower = base.to_ascii_lowercase();
+    let idx = lower.find("/backend-api")?;
+    Some(&base[..idx + "/backend-api".len()])
+}
+
+fn push_quota_candidate(
+    out: &mut Vec<QuotaEndpointCandidate>,
+    url: String,
+    source: &str,
+    style: QuotaEndpointStyle,
+) {
+    if out.iter().any(|candidate| candidate.url == url) {
+        return;
+    }
+    out.push(QuotaEndpointCandidate {
+        url,
+        source: source.to_string(),
+        style,
+    });
+}
+
 async fn request_quota_snapshot(
     client: &reqwest::Client,
     platform: &str,
-    access_token: &str,
+    auth: &QuotaRequestAuth,
     secret: &Value,
     candidate: &QuotaEndpointCandidate,
 ) -> Result<Option<OfficialQuotaSnapshot>, String> {
-    let mut request = client
-        .get(&candidate.url)
-        .header("authorization", format!("Bearer {access_token}"))
-        .header("accept", "application/json");
+    let mut request = client.get(&candidate.url).header("accept", "application/json");
+    request = match auth {
+        QuotaRequestAuth::Bearer(access_token) => {
+            request.header("authorization", format!("Bearer {access_token}"))
+        }
+        QuotaRequestAuth::AgentIdentity(agent_identity) => {
+            request.header("authorization", agent_identity.authorization.as_str())
+        }
+    };
 
     match candidate.style {
         QuotaEndpointStyle::CodexWham => {
-            if let Some(account_id) = string_value(secret, "account_id") {
-                request = request.header("chatgpt-account-id", account_id);
+            request = request
+                .header("openai-beta", CODEX_QUOTA_OPENAI_BETA)
+                .header("oai-language", CODEX_QUOTA_LANGUAGE)
+                .header("sec-fetch-site", CODEX_QUOTA_SEC_FETCH_SITE)
+                .header("sec-fetch-mode", CODEX_QUOTA_SEC_FETCH_MODE)
+                .header("sec-fetch-dest", CODEX_QUOTA_SEC_FETCH_DEST)
+                .header("priority", CODEX_QUOTA_PRIORITY);
+            match auth {
+                QuotaRequestAuth::Bearer(_) => {
+                    if let Some(account_id) = codex_account_id(secret) {
+                        request = request.header("chatgpt-account-id", account_id);
+                    }
+                    request = request
+                        .header("originator", CODEX_QUOTA_CLI_ORIGINATOR)
+                        .header("user-agent", CODEX_QUOTA_CLI_USER_AGENT);
+                }
+                QuotaRequestAuth::AgentIdentity(agent_identity) => {
+                    request = request
+                        .header("chatgpt-account-id", agent_identity.chatgpt_account_id.as_str())
+                        .header("originator", CODEX_QUOTA_AGENT_IDENTITY_ORIGINATOR)
+                        .header("user-agent", CODEX_QUOTA_AGENT_IDENTITY_USER_AGENT);
+                    if agent_identity.is_fedramp_account {
+                        request = request.header("x-openai-fedramp", "true");
+                    }
+                }
             }
-            request = request.header("user-agent", "ai-switch/0.1");
         }
         QuotaEndpointStyle::ClaudeOauthUsage => {
             request = request
@@ -301,7 +430,12 @@ async fn request_quota_snapshot(
     let response = request
         .send()
         .await
-        .map_err(|err| format!("Quota request failed for {}: {err}", candidate.url))?;
+        .map_err(|err| {
+            format!(
+                "Quota request failed for {} ({}): {err}",
+                candidate.source, candidate.url
+            )
+        })?;
     let status = response.status();
     let body = response
         .text()
@@ -314,17 +448,30 @@ async fn request_quota_snapshot(
     if !status.is_success() {
         // Auth/network failures should surface for single-endpoint attempts, but callers
         // may continue to the next candidate.
-        return Err(format!(
-            "Quota request failed for {} with status {}: {}",
-            candidate.url,
+        return Err(format_quota_http_error(
+            &candidate.source,
+            &candidate.url,
             status.as_u16(),
-            body.chars().take(240).collect::<String>()
+            &body,
         ));
     }
 
     let value = match serde_json::from_str::<Value>(&body) {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(_) => {
+            if let Some(blocked) = chatgpt_network_block_message(&body) {
+                return Err(format!(
+                    "Quota response from {} ({}) was blocked by ChatGPT network policy: {}",
+                    candidate.source, candidate.url, blocked
+                ));
+            }
+            return Err(format!(
+                "Quota response from {} ({}) was not JSON: {}",
+                candidate.source,
+                candidate.url,
+                quota_response_snippet(&body)
+            ));
+        }
     };
 
     let snapshot = match candidate.style {
@@ -334,10 +481,104 @@ async fn request_quota_snapshot(
     };
 
     let _ = platform;
+    if snapshot.is_none() {
+        return Err(format!(
+            "Quota response from {} ({}) had no supported quota fields: {}",
+            candidate.source,
+            candidate.url,
+            quota_response_snippet(&body)
+        ));
+    }
     Ok(snapshot)
 }
 
+fn codex_account_id(secret: &Value) -> Option<&str> {
+    string_value(secret, "account_id")
+        .or_else(|| string_value(secret, "chatgpt_account_id"))
+        .or_else(|| string_value(secret, "workspace_id"))
+}
+
+fn quota_fetch_failure_message(diagnostics: &[String]) -> Option<String> {
+    if diagnostics.is_empty() {
+        return None;
+    }
+    let joined = diagnostics.join(" | ");
+    Some(format!(
+        "No official quota endpoint returned usable remaining data: {}",
+        joined.chars().take(720).collect::<String>()
+    ))
+}
+
+fn format_quota_http_error(source: &str, url: &str, status: u16, body: &str) -> String {
+    if let Some(blocked) = chatgpt_network_block_message(body) {
+        return format!(
+            "Quota request failed for {source} ({url}) with status {status}: {blocked}"
+        );
+    }
+    format!(
+        "Quota request failed for {source} ({url}) with status {status}: {}",
+        quota_response_snippet(body)
+    )
+}
+
+fn chatgpt_network_block_message(body: &str) -> Option<String> {
+    let lower = body.to_ascii_lowercase();
+    let blocked = lower.contains("unable to load site")
+        || lower.contains("if you are using a vpn")
+        || (lower.contains("blocked-icon") && lower.contains("status.openai.com"));
+    if !blocked {
+        return None;
+    }
+
+    let mut message = String::from(
+        "ChatGPT blocked this network egress (often VPN/proxy IP). Switch to another exit node or disable VPN, then retry quota refresh.",
+    );
+    if let Some(ip) = extract_bracketed_field(body, "IP:") {
+        message.push_str(&format!(" Detected IP: {ip}."));
+    }
+    if let Some(ray_id) = extract_bracketed_field(body, "Ray ID:") {
+        message.push_str(&format!(" Ray ID: {ray_id}."));
+    }
+    Some(message)
+}
+
+fn extract_bracketed_field(body: &str, label: &str) -> Option<String> {
+    let start = body.find(label)? + label.len();
+    let rest = body[start..].trim_start();
+    let token = rest
+        .split(|ch: char| ch == '|' || ch == ']' || ch.is_whitespace())
+        .find(|part| !part.is_empty())?;
+    Some(
+        token
+            .trim_matches(|ch: char| ch == '[' || ch == ']' || ch == ',')
+            .to_string(),
+    )
+}
+
+fn quota_response_snippet(body: &str) -> String {
+    let snippet = body
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(QUOTA_BODY_SNIPPET_CHARS)
+        .collect::<String>();
+    if snippet.is_empty() {
+        "<empty body>".to_string()
+    } else {
+        snippet
+    }
+}
+
 pub fn parse_codex_quota_snapshot(value: &Value) -> Option<OfficialQuotaSnapshot> {
+    if let Some(rate_limits) = value.get("rate_limits").or_else(|| value.get("rateLimits")) {
+        if let Some(snapshot) = parse_codex_quota_snapshot(rate_limits) {
+            return Some(snapshot);
+        }
+    }
+
+    let subscription_type = subscription_type_from(value);
+
     // Preferred ChatGPT/Codex WHAM shape.
     if let Some(rate_limit) = value.get("rate_limit").or_else(|| value.get("rateLimit")) {
         let primary = window_remain(
@@ -356,8 +597,18 @@ pub fn parse_codex_quota_snapshot(value: &Value) -> Option<OfficialQuotaSnapshot
                 .or_else(|| rate_limit.get("sevenDay")),
         );
         if primary.is_some() || weekly.is_some() {
-            return Some(merge_windows(primary, weekly, subscription_type_from(value)));
+            return Some(merge_windows(primary, weekly, subscription_type));
         }
+        if codex_rate_limit_exhausted(value, rate_limit) {
+            return Some(snapshot_with_primary_remaining(subscription_type, Some(0)));
+        }
+    }
+
+    if let Some(snapshot) = parse_codex_additional_rate_limits(value, subscription_type.clone()) {
+        return Some(snapshot);
+    }
+    if let Some(snapshot) = parse_codex_spend_control(value, subscription_type.clone()) {
+        return Some(snapshot);
     }
 
     // Flat five_hour / weekly objects.
@@ -377,9 +628,112 @@ pub fn parse_codex_quota_snapshot(value: &Value) -> Option<OfficialQuotaSnapshot
             .or_else(|| value.get("secondaryWindow")),
     );
     if primary.is_some() || weekly.is_some() {
-        return Some(merge_windows(primary, weekly, subscription_type_from(value)));
+        return Some(merge_windows(primary, weekly, subscription_type));
+    }
+    if subscription_type.is_some() && has_codex_quota_signal(value) {
+        return Some(snapshot_with_primary_remaining(subscription_type, None));
     }
     None
+}
+
+fn parse_codex_additional_rate_limits(
+    value: &Value,
+    subscription_type: Option<String>,
+) -> Option<OfficialQuotaSnapshot> {
+    let items = value
+        .get("additional_rate_limits")
+        .or_else(|| value.get("additionalRateLimits"))?
+        .as_array()?;
+    let mut fallback: Option<OfficialQuotaSnapshot> = None;
+
+    for item in items {
+        let Some(rate_limit) = item.get("rate_limit").or_else(|| item.get("rateLimit")) else {
+            continue;
+        };
+        let primary = window_remain(
+            rate_limit
+                .get("primary_window")
+                .or_else(|| rate_limit.get("primaryWindow")),
+        );
+        let weekly = window_remain(
+            rate_limit
+                .get("secondary_window")
+                .or_else(|| rate_limit.get("secondaryWindow")),
+        );
+        let snapshot = if primary.is_some() || weekly.is_some() {
+            merge_windows(primary, weekly, subscription_type.clone())
+        } else if codex_rate_limit_exhausted(value, rate_limit) {
+            snapshot_with_primary_remaining(subscription_type.clone(), Some(0))
+        } else {
+            continue;
+        };
+
+        let feature = string_value(item, "metered_feature")
+            .or_else(|| string_value(item, "meteredFeature"))
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if feature == "codex" {
+            return Some(snapshot);
+        }
+        if fallback.is_none() {
+            fallback = Some(snapshot);
+        }
+    }
+
+    fallback
+}
+
+fn parse_codex_spend_control(
+    value: &Value,
+    subscription_type: Option<String>,
+) -> Option<OfficialQuotaSnapshot> {
+    let spend_control = value
+        .get("spend_control")
+        .or_else(|| value.get("spendControl"))?;
+    if bool_value(spend_control, "reached").unwrap_or(false) {
+        return Some(snapshot_with_primary_remaining(subscription_type, Some(0)));
+    }
+    let individual_limit = spend_control
+        .get("individual_limit")
+        .or_else(|| spend_control.get("individualLimit"));
+    let primary = window_remain(individual_limit);
+    primary.map(|primary| merge_windows(Some(primary), None, subscription_type))
+}
+
+fn codex_rate_limit_exhausted(root: &Value, rate_limit: &Value) -> bool {
+    bool_value(rate_limit, "limit_reached").unwrap_or(false)
+        || bool_value(rate_limit, "limitReached").unwrap_or(false)
+        || bool_value(rate_limit, "allowed").is_some_and(|allowed| !allowed)
+        || root
+            .get("rate_limit_reached_type")
+            .or_else(|| root.get("rateLimitReachedType"))
+            .is_some_and(|value| !value.is_null())
+}
+
+fn has_codex_quota_signal(value: &Value) -> bool {
+    value.get("rate_limit").is_some()
+        || value.get("rateLimit").is_some()
+        || value.get("credits").is_some()
+        || value.get("spend_control").is_some()
+        || value.get("spendControl").is_some()
+        || value.get("additional_rate_limits").is_some()
+        || value.get("additionalRateLimits").is_some()
+}
+
+fn snapshot_with_primary_remaining(
+    subscription_type: Option<String>,
+    primary_remain: Option<i64>,
+) -> OfficialQuotaSnapshot {
+    OfficialQuotaSnapshot {
+        subscription_type,
+        primary_remain,
+        weekly_remain: None,
+        reset_primary: None,
+        reset_weekly: None,
+        quota_remaining: primary_remain,
+        quota_limit: None,
+        quota_used: None,
+    }
 }
 
 pub fn parse_claude_quota_snapshot(value: &Value) -> Option<OfficialQuotaSnapshot> {
@@ -487,6 +841,8 @@ fn window_remain(value: Option<&Value>) -> Option<WindowRemain> {
             "remaining",
             "remain",
             "left",
+            "remaining_percent",
+            "remainingPercent",
             "tokens_remaining",
             "remaining_tokens",
         ],
@@ -636,6 +992,18 @@ fn as_f64(value: &Value) -> Option<f64> {
     }
 }
 
+fn bool_value(value: &Value, key: &str) -> Option<bool> {
+    match value.get(key)? {
+        Value::Bool(value) => Some(*value),
+        Value::String(text) => match text.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => Some(true),
+            "false" | "0" | "no" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn as_time_string(value: &Value) -> Option<String> {
     match value {
         Value::String(text) => {
@@ -741,6 +1109,110 @@ mod tests {
     }
 
     #[test]
+    fn codex_candidates_use_official_chatgpt_wham_endpoint() {
+        let candidates = quota_endpoint_candidates(
+            "codex",
+            &json!({"base_url":"https://chatgpt.com/backend-api/codex"}),
+        );
+        let urls = candidates
+            .iter()
+            .map(|candidate| candidate.url.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(urls, vec!["https://chatgpt.com/backend-api/wham/usage"]);
+        assert!(!urls.contains(&"https://chatgpt.com/backend-api/codex/usage"));
+    }
+
+    #[test]
+    fn codex_candidates_normalize_chatgpt_host_to_backend_api_wham() {
+        let candidates = quota_endpoint_candidates("codex", &json!({"base_url":"https://chatgpt.com"}));
+        let urls = candidates
+            .iter()
+            .map(|candidate| candidate.url.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(urls, vec!["https://chatgpt.com/backend-api/wham/usage"]);
+        assert!(!urls.contains(&"https://chatgpt.com/api/codex/usage"));
+    }
+
+    #[test]
+    fn codex_candidates_use_codex_api_usage_for_non_chatgpt_base() {
+        let candidates = quota_endpoint_candidates("codex", &json!({"base_url":"https://example.test"}));
+        let urls = candidates
+            .iter()
+            .map(|candidate| candidate.url.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(urls, vec!["https://example.test/api/codex/usage"]);
+        assert!(!urls.contains(&"https://chatgpt.com/backend-api/codex/usage"));
+    }
+
+    #[test]
+    fn parse_codex_official_percent_windows() {
+        let value = json!({
+            "plan_type": "k12",
+            "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "primary_window": {
+                    "used_percent": 42,
+                    "limit_window_seconds": 18000,
+                    "reset_after_seconds": 1000,
+                    "reset_at": 1780000000
+                },
+                "secondary_window": {
+                    "used_percent": 84,
+                    "limit_window_seconds": 604800,
+                    "reset_after_seconds": 2000,
+                    "reset_at": 1780600000
+                }
+            },
+            "additional_rate_limits": []
+        });
+
+        let snapshot = parse_codex_quota_snapshot(&value).expect("snapshot");
+        assert_eq!(snapshot.subscription_type.as_deref(), Some("k12"));
+        assert_eq!(snapshot.primary_remain, Some(58));
+        assert_eq!(snapshot.weekly_remain, Some(16));
+        assert!(snapshot.reset_primary.as_deref().is_some_and(|value| value.contains('T')));
+        assert!(snapshot.reset_weekly.as_deref().is_some_and(|value| value.contains('T')));
+    }
+
+    #[test]
+    fn parse_codex_exhausted_without_windows() {
+        let value = json!({
+            "plan_type": "free",
+            "rate_limit": {
+                "allowed": false,
+                "limit_reached": true
+            },
+            "rate_limit_reached_type": { "type": "rate_limit_reached" }
+        });
+
+        let snapshot = parse_codex_quota_snapshot(&value).expect("snapshot");
+        assert_eq!(snapshot.subscription_type.as_deref(), Some("free"));
+        assert_eq!(snapshot.primary_remain, Some(0));
+        assert_eq!(snapshot.quota_remaining, Some(0));
+    }
+
+    #[test]
+    fn parse_codex_subscription_only_payload() {
+        let value = json!({
+            "plan_type": "k12",
+            "rate_limit": null,
+            "credits": {
+                "has_credits": true,
+                "unlimited": true
+            }
+        });
+
+        let snapshot = parse_codex_quota_snapshot(&value).expect("snapshot");
+        assert_eq!(snapshot.subscription_type.as_deref(), Some("k12"));
+        assert_eq!(snapshot.primary_remain, None);
+        assert_eq!(snapshot.weekly_remain, None);
+    }
+
+    #[test]
     fn parse_claude_utilization_percent() {
         let value = json!({
             "five_hour": { "utilization": 0.25, "resets_at": "2026-07-22T12:00:00Z" },
@@ -824,5 +1296,180 @@ mod tests {
         assert!(!outcome.updated);
         assert_eq!(outcome.source, "skipped");
         assert_eq!(outcome.credential.id, created.id);
+    }
+
+    fn assert_quota_header(headers: &axum::http::HeaderMap, name: &str, expected: &str) {
+        assert_eq!(
+            headers.get(name).and_then(|value| value.to_str().ok()),
+            Some(expected),
+            "header {name}"
+        );
+    }
+
+    fn assert_common_codex_quota_headers(
+        headers: &axum::http::HeaderMap,
+        originator: &str,
+        user_agent: &str,
+    ) {
+        assert_quota_header(headers, "user-agent", user_agent);
+        assert_quota_header(headers, "originator", originator);
+        assert_quota_header(headers, "openai-beta", CODEX_QUOTA_OPENAI_BETA);
+        assert_quota_header(headers, "oai-language", CODEX_QUOTA_LANGUAGE);
+        assert_quota_header(headers, "sec-fetch-site", CODEX_QUOTA_SEC_FETCH_SITE);
+        assert_quota_header(headers, "sec-fetch-mode", CODEX_QUOTA_SEC_FETCH_MODE);
+        assert_quota_header(headers, "sec-fetch-dest", CODEX_QUOTA_SEC_FETCH_DEST);
+        assert_quota_header(headers, "priority", CODEX_QUOTA_PRIORITY);
+    }
+
+    #[tokio::test]
+    async fn codex_quota_request_uses_official_headers() {
+        use axum::http::HeaderMap;
+        use axum::routing::get;
+        use axum::{Json, Router};
+        use std::sync::{Arc, Mutex};
+        use tokio::net::TcpListener;
+
+        let seen_headers: Arc<Mutex<Option<HeaderMap>>> = Arc::new(Mutex::new(None));
+        let captured = Arc::clone(&seen_headers);
+        let app = Router::new().route(
+            "/usage",
+            get(move |headers: HeaderMap| {
+                let captured = Arc::clone(&captured);
+                async move {
+                    *captured.lock().expect("headers lock") = Some(headers);
+                    Json(json!({
+                        "plan_type": "plus",
+                        "rate_limit": {
+                            "primary_window": { "remaining": 12 }
+                        }
+                    }))
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let client = build_outbound_http_client(Some(Duration::from_secs(5))).expect("client");
+        let secret = json!({
+            "access_token": "at-test",
+            "chatgpt_account_id": "account-123"
+        });
+        let candidate = QuotaEndpointCandidate {
+            url: format!("http://{address}/usage"),
+            source: "test.codex".to_string(),
+            style: QuotaEndpointStyle::CodexWham,
+        };
+
+        let snapshot = request_quota_snapshot(
+            &client,
+            "codex",
+            &QuotaRequestAuth::Bearer("at-test".to_string()),
+            &secret,
+            &candidate,
+        )
+        .await
+        .expect("request")
+        .expect("snapshot");
+
+        assert_eq!(snapshot.primary_remain, Some(12));
+        let headers = seen_headers
+            .lock()
+            .expect("headers lock")
+            .clone()
+            .expect("captured headers");
+        assert_common_codex_quota_headers(&headers, CODEX_QUOTA_CLI_ORIGINATOR, CODEX_QUOTA_CLI_USER_AGENT);
+        assert_quota_header(&headers, "authorization", "Bearer at-test");
+        assert_quota_header(&headers, "chatgpt-account-id", "account-123");
+    }
+
+    #[tokio::test]
+    async fn codex_quota_request_uses_agent_identity_headers() {
+        use axum::http::HeaderMap;
+        use axum::routing::get;
+        use axum::{Json, Router};
+        use std::sync::{Arc, Mutex};
+        use tokio::net::TcpListener;
+
+        let seen_headers: Arc<Mutex<Option<HeaderMap>>> = Arc::new(Mutex::new(None));
+        let captured = Arc::clone(&seen_headers);
+        let app = Router::new().route(
+            "/usage",
+            get(move |headers: HeaderMap| {
+                let captured = Arc::clone(&captured);
+                async move {
+                    *captured.lock().expect("headers lock") = Some(headers);
+                    Json(json!({
+                        "plan_type": "k12",
+                        "rate_limit": {
+                            "primary_window": { "remaining": 88 }
+                        }
+                    }))
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let client = build_outbound_http_client(Some(Duration::from_secs(5))).expect("client");
+        let secret = json!({});
+        let candidate = QuotaEndpointCandidate {
+            url: format!("http://{address}/usage"),
+            source: "test.codex_agent_identity".to_string(),
+            style: QuotaEndpointStyle::CodexWham,
+        };
+
+        let snapshot = request_quota_snapshot(
+            &client,
+            "codex",
+            &QuotaRequestAuth::AgentIdentity(AgentIdentityHeaders {
+                authorization: "AgentAssertion token-test".to_string(),
+                chatgpt_account_id: "account-agent-1".to_string(),
+                is_fedramp_account: true,
+            }),
+            &secret,
+            &candidate,
+        )
+        .await
+        .expect("request")
+        .expect("snapshot");
+
+        assert_eq!(snapshot.primary_remain, Some(88));
+        let headers = seen_headers
+            .lock()
+            .expect("headers lock")
+            .clone()
+            .expect("captured headers");
+        assert_common_codex_quota_headers(&headers, CODEX_QUOTA_AGENT_IDENTITY_ORIGINATOR, CODEX_QUOTA_AGENT_IDENTITY_USER_AGENT);
+        assert_quota_header(&headers, "authorization", "AgentAssertion token-test");
+        assert_quota_header(&headers, "chatgpt-account-id", "account-agent-1");
+        assert_quota_header(&headers, "x-openai-fedramp", "true");
+    }
+
+    #[test]
+    fn detects_chatgpt_vpn_block_page() {
+        let body = r#"<html><div class="blocked-icon"></div><p>Unable to load site</p>
+        <span>Please try again later. If you are using a VPN, try turning it off.
+        Check the <a href="https://status.openai.com/">status page</a>
+        [IP:45.144.136.244 | Ray ID:a1f774a29f0f04c7]</span></html>"#;
+        let message = chatgpt_network_block_message(body).expect("blocked page");
+        assert!(message.contains("VPN/proxy IP"));
+        assert!(message.contains("45.144.136.244"));
+        assert!(message.contains("a1f774a29f0f04c7"));
+
+        let err = format_quota_http_error(
+            "codex.default_wham_usage",
+            "https://chatgpt.com/backend-api/wham/usage",
+            403,
+            body,
+        );
+        assert!(err.contains("status 403"));
+        assert!(err.contains("VPN/proxy IP"));
+        assert!(!err.contains("<html>"));
     }
 }

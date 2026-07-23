@@ -33,13 +33,15 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "io-util
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "migrate", "macros", "chrono", "uuid", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+ed25519-dalek = { version = "2", features = ["pkcs8"] }
 directories = "5"
 keyring = "3"
 sha2 = "0.10"
 tempfile = "3"
 url = "2"
 axum = { version = "0.7", features = ["ws"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "system-proxy"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "system-proxy", "cookies"] }
 async-trait = "0.1"
 portable-pty = "0.8"
 tauri-plugin-dialog = "2"
