@@ -312,6 +312,26 @@ describe("AccountsScreen", () => {
     );
   });
 
+  it("shows readable interface format labels for OpenAI and Claude options", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+
+    const formatSelect = screen.getByLabelText("接口格式");
+    expect(within(formatSelect).getByRole("option", { name: "OpenAI Chat Completions" })).toHaveValue(
+      "openai",
+    );
+    expect(within(formatSelect).getByRole("option", { name: "OpenAI Responses" })).toHaveValue(
+      "openai-responses",
+    );
+    expect(within(formatSelect).getByRole("option", { name: "Claude Messages" })).toHaveValue("anthropic");
+    expect(within(formatSelect).getByRole("option", { name: "Claude Messages（兼容）" })).toHaveValue(
+      "anthropic-messages",
+    );
+    expect(within(formatSelect).getByRole("option", { name: "Gemini" })).toHaveValue("gemini");
+  });
+
   it("creates an API route credential with interface format and model mappings", async () => {
     renderScreen();
 
@@ -391,7 +411,7 @@ describe("AccountsScreen", () => {
       expect(createApiRouteCredential).toHaveBeenCalledWith(
         expect.objectContaining({
           display_name: "Fetched API",
-          model_mappings_json: "[{\"from\":\"gpt-5\",\"to\":\"gpt-5\"}]",
+          model_mappings_json: "[{\"from\":\"gpt-5.5\",\"to\":\"gpt-5\"}]",
         }),
       ),
     );

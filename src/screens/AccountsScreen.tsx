@@ -294,6 +294,24 @@ const interfaceFormats: InterfaceFormat[] = [
   "gemini",
 ];
 
+const interfaceFormatLabels: Record<InterfaceFormat, string> = {
+  openai: "OpenAI Chat Completions",
+  "openai-responses": "OpenAI Responses",
+  anthropic: "Claude Messages",
+  "anthropic-messages": "Claude Messages（兼容）",
+  gemini: "Gemini",
+};
+
+function interfaceFormatLabel(value: InterfaceFormat | string | null | undefined) {
+  if (!value) {
+    return "";
+  }
+  if (value in interfaceFormatLabels) {
+    return interfaceFormatLabels[value as InterfaceFormat];
+  }
+  return value;
+}
+
 const anthropicApiKeyFields: Array<{ value: AnthropicApiKeyField; label: string; description: string }> = [
   {
     value: "ANTHROPIC_AUTH_TOKEN",
@@ -424,9 +442,9 @@ function defaultRequestedModel(platform: PlatformKey, interfaceFormat?: Interfac
     return "gemini-2.5-flash";
   }
   if (platform === "grok") {
-    return "grok-3";
+    return "grok-4.5";
   }
-  return "gpt-5";
+  return "gpt-5.5";
 }
 
 function isClaudeTemplateSource(value: string) {
@@ -473,13 +491,13 @@ function pickGeneralModel(platform: PlatformKey, models: FetchedRouteModel[]) {
   }
   if (platform === "grok") {
     return (
-      pickModelByKeywords(models, ["grok-3", "grok-2", "grok"]) ??
+      pickModelByKeywords(models, ["grok-4.5", "grok-4", "grok-3", "grok"]) ??
       ids.find((id) => !id.toLowerCase().includes("embedding")) ??
       ids[0]
     );
   }
   return (
-    pickModelByKeywords(models, ["gpt-5", "gpt-4o", "gpt", "claude", "sonnet"]) ??
+    pickModelByKeywords(models, ["gpt-5.5", "gpt-5", "gpt-4o", "gpt", "claude", "sonnet"]) ??
     ids.find((id) => !id.toLowerCase().includes("embedding")) ??
     ids[0]
   );
@@ -950,7 +968,7 @@ function ModelMappingsEditor({
                     className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                     list={modelListId}
                     onChange={(event) => updateRow(index, { from: event.target.value })}
-                    placeholder="gpt-5"
+                    placeholder="gpt-5.5"
                     value={mapping.from}
                   />
                 )}
@@ -1995,7 +2013,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                   真实生成测试：{modelTestOutcome.success ? "通过" : "失败"}
                 </p>
                 <p className="text-[11px] opacity-80">
-                  {modelTestOutcome.selected_account_name} · {modelTestOutcome.interface_format} · {modelTestTargetText(modelTestOutcome)}
+                  {modelTestOutcome.selected_account_name} · {interfaceFormatLabel(modelTestOutcome.interface_format)} · {modelTestTargetText(modelTestOutcome)}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -2547,7 +2565,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                   >
                     {interfaceFormats.map((format) => (
                       <option key={format} value={format}>
-                        {format}
+                        {interfaceFormatLabel(format)}
                       </option>
                     ))}
                   </select>
@@ -2878,7 +2896,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                     >
                       {interfaceFormats.map((format) => (
                         <option key={format} value={format}>
-                          {format}
+                          {interfaceFormatLabel(format)}
                         </option>
                       ))}
                     </select>

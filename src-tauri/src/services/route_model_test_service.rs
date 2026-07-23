@@ -401,13 +401,13 @@ fn default_model_for(interface_format: &str) -> &'static str {
     match interface_format {
         "anthropic" | "anthropic-messages" => "claude-sonnet-4-20250514",
         "gemini" => "gemini-2.5-flash",
-        _ => "gpt-5",
+        _ => "gpt-5.5",
     }
 }
 
 fn default_model_for_platform(platform: &str, interface_format: &str) -> String {
     if platform == "grok" {
-        return "grok-3".to_string();
+        return "grok-4.5".to_string();
     }
     default_model_for(interface_format).to_string()
 }
@@ -468,7 +468,7 @@ async fn load_pool_credentials(
     platform: &str,
 ) -> Result<Vec<SelectedCredential>, AppError> {
     let rows = sqlx::query(
-        "SELECT c.id, c.platform, c.kind, c.display_name, c.secret_payload_json, c.config_json
+        "SELECT c.id, c.platform, c.kind, c.display_name, c.status, c.secret_payload_json, c.config_json
          FROM route_pool_members rpm
          INNER JOIN route_credentials c ON c.id = rpm.route_credential_id
          WHERE rpm.platform = ?
@@ -495,6 +495,7 @@ async fn load_pool_credentials(
             platform: row.get("platform"),
             kind: row.get("kind"),
             display_name: row.get("display_name"),
+            status: row.get("status"),
             secret_payload_json: row.get("secret_payload_json"),
             config_json: row.get("config_json"),
         })
@@ -509,7 +510,7 @@ async fn load_account_credential(
     account_id: &str,
 ) -> Result<SelectedCredential, AppError> {
     let row = sqlx::query(
-        "SELECT id, platform, kind, display_name, secret_payload_json, config_json
+        "SELECT id, platform, kind, display_name, status, secret_payload_json, config_json
          FROM route_credentials
          WHERE id = ? AND platform = ?",
     )
@@ -529,6 +530,7 @@ async fn load_account_credential(
         platform: row.get("platform"),
         kind: row.get("kind"),
         display_name: row.get("display_name"),
+        status: row.get("status"),
         secret_payload_json: row.get("secret_payload_json"),
         config_json: row.get("config_json"),
     })
@@ -604,7 +606,9 @@ async fn finish_outcome(
     if !response_body.trim().is_empty() {
         let _ = maybe_persist_official_quota_from_response(pool, &credential, &response_body).await;
     }
-    if !success
+    if success && should_restore_model_test_account_status(&credential.status) {
+        RouteCredentialRepository::update_status(pool, &credential.id, "ok").await?;
+    } else if !success
         && should_mark_model_test_account_unavailable(response_status, error_message.as_deref())
     {
         RouteCredentialRepository::update_status(pool, &credential.id, "error").await?;
@@ -707,6 +711,10 @@ fn should_mark_model_test_account_unavailable(
         || lower.contains("invalid_grant")
         || lower.contains("refresh token has been revoked")
         || lower.contains("官方 oauth 凭证已失效")
+}
+
+fn should_restore_model_test_account_status(status: &str) -> bool {
+    matches!(status, "error" | "warning")
 }
 
 fn metadata_json(
@@ -820,6 +828,7 @@ mod tests {
             platform: "codex".to_string(),
             kind: "api".to_string(),
             display_name: "API Account".to_string(),
+            status: "ok".to_string(),
             secret_payload_json: r#"{"api_key":"sk-test"}"#.to_string(),
             config_json: json!({
                 "base_url": "https://api.example.com/v1",
@@ -836,6 +845,7 @@ mod tests {
             platform: platform.to_string(),
             kind: "official".to_string(),
             display_name: "Official Account".to_string(),
+            status: "ok".to_string(),
             secret_payload_json: r#"{"access_token":"at"}"#.to_string(),
             config_json: "{}".to_string(),
         }
@@ -953,8 +963,8 @@ mod tests {
             .expect("request");
         assert_eq!(request.interface_format, "openai");
         assert_eq!(request.request_path, "/chat/completions");
-        assert!(request.request_body_json.contains("\"model\": \"grok-3\"")
-            || request.request_body_json.contains("\"model\":\"grok-3\""));
+        assert!(request.request_body_json.contains("\"model\": \"grok-4.5\"")
+            || request.request_body_json.contains("\"model\":\"grok-4.5\""));
     }
 
     #[test]
@@ -1202,6 +1212,76 @@ mod tests {
         assert_eq!(outcome.selected_account_id, credential_id);
         assert!(outcome.request_body_json.contains("gpt-4o"));
         assert_eq!(outcome.stats.request_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_model_restores_error_account_status_on_success() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let base_url = start_json_test_server(
+            axum::http::StatusCode::OK,
+            json!({
+                "choices": [{"message": {"content": "ai-switch-ok"}}]
+            }),
+        )
+        .await;
+        let credential_id = create_api_credential(&pool, &base_url).await;
+        RouteCredentialRepository::update_status(&pool, &credential_id, "error")
+            .await
+            .expect("status");
+
+        let outcome = RouteModelTestService::test_model(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "codex".to_string(),
+                account_id: Some(credential_id.clone()),
+                model: None,
+            },
+        )
+        .await
+        .expect("outcome");
+
+        assert!(outcome.success);
+
+        let credential = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("credential");
+        assert_eq!(credential.status, "ok");
+    }
+
+    #[tokio::test]
+    async fn test_model_keeps_revoked_account_status_on_success() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let base_url = start_json_test_server(
+            axum::http::StatusCode::OK,
+            json!({
+                "choices": [{"message": {"content": "ai-switch-ok"}}]
+            }),
+        )
+        .await;
+        let credential_id = create_api_credential(&pool, &base_url).await;
+        RouteCredentialRepository::update_status(&pool, &credential_id, "revoked")
+            .await
+            .expect("status");
+
+        let outcome = RouteModelTestService::test_model(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "codex".to_string(),
+                account_id: Some(credential_id.clone()),
+                model: None,
+            },
+        )
+        .await
+        .expect("outcome");
+
+        assert!(outcome.success);
+
+        let credential = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("credential");
+        assert_eq!(credential.status, "revoked");
     }
 
     #[tokio::test]
