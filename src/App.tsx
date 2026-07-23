@@ -10,7 +10,7 @@ import {
 import { WebAuthGate } from "./components/auth/WebAuthGate";
 import { I18nProvider } from "./lib/i18n";
 import { createQueryClient } from "./lib/query/queryClient";
-import { isDesktop } from "./lib/transport";
+import { isDesktop, isLocalWebDevRuntime } from "./lib/transport";
 import { AccountsScreen } from "./screens/AccountsScreen";
 import { BatchesScreen } from "./screens/BatchesScreen";
 import { DashboardScreen } from "./screens/DashboardScreen";
@@ -53,14 +53,18 @@ const implementedScreens = new Set([
   "Vibe",
 ]);
 
+function canSkipWebAuthGate() {
+  return isDesktop() || isLocalWebDevRuntime();
+}
+
 export function App() {
   const [screen, setScreen] = useState("Codex");
   const [sessionPlatform, setSessionPlatform] = useState<string | null>(null);
-  const [webReady, setWebReady] = useState(() => isDesktop());
+  const [webReady, setWebReady] = useState(canSkipWebAuthGate);
   const agentPlatform = platformByAgentScreen[screen];
 
   useEffect(() => {
-    setWebReady(isDesktop());
+    setWebReady(canSkipWebAuthGate());
   }, []);
 
   const handleWebAuthenticated = useCallback(() => {

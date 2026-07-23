@@ -54,6 +54,17 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 1420,
     strictPort: true,
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:3090",
+        changeOrigin: true,
+      },
+      "/ws/events": {
+        target: "http://127.0.0.1:3090",
+        changeOrigin: true,
+        ws: true,
+      },
+    },
   },
   optimizeDeps: {
     esbuildOptions: {

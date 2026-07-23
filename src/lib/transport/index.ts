@@ -11,7 +11,7 @@ export {
   WebTransport,
 } from "./web-transport";
 export { TauriTransport } from "./tauri-transport";
-export { isTauriRuntime } from "./detect";
+export { isLocalWebDevRuntime, isTauriRuntime } from "./detect";
 
 import { isTauriRuntime } from "./detect";
 import { TauriTransport } from "./tauri-transport";
