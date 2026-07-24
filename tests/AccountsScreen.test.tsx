@@ -361,7 +361,30 @@ describe("AccountsScreen", () => {
         preview_json: null,
         batch_id: null,
         responses_custom_tool_compat: false,
+        user_agent: null,
       }),
+    );
+  });
+
+  it("creates an API route credential with custom User-Agent", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "UA API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-ua");
+    await userEvent.clear(screen.getByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://api.upstream.test/v1");
+    await userEvent.selectOptions(screen.getByLabelText("创建 User-Agent 预设"), "grok-workspace");
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() =>
+      expect(createApiRouteCredential).toHaveBeenCalledWith(
+        expect.objectContaining({
+          display_name: "UA API",
+          user_agent: "xai-grok-workspace/0.2.93",
+        }),
+      ),
     );
   });
 
@@ -541,6 +564,7 @@ describe("AccountsScreen", () => {
         preview_json: null,
         batch_id: null,
         responses_custom_tool_compat: false,
+        user_agent: null,
       }),
     );
   });
@@ -679,6 +703,34 @@ describe("AccountsScreen", () => {
     expect(config.responses_custom_tool_compat).toBe(false);
   });
 
+  it("hydrates and saves User-Agent when editing an API account", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      {
+        ...credentialsFixture[1],
+        config_json: JSON.stringify({
+          base_url: "https://api.example.com/v1",
+          interface_format: "openai",
+          model_mappings: [],
+          headers: { "User-Agent": "OldBot/1.0" },
+        }),
+      },
+    ]);
+    vi.mocked(updateRouteCredential).mockResolvedValue(credentialsFixture[1]);
+
+    renderScreen();
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+
+    expect(screen.getByLabelText("编辑 User-Agent")).toHaveValue("OldBot/1.0");
+    await userEvent.clear(screen.getByLabelText("编辑 User-Agent"));
+    await userEvent.type(screen.getByLabelText("编辑 User-Agent"), "NewBot/2.0");
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const payload = vi.mocked(updateRouteCredential).mock.calls[0][1];
+    const config = JSON.parse(payload.config_json);
+    expect(config.headers["User-Agent"]).toBe("NewBot/2.0");
+  });
+
   it("edits API credential model mappings through the visual editor", async () => {
     renderScreen();
 
@@ -798,6 +850,20 @@ describe("AccountsScreen", () => {
         preview_json: "{\n  \"auth_json\": {}\n}",
       }),
     );
+  });
+
+  it("saves official account User-Agent into config headers", async () => {
+    vi.mocked(updateRouteCredential).mockResolvedValue(credentialsFixture[0]);
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+    await userEvent.selectOptions(screen.getByLabelText("编辑 User-Agent 预设"), "browser");
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const payload = vi.mocked(updateRouteCredential).mock.calls[0][1];
+    const config = JSON.parse(payload.config_json);
+    expect(config.headers["User-Agent"]).toContain("Mozilla/5.0");
   });
 
   it("renders filtered route request statistics, expands request details, and paginates request rows", async () => {
