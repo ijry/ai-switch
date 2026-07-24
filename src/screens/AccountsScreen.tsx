@@ -55,6 +55,12 @@ import type {
   RoutePoolUsageLog,
 } from "../lib/api/types";
 import {
+  matchUserAgentPreset,
+  readUserAgentFromConfig,
+  USER_AGENT_PRESETS,
+  writeUserAgentToConfig,
+} from "../lib/accountUserAgent";
+import {
   ClipboardImageReadError,
   readClipboardImageBlob,
   recognizeApiKeysFromImageBlob,
@@ -711,6 +717,7 @@ function apiConfigJsonWithFields(
   mappings: ModelMapping[],
   apiKeyField: AnthropicApiKeyField,
   responsesCustomToolCompat = false,
+  userAgent = "",
 ) {
   const config = parseJsonObject(configJson);
   config.base_url = baseUrl.trim();
@@ -722,7 +729,7 @@ function apiConfigJsonWithFields(
   } else {
     delete config.api_key_field;
   }
-  return JSON.stringify(config, null, 2);
+  return JSON.stringify(writeUserAgentToConfig(config, userAgent), null, 2);
 }
 
 function apiPreviewJsonFromPayloads(platform: PlatformKey, secretJson: string, configJson: string) {
@@ -776,6 +783,7 @@ function apiPreviewJsonWithFields(
   mappings: ModelMapping[],
   apiKeyField: AnthropicApiKeyField,
   responsesCustomToolCompat = false,
+  userAgent = "",
 ) {
   return apiPreviewJsonFromPayloads(
     platform,
@@ -787,6 +795,7 @@ function apiPreviewJsonWithFields(
       mappings,
       apiKeyField,
       responsesCustomToolCompat,
+      userAgent,
     ),
   );
 }
@@ -1035,6 +1044,61 @@ function prettyJsonOrText(value: string) {
   }
 }
 
+function UserAgentFields({
+  fieldClass,
+  idPrefix,
+  labelClass,
+  onChange,
+  value,
+}: {
+  fieldClass: string;
+  idPrefix: string;
+  labelClass: string;
+  onChange: (next: string) => void;
+  value: string;
+}) {
+  const preset = matchUserAgentPreset(value);
+  return (
+    <div className="grid gap-2">
+      <label className={labelClass}>
+        User-Agent 预设
+        <select
+          aria-label={`${idPrefix} User-Agent 预设`}
+          className={fieldClass}
+          onChange={(event) => {
+            const selected = USER_AGENT_PRESETS.find((item) => item.id === event.target.value);
+            if (!selected) {
+              return;
+            }
+            if (selected.id === "custom") {
+              onChange(value);
+              return;
+            }
+            onChange(selected.value);
+          }}
+          value={preset}
+        >
+          {USER_AGENT_PRESETS.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className={labelClass}>
+        User-Agent
+        <input
+          aria-label={`${idPrefix} User-Agent`}
+          className={fieldClass}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder="留空则使用默认/内置 UA"
+          value={value}
+        />
+      </label>
+    </div>
+  );
+}
+
 export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsScreenProps) {
   const queryClient = useQueryClient();
   const activePlatform = platform;
@@ -1061,6 +1125,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     defaultInterfaceFormat(activePlatform),
   );
   const [apiResponsesCustomToolCompat, setApiResponsesCustomToolCompat] = useState(false);
+  const [apiUserAgent, setApiUserAgent] = useState("");
   const [apiKeyField, setApiKeyField] = useState<AnthropicApiKeyField>(() =>
     defaultAnthropicApiKeyFieldForCreate(activePlatform),
   );
@@ -1081,6 +1146,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const [editApiBaseUrl, setEditApiBaseUrl] = useState("");
   const [editApiInterfaceFormat, setEditApiInterfaceFormat] = useState<InterfaceFormat>("openai");
   const [editResponsesCustomToolCompat, setEditResponsesCustomToolCompat] = useState(false);
+  const [editUserAgent, setEditUserAgent] = useState("");
   const [editApiKeyField, setEditApiKeyField] = useState<AnthropicApiKeyField>("ANTHROPIC_API_KEY");
   const [editSecretJson, setEditSecretJson] = useState("{}");
   const [editConfigJson, setEditConfigJson] = useState("{}");
@@ -1140,6 +1206,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     setOfficialFilePaths([]);
     setApiInterfaceFormat(nextInterfaceFormat);
     setApiResponsesCustomToolCompat(false);
+    setApiUserAgent("");
     setApiBaseUrl(activePlatform === "grok" ? "https://api.x.ai/v1" : "https://api.example.com/v1");
     setApiKeyField(defaultAnthropicApiKeyFieldForCreate(activePlatform));
     setApiMappings(defaultModelMappings(activePlatform));
@@ -1160,6 +1227,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     const config = parseJsonObject(editingCredential.config_json);
     setEditSecretJson(parseJsonPreview(editingCredential.secret_payload_json, editingCredential.secret_payload_json));
     setEditConfigJson(parseJsonPreview(editingCredential.config_json, editingCredential.config_json));
+    setEditUserAgent(readUserAgentFromConfig(config));
     if (editingCredential.kind === "api") {
       const interfaceFormat = interfaceFormatFromConfig(config);
       setEditApiKey(stringFromRecord(secret, "api_key"));
@@ -1244,6 +1312,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       editModelMappings,
       editApiKeyField,
       editResponsesCustomToolCompat,
+      editUserAgent,
     );
   }, [
     activePlatform,
@@ -1256,6 +1325,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     editPreviewJson,
     editResponsesCustomToolCompat,
     editSecretJson,
+    editUserAgent,
     editingCredential?.kind,
   ]);
 
@@ -1443,6 +1513,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
           preview_json: apiPreviewJson.trim() || null,
           batch_id: batch?.id ?? null,
           responses_custom_tool_compat: apiResponsesCustomToolCompat,
+          user_agent: apiUserAgent.trim() || null,
         };
         imported.push(
           await createApiRouteCredential(
@@ -1594,8 +1665,13 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
               normalizedMappings.mappings,
               editApiKeyField,
               editResponsesCustomToolCompat,
+              editUserAgent,
             )
-          : editConfigJson.trim() || "{}";
+          : JSON.stringify(
+              writeUserAgentToConfig(parseJsonObject(editConfigJson.trim() || "{}"), editUserAgent),
+              null,
+              2,
+            );
       const nextPreviewJson =
         editingCredential.kind === "api"
           ? apiPreviewJsonFromPayloads(activePlatform, nextSecretJson, nextConfigJson)
@@ -1853,6 +1929,18 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     "rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:bg-stone-50";
   const primaryButtonClass =
     "rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-stone-800 disabled:opacity-50";
+  const handleEditUserAgentChange = (next: string) => {
+    setEditUserAgent(next);
+    if (editingCredential?.kind === "official") {
+      setEditConfigJson(
+        JSON.stringify(
+          writeUserAgentToConfig(parseJsonObject(editConfigJson.trim() || "{}"), next),
+          null,
+          2,
+        ),
+      );
+    }
+  };
 
   return (
     <section className="space-y-3">
@@ -2551,6 +2639,13 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                     value={apiBaseUrl}
                   />
                 </label>
+                <UserAgentFields
+                  fieldClass={fieldClass}
+                  idPrefix="创建"
+                  labelClass={labelClass}
+                  onChange={setApiUserAgent}
+                  value={apiUserAgent}
+                />
                 <label className={labelClass}>
                   接口格式
                   <select
@@ -2820,6 +2915,15 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                   <option value="revoked">revoked</option>
                 </select>
               </label>
+              {editingCredential.kind === "official" && (
+                <UserAgentFields
+                  fieldClass={fieldClass}
+                  idPrefix="编辑"
+                  labelClass={labelClass}
+                  onChange={handleEditUserAgentChange}
+                  value={editUserAgent}
+                />
+              )}
               {editingCredential.kind === "api" ? (
                 <>
                   <label className={labelClass}>
@@ -2882,6 +2986,13 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                       value={editApiBaseUrl}
                     />
                   </label>
+                  <UserAgentFields
+                    fieldClass={fieldClass}
+                    idPrefix="编辑"
+                    labelClass={labelClass}
+                    onChange={handleEditUserAgentChange}
+                    value={editUserAgent}
+                  />
                   <label className={labelClass}>
                     接口格式
                     <select
@@ -2977,8 +3088,10 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                       aria-label="编辑 Config JSON"
                       className={`${monoFieldClass} min-h-24`}
                       onChange={(event) => {
-                        setEditConfigJson(event.target.value);
-                        setEditModelMappings(parseModelMappingsFromConfig(event.target.value));
+                        const nextConfigJson = event.target.value;
+                        setEditConfigJson(nextConfigJson);
+                        setEditUserAgent(readUserAgentFromConfig(parseJsonObject(nextConfigJson)));
+                        setEditModelMappings(parseModelMappingsFromConfig(nextConfigJson));
                         setEditModelMappingsError(null);
                         setEditFetchedModels([]);
                         setEditFetchModelsError(null);
