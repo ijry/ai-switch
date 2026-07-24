@@ -21,7 +21,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -233,6 +233,31 @@ async fn forward_request(
     let platform = resolve_platform(state, &path, &headers, inbound_key.as_deref())
         .await
         .map_err(|err| err.to_string())?;
+
+    // OpenAI-compatible model listing: aggregate/dedupe client-facing model ids
+    // from every enabled pool credential mapping instead of forwarding upstream.
+    if is_models_list_path(&path) {
+        if method != Method::GET {
+            return Ok((
+                StatusCode::METHOD_NOT_ALLOWED,
+                [("content-type", "application/json"), ("allow", "GET")],
+                json!({
+                    "error": {
+                        "code": "route_proxy.method_not_allowed",
+                        "message": "Method not allowed for models list",
+                        "type": "route_proxy_error",
+                    }
+                })
+                .to_string(),
+            )
+                .into_response());
+        }
+        let credentials = load_pool_credentials(pool, &platform)
+            .await
+            .map_err(|err| err.to_string())?;
+        return Ok(json_models_list_response(&platform, &credentials));
+    }
+
     let credentials = load_pool_credentials(pool, &platform)
         .await
         .map_err(|err| err.to_string())?;
@@ -1813,6 +1838,81 @@ fn is_placeholder_model(value: &str) -> bool {
     value.is_empty() || value == "upstream-model"
 }
 
+fn is_models_list_path(path: &str) -> bool {
+    matches!(
+        path.trim().trim_end_matches('/'),
+        "/models" | "/v1/models"
+    )
+}
+
+fn collect_pool_model_ids(platform: &str, credentials: &[SelectedCredential]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut models = Vec::new();
+
+    for credential in credentials {
+        let Ok(config) = parse_json_object(&credential.config_json, "config") else {
+            continue;
+        };
+        for mapping in model_mappings(&config) {
+            let from = mapping.from.trim();
+            if from.is_empty() || is_placeholder_model(from) {
+                continue;
+            }
+            push_unique_model(&mut models, &mut seen, from);
+
+            // Expose Claude 1M as a separate client-facing model id when declared.
+            if platform == "claude" && mapping.supports_1m == Some(true) {
+                let base = strip_one_m_suffix_for_route_lookup(from);
+                if is_claude_route_model(base) {
+                    push_unique_model(&mut models, &mut seen, &format!("{base}[1m]"));
+                }
+            }
+        }
+    }
+
+    models
+}
+
+fn push_unique_model(models: &mut Vec<String>, seen: &mut HashSet<String>, model: &str) {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let key = trimmed.to_ascii_lowercase();
+    if seen.insert(key) {
+        models.push(trimmed.to_string());
+    }
+}
+
+fn build_models_list_payload(platform: &str, credentials: &[SelectedCredential]) -> Value {
+    let created = Utc::now().timestamp();
+    let data: Vec<Value> = collect_pool_model_ids(platform, credentials)
+        .into_iter()
+        .map(|id| {
+            json!({
+                "id": id,
+                "object": "model",
+                "created": created,
+                "owned_by": "ai-switch",
+            })
+        })
+        .collect();
+
+    json!({
+        "object": "list",
+        "data": data,
+    })
+}
+
+fn json_models_list_response(platform: &str, credentials: &[SelectedCredential]) -> Response {
+    (
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        build_models_list_payload(platform, credentials).to_string(),
+    )
+        .into_response()
+}
+
 fn insert_header(headers: &mut HeaderMap, name: &'static str, value: &str) -> Result<(), String> {
     let value =
         HeaderValue::from_str(value).map_err(|err| format!("Invalid header value: {err}"))?;
@@ -2875,4 +2975,96 @@ mod tests {
         assert!(!text.contains("function_call"), "restored={text}");
     }
 
+    #[test]
+    fn is_models_list_path_matches_openai_style_paths() {
+        assert!(is_models_list_path("/v1/models"));
+        assert!(is_models_list_path("/models"));
+        assert!(is_models_list_path("/v1/models/"));
+        assert!(!is_models_list_path("/v1/chat/completions"));
+        assert!(!is_models_list_path("/v1beta/models/gemini:generateContent"));
+    }
+
+    #[test]
+    fn collect_pool_model_ids_aggregates_and_dedupes_mappings() {
+        let mut first = api_credential("first", "openai");
+        first.config_json = serde_json::json!({
+            "base_url": "https://api.example.com/v1",
+            "interface_format": "openai",
+            "model_mappings": [
+                {"from":"gpt-5.5","to":"up-a"},
+                {"from":"gpt-5","to":"up-b"},
+                {"from":"upstream-model","to":"ignored"}
+            ]
+        })
+        .to_string();
+
+        let mut second = api_credential("second", "openai");
+        second.config_json = serde_json::json!({
+            "base_url": "https://api.example.com/v1",
+            "interface_format": "openai",
+            "model_mappings": [
+                {"from":"GPT-5","to":"up-c"},
+                {"from":"gpt-4.1","to":"up-d"}
+            ]
+        })
+        .to_string();
+
+        let models = collect_pool_model_ids("codex", &[first, second]);
+        assert_eq!(models, vec!["gpt-5.5", "gpt-5", "gpt-4.1"]);
+    }
+
+    #[test]
+    fn collect_pool_model_ids_exposes_claude_1m_variants() {
+        let mut credential = api_credential("claude-a", "anthropic");
+        credential.platform = "claude".to_string();
+        credential.config_json = serde_json::json!({
+            "base_url": "https://api.anthropic.com",
+            "interface_format": "anthropic",
+            "model_mappings": [
+                {
+                    "from": "claude-sonnet-5",
+                    "to": "provider-sonnet",
+                    "supports_1m": true
+                },
+                {
+                    "from": "claude-opus-4-8",
+                    "to": "provider-opus",
+                    "supports_1m": false
+                }
+            ]
+        })
+        .to_string();
+
+        let models = collect_pool_model_ids("claude", &[credential]);
+        assert_eq!(
+            models,
+            vec!["claude-sonnet-5", "claude-sonnet-5[1m]", "claude-opus-4-8"]
+        );
+    }
+
+    #[test]
+    fn json_models_list_response_returns_openai_compatible_list() {
+        let mut credential = api_credential("first", "openai");
+        credential.config_json = serde_json::json!({
+            "base_url": "https://api.example.com/v1",
+            "interface_format": "openai",
+            "model_mappings": [
+                {"from":"gpt-5.5","to":"up-a"},
+                {"from":"gpt-5","to":"up-b"}
+            ]
+        })
+        .to_string();
+
+        let payload = build_models_list_payload("codex", &[credential]);
+        assert_eq!(payload.get("object").and_then(Value::as_str), Some("list"));
+        let data = payload.get("data").and_then(Value::as_array).expect("data");
+        assert_eq!(data.len(), 2);
+        assert_eq!(data[0].get("id").and_then(Value::as_str), Some("gpt-5.5"));
+        assert_eq!(data[0].get("object").and_then(Value::as_str), Some("model"));
+        assert_eq!(data[0].get("owned_by").and_then(Value::as_str), Some("ai-switch"));
+        assert_eq!(data[1].get("id").and_then(Value::as_str), Some("gpt-5"));
+
+        let response = json_models_list_response("codex", &[]);
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 }
