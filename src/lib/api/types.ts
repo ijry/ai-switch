@@ -154,6 +154,7 @@ export type CreateApiRouteCredentialInput = {
   preview_json?: string | null;
   batch_id?: string | null;
   responses_custom_tool_compat?: boolean | null;
+  user_agent?: string | null;
 };
 
 export type UpdateRouteCredentialInput = {

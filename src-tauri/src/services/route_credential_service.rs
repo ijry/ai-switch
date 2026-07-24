@@ -57,6 +57,14 @@ impl RouteCredentialService {
         if let Some(api_key_field) = api_key_field {
             config["api_key_field"] = json!(api_key_field);
         }
+        if let Some(user_agent) = input
+            .user_agent
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            config["headers"] = json!({ "User-Agent": user_agent });
+        }
         let config_json = config.to_string();
         let preview_json = input.preview_json.unwrap_or_else(|| {
             RoutePreviewService::generate(&platform, "api", &secret_payload_json, &config_json)
@@ -472,6 +480,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: Some(true),
+                user_agent: None,
             },
         )
         .await
@@ -505,6 +514,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: None,
+                user_agent: None,
             },
         )
         .await
@@ -516,5 +526,70 @@ mod tests {
             config["responses_custom_tool_compat"],
             serde_json::json!(false)
         );
+    }
+
+    #[tokio::test]
+    async fn create_api_credential_persists_user_agent_header() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+
+        let created = RouteCredentialService::create_api(
+            &pool,
+            CreateApiRouteCredentialInput {
+                platform: "grok".into(),
+                display_name: "Grok UA".into(),
+                api_key: "sk-test".into(),
+                base_url: "https://api.x.ai/v1".into(),
+                interface_format: "openai".into(),
+                model_mappings_json: "[]".into(),
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: None,
+                user_agent: Some("  MyGrokClient/9.9.9  ".into()),
+            },
+        )
+        .await
+        .expect("create");
+
+        let config: serde_json::Value =
+            serde_json::from_str(&created.config_json).expect("config");
+        assert_eq!(
+            config["headers"]["User-Agent"],
+            serde_json::json!("MyGrokClient/9.9.9")
+        );
+    }
+
+    #[tokio::test]
+    async fn create_api_credential_omits_user_agent_when_empty() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+
+        let created = RouteCredentialService::create_api(
+            &pool,
+            CreateApiRouteCredentialInput {
+                platform: "codex".into(),
+                display_name: "No UA".into(),
+                api_key: "sk-test".into(),
+                base_url: "https://api.example.com/v1".into(),
+                interface_format: "openai".into(),
+                model_mappings_json: "[]".into(),
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: None,
+                user_agent: Some("   ".into()),
+            },
+        )
+        .await
+        .expect("create");
+
+        let config: serde_json::Value =
+            serde_json::from_str(&created.config_json).expect("config");
+        assert!(config.get("headers").is_none());
     }
 }
