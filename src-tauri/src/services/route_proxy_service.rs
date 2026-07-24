@@ -823,6 +823,7 @@ fn build_api_upstream_request(
     }
 
     let _ = platform;
+    apply_credential_user_agent(headers, config)?;
     Ok((target_url, headers.clone(), rewritten_body))
 }
 
@@ -869,6 +870,7 @@ fn build_official_upstream_request(
     if is_official_grok_platform(platform) && is_grok_cli_chat_proxy_base_url(base_url) {
         apply_official_grok_cli_headers(headers)?;
     }
+    apply_credential_user_agent(headers, config)?;
     let target_url = build_target_url(base_url, path, query);
     Ok((target_url, headers.clone(), body.to_vec()))
 }
@@ -912,6 +914,25 @@ fn apply_config_headers(headers: &mut HeaderMap, config: &Value) -> Result<(), S
         headers.entry(header_name).or_insert(header_value);
     }
     Ok(())
+}
+
+fn credential_user_agent(config: &Value) -> Option<&str> {
+    let Some(Value::Object(extra)) = config.get("headers") else {
+        return None;
+    };
+    for (name, value) in extra {
+        if name.eq_ignore_ascii_case("user-agent") {
+            return value.as_str().map(str::trim).filter(|item| !item.is_empty());
+        }
+    }
+    None
+}
+
+fn apply_credential_user_agent(headers: &mut HeaderMap, config: &Value) -> Result<(), String> {
+    let Some(user_agent) = credential_user_agent(config) else {
+        return Ok(());
+    };
+    insert_header(headers, "user-agent", user_agent)
 }
 
 fn resolve_official_access_token(
@@ -2270,7 +2291,6 @@ mod tests {
                 "base_url": "https://cli-chat-proxy.grok.com/v1",
                 "token_endpoint": "https://auth.x.ai/oauth2/token",
                 "headers": {
-                    "User-Agent": "grok-cli",
                     "X-Client-Name": "grok-cli"
                 }
             })
@@ -2317,6 +2337,122 @@ mod tests {
             Some("xai-grok-cli")
         );
         assert!(headers.get("x-client-name").is_none());
+    }
+
+    #[test]
+    fn build_upstream_request_custom_user_agent_overrides_grok_forced_ua() {
+        let credential = SelectedCredential {
+            id: "official-grok-custom-ua".to_string(),
+            platform: "grok".to_string(),
+            kind: "official".to_string(),
+            display_name: "Grok Custom UA".to_string(),
+            status: "ok".to_string(),
+            secret_payload_json: r#"{"access_token":"at-xai"}"#.to_string(),
+            config_json: serde_json::json!({
+                "base_url": "https://cli-chat-proxy.grok.com/v1",
+                "headers": {
+                    "User-Agent": "MyGrokClient/9.9.9",
+                    "X-Client-Name": "grok-cli"
+                }
+            })
+            .to_string(),
+        };
+
+        let (_, headers, _) = build_upstream_request(
+            &credential,
+            "grok",
+            "/chat/completions",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"grok-4.5"}"#,
+        )
+        .expect("request");
+
+        assert_eq!(
+            headers
+                .get("user-agent")
+                .and_then(|value| value.to_str().ok()),
+            Some("MyGrokClient/9.9.9")
+        );
+        assert_eq!(
+            headers
+                .get("x-grok-client-version")
+                .and_then(|value| value.to_str().ok()),
+            Some("0.2.93")
+        );
+        assert_eq!(
+            headers
+                .get("x-xai-token-auth")
+                .and_then(|value| value.to_str().ok()),
+            Some("xai-grok-cli")
+        );
+    }
+
+    #[test]
+    fn build_upstream_request_empty_user_agent_keeps_grok_forced_ua() {
+        let credential = SelectedCredential {
+            id: "official-grok-empty-ua".to_string(),
+            platform: "grok".to_string(),
+            kind: "official".to_string(),
+            display_name: "Grok Empty UA".to_string(),
+            status: "ok".to_string(),
+            secret_payload_json: r#"{"access_token":"at-xai"}"#.to_string(),
+            config_json: serde_json::json!({
+                "base_url": "https://cli-chat-proxy.grok.com/v1",
+                "headers": {
+                    "User-Agent": "   "
+                }
+            })
+            .to_string(),
+        };
+
+        let (_, headers, _) = build_upstream_request(
+            &credential,
+            "grok",
+            "/chat/completions",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"grok-4.5"}"#,
+        )
+        .expect("request");
+
+        assert_eq!(
+            headers
+                .get("user-agent")
+                .and_then(|value| value.to_str().ok()),
+            Some("xai-grok-workspace/0.2.93")
+        );
+    }
+
+    #[test]
+    fn build_upstream_request_custom_user_agent_applies_on_api_accounts() {
+        let mut credential = api_credential("relay-ua", "openai");
+        credential.config_json = serde_json::json!({
+            "base_url": "https://api.example.com/v1",
+            "interface_format": "openai",
+            "model_mappings": [],
+            "headers": {
+                "user-agent": "RelayBot/1.0"
+            }
+        })
+        .to_string();
+
+        let (_, headers, _) = build_upstream_request(
+            &credential,
+            "codex",
+            "/chat/completions",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5.5"}"#,
+        )
+        .expect("request");
+
+        assert_eq!(
+            headers
+                .get("user-agent")
+                .and_then(|value| value.to_str().ok()),
+            Some("RelayBot/1.0")
+        );
     }
 
     #[test]
