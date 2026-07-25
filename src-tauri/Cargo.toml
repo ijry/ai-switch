@@ -41,7 +41,8 @@ sha2 = "0.10"
 tempfile = "3"
 url = "2"
 axum = { version = "0.7", features = ["ws"] }
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "system-proxy", "cookies"] }
 async-trait = "0.1"
 portable-pty = "0.8"

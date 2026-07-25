@@ -53,6 +53,15 @@ pub struct RouteProxyStatus {
     pub base_url: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub enum RouteProxyTransport {
+    Http,
+    Https {
+        certificate_pem_path: std::path::PathBuf,
+        private_key_pem_path: std::path::PathBuf,
+    },
+}
+
 #[derive(Clone, Default)]
 pub struct RouteProxyRuntimeState {
     inner: Arc<Mutex<RouteProxyInner>>,
@@ -119,6 +128,7 @@ impl RouteProxyService {
     pub async fn start(
         state: &RouteProxyRuntimeState,
         pool: SqlitePool,
+        transport: RouteProxyTransport,
     ) -> Result<RouteProxyStatus, AppError> {
         let mut inner = state.inner.lock().await;
         if inner.running {
@@ -146,7 +156,11 @@ impl RouteProxyService {
             recoverable: true,
         })?;
         let port = addr.port();
-        let base_url = format!("http://{BIND_HOST}:{port}");
+        let scheme = match &transport {
+            RouteProxyTransport::Http => "http",
+            RouteProxyTransport::Https { .. } => "https",
+        };
+        let base_url = format!("{scheme}://{BIND_HOST}:{port}");
 
         let app_state = ProxyAppState {
             pool,
@@ -157,19 +171,65 @@ impl RouteProxyService {
             .with_state(app_state);
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        let join_handle = tokio::spawn(async move {
-            let server = axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .with_graceful_shutdown(async {
-                let _ = shutdown_rx.await;
-            });
+        let join_handle = match transport {
+            RouteProxyTransport::Http => tokio::spawn(async move {
+                let server = axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                });
 
-            if let Err(err) = server.await {
-                eprintln!("route proxy server error: {err}");
+                if let Err(err) = server.await {
+                    eprintln!("route proxy server error: {err}");
+                }
+            }),
+            RouteProxyTransport::Https {
+                certificate_pem_path,
+                private_key_pem_path,
+            } => {
+                let rustls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+                    &certificate_pem_path,
+                    &private_key_pem_path,
+                )
+                .await
+                .map_err(|error| AppError::Validation {
+                    code: "validation.route_proxy_https_certificate",
+                    message: "Could not load local route proxy HTTPS certificate".to_string(),
+                    details: Some(error.to_string()),
+                    recoverable: true,
+                })?;
+                let std_listener = listener.into_std().map_err(|error| AppError::Filesystem {
+                    code: "filesystem.route_proxy_tls_listener",
+                    message: "Could not prepare local HTTPS listener".to_string(),
+                    details: Some(error.to_string()),
+                    recoverable: true,
+                })?;
+                let handle = axum_server::Handle::new();
+
+                tokio::spawn(async move {
+                    let server = axum_server::from_tcp_rustls(std_listener, rustls_config)
+                        .handle(handle.clone())
+                        .serve(app.into_make_service_with_connect_info::<SocketAddr>());
+                    tokio::pin!(server);
+
+                    tokio::select! {
+                        result = &mut server => {
+                            if let Err(error) = result {
+                                eprintln!("route proxy HTTPS server error: {error}");
+                            }
+                        }
+                        _ = shutdown_rx => {
+                            handle.graceful_shutdown(Some(Duration::from_secs(5)));
+                            if let Err(error) = server.await {
+                                eprintln!("route proxy HTTPS shutdown error: {error}");
+                            }
+                        }
+                    }
+                })
             }
-        });
+        };
 
         inner.running = true;
         inner.port = Some(port);
@@ -2058,6 +2118,96 @@ async fn insert_route_credential_usage_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn https_transport_serves_the_existing_route_proxy_handler_and_rejects_plain_http() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+        use crate::paths::AppPaths;
+        use crate::services::route_proxy_https_service::RouteProxyHttpsService;
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let paths = AppPaths::from_data_dir(temp.path().to_path_buf());
+        let material = RouteProxyHttpsService::ensure_material(&paths)
+            .await
+            .expect("material");
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let key = RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+            .await
+            .expect("proxy key");
+        let runtime = RouteProxyRuntimeState::default();
+
+        let status = RouteProxyService::start(
+            &runtime,
+            pool,
+            RouteProxyTransport::Https {
+                certificate_pem_path: material.server_certificate_pem.clone(),
+                private_key_pem_path: material.server_private_key_pem.clone(),
+            },
+        )
+        .await
+        .expect("start tls");
+        let root = reqwest::Certificate::from_pem(
+            &tokio::fs::read(&material.root_certificate_pem)
+                .await
+                .expect("root pem"),
+        )
+        .expect("root certificate");
+        let client = reqwest::Client::builder()
+            .add_root_certificate(root)
+            .build()
+            .expect("client");
+        let tls_response = client
+            .get(format!(
+                "{}/v1/models",
+                status.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(key)
+            .send()
+            .await
+            .expect("tls request");
+
+        assert_eq!(
+            status
+                .base_url
+                .as_deref()
+                .map(|value| value.starts_with("https://")),
+            Some(true)
+        );
+        assert_eq!(tls_response.status(), reqwest::StatusCode::OK);
+        let plain_error = reqwest::get(format!(
+            "http://127.0.0.1:{}/v1/models",
+            status.port.expect("port")
+        ))
+        .await
+        .expect_err("plain HTTP must not be served by the TLS listener");
+        assert!(plain_error.is_request() || plain_error.is_connect() || plain_error.is_decode());
+
+        RouteProxyService::stop(&runtime).await.expect("stop");
+    }
+
+    #[tokio::test]
+    async fn http_transport_retains_the_existing_http_base_url() {
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let runtime = RouteProxyRuntimeState::default();
+
+        let status = RouteProxyService::start(&runtime, pool, RouteProxyTransport::Http)
+            .await
+            .expect("start http");
+
+        assert_eq!(
+            status
+                .base_url
+                .as_deref()
+                .map(|value| value.starts_with("http://")),
+            Some(true)
+        );
+        RouteProxyService::stop(&runtime).await.expect("stop");
+    }
 
     fn api_credential(name: &str, interface_format: &str) -> SelectedCredential {
         SelectedCredential {
