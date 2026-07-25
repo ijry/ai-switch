@@ -124,7 +124,7 @@ No platform adapter uses string-built shell commands. Commands receive validated
 
 `Uninstall Root CA` only removes a Root CA that matches the application-managed fingerprint and subject identity. It never enumerates/removes unrelated certificates.
 
-After successful uninstallation, HTTPS is disabled and the route proxy restarts in HTTP mode. Certificate files stay on disk so the user can re-import without regeneration. Local certificate deletion is a separate explicitly confirmed operation.
+When HTTPS is active, uninstall first stops the TLS proxy without persisting a transport change, then attempts Root CA removal. A successful removal disables HTTPS and restarts the proxy in HTTP mode. A failed removal restarts the TLS proxy and retains the enabled state. Certificate files stay on disk so the user can re-import without regeneration. Local certificate deletion is a separate explicitly confirmed operation.
 
 ## Runtime State Transitions
 
@@ -150,9 +150,11 @@ If HTTP restart fails, report the proxy as stopped; never report a usable endpoi
 
 ### Uninstall Root CA
 
-1. Disable HTTPS using the normal transition.
+1. Stop the running TLS route proxy without changing persisted HTTPS settings.
 2. Remove the application Root CA from the active platform stores.
-3. Preserve certificate files unless the user separately selects deletion.
+3. On success, persist HTTPS disabled and restart the proxy in HTTP mode when it was previously running.
+4. On failure, restart the TLS proxy and retain HTTPS enabled.
+5. Preserve certificate files unless the user separately selects deletion.
 
 If uninstall fails, preserve the HTTPS state and report the failure rather than presenting a false success state.
 
