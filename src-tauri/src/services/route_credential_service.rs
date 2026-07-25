@@ -14,6 +14,7 @@ use crate::services::cpa_import_service::{
     parse_cpa_file, parse_cpa_text, ParsedOfficialCredential,
 };
 use crate::services::route_preview_service::RoutePreviewService;
+use chrono::Utc;
 use serde_json::json;
 use sqlx::SqlitePool;
 
@@ -90,7 +91,7 @@ impl RouteCredentialService {
         input: ImportOfficialTextInput,
     ) -> Result<RouteCredentialImportResult, AppError> {
         let platform = normalize_platform(&input.platform)?;
-        let batch_id = ensure_optional_batch(pool, input.batch_name).await?;
+        let batch_id = ensure_required_batch(pool, input.batch_name).await?;
         let parsed = parse_official_credentials_text(&platform, &input.text)?;
         let mut imported = Vec::with_capacity(parsed.len());
 
@@ -129,7 +130,7 @@ impl RouteCredentialService {
         input: ImportOfficialFilesInput,
     ) -> Result<RouteCredentialImportResult, AppError> {
         let platform = normalize_platform(&input.platform)?;
-        let batch_id = ensure_optional_batch(pool, input.batch_name).await?;
+        let batch_id = ensure_required_batch(pool, input.batch_name).await?;
         let mut imported = Vec::new();
         let mut failed = Vec::new();
 
@@ -185,12 +186,40 @@ impl RouteCredentialService {
         RouteCredentialRepository::update(pool, &id, &input).await
     }
 
+    pub async fn copy(pool: &SqlitePool, id: String) -> Result<RouteCredential, AppError> {
+        let source = RouteCredentialRepository::get(pool, &id).await?;
+        let display_name = duplicated_display_name(&source.display_name);
+        RouteCredentialRepository::create(
+            pool,
+            &source.platform,
+            &source.kind,
+            &display_name,
+            source.email.clone(),
+            "ok",
+            source.batch_id.clone(),
+            &source.secret_payload_json,
+            &source.config_json,
+            &source.preview_json,
+        )
+        .await
+    }
+
     pub async fn delete(pool: &SqlitePool, id: String) -> Result<(), AppError> {
         RouteCredentialRepository::delete(pool, &id).await
     }
 }
 
-async fn ensure_optional_batch(
+fn duplicated_display_name(name: &str) -> String {
+    let base = name.trim();
+    let stamp = Utc::now().format("%Y-%m-%d").to_string();
+    if base.is_empty() {
+        format!("copy {stamp}")
+    } else {
+        format!("{base} {stamp}")
+    }
+}
+
+async fn ensure_required_batch(
     pool: &SqlitePool,
     batch_name: Option<String>,
 ) -> Result<Option<String>, AppError> {
@@ -198,7 +227,12 @@ async fn ensure_optional_batch(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
     else {
-        return Ok(None);
+        return Err(AppError::Validation {
+            code: "validation.batch_name_required",
+            message: "Batch name is required".to_string(),
+            details: None,
+            recoverable: true,
+        });
     };
 
     let batch = BatchRepository::create(
@@ -461,6 +495,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn copy_route_credential_appends_date_to_display_name() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+
+        let created = RouteCredentialService::create_api(
+            &pool,
+            CreateApiRouteCredentialInput {
+                platform: "codex".into(),
+                display_name: "Team Account".into(),
+                api_key: "sk-test".into(),
+                base_url: "https://api.example.com/v1".into(),
+                interface_format: "openai".into(),
+                model_mappings_json: "[]".into(),
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: None,
+                user_agent: None,
+            },
+        )
+        .await
+        .expect("create");
+
+        let copied = RouteCredentialService::copy(&pool, created.id.clone())
+            .await
+            .expect("copy");
+
+        assert_ne!(copied.id, created.id);
+        assert_eq!(copied.platform, created.platform);
+        assert_eq!(copied.kind, created.kind);
+        assert_eq!(copied.secret_payload_json, created.secret_payload_json);
+        assert_eq!(copied.config_json, created.config_json);
+        assert!(
+            copied.display_name.starts_with("Team Account "),
+            "unexpected display name: {}",
+            copied.display_name
+        );
+        assert_eq!(copied.display_name.len(), "Team Account YYYY-MM-DD".len());
+    }
+
+    #[tokio::test]
     async fn create_api_credential_persists_responses_custom_tool_compat() {
         let pool = crate::database::create_memory_pool().await.expect("pool");
         crate::database::run_migrations(&pool)
@@ -486,8 +563,7 @@ mod tests {
         .await
         .expect("create");
 
-        let config: serde_json::Value =
-            serde_json::from_str(&created.config_json).expect("config");
+        let config: serde_json::Value = serde_json::from_str(&created.config_json).expect("config");
         assert_eq!(
             config["responses_custom_tool_compat"],
             serde_json::json!(true)
@@ -520,8 +596,7 @@ mod tests {
         .await
         .expect("create");
 
-        let config: serde_json::Value =
-            serde_json::from_str(&created.config_json).expect("config");
+        let config: serde_json::Value = serde_json::from_str(&created.config_json).expect("config");
         assert_eq!(
             config["responses_custom_tool_compat"],
             serde_json::json!(false)
@@ -554,8 +629,7 @@ mod tests {
         .await
         .expect("create");
 
-        let config: serde_json::Value =
-            serde_json::from_str(&created.config_json).expect("config");
+        let config: serde_json::Value = serde_json::from_str(&created.config_json).expect("config");
         assert_eq!(
             config["headers"]["User-Agent"],
             serde_json::json!("MyGrokClient/9.9.9")
@@ -588,8 +662,7 @@ mod tests {
         .await
         .expect("create");
 
-        let config: serde_json::Value =
-            serde_json::from_str(&created.config_json).expect("config");
+        let config: serde_json::Value = serde_json::from_str(&created.config_json).expect("config");
         assert!(config.get("headers").is_none());
     }
 }

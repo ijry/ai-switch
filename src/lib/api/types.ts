@@ -120,6 +120,7 @@ export type RouteCredential = {
   status: AccountStatus;
   sort_order: number;
   batch_id?: string | null;
+  batch_name?: string | null;
   secret_payload_json: string;
   config_json: string;
   preview_json: string;

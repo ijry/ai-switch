@@ -70,6 +70,16 @@ pub async fn update_route_credential(
 }
 
 #[tauri::command]
+pub async fn copy_route_credential(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<RouteCredential, ApiError> {
+    RouteCredentialService::copy(&state.pool, id)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
 pub async fn delete_route_credential(
     state: State<'_, AppState>,
     id: String,

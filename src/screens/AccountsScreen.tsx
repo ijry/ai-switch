@@ -3,9 +3,11 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowRight,
   BarChart3,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Copy,
   Edit3,
   FileCode2,
   KeyRound,
@@ -23,6 +25,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import {
   createBatch,
+  copyRouteCredential,
   createApiRouteCredential,
   deleteRouteCredential,
   fetchRouteModels,
@@ -363,6 +366,20 @@ function defaultOfficialJson(platform: PlatformKey) {
 function shortId(id: string) {
   return id.length > 8 ? id.slice(0, 8) : id;
 }
+
+const SINGLE_ACCOUNT_FILTER = "__single__";
+
+function credentialBatchFilterKey(credential: RouteCredential): string {
+  if (!credential.batch_id) {
+    return SINGLE_ACCOUNT_FILTER;
+  }
+  return credential.batch_name?.trim() || shortId(credential.batch_id);
+}
+
+function credentialBatchFilterLabel(key: string): string {
+  return key === SINGLE_ACCOUNT_FILTER ? "单账号" : key;
+}
+
 
 function kindLabel(kind: RouteCredential["kind"]) {
   return kind === "api" ? "API" : "官方";
@@ -1103,6 +1120,11 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const queryClient = useQueryClient();
   const activePlatform = platform;
   const [draftPoolIds, setDraftPoolIds] = useState<Set<string>>(() => new Set());
+  const [selectedAccountIds, setSelectedAccountIds] = useState<Set<string>>(() => new Set());
+  const [accountFilters, setAccountFilters] = useState<string[]>([]);
+  const [accountFilterMenuOpen, setAccountFilterMenuOpen] = useState(false);
+  const [copiedCredentialId, setCopiedCredentialId] = useState<string | null>(null);
+  const accountFilterMenuRef = useRef<HTMLDivElement | null>(null);
   const [statsOpen, setStatsOpen] = useState(false);
   const [statsPeriod, setStatsPeriod] = useState<RouteStatsPeriod>("today");
   const [requestPage, setRequestPage] = useState(1);
@@ -1168,6 +1190,27 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const routeTestModel = routeTestModelsByPlatform[activePlatform] ?? "";
   const statsSince = useMemo(() => routeStatsSince(statsPeriod), [statsPeriod]);
 
+  useEffect(() => {
+    setAccountFilters([]);
+    setAccountFilterMenuOpen(false);
+    setCopiedCredentialId(null);
+  }, [activePlatform]);
+
+  useEffect(() => {
+    if (!accountFilterMenuOpen) {
+      return;
+    }
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (target && accountFilterMenuRef.current && !accountFilterMenuRef.current.contains(target)) {
+        setAccountFilterMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [accountFilterMenuOpen]);
+
+
   const credentialsQuery = useQuery({
     queryKey: ["route-credentials", activePlatform],
     queryFn: () => listRouteCredentials(activePlatform),
@@ -1188,6 +1231,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
 
   useEffect(() => {
     setRequestPage(1);
+    setSelectedAccountIds(new Set());
   }, [activePlatform]);
 
   useEffect(() => {
@@ -1280,14 +1324,44 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   }, [requestPage, routePoolQuery.data?.stats]);
 
   const credentials = credentialsQuery.data ?? [];
+  const accountFilterOptions = useMemo(() => {
+    const batchNames = new Set<string>();
+    let hasSingle = false;
+    for (const credential of credentials) {
+      const key = credentialBatchFilterKey(credential);
+      if (key === SINGLE_ACCOUNT_FILTER) {
+        hasSingle = true;
+      } else {
+        batchNames.add(key);
+      }
+    }
+    const options = Array.from(batchNames).sort((a, b) => a.localeCompare(b, "zh-CN"));
+    if (hasSingle) {
+      options.push(SINGLE_ACCOUNT_FILTER);
+    }
+    return options;
+  }, [credentials]);
+
+  const filteredCredentials = useMemo(() => {
+    if (accountFilters.length === 0) {
+      return credentials;
+    }
+    const selected = new Set(accountFilters);
+    return credentials.filter((credential) => selected.has(credentialBatchFilterKey(credential)));
+  }, [accountFilters, credentials]);
+
   const groupedCredentials = useMemo(() => {
     const groups = new Map<string, RouteCredential[]>();
-    for (const credential of credentials) {
-      const key = credential.batch_id ? `批量 ${shortId(credential.batch_id)}` : "单个账号";
+    for (const credential of filteredCredentials) {
+      const filterKey = credentialBatchFilterKey(credential);
+      const key =
+        filterKey === SINGLE_ACCOUNT_FILTER
+          ? "账号列表"
+          : `批量 · ${credential.batch_name?.trim() || shortId(credential.batch_id ?? filterKey)}`;
       groups.set(key, [...(groups.get(key) ?? []), credential]);
     }
     return Array.from(groups.entries()).map(([name, items]) => ({ name, items }));
-  }, [credentials]);
+  }, [filteredCredentials]);
 
   const routeStats = routePoolQuery.data?.stats;
   const costTotal = (routeStats?.cost_micros ?? 0) / 1_000_000;
@@ -1462,11 +1536,15 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const createMutation = useMutation({
     mutationFn: async () => {
       if (createMode === "official") {
+        const batchName = officialBatchName.trim();
+        if (!batchName) {
+          throw new Error("批量名称不能为空");
+        }
         if (officialFilePaths.length > 0) {
           return importOfficialRouteCredentialsFromFiles({
             platform: activePlatform,
             file_paths: officialFilePaths,
-            batch_name: officialBatchName.trim() || null,
+            batch_name: batchName,
           });
         }
         if (!officialText.trim()) {
@@ -1475,7 +1553,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
         return importOfficialRouteCredentialsFromText({
           platform: activePlatform,
           text: officialText,
-          batch_name: officialBatchName.trim() || null,
+          batch_name: batchName,
         });
       }
 
@@ -1697,18 +1775,112 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       await invalidateAccountData();
     },
   });
+  const copyCredentialMutation = useMutation({
+    mutationFn: (id: string) => copyRouteCredential(id),
+    onSuccess: async (credential, sourceId) => {
+      mergeCredentialsIntoCache([credential]);
+      setCopiedCredentialId(sourceId);
+      window.setTimeout(() => {
+        setCopiedCredentialId((current) => (current === sourceId ? null : current));
+      }, 1400);
+      await invalidateAccountData();
+    },
+  });
 
-  const togglePool = (credentialId: string) => {
-    const next = new Set(draftPoolIds);
-    if (next.has(credentialId)) {
-      next.delete(credentialId);
-    } else {
-      next.add(credentialId);
+  const batchDeleteMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      for (const id of ids) {
+        await deleteRouteCredential(id);
+      }
+      return ids;
+    },
+    onSuccess: async (ids) => {
+      if (editingCredential && ids.includes(editingCredential.id)) {
+        setEditingCredential(null);
+      }
+      await invalidateAccountData();
+    },
+  });
+
+  const toggleAccountSelection = (credentialId: string) => {
+    setSelectedAccountIds((current) => {
+      const next = new Set(current);
+      if (next.has(credentialId)) {
+        next.delete(credentialId);
+      } else {
+        next.add(credentialId);
+      }
+      return next;
+    });
+  };
+
+  const clearAccountSelection = () => {
+    setSelectedAccountIds(new Set());
+  };
+
+  const toggleAccountFilter = (key: string) => {
+    setAccountFilters((current) =>
+      current.includes(key) ? current.filter((item) => item !== key) : [...current, key],
+    );
+  };
+
+  const removeAccountFilter = (key: string) => {
+    setAccountFilters((current) => current.filter((item) => item !== key));
+  };
+
+  const copyCredential = (credential: RouteCredential) => {
+    if (copyCredentialMutation.isPending) {
+      return;
     }
+    copyCredentialMutation.mutate(credential.id);
+  };
+
+  const applyPoolMembership = (accountIds: string[]) => {
+    const next = new Set(accountIds);
     setDraftPoolIds(next);
     routePoolMutation.mutate({
       platform: activePlatform,
       account_ids: Array.from(next),
+    });
+  };
+
+  const addSelectedToPool = () => {
+    if (selectedAccountIds.size === 0 || routePoolMutation.isPending) {
+      return;
+    }
+    const next = new Set(draftPoolIds);
+    for (const id of selectedAccountIds) {
+      next.add(id);
+    }
+    applyPoolMembership(Array.from(next));
+    clearAccountSelection();
+  };
+
+  const removeSelectedFromPool = () => {
+    if (selectedAccountIds.size === 0 || routePoolMutation.isPending) {
+      return;
+    }
+    const next = new Set(draftPoolIds);
+    for (const id of selectedAccountIds) {
+      next.delete(id);
+    }
+    applyPoolMembership(Array.from(next));
+    clearAccountSelection();
+  };
+
+  const deleteSelectedAccounts = () => {
+    if (selectedAccountIds.size === 0 || batchDeleteMutation.isPending) {
+      return;
+    }
+    const ids = Array.from(selectedAccountIds);
+    const remainingPool = Array.from(draftPoolIds).filter((id) => !selectedAccountIds.has(id));
+    clearAccountSelection();
+    batchDeleteMutation.mutate(ids, {
+      onSuccess: () => {
+        if (remainingPool.length !== draftPoolIds.size) {
+          applyPoolMembership(remainingPool);
+        }
+      },
     });
   };
 
@@ -1950,7 +2122,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
             <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
               {platformLabels[activePlatform]}
             </p>
-            <h1 className="mt-0.5 text-lg font-semibold tracking-tight text-stone-950">账号列表</h1>
+            <h1 className="mt-0.5 text-lg font-semibold tracking-tight text-stone-950">算力中心</h1>
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -2289,9 +2461,87 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       </div>
 
       <section className="rounded-2xl border border-stone-200 bg-white/82 shadow-sm">
-        <div className="flex items-center justify-between gap-3 border-b border-stone-200 px-4 py-3">
-          <div>
-            <h2 className="text-[15px] font-semibold text-stone-950">{platformLabels[activePlatform]} 账号</h2>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 px-4 py-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <span className="shrink-0 text-[12px] font-semibold text-stone-600">筛选：</span>
+              <div className="relative min-w-0 flex-1" ref={accountFilterMenuRef}>
+                <div
+                  className="flex min-h-9 min-w-[220px] max-w-full flex-wrap items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-2 py-1.5"
+                  onClick={() => setAccountFilterMenuOpen(true)}
+                >
+                  {accountFilters.length === 0 ? (
+                    <span className="px-1 text-[12px] text-stone-400">选择批量名或单账号</span>
+                  ) : (
+                    accountFilters.map((filterKey) => (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-800"
+                        key={filterKey}
+                      >
+                        {credentialBatchFilterLabel(filterKey)}
+                        <button
+                          aria-label={`移除筛选 ${credentialBatchFilterLabel(filterKey)}`}
+                          className="rounded-full p-0.5 text-blue-700 transition-colors hover:bg-blue-100"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            removeAccountFilter(filterKey);
+                          }}
+                          type="button"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    ))
+                  )}
+                  <button
+                    aria-label="打开账号筛选"
+                    className="ml-auto inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-[12px] font-semibold text-stone-600 transition-colors hover:bg-stone-50"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setAccountFilterMenuOpen((open) => !open);
+                    }}
+                    type="button"
+                  >
+                    <ChevronDown className={`h-3.5 w-3.5 transition-transform ${accountFilterMenuOpen ? "rotate-180" : ""}`} />
+                  </button>
+                </div>
+                {accountFilterMenuOpen && (
+                  <div className="absolute left-0 right-0 z-20 mt-1 max-h-56 overflow-auto rounded-xl border border-stone-200 bg-white p-1 shadow-lg">
+                    {accountFilterOptions.length === 0 ? (
+                      <p className="px-2 py-2 text-[12px] text-stone-500">暂无可筛选项</p>
+                    ) : (
+                      accountFilterOptions.map((option) => {
+                        const checked = accountFilters.includes(option);
+                        return (
+                          <button
+                            aria-label={`筛选 ${credentialBatchFilterLabel(option)}`}
+                            className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-[12px] font-semibold transition-colors ${
+                              checked ? "bg-blue-50 text-blue-800" : "text-stone-700 hover:bg-stone-50"
+                            }`}
+                            key={option}
+                            onClick={() => toggleAccountFilter(option)}
+                            type="button"
+                          >
+                            <span>{credentialBatchFilterLabel(option)}</span>
+                            {checked ? <Check className="h-3.5 w-3.5" /> : null}
+                          </button>
+                        );
+                      })
+                    )}
+                    {accountFilters.length > 0 && (
+                      <button
+                        aria-label="清空账号筛选"
+                        className="mt-1 w-full rounded-lg border border-stone-200 px-2.5 py-1.5 text-[12px] font-semibold text-stone-600 transition-colors hover:bg-stone-50"
+                        onClick={() => setAccountFilters([])}
+                        type="button"
+                      >
+                        清空筛选
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -2316,13 +2566,55 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
               <RefreshCw className={`h-3.5 w-3.5 ${quotaRefreshPlatformMutation.isPending ? "animate-spin" : ""}`} />
               刷新额度
             </button>
-            <span className="rounded-full bg-stone-100 px-2.5 py-1 text-[12px] font-semibold text-stone-600">
-              {credentials.length} 个
-            </span>
           </div>
         </div>
 
         <div className="space-y-3 p-3">
+          {selectedAccountIds.size > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2">
+              <div className="flex min-w-0 flex-wrap items-center gap-2 text-[12px] font-semibold text-amber-900">
+                <span>已选 {selectedAccountIds.size} 个账号</span>
+                <button
+                  aria-label="取消账号选择"
+                  className="rounded-lg border border-amber-200 bg-white px-2 py-1 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50"
+                  onClick={clearAccountSelection}
+                  type="button"
+                >
+                  取消选择
+                </button>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  aria-label="批量加入算力池"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-700 px-2.5 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-emerald-800 disabled:opacity-50"
+                  disabled={routePoolMutation.isPending}
+                  onClick={addSelectedToPool}
+                  type="button"
+                >
+                  加入算力池
+                </button>
+                <button
+                  aria-label="批量移出算力池"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-emerald-800 transition-colors hover:bg-emerald-50 disabled:opacity-50"
+                  disabled={routePoolMutation.isPending}
+                  onClick={removeSelectedFromPool}
+                  type="button"
+                >
+                  移出算力池
+                </button>
+                <button
+                  aria-label="批量删除账号"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50"
+                  disabled={batchDeleteMutation.isPending}
+                  onClick={deleteSelectedAccounts}
+                  type="button"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  批量删除
+                </button>
+              </div>
+            </div>
+          )}
           {quotaRefreshMessage && (
             <p className="rounded-xl bg-violet-50 px-3 py-2 text-[12px] font-medium text-violet-800">
               {quotaRefreshMessage}
@@ -2333,6 +2625,11 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
           {!credentialsQuery.isLoading && credentials.length === 0 && (
             <div className="rounded-xl border border-dashed border-stone-300 bg-stone-50 p-6 text-center text-sm text-stone-500">
               暂无账号
+            </div>
+          )}
+          {!credentialsQuery.isLoading && credentials.length > 0 && filteredCredentials.length === 0 && (
+            <div className="rounded-xl border border-dashed border-stone-300 bg-stone-50 p-6 text-center text-sm text-stone-500">
+              当前筛选下暂无账号
             </div>
           )}
 
@@ -2351,11 +2648,10 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                   return (
                   <div className="grid gap-2 px-3 py-2.5 lg:grid-cols-[auto_1fr_auto] lg:items-center" key={credential.id}>
                     <input
-                      aria-label={`将 ${credential.display_name} 加入算力池`}
-                      checked={draftPoolIds.has(credential.id)}
+                      aria-label={`选择 ${credential.display_name}`}
+                      checked={selectedAccountIds.has(credential.id)}
                       className="h-4 w-4 rounded border-stone-300 text-amber-500 focus:ring-blue-400"
-                      disabled={routePoolMutation.isPending}
-                      onChange={() => togglePool(credential.id)}
+                      onChange={() => toggleAccountSelection(credential.id)}
                       type="checkbox"
                     />
                     <div className="min-w-0">
@@ -2369,6 +2665,19 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                         <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
                           {kindLabel(credential.kind)}
                         </span>
+                        {draftPoolIds.has(credential.id) && (
+                          <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800">
+                            已入池
+                          </span>
+                        )}
+                        {credential.batch_id && (
+                          <span
+                            className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-800"
+                            title={credential.batch_name?.trim() || credential.batch_id}
+                          >
+                            批量 {credential.batch_name?.trim() || shortId(credential.batch_id)}
+                          </span>
+                        )}
                         <span
                           className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${accountStatusClass(credential.status)}`}
                           title={credential.status}
@@ -2425,6 +2734,26 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                           {refreshingQuotaId === credential.id ? "刷新中" : "额度"}
                         </button>
                       )}
+                      <button
+                        aria-label={`复制 ${credential.display_name}`}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-stone-200 px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50 disabled:opacity-50"
+                        disabled={copyCredentialMutation.isPending}
+                        onClick={() => {
+                          copyCredential(credential);
+                        }}
+                        type="button"
+                      >
+                        {copiedCredentialId === credential.id ? (
+                          <Check className="h-3.5 w-3.5 text-emerald-600" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5" />
+                        )}
+                        {copyCredentialMutation.isPending && copyCredentialMutation.variables === credential.id
+                          ? "复制中"
+                          : copiedCredentialId === credential.id
+                            ? "已复制"
+                            : "复制"}
+                      </button>
                       <button
                         aria-label={`测试 ${credential.display_name}`}
                         className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 px-2.5 py-1.5 text-[12px] font-semibold text-emerald-700 transition-colors hover:bg-emerald-50 disabled:opacity-50"
@@ -2790,11 +3119,13 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                 </details>
 
                 <label className={labelClass}>
-                  批量名称（可选）
+                  名称
                   <input
                     aria-label="导入批量名称"
                     className={fieldClass}
                     onChange={(event) => setOfficialBatchName(event.target.value)}
+                    placeholder="必填，用于标记本次批量导入"
+                    required
                     value={officialBatchName}
                   />
                 </label>

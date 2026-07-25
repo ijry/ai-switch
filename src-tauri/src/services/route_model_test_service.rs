@@ -959,12 +959,16 @@ mod tests {
 
     #[test]
     fn builds_openai_test_request_for_official_grok() {
-        let request = build_model_test_request(&official_credential("grok"), "grok", None)
-            .expect("request");
+        let request =
+            build_model_test_request(&official_credential("grok"), "grok", None).expect("request");
         assert_eq!(request.interface_format, "openai");
         assert_eq!(request.request_path, "/chat/completions");
-        assert!(request.request_body_json.contains("\"model\": \"grok-4.5\"")
-            || request.request_body_json.contains("\"model\":\"grok-4.5\""));
+        assert!(
+            request
+                .request_body_json
+                .contains("\"model\": \"grok-4.5\"")
+                || request.request_body_json.contains("\"model\":\"grok-4.5\"")
+        );
     }
 
     #[test]
@@ -1365,14 +1369,14 @@ mod tests {
 
     #[tokio::test]
     async fn persists_official_free_usage_exhausted_quota() {
-
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
         let body = json!({
             "code": "subscription:free-usage-exhausted",
             "error": "You've used all the included free usage for model grok-4.5-build-free for now. Usage resets over a rolling 24-hour window — tokens (actual/limit): 1177205/1000000."
         });
-        let base_url = start_json_test_server(axum::http::StatusCode::TOO_MANY_REQUESTS, body).await;
+        let base_url =
+            start_json_test_server(axum::http::StatusCode::TOO_MANY_REQUESTS, body).await;
         let created = RouteCredentialRepository::create(
             &pool,
             "grok",
@@ -1408,7 +1412,9 @@ mod tests {
         let credential = RouteCredentialRepository::get(&pool, &created.id)
             .await
             .expect("credential");
-        assert!(credential.config_json.contains("\"subscription_type\":\"free\""));
+        assert!(credential
+            .config_json
+            .contains("\"subscription_type\":\"free\""));
         assert!(credential.config_json.contains("\"primary_remain\":0"));
         assert!(credential.config_json.contains("\"quota_remaining\":0"));
         assert!(credential.config_json.contains("\"quota_used\":1177205"));

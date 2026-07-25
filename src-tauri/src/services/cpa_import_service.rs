@@ -226,10 +226,7 @@ fn normalize_imported_headers(platform: &str, headers: &Value) -> Value {
         Value::Object(object) => object.clone(),
         _ => Map::new(),
     };
-    map.insert(
-        "User-Agent".to_string(),
-        json!("xai-grok-workspace/0.2.93"),
-    );
+    map.insert("User-Agent".to_string(), json!("xai-grok-workspace/0.2.93"));
     map.insert("X-XAI-Token-Auth".to_string(), json!("xai-grok-cli"));
     map.insert("x-grok-client-version".to_string(), json!("0.2.93"));
     map.remove("X-Client-Name");
@@ -358,8 +355,12 @@ mod tests {
         let parsed = parse_cpa_text("claude", text).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].email.as_deref(), Some("x@example.com"));
-        assert!(parsed[0].secret_payload_json.contains("\"access_token\":\"a\""));
-        assert!(parsed[0].secret_payload_json.contains("\"refresh_token\":\"b\""));
+        assert!(parsed[0]
+            .secret_payload_json
+            .contains("\"access_token\":\"a\""));
+        assert!(parsed[0]
+            .secret_payload_json
+            .contains("\"refresh_token\":\"b\""));
         assert!(parsed[0].config_json.contains("\"raw\""));
     }
 
@@ -406,17 +407,15 @@ mod tests {
         assert!(parsed[0]
             .config_json
             .contains("https://auth.x.ai/oauth2/token"));
-        assert!(parsed[0]
-            .config_json
-            .contains("xai-grok-workspace/0.2.93"));
-        assert!(parsed[0]
-            .config_json
-            .contains("x-grok-client-version"));
+        assert!(parsed[0].config_json.contains("xai-grok-workspace/0.2.93"));
+        assert!(parsed[0].config_json.contains("x-grok-client-version"));
         // Stored headers are upgraded; original CPA payload remains in raw for lossless re-export.
-        assert!(parsed[0]
-            .config_json
-            .contains("\"headers\":{\"User-Agent\":\"xai-grok-workspace/0.2.93\"")
-            || parsed[0].config_json.contains("xai-grok-workspace/0.2.93"));
+        assert!(
+            parsed[0]
+                .config_json
+                .contains("\"headers\":{\"User-Agent\":\"xai-grok-workspace/0.2.93\"")
+                || parsed[0].config_json.contains("xai-grok-workspace/0.2.93")
+        );
         assert!(parsed[0].config_json.contains("\"auth_kind\":\"oauth\""));
         assert!(parsed[0]
             .config_json
@@ -436,12 +435,8 @@ mod tests {
     fn fills_default_grok_cli_headers_when_missing() {
         let text = r#"{"type":"xai","access_token":"at","refresh_token":"rt","base_url":"https://cli-chat-proxy.grok.com/v1"}"#;
         let parsed = parse_cpa_text("grok", text).unwrap();
-        assert!(parsed[0]
-            .config_json
-            .contains("xai-grok-workspace/0.2.93"));
-        assert!(parsed[0]
-            .config_json
-            .contains("x-grok-client-version"));
+        assert!(parsed[0].config_json.contains("xai-grok-workspace/0.2.93"));
+        assert!(parsed[0].config_json.contains("x-grok-client-version"));
         assert!(parsed[0].config_json.contains("X-XAI-Token-Auth"));
     }
 }

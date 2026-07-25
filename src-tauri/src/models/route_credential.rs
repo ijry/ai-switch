@@ -14,6 +14,8 @@ pub struct RouteCredential {
     pub status: String,
     pub sort_order: i64,
     pub batch_id: Option<String>,
+    #[sqlx(default)]
+    pub batch_name: Option<String>,
     pub secret_payload_json: String,
     pub config_json: String,
     pub preview_json: String,

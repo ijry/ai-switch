@@ -2,14 +2,14 @@ use crate::database::repositories::route_credential_repository::RouteCredentialR
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
 use crate::error::AppError;
+use crate::models::route_credential::{
+    normalize_anthropic_api_key_field, ModelMapping, ANTHROPIC_API_KEY_FIELD,
+    ANTHROPIC_AUTH_TOKEN_FIELD,
+};
 use crate::services::http_client::build_outbound_http_client;
 use crate::services::official_agent_identity_service::{
     is_official_agent_identity_credential, resolve_agent_identity_headers,
     CODEX_AGENT_IDENTITY_BASE_URL,
-};
-use crate::models::route_credential::{
-    normalize_anthropic_api_key_field, ModelMapping, ANTHROPIC_API_KEY_FIELD,
-    ANTHROPIC_AUTH_TOKEN_FIELD,
 };
 use axum::body::Body;
 use axum::extract::State as AxumState;
@@ -646,7 +646,10 @@ pub fn normalize_route_platform(value: &str) -> String {
     let normalized = value.trim().to_lowercase();
     if normalized.contains("claude") || normalized.contains("anthropic") {
         "claude".to_string()
-    } else if normalized.contains("grok") || normalized.contains("xai") || normalized.contains("x.ai") {
+    } else if normalized.contains("grok")
+        || normalized.contains("xai")
+        || normalized.contains("x.ai")
+    {
         "grok".to_string()
     } else if normalized.contains("gemini") || normalized.contains("google") {
         "gemini".to_string()
@@ -988,7 +991,11 @@ fn apply_config_headers(headers: &mut HeaderMap, config: &Value) -> Result<(), S
         return Ok(());
     };
     for (name, value) in extra {
-        let Some(value) = value.as_str().map(str::trim).filter(|item| !item.is_empty()) else {
+        let Some(value) = value
+            .as_str()
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+        else {
             continue;
         };
         let header_name = HeaderName::from_bytes(name.as_bytes())
@@ -1007,7 +1014,10 @@ fn credential_user_agent(config: &Value) -> Option<&str> {
     };
     for (name, value) in extra {
         if name.eq_ignore_ascii_case("user-agent") {
-            return value.as_str().map(str::trim).filter(|item| !item.is_empty());
+            return value
+                .as_str()
+                .map(str::trim)
+                .filter(|item| !item.is_empty());
         }
     }
     None
@@ -1052,7 +1062,9 @@ fn access_token_is_expired_with_secret(config: &Value, secret: Option<&Value>) -
                 if !trimmed.is_empty() {
                     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(trimmed) {
                         return dt.with_timezone(&Utc)
-                            <= Utc::now() + chrono::Duration::from_std(OAUTH_REFRESH_LEAD).unwrap_or_default();
+                            <= Utc::now()
+                                + chrono::Duration::from_std(OAUTH_REFRESH_LEAD)
+                                    .unwrap_or_default();
                     }
                 }
             }
@@ -1106,21 +1118,18 @@ pub async fn maybe_refresh_official_credential(
     };
     let client_id = resolve_oauth_client_id(&credential.platform, &config, &secret);
 
-    let refreshed = match refresh_oauth_access_token(
-        &token_endpoint,
-        &refresh_token,
-        client_id.as_deref(),
-    )
-    .await
-    {
-        Ok(value) => value,
-        Err(err) => {
-            if is_permanent_oauth_refresh_failure(&err) {
-                mark_route_credential_revoked(pool, &credential.id).await;
+    let refreshed =
+        match refresh_oauth_access_token(&token_endpoint, &refresh_token, client_id.as_deref())
+            .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                if is_permanent_oauth_refresh_failure(&err) {
+                    mark_route_credential_revoked(pool, &credential.id).await;
+                }
+                return Err(format_oauth_refresh_failure(&err));
             }
-            return Err(format_oauth_refresh_failure(&err));
-        }
-    };
+        };
     let mut secret_obj = secret
         .as_object()
         .cloned()
@@ -1130,7 +1139,10 @@ pub async fn maybe_refresh_official_credential(
         .cloned()
         .ok_or_else(|| "Route credential config JSON must be an object".to_string())?;
 
-    secret_obj.insert("access_token".to_string(), Value::String(refreshed.access_token.clone()));
+    secret_obj.insert(
+        "access_token".to_string(),
+        Value::String(refreshed.access_token.clone()),
+    );
     if let Some(refresh) = refreshed.refresh_token {
         secret_obj.insert("refresh_token".to_string(), Value::String(refresh));
     }
@@ -1142,7 +1154,9 @@ pub async fn maybe_refresh_official_credential(
     }
     if let Some(expires_in) = refreshed.expires_in {
         config_obj.insert("expires_in".to_string(), json!(expires_in));
-        if let Some(expired_at) = Utc::now().checked_add_signed(chrono::Duration::seconds(expires_in)) {
+        if let Some(expired_at) =
+            Utc::now().checked_add_signed(chrono::Duration::seconds(expires_in))
+        {
             config_obj.insert(
                 "expired".to_string(),
                 Value::String(expired_at.to_rfc3339()),
@@ -1156,7 +1170,10 @@ pub async fn maybe_refresh_official_credential(
             );
         }
     }
-    config_obj.insert("last_refresh".to_string(), Value::String(Utc::now().to_rfc3339()));
+    config_obj.insert(
+        "last_refresh".to_string(),
+        Value::String(Utc::now().to_rfc3339()),
+    );
 
     let secret_payload_json = Value::Object(secret_obj).to_string();
     let config_json = Value::Object(config_obj).to_string();
@@ -1260,8 +1277,6 @@ async fn refresh_oauth_access_token(
     })
 }
 
-
-
 fn is_permanent_oauth_refresh_failure(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("invalid_grant")
@@ -1273,9 +1288,7 @@ fn is_permanent_oauth_refresh_failure(message: &str) -> bool {
 
 fn format_oauth_refresh_failure(message: &str) -> String {
     if is_permanent_oauth_refresh_failure(message) {
-        format!(
-            "官方 OAuth 凭证已失效（revoked），请重新导入 CPA 授权文件。原始错误：{message}"
-        )
+        format!("官方 OAuth 凭证已失效（revoked），请重新导入 CPA 授权文件。原始错误：{message}")
     } else {
         message.to_string()
     }
@@ -1401,7 +1414,10 @@ fn config_remain_positive(config: &Value, keys: &[&str]) -> bool {
         match config.get(*key) {
             None | Some(Value::Null) => continue,
             Some(Value::Number(value)) => {
-                return value.as_i64().map(|remaining| remaining > 0).unwrap_or(true);
+                return value
+                    .as_i64()
+                    .map(|remaining| remaining > 0)
+                    .unwrap_or(true);
             }
             Some(Value::String(value)) => {
                 return value
@@ -1496,16 +1512,16 @@ fn parse_tokens_actual_limit(text: &str) -> Option<(i64, i64)> {
     Some((used, limit))
 }
 
-pub fn apply_official_quota_snapshot(config_json: &str, snapshot: &OfficialQuotaSnapshot) -> Result<String, String> {
+pub fn apply_official_quota_snapshot(
+    config_json: &str,
+    snapshot: &OfficialQuotaSnapshot,
+) -> Result<String, String> {
     let mut config = parse_json_object(config_json, "config")?;
     let Some(object) = config.as_object_mut() else {
         return Err("Route credential config JSON must be an object".to_string());
     };
     if let Some(subscription_type) = &snapshot.subscription_type {
-        object.insert(
-            "subscription_type".to_string(),
-            json!(subscription_type),
-        );
+        object.insert("subscription_type".to_string(), json!(subscription_type));
     }
     if let Some(primary_remain) = snapshot.primary_remain {
         object.insert("primary_remain".to_string(), json!(primary_remain));
@@ -1552,14 +1568,15 @@ pub async fn maybe_persist_official_quota_from_response(
     let Some(snapshot) = parse_official_quota_snapshot(response_body) else {
         return Ok(false);
     };
-    let next_config = apply_official_quota_snapshot(&credential.config_json, &snapshot).map_err(
-        |message| AppError::Validation {
-            code: "validation.route_credential_quota",
-            message,
-            details: Some(credential.id.clone()),
-            recoverable: true,
-        },
-    )?;
+    let next_config =
+        apply_official_quota_snapshot(&credential.config_json, &snapshot).map_err(|message| {
+            AppError::Validation {
+                code: "validation.route_credential_quota",
+                message,
+                details: Some(credential.id.clone()),
+                recoverable: true,
+            }
+        })?;
     if next_config == credential.config_json {
         return Ok(false);
     }
@@ -1868,7 +1885,10 @@ fn tool_type(value: &Value) -> Option<&str> {
 
 fn responses_tool_name(tool: &Value) -> Option<String> {
     tool.get("name")
-        .or_else(|| tool.get("function").and_then(|function| function.get("name")))
+        .or_else(|| {
+            tool.get("function")
+                .and_then(|function| function.get("name"))
+        })
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1899,10 +1919,7 @@ fn is_placeholder_model(value: &str) -> bool {
 }
 
 fn is_models_list_path(path: &str) -> bool {
-    matches!(
-        path.trim().trim_end_matches('/'),
-        "/models" | "/v1/models"
-    )
+    matches!(path.trim().trim_end_matches('/'), "/models" | "/v1/models")
 }
 
 fn collect_pool_model_ids(platform: &str, credentials: &[SelectedCredential]) -> Vec<String> {
@@ -2448,8 +2465,14 @@ mod tests {
 
         let mut grok_headers = HeaderMap::new();
         grok_headers.insert("x-ai-switch-platform", HeaderValue::from_static("xai"));
-        assert_eq!(detect_platform("/v1/chat/completions", &grok_headers), "grok");
-        assert_eq!(detect_platform("/v1/grok/chat/completions", &HeaderMap::new()), "grok");
+        assert_eq!(
+            detect_platform("/v1/chat/completions", &grok_headers),
+            "grok"
+        );
+        assert_eq!(
+            detect_platform("/v1/grok/chat/completions", &HeaderMap::new()),
+            "grok"
+        );
         assert_eq!(normalize_route_platform("Grok"), "grok");
     }
 
@@ -2536,7 +2559,8 @@ mod tests {
             kind: "official".to_string(),
             display_name: "Grok OAuth".to_string(),
             status: "ok".to_string(),
-            secret_payload_json: r#"{"access_token":"at-xai","refresh_token":"rt-xai"}"#.to_string(),
+            secret_payload_json: r#"{"access_token":"at-xai","refresh_token":"rt-xai"}"#
+                .to_string(),
             config_json: serde_json::json!({
                 "base_url": "https://cli-chat-proxy.grok.com/v1",
                 "token_endpoint": "https://auth.x.ai/oauth2/token",
@@ -2557,10 +2581,7 @@ mod tests {
         )
         .expect("official grok request");
 
-        assert_eq!(
-            url,
-            "https://cli-chat-proxy.grok.com/v1/chat/completions"
-        );
+        assert_eq!(url, "https://cli-chat-proxy.grok.com/v1/chat/completions");
         assert_eq!(
             headers
                 .get("authorization")
@@ -2774,12 +2795,10 @@ mod tests {
         .expect("agent identity request");
 
         assert_eq!(url, "https://chatgpt.com/backend-api/codex/responses");
-        assert!(
-            headers
-                .get("authorization")
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value.starts_with("AgentAssertion "))
-        );
+        assert!(headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("AgentAssertion ")));
         assert_eq!(
             headers
                 .get("chatgpt-account-id")
@@ -2797,14 +2816,30 @@ mod tests {
     #[test]
     fn is_route_credential_quota_available_filters_zero_remaining() {
         assert!(is_route_credential_quota_available("{}"));
-        assert!(is_route_credential_quota_available(r#"{"quota_remaining":12}"#));
-        assert!(is_route_credential_quota_available(r#"{"primary_remain":12}"#));
-        assert!(!is_route_credential_quota_available(r#"{"quota_remaining":0}"#));
-        assert!(!is_route_credential_quota_available(r#"{"primary_remain":0}"#));
-        assert!(!is_route_credential_quota_available(r#"{"primary_remain":5,"weekly_remain":0}"#));
-        assert!(!is_route_credential_quota_available(r#"{"quota_remaining":-1}"#));
-        assert!(!is_route_credential_quota_available(r#"{"quota_remaining":"0"}"#));
-        assert!(is_route_credential_quota_available(r#"{"quota_remaining":"5"}"#));
+        assert!(is_route_credential_quota_available(
+            r#"{"quota_remaining":12}"#
+        ));
+        assert!(is_route_credential_quota_available(
+            r#"{"primary_remain":12}"#
+        ));
+        assert!(!is_route_credential_quota_available(
+            r#"{"quota_remaining":0}"#
+        ));
+        assert!(!is_route_credential_quota_available(
+            r#"{"primary_remain":0}"#
+        ));
+        assert!(!is_route_credential_quota_available(
+            r#"{"primary_remain":5,"weekly_remain":0}"#
+        ));
+        assert!(!is_route_credential_quota_available(
+            r#"{"quota_remaining":-1}"#
+        ));
+        assert!(!is_route_credential_quota_available(
+            r#"{"quota_remaining":"0"}"#
+        ));
+        assert!(is_route_credential_quota_available(
+            r#"{"quota_remaining":"5"}"#
+        ));
     }
 
     #[test]
@@ -2885,7 +2920,8 @@ mod tests {
     #[test]
     fn jwt_claim_helpers_parse_payload() {
         // {"alg":"none"}.{"exp":1893456000,"client_id":"cid-from-jwt"}.sig
-        let token = "eyJhbGciOiJub25lIn0.eyJleHAiOjE4OTM0NTYwMDAsImNsaWVudF9pZCI6ImNpZC1mcm9tLWp3dCJ9.sig";
+        let token =
+            "eyJhbGciOiJub25lIn0.eyJleHAiOjE4OTM0NTYwMDAsImNsaWVudF9pZCI6ImNpZC1mcm9tLWp3dCJ9.sig";
         assert_eq!(jwt_claim_i64(token, "exp"), Some(1893456000));
         assert_eq!(
             jwt_claim_string(token, "client_id").as_deref(),
@@ -3131,7 +3167,9 @@ mod tests {
         assert!(is_models_list_path("/models"));
         assert!(is_models_list_path("/v1/models/"));
         assert!(!is_models_list_path("/v1/chat/completions"));
-        assert!(!is_models_list_path("/v1beta/models/gemini:generateContent"));
+        assert!(!is_models_list_path(
+            "/v1beta/models/gemini:generateContent"
+        ));
     }
 
     #[test]
@@ -3211,7 +3249,10 @@ mod tests {
         assert_eq!(data.len(), 2);
         assert_eq!(data[0].get("id").and_then(Value::as_str), Some("gpt-5.5"));
         assert_eq!(data[0].get("object").and_then(Value::as_str), Some("model"));
-        assert_eq!(data[0].get("owned_by").and_then(Value::as_str), Some("ai-switch"));
+        assert_eq!(
+            data[0].get("owned_by").and_then(Value::as_str),
+            Some("ai-switch")
+        );
         assert_eq!(data[1].get("id").and_then(Value::as_str), Some("gpt-5"));
 
         let response = json_models_list_response("codex", &[]);

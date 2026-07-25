@@ -70,9 +70,10 @@ pub fn build_outbound_http_client(timeout: Option<Duration>) -> Result<Client, S
 }
 
 fn chatgpt_cloudflare_cookie_store() -> Arc<ChatGptCloudflareCookieStore> {
-    Arc::clone(SHARED_CHATGPT_CLOUDFLARE_COOKIE_STORE.get_or_init(|| {
-        Arc::new(ChatGptCloudflareCookieStore::default())
-    }))
+    Arc::clone(
+        SHARED_CHATGPT_CLOUDFLARE_COOKIE_STORE
+            .get_or_init(|| Arc::new(ChatGptCloudflareCookieStore::default())),
+    )
 }
 
 fn is_chatgpt_cookie_url(url: &reqwest::Url) -> bool {
@@ -88,8 +89,10 @@ fn is_chatgpt_cookie_url(url: &reqwest::Url) -> bool {
 }
 
 fn is_allowed_chatgpt_host(host: &str) -> bool {
-    matches!(host, "chatgpt.com" | "chat.openai.com" | "chatgpt-staging.com")
-        || host.ends_with(".chatgpt.com")
+    matches!(
+        host,
+        "chatgpt.com" | "chat.openai.com" | "chatgpt-staging.com"
+    ) || host.ends_with(".chatgpt.com")
         || host.ends_with(".chatgpt-staging.com")
 }
 
@@ -286,7 +289,8 @@ mod tests {
     #[test]
     fn does_not_return_chatgpt_cookies_for_other_hosts() {
         let store = ChatGptCloudflareCookieStore::default();
-        let chatgpt_url = reqwest::Url::parse("https://chatgpt.com/backend-api/codex/usage").unwrap();
+        let chatgpt_url =
+            reqwest::Url::parse("https://chatgpt.com/backend-api/codex/usage").unwrap();
         let api_url = reqwest::Url::parse("https://api.openai.com/v1/responses").unwrap();
         let cfuvid = HeaderValue::from_static("_cfuvid=visitor; Path=/; Secure; HttpOnly");
         let mut set_cookies = [&cfuvid].into_iter();

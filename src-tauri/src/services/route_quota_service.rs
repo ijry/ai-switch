@@ -200,9 +200,7 @@ async fn fetch_official_quota_snapshot(
 
     let mut diagnostics: Vec<String> = Vec::new();
     for candidate in candidates {
-        match request_quota_snapshot(&client, &platform_key, &auth, &secret, &candidate)
-            .await
-        {
+        match request_quota_snapshot(&client, &platform_key, &auth, &secret, &candidate).await {
             Ok(Some(snapshot)) => {
                 return Ok(QuotaFetchResult {
                     snapshot: Some((snapshot, candidate.source)),
@@ -322,11 +320,7 @@ fn quota_endpoint_candidates(platform: &str, config: &Value) -> Vec<QuotaEndpoin
     out
 }
 
-fn push_codex_usage_candidate(
-    out: &mut Vec<QuotaEndpointCandidate>,
-    base_url: &str,
-    source: &str,
-) {
+fn push_codex_usage_candidate(out: &mut Vec<QuotaEndpointCandidate>, base_url: &str, source: &str) {
     let base = base_url.trim().trim_end_matches('/');
     if base.is_empty() {
         return;
@@ -374,7 +368,9 @@ async fn request_quota_snapshot(
     secret: &Value,
     candidate: &QuotaEndpointCandidate,
 ) -> Result<Option<OfficialQuotaSnapshot>, String> {
-    let mut request = client.get(&candidate.url).header("accept", "application/json");
+    let mut request = client
+        .get(&candidate.url)
+        .header("accept", "application/json");
     request = match auth {
         QuotaRequestAuth::Bearer(access_token) => {
             request.header("authorization", format!("Bearer {access_token}"))
@@ -404,7 +400,10 @@ async fn request_quota_snapshot(
                 }
                 QuotaRequestAuth::AgentIdentity(agent_identity) => {
                     request = request
-                        .header("chatgpt-account-id", agent_identity.chatgpt_account_id.as_str())
+                        .header(
+                            "chatgpt-account-id",
+                            agent_identity.chatgpt_account_id.as_str(),
+                        )
                         .header("originator", CODEX_QUOTA_AGENT_IDENTITY_ORIGINATOR)
                         .header("user-agent", CODEX_QUOTA_AGENT_IDENTITY_USER_AGENT);
                     if agent_identity.is_fedramp_account {
@@ -427,15 +426,12 @@ async fn request_quota_snapshot(
         }
     }
 
-    let response = request
-        .send()
-        .await
-        .map_err(|err| {
-            format!(
-                "Quota request failed for {} ({}): {err}",
-                candidate.source, candidate.url
-            )
-        })?;
+    let response = request.send().await.map_err(|err| {
+        format!(
+            "Quota request failed for {} ({}): {err}",
+            candidate.source, candidate.url
+        )
+    })?;
     let status = response.status();
     let body = response
         .text()
@@ -754,7 +750,11 @@ pub fn parse_claude_quota_snapshot(value: &Value) -> Option<OfficialQuotaSnapsho
             .or_else(|| value.pointer("/rateLimit/sevenDay")),
     );
     if primary.is_some() || weekly.is_some() {
-        return Some(merge_windows(primary, weekly, subscription_type_from(value)));
+        return Some(merge_windows(
+            primary,
+            weekly,
+            subscription_type_from(value),
+        ));
     }
     // Some payloads nest under "usage".
     if let Some(usage) = value.get("usage") {
@@ -796,7 +796,13 @@ pub fn parse_grok_quota_snapshot(value: &Value) -> Option<OfficialQuotaSnapshot>
     let weekly = first_i64(value, &["weekly_remain", "weekly_remaining"]);
     let reset_primary = first_time(
         value,
-        &["reset_primary", "resets_at", "reset_at", "resetAt", "expires_at"],
+        &[
+            "reset_primary",
+            "resets_at",
+            "reset_at",
+            "resetAt",
+            "expires_at",
+        ],
     );
     let reset_weekly = first_time(value, &["reset_weekly", "weekly_reset_at", "weeklyResetAt"]);
 
@@ -974,12 +980,11 @@ fn as_i64(value: &Value) -> Option<i64> {
         Value::Number(number) => number
             .as_i64()
             .or_else(|| number.as_f64().map(|n| n.round() as i64)),
-        Value::String(text) => text.trim().parse::<i64>().ok().or_else(|| {
-            text.trim()
-                .parse::<f64>()
-                .ok()
-                .map(|n| n.round() as i64)
-        }),
+        Value::String(text) => text
+            .trim()
+            .parse::<i64>()
+            .ok()
+            .or_else(|| text.trim().parse::<f64>().ok().map(|n| n.round() as i64)),
         _ => None,
     }
 }
@@ -1014,9 +1019,15 @@ fn as_time_string(value: &Value) -> Option<String> {
             Some(text.to_string())
         }
         Value::Number(number) => {
-            let raw = number.as_i64().or_else(|| number.as_f64().map(|n| n as i64))?;
+            let raw = number
+                .as_i64()
+                .or_else(|| number.as_f64().map(|n| n as i64))?;
             // Accept seconds or milliseconds epoch.
-            let seconds = if raw > 10_000_000_000 { raw / 1000 } else { raw };
+            let seconds = if raw > 10_000_000_000 {
+                raw / 1000
+            } else {
+                raw
+            };
             Utc.timestamp_opt(seconds, 0)
                 .single()
                 .map(|dt| dt.to_rfc3339())
@@ -1105,7 +1116,10 @@ mod tests {
         assert_eq!(snapshot.weekly_remain, Some(800));
         assert_eq!(snapshot.quota_limit, Some(100));
         assert_eq!(snapshot.quota_used, Some(35));
-        assert!(snapshot.reset_primary.as_deref().is_some_and(|value| value.contains('T')));
+        assert!(snapshot
+            .reset_primary
+            .as_deref()
+            .is_some_and(|value| value.contains('T')));
     }
 
     #[test]
@@ -1125,7 +1139,8 @@ mod tests {
 
     #[test]
     fn codex_candidates_normalize_chatgpt_host_to_backend_api_wham() {
-        let candidates = quota_endpoint_candidates("codex", &json!({"base_url":"https://chatgpt.com"}));
+        let candidates =
+            quota_endpoint_candidates("codex", &json!({"base_url":"https://chatgpt.com"}));
         let urls = candidates
             .iter()
             .map(|candidate| candidate.url.as_str())
@@ -1137,7 +1152,8 @@ mod tests {
 
     #[test]
     fn codex_candidates_use_codex_api_usage_for_non_chatgpt_base() {
-        let candidates = quota_endpoint_candidates("codex", &json!({"base_url":"https://example.test"}));
+        let candidates =
+            quota_endpoint_candidates("codex", &json!({"base_url":"https://example.test"}));
         let urls = candidates
             .iter()
             .map(|candidate| candidate.url.as_str())
@@ -1174,8 +1190,14 @@ mod tests {
         assert_eq!(snapshot.subscription_type.as_deref(), Some("k12"));
         assert_eq!(snapshot.primary_remain, Some(58));
         assert_eq!(snapshot.weekly_remain, Some(16));
-        assert!(snapshot.reset_primary.as_deref().is_some_and(|value| value.contains('T')));
-        assert!(snapshot.reset_weekly.as_deref().is_some_and(|value| value.contains('T')));
+        assert!(snapshot
+            .reset_primary
+            .as_deref()
+            .is_some_and(|value| value.contains('T')));
+        assert!(snapshot
+            .reset_weekly
+            .as_deref()
+            .is_some_and(|value| value.contains('T')));
     }
 
     #[test]
@@ -1380,7 +1402,11 @@ mod tests {
             .expect("headers lock")
             .clone()
             .expect("captured headers");
-        assert_common_codex_quota_headers(&headers, CODEX_QUOTA_CLI_ORIGINATOR, CODEX_QUOTA_CLI_USER_AGENT);
+        assert_common_codex_quota_headers(
+            &headers,
+            CODEX_QUOTA_CLI_ORIGINATOR,
+            CODEX_QUOTA_CLI_USER_AGENT,
+        );
         assert_quota_header(&headers, "authorization", "Bearer at-test");
         assert_quota_header(&headers, "chatgpt-account-id", "account-123");
     }
@@ -1445,7 +1471,11 @@ mod tests {
             .expect("headers lock")
             .clone()
             .expect("captured headers");
-        assert_common_codex_quota_headers(&headers, CODEX_QUOTA_AGENT_IDENTITY_ORIGINATOR, CODEX_QUOTA_AGENT_IDENTITY_USER_AGENT);
+        assert_common_codex_quota_headers(
+            &headers,
+            CODEX_QUOTA_AGENT_IDENTITY_ORIGINATOR,
+            CODEX_QUOTA_AGENT_IDENTITY_USER_AGENT,
+        );
         assert_quota_header(&headers, "authorization", "AgentAssertion token-test");
         assert_quota_header(&headers, "chatgpt-account-id", "account-agent-1");
         assert_quota_header(&headers, "x-openai-fedramp", "true");

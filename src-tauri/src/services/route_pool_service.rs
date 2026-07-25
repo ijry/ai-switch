@@ -265,7 +265,10 @@ pub fn normalize_platform(platform: &str) -> Result<String, AppError> {
 
     if normalized.contains("claude") {
         Ok("claude".to_string())
-    } else if normalized.contains("grok") || normalized.contains("xai") || normalized.contains("x.ai") {
+    } else if normalized.contains("grok")
+        || normalized.contains("xai")
+        || normalized.contains("x.ai")
+    {
         Ok("grok".to_string())
     } else if normalized.contains("gemini") {
         Ok("gemini".to_string())

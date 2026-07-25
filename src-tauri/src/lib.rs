@@ -22,10 +22,10 @@ use commands::batch_commands::{
 };
 use commands::import_commands::import_example_json;
 use commands::route_credential_commands::{
-    create_api_route_credential, delete_route_credential, get_route_credential,
-    import_official_route_credentials_from_files, import_official_route_credentials_from_text,
-    list_route_credentials, refresh_route_credential_quota, refresh_route_credentials_quota,
-    update_route_credential,
+    copy_route_credential, create_api_route_credential, delete_route_credential,
+    get_route_credential, import_official_route_credentials_from_files,
+    import_official_route_credentials_from_text, list_route_credentials,
+    refresh_route_credential_quota, refresh_route_credentials_quota, update_route_credential,
 };
 use commands::route_pool_commands::{
     fetch_route_models, get_route_pool, route_pool_route_once, route_pool_test_model,
@@ -54,11 +54,11 @@ use commands::web_service_commands::{
 };
 use database::open_migrated_pool;
 use paths::AppPaths;
+use services::deeplink_service::{parse_deeplink_url, DeepLinkErrorPayload};
 use services::route_proxy_service::RouteProxyRuntimeState;
 use services::tailscale_service::TailscaleRuntimeState;
 use services::web_service::{WebService, WebServiceRuntimeState};
 use std::sync::Arc;
-use services::deeplink_service::{parse_deeplink_url, DeepLinkErrorPayload};
 use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 use terminal_manager::TerminalManager;
@@ -189,6 +189,7 @@ pub fn run() {
             list_route_credentials,
             get_route_credential,
             create_api_route_credential,
+            copy_route_credential,
             import_official_route_credentials_from_text,
             import_official_route_credentials_from_files,
             update_route_credential,

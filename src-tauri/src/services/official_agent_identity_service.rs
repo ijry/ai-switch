@@ -17,8 +17,12 @@ pub struct AgentIdentityHeaders {
 
 pub fn is_official_agent_identity_credential(secret: &Value, config: &Value) -> bool {
     auth_mode_is_agent_identity(secret, config)
-        || string_from_any(secret, config, &[&["agent_private_key"], &["agentPrivateKey"]])
-            .is_some()
+        || string_from_any(
+            secret,
+            config,
+            &[&["agent_private_key"], &["agentPrivateKey"]],
+        )
+        .is_some()
 }
 
 pub fn resolve_agent_identity_headers(
@@ -92,8 +96,12 @@ fn authorization_header_for_agent_task(
     task_id: &str,
 ) -> Result<String, String> {
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
-    let signature =
-        sign_agent_assertion_payload(agent_runtime_id, private_key_pkcs8_base64, task_id, &timestamp)?;
+    let signature = sign_agent_assertion_payload(
+        agent_runtime_id,
+        private_key_pkcs8_base64,
+        task_id,
+        &timestamp,
+    )?;
     let payload = serde_json::to_vec(&BTreeMap::from([
         ("agent_runtime_id", agent_runtime_id),
         ("signature", signature.as_str()),
@@ -101,7 +109,10 @@ fn authorization_header_for_agent_task(
         ("timestamp", timestamp.as_str()),
     ]))
     .map_err(|err| format!("Could not serialize agent assertion: {err}"))?;
-    Ok(format!("AgentAssertion {}", URL_SAFE_NO_PAD.encode(payload)))
+    Ok(format!(
+        "AgentAssertion {}",
+        URL_SAFE_NO_PAD.encode(payload)
+    ))
 }
 
 fn sign_agent_assertion_payload(
@@ -159,8 +170,11 @@ fn string_from_any(secret: &Value, config: &Value, paths: &[&[&str]]) -> Option<
         })
         .or_else(|| {
             config.get("raw").and_then(|raw| {
-                raw.get("credentials")
-                    .and_then(|credentials| paths.iter().find_map(|path| string_at_path(credentials, path)))
+                raw.get("credentials").and_then(|credentials| {
+                    paths
+                        .iter()
+                        .find_map(|path| string_at_path(credentials, path))
+                })
             })
         })
         .or_else(|| {
@@ -180,7 +194,9 @@ fn string_from_any(secret: &Value, config: &Value, paths: &[&[&str]]) -> Option<
             config.get("raw").and_then(|raw| {
                 raw.get("credentials")
                     .and_then(|credentials| credentials.get("live_identity"))
-                    .and_then(|identity| paths.iter().find_map(|path| string_at_path(identity, path)))
+                    .and_then(|identity| {
+                        paths.iter().find_map(|path| string_at_path(identity, path))
+                    })
             })
         })
 }
@@ -197,8 +213,11 @@ fn bool_from_any(secret: &Value, config: &Value, paths: &[&[&str]]) -> Option<bo
         })
         .or_else(|| {
             config.get("raw").and_then(|raw| {
-                raw.get("credentials")
-                    .and_then(|credentials| paths.iter().find_map(|path| bool_at_path(credentials, path)))
+                raw.get("credentials").and_then(|credentials| {
+                    paths
+                        .iter()
+                        .find_map(|path| bool_at_path(credentials, path))
+                })
             })
         })
         .or_else(|| {
@@ -248,24 +267,16 @@ mod tests {
     fn test_private_key() -> (SigningKey, String) {
         let signing_key = SigningKey::from_bytes(&[7u8; 32]);
         let private_key = signing_key.to_pkcs8_der().expect("encode key");
-        (
-            signing_key,
-            BASE64_STANDARD.encode(private_key.as_bytes()),
-        )
+        (signing_key, BASE64_STANDARD.encode(private_key.as_bytes()))
     }
 
     #[test]
     fn builds_agent_assertion_header_that_verifies() {
         let (signing_key, private_key) = test_private_key();
-        let header = authorization_header_for_agent_task(
-            "agent-runtime-1",
-            &private_key,
-            "task-run-1",
-        )
-        .expect("header");
-        let token = header
-            .strip_prefix("AgentAssertion ")
-            .expect("scheme");
+        let header =
+            authorization_header_for_agent_task("agent-runtime-1", &private_key, "task-run-1")
+                .expect("header");
+        let token = header.strip_prefix("AgentAssertion ").expect("scheme");
         let payload = URL_SAFE_NO_PAD.decode(token).expect("decode token");
         let envelope: Value = serde_json::from_slice(&payload).expect("json");
 
@@ -273,13 +284,21 @@ mod tests {
             envelope.get("agent_runtime_id").and_then(Value::as_str),
             Some("agent-runtime-1")
         );
-        assert_eq!(envelope.get("task_id").and_then(Value::as_str), Some("task-run-1"));
+        assert_eq!(
+            envelope.get("task_id").and_then(Value::as_str),
+            Some("task-run-1")
+        );
         let timestamp = envelope
             .get("timestamp")
             .and_then(Value::as_str)
             .expect("timestamp");
         let signature = BASE64_STANDARD
-            .decode(envelope.get("signature").and_then(Value::as_str).expect("signature"))
+            .decode(
+                envelope
+                    .get("signature")
+                    .and_then(Value::as_str)
+                    .expect("signature"),
+            )
             .expect("signature base64");
         let signature = Signature::from_slice(&signature).expect("signature bytes");
         signing_key

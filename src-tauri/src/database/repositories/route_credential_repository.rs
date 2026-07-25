@@ -35,8 +35,8 @@ fn quota_columns_from_config_json(config_json: &str) -> QuotaColumns {
         .map(str::trim)
         .filter(|item| !item.is_empty())
         .map(str::to_string);
-    let primary_remain = json_i64(object.get("primary_remain"))
-        .or_else(|| json_i64(object.get("quota_remaining")));
+    let primary_remain =
+        json_i64(object.get("primary_remain")).or_else(|| json_i64(object.get("quota_remaining")));
     let weekly_remain = json_i64(object.get("weekly_remain"));
     let reset_primary = json_string(object.get("reset_primary"))
         .or_else(|| json_string(object.get("quota_updated_at")));
@@ -151,16 +151,44 @@ impl RouteCredentialRepository {
     }
 
     pub async fn get(pool: &SqlitePool, id: &str) -> Result<RouteCredential, AppError> {
-        sqlx::query_as::<_, RouteCredential>("SELECT * FROM route_credentials WHERE id = ?")
-            .bind(id)
-            .fetch_one(pool)
-            .await
-            .map_err(|err| AppError::Database {
-                code: "database.route_credential_get",
-                message: "Could not load route credential".to_string(),
-                details: Some(err.to_string()),
-                recoverable: true,
-            })
+        sqlx::query_as::<_, RouteCredential>(
+            "SELECT
+                rc.id,
+                rc.platform,
+                rc.kind,
+                rc.display_name,
+                rc.email,
+                rc.status,
+                rc.sort_order,
+                rc.batch_id,
+                b.name AS batch_name,
+                rc.secret_payload_json,
+                rc.config_json,
+                rc.preview_json,
+                rc.subscription_type,
+                rc.primary_remain,
+                rc.weekly_remain,
+                rc.reset_primary,
+                rc.reset_weekly,
+                rc.quota_remaining,
+                rc.quota_limit,
+                rc.quota_used,
+                rc.quota_updated_at,
+                rc.created_at,
+                rc.updated_at
+             FROM route_credentials rc
+             LEFT JOIN batches b ON b.id = rc.batch_id
+             WHERE rc.id = ?",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_credential_get",
+            message: "Could not load route credential".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })
     }
 
     pub async fn list_by_platform(
@@ -168,9 +196,34 @@ impl RouteCredentialRepository {
         platform: &str,
     ) -> Result<Vec<RouteCredential>, AppError> {
         sqlx::query_as::<_, RouteCredential>(
-            "SELECT * FROM route_credentials
-             WHERE platform = ?
-             ORDER BY sort_order ASC, created_at DESC",
+            "SELECT
+                rc.id,
+                rc.platform,
+                rc.kind,
+                rc.display_name,
+                rc.email,
+                rc.status,
+                rc.sort_order,
+                rc.batch_id,
+                b.name AS batch_name,
+                rc.secret_payload_json,
+                rc.config_json,
+                rc.preview_json,
+                rc.subscription_type,
+                rc.primary_remain,
+                rc.weekly_remain,
+                rc.reset_primary,
+                rc.reset_weekly,
+                rc.quota_remaining,
+                rc.quota_limit,
+                rc.quota_used,
+                rc.quota_updated_at,
+                rc.created_at,
+                rc.updated_at
+             FROM route_credentials rc
+             LEFT JOIN batches b ON b.id = rc.batch_id
+             WHERE rc.platform = ?
+             ORDER BY rc.sort_order ASC, rc.created_at DESC",
         )
         .bind(platform)
         .fetch_all(pool)
@@ -418,8 +471,14 @@ mod tests {
         assert_eq!(created.subscription_type.as_deref(), Some("free"));
         assert_eq!(created.primary_remain, Some(0));
         assert_eq!(created.weekly_remain, Some(12));
-        assert_eq!(created.reset_primary.as_deref(), Some("2026-07-22T00:00:00Z"));
-        assert_eq!(created.reset_weekly.as_deref(), Some("2026-07-28T00:00:00Z"));
+        assert_eq!(
+            created.reset_primary.as_deref(),
+            Some("2026-07-22T00:00:00Z")
+        );
+        assert_eq!(
+            created.reset_weekly.as_deref(),
+            Some("2026-07-28T00:00:00Z")
+        );
         assert_eq!(created.quota_remaining, Some(0));
         assert_eq!(created.quota_limit, Some(1_000_000));
         assert_eq!(created.quota_used, Some(1_177_205));

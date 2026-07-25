@@ -1,9 +1,9 @@
-use crate::services::http_client::build_outbound_http_client;
 use crate::error::AppError;
 use crate::models::route_credential::{
     normalize_anthropic_api_key_field, ANTHROPIC_API_KEY_FIELD, ANTHROPIC_AUTH_TOKEN_FIELD,
 };
 use crate::models::route_pool::{FetchedRouteModel, RouteModelsFetchRequest};
+use crate::services::http_client::build_outbound_http_client;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 use reqwest::StatusCode;
 use serde::Deserialize;
@@ -90,13 +90,14 @@ impl RouteModelFetchService {
             )
         })?;
 
-        let client = build_outbound_http_client(Some(Duration::from_secs(FETCH_TIMEOUT_SECS))).map_err(|err| {
-            validation_error(
-                "validation.route_models_client",
-                "Could not initialize model list client",
-                Some(err),
-            )
-        })?;
+        let client = build_outbound_http_client(Some(Duration::from_secs(FETCH_TIMEOUT_SECS)))
+            .map_err(|err| {
+                validation_error(
+                    "validation.route_models_client",
+                    "Could not initialize model list client",
+                    Some(err),
+                )
+            })?;
 
         let mut last_err: Option<String> = None;
         for raw_url in &candidates {

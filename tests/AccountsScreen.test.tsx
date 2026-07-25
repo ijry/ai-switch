@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createBatch,
+  copyRouteCredential,
   createApiRouteCredential,
   deleteRouteCredential,
   fetchRouteModels,
@@ -32,6 +33,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 vi.mock("../src/lib/api/client", () => ({
   createBatch: vi.fn(),
+  copyRouteCredential: vi.fn(),
   createApiRouteCredential: vi.fn(),
   deleteRouteCredential: vi.fn(),
   fetchRouteModels: vi.fn(),
@@ -67,6 +69,7 @@ const credentialsFixture: RouteCredential[] = [
     status: "ok",
     sort_order: 0,
     batch_id: "batch-1",
+    batch_name: "Codex Batch",
     secret_payload_json: "{\"access_token\":\"at\",\"refresh_token\":\"rt\"}",
     config_json: "{\"type\":\"codex\"}",
     preview_json: "{\"auth_json\":{}}",
@@ -82,6 +85,7 @@ const credentialsFixture: RouteCredential[] = [
     status: "ok",
     sort_order: 1,
     batch_id: null,
+    batch_name: null,
     secret_payload_json: "{\"api_key\":\"sk-test\"}",
     config_json: "{\"base_url\":\"https://api.example.com/v1\",\"interface_format\":\"openai\",\"model_mappings\":[{\"from\":\"gpt-5\",\"to\":\"old-upstream\"}]}",
     preview_json: "{\"config_toml\":\"\"}",
@@ -158,6 +162,7 @@ describe("AccountsScreen", () => {
   beforeEach(() => {
     vi.mocked(open).mockReset();
     vi.mocked(createBatch).mockReset();
+    vi.mocked(copyRouteCredential).mockReset();
     vi.mocked(createApiRouteCredential).mockReset();
     vi.mocked(deleteRouteCredential).mockReset();
     vi.mocked(fetchRouteModels).mockReset();
@@ -177,7 +182,10 @@ describe("AccountsScreen", () => {
 
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
-      value: undefined,
+      value: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+        read: vi.fn().mockResolvedValue([]),
+      },
     });
 
     vi.mocked(open).mockResolvedValue(null);
@@ -192,27 +200,33 @@ describe("AccountsScreen", () => {
     });
     vi.mocked(listRouteCredentials).mockResolvedValue(credentialsFixture);
     vi.mocked(refreshRouteCredentialsQuota).mockResolvedValue([]);
-    vi.mocked(getRoutePool).mockResolvedValue({
-      platform: "codex",
-      account_ids: [],
-      stats: statsFixture(),
-    });
+    const poolStateByPlatform = new Map<string, string[]>([["codex", []]]);
+    vi.mocked(getRoutePool).mockImplementation(async (platform) => ({
+      platform,
+      account_ids: [...(poolStateByPlatform.get(platform) ?? [])],
+      stats: statsFixture({
+        member_count: (poolStateByPlatform.get(platform) ?? []).length,
+      }),
+    }));
     vi.mocked(getRouteProxyStatus).mockResolvedValue({
       running: false,
       bind_host: "127.0.0.1",
       port: null,
       base_url: null,
     });
-    vi.mocked(setRoutePoolMembers).mockImplementation(async (input) => ({
-      platform: input.platform,
-      account_ids: input.account_ids,
-      stats: statsFixture({
-        member_count: input.account_ids.length,
-        request_count: 1,
-        token_count: 4096,
-        cost_micros: 2500,
-      }),
-    }));
+    vi.mocked(setRoutePoolMembers).mockImplementation(async (input) => {
+      poolStateByPlatform.set(input.platform, [...input.account_ids]);
+      return {
+        platform: input.platform,
+        account_ids: [...input.account_ids],
+        stats: statsFixture({
+          member_count: input.account_ids.length,
+          request_count: 1,
+          token_count: 4096,
+          cost_micros: 2500,
+        }),
+      };
+    });
     vi.mocked(routePoolTestModel).mockResolvedValue(modelTestOutcomeFixture());
     vi.mocked(startRouteProxy).mockResolvedValue({
       running: true,
@@ -243,6 +257,14 @@ describe("AccountsScreen", () => {
       failed: [],
     });
     vi.mocked(createApiRouteCredential).mockResolvedValue(credentialsFixture[1]);
+    vi.mocked(copyRouteCredential).mockImplementation(async (id: string) => {
+      const source = credentialsFixture.find((item) => item.id === id) ?? credentialsFixture[0];
+      return {
+        ...source,
+        id: `${source.id}-copy`,
+        display_name: `${source.display_name} 2026-07-25`,
+      };
+    });
     vi.mocked(updateRouteCredential).mockResolvedValue({
       ...credentialsFixture[0],
       display_name: "Updated Team Account",
@@ -257,11 +279,16 @@ describe("AccountsScreen", () => {
   it("renders route credentials under the selected first-level agent tab and toggles pool membership", async () => {
     renderScreen();
 
-    expect(await screen.findByText("Codex 账号")).toBeInTheDocument();
+    expect(await screen.findByText("筛选：")).toBeInTheDocument();
     expect(await screen.findByText("Team Account")).toBeInTheDocument();
     expect(screen.getByText("API Account")).toBeInTheDocument();
+    expect(screen.getByText("批量 · Codex Batch")).toBeInTheDocument();
+    expect(screen.getByText("批量 Codex Batch")).toBeInTheDocument();
 
-    await userEvent.click(screen.getByLabelText("将 Team Account 加入算力池"));
+    expect(screen.queryByLabelText("批量加入算力池")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("选择 Team Account"));
+    expect(screen.getByText("已选 1 个账号")).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("批量加入算力池"));
 
     await waitFor(() =>
       expect(setRoutePoolMembers).toHaveBeenCalledWith({
@@ -270,6 +297,75 @@ describe("AccountsScreen", () => {
       }),
     );
     expect(screen.getByText("已加入 1 个账号")).toBeInTheDocument();
+    expect(screen.getByText("已入池")).toBeInTheDocument();
+    expect(screen.queryByLabelText("批量加入算力池")).not.toBeInTheDocument();
+  });
+
+  it("filters accounts by batch name and single-account option", async () => {
+    renderScreen();
+
+    expect(await screen.findByText("Team Account")).toBeInTheDocument();
+    expect(screen.getByText("API Account")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("打开账号筛选"));
+    await userEvent.click(screen.getByLabelText("筛选 Codex Batch"));
+    expect(screen.getByText("Team Account")).toBeInTheDocument();
+    expect(screen.queryByText("API Account")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("筛选 单账号"));
+    expect(screen.getByText("Team Account")).toBeInTheDocument();
+    expect(screen.getByText("API Account")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("移除筛选 Codex Batch"));
+    expect(screen.queryByText("Team Account")).not.toBeInTheDocument();
+    expect(screen.getByText("API Account")).toBeInTheDocument();
+  });
+
+  it("duplicates an account from the account list with a dated name", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByLabelText("复制 Team Account"));
+    await waitFor(() => expect(copyRouteCredential).toHaveBeenCalledWith("cred-official-1"));
+    expect(screen.getByLabelText("复制 Team Account")).toHaveTextContent("已复制");
+  });
+
+  it("supports batch remove from pool and batch delete for selected accounts", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByLabelText("选择 Team Account"));
+    await userEvent.click(screen.getByLabelText("选择 API Account"));
+    expect(screen.getByText("已选 2 个账号")).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("批量加入算力池"));
+
+    await waitFor(() => {
+      expect(setRoutePoolMembers).toHaveBeenCalled();
+      const lastCall = vi.mocked(setRoutePoolMembers).mock.calls.at(-1)?.[0];
+      expect(lastCall?.platform).toBe("codex");
+      expect(new Set(lastCall?.account_ids ?? [])).toEqual(new Set(["cred-official-1", "cred-api-1"]));
+    });
+    expect(screen.getAllByText("已入池")).toHaveLength(2);
+
+    await userEvent.click(screen.getByLabelText("选择 Team Account"));
+    await userEvent.click(screen.getByLabelText("批量移出算力池"));
+
+    await waitFor(() => {
+      const lastCall = vi.mocked(setRoutePoolMembers).mock.calls.at(-1)?.[0];
+      expect(lastCall?.account_ids).toEqual(["cred-api-1"]);
+    });
+    expect(screen.getAllByText("已入池")).toHaveLength(1);
+
+    await userEvent.click(screen.getByLabelText("选择 API Account"));
+    expect(screen.getByText("已选 1 个账号")).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("批量删除账号"));
+
+    await waitFor(() => {
+      expect(deleteRouteCredential).toHaveBeenCalledTimes(1);
+      expect(deleteRouteCredential).toHaveBeenCalledWith("cred-api-1");
+    });
+    await waitFor(() => {
+      const lastCall = vi.mocked(setRoutePoolMembers).mock.calls.at(-1)?.[0];
+      expect(lastCall?.account_ids).toEqual([]);
+    });
   });
 
   it("imports a single official CPA credential from the add dialog", async () => {
@@ -301,13 +397,14 @@ describe("AccountsScreen", () => {
     await userEvent.click(screen.getByRole("button", { name: "官方导入" }));
     vi.mocked(open).mockResolvedValue(["C:\\one.json", "C:\\two.json"]);
     await userEvent.click(screen.getByRole("button", { name: "导入 JSON 文件" }));
+    await userEvent.type(screen.getByLabelText("导入批量名称"), "File Batch");
     await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
 
     await waitFor(() =>
       expect(importOfficialRouteCredentialsFromFiles).toHaveBeenCalledWith({
         platform: "codex",
         file_paths: ["C:\\one.json", "C:\\two.json"],
-        batch_name: null,
+        batch_name: "File Batch",
       }),
     );
   });
@@ -1009,7 +1106,7 @@ describe("AccountsScreen", () => {
 
     renderScreen();
 
-    await screen.findByText("Codex 账号");
+    await screen.findByText("筛选：");
     expect(getRoutePool).toHaveBeenCalledTimes(1);
 
     vi.useFakeTimers();
@@ -1049,7 +1146,8 @@ describe("AccountsScreen", () => {
     expect(await screen.findByText("本地代理：未启动")).toBeInTheDocument();
     expect(screen.getByLabelText("真实生成测试算力池路由")).toBeDisabled();
 
-    await userEvent.click(await screen.findByLabelText("将 Team Account 加入算力池"));
+    await userEvent.click(await screen.findByLabelText("选择 Team Account"));
+    await userEvent.click(screen.getByLabelText("批量加入算力池"));
     await waitFor(() => expect(screen.getByLabelText("真实生成测试算力池路由")).toBeEnabled());
     await userEvent.click(screen.getByLabelText("真实生成测试算力池路由"));
     expect(await screen.findByLabelText("真实生成测试弹窗")).toBeInTheDocument();
@@ -1082,7 +1180,8 @@ describe("AccountsScreen", () => {
   it("tests the credential pool route with a user-specified model", async () => {
     renderScreen();
 
-    await userEvent.click(await screen.findByLabelText("将 Team Account 加入算力池"));
+    await userEvent.click(await screen.findByLabelText("选择 Team Account"));
+    await userEvent.click(screen.getByLabelText("批量加入算力池"));
     await userEvent.click(screen.getByLabelText("真实生成测试算力池路由"));
     await userEvent.type(await screen.findByLabelText("弹窗测试模型"), "gpt-4o");
     await userEvent.click(screen.getByLabelText("开始真实生成测试"));
@@ -1152,7 +1251,8 @@ describe("AccountsScreen", () => {
   it("closes the model connectivity result panel", async () => {
     renderScreen();
 
-    await userEvent.click(await screen.findByLabelText("将 Team Account 加入算力池"));
+    await userEvent.click(await screen.findByLabelText("选择 Team Account"));
+    await userEvent.click(screen.getByLabelText("批量加入算力池"));
     await userEvent.click(screen.getByLabelText("真实生成测试算力池路由"));
     await userEvent.click(await screen.findByLabelText("开始真实生成测试"));
     expect(await screen.findByLabelText("真实生成测试结果")).toBeInTheDocument();
@@ -1177,7 +1277,8 @@ describe("AccountsScreen", () => {
 
     renderScreen();
 
-    await userEvent.click(await screen.findByLabelText("将 Team Account 加入算力池"));
+    await userEvent.click(await screen.findByLabelText("选择 Team Account"));
+    await userEvent.click(screen.getByLabelText("批量加入算力池"));
     await userEvent.click(screen.getByLabelText("真实生成测试算力池路由"));
     await userEvent.click(await screen.findByLabelText("开始真实生成测试"));
 

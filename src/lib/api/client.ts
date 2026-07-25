@@ -204,6 +204,10 @@ export function updateRouteCredential(
   return invoke("update_route_credential", { id, input });
 }
 
+export function copyRouteCredential(id: string): Promise<RouteCredential> {
+  return invoke("copy_route_credential", { id });
+}
+
 export function deleteRouteCredential(id: string): Promise<void> {
   return invoke("delete_route_credential", { id });
 }
