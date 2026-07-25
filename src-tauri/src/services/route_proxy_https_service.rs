@@ -1,11 +1,17 @@
+use crate::app_state::AppState;
 use crate::config_writer::ConfigWriter;
 use crate::error::AppError;
 use crate::models::route_proxy_https::{
-    RouteProxyHttpsConfig, RouteProxyHttpsStatus, RouteProxyTrustRecord, RouteProxyTrustStatus,
+    RouteProxyHttpsConfig, RouteProxyHttpsOperationOutcome, RouteProxyHttpsStatus,
+    RouteProxyTrustRecord, RouteProxyTrustStatus,
 };
 use crate::paths::AppPaths;
+use crate::services::route_config_service::{RouteConfigService, RouteConfigWriteOutcome};
 use crate::services::route_proxy_https_trust::{
     RouteProxyHttpsTrustExecutor, RouteProxyTrustOutcome, SystemRouteProxyHttpsTrustExecutor,
+};
+use crate::services::route_proxy_service::{
+    RouteProxyService, RouteProxyStatus, RouteProxyTransport,
 };
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
@@ -83,6 +89,480 @@ impl RouteProxyHttpsService {
         }
 
         Self::generate_material(paths).await
+    }
+
+    pub async fn transport(paths: &AppPaths) -> Result<RouteProxyTransport, AppError> {
+        let config = Self::load_config(paths).await?;
+        if !config.enabled {
+            return Ok(RouteProxyTransport::Http);
+        }
+
+        let material = Self::ensure_material(paths).await?;
+        Ok(Self::tls_transport(&material))
+    }
+
+    pub async fn start_proxy(state: &AppState) -> Result<RouteProxyStatus, AppError> {
+        let transport = Self::transport(&state.paths).await?;
+        RouteProxyService::start(&state.route_proxy, state.pool.clone(), transport).await
+    }
+
+    pub async fn status_for_state(state: &AppState) -> Result<RouteProxyHttpsStatus, AppError> {
+        Self::status(
+            &state.paths,
+            RouteProxyService::status(&state.route_proxy).await.base_url,
+        )
+        .await
+    }
+
+    pub async fn enable(state: &AppState) -> Result<RouteProxyHttpsOperationOutcome, AppError> {
+        Self::enable_with_trust(state, &SystemRouteProxyHttpsTrustExecutor).await
+    }
+
+    pub(crate) async fn enable_with_trust(
+        state: &AppState,
+        trust_executor: &dyn RouteProxyHttpsTrustExecutor,
+    ) -> Result<RouteProxyHttpsOperationOutcome, AppError> {
+        let material = Self::ensure_material(&state.paths).await?;
+        let trust = trust_executor.install(&material).await;
+        Self::save_trust_outcome(&state.paths, trust).await?;
+
+        let previous = RouteProxyService::status(&state.route_proxy).await;
+        if previous.running {
+            RouteProxyService::stop(&state.route_proxy).await?;
+        }
+
+        let route_proxy = match RouteProxyService::start(
+            &state.route_proxy,
+            state.pool.clone(),
+            Self::tls_transport(&material),
+        )
+        .await
+        {
+            Ok(status) => status,
+            Err(error) => {
+                // A failed HTTPS transition must not strand a previously active proxy.
+                if previous.running {
+                    let _ = RouteProxyService::start(
+                        &state.route_proxy,
+                        state.pool.clone(),
+                        RouteProxyTransport::Http,
+                    )
+                    .await;
+                }
+                Self::save_config(&state.paths, &RouteProxyHttpsConfig { enabled: false }).await?;
+                return Err(error);
+            }
+        };
+
+        Self::save_config(&state.paths, &RouteProxyHttpsConfig { enabled: true }).await?;
+        let config_writes = Self::rewrite_existing_configs(state, &route_proxy).await?;
+        let https =
+            Self::status_with_trust(&state.paths, route_proxy.base_url.clone(), trust_executor)
+                .await?;
+
+        Ok(RouteProxyHttpsOperationOutcome {
+            https,
+            route_proxy,
+            config_writes,
+        })
+    }
+
+    pub async fn disable(state: &AppState) -> Result<RouteProxyHttpsOperationOutcome, AppError> {
+        let previous = RouteProxyService::status(&state.route_proxy).await;
+        if previous.running {
+            RouteProxyService::stop(&state.route_proxy).await?;
+        }
+        Self::save_config(&state.paths, &RouteProxyHttpsConfig { enabled: false }).await?;
+
+        let route_proxy = RouteProxyService::start(
+            &state.route_proxy,
+            state.pool.clone(),
+            RouteProxyTransport::Http,
+        )
+        .await?;
+        let config_writes = Self::rewrite_existing_configs(state, &route_proxy).await?;
+        let https = Self::status_for_state(state).await?;
+
+        Ok(RouteProxyHttpsOperationOutcome {
+            https,
+            route_proxy,
+            config_writes,
+        })
+    }
+
+    pub async fn reimport_root_ca(
+        state: &AppState,
+    ) -> Result<RouteProxyHttpsOperationOutcome, AppError> {
+        Self::reimport_root_ca_with_trust(state, &SystemRouteProxyHttpsTrustExecutor).await
+    }
+
+    pub(crate) async fn reimport_root_ca_with_trust(
+        state: &AppState,
+        trust_executor: &dyn RouteProxyHttpsTrustExecutor,
+    ) -> Result<RouteProxyHttpsOperationOutcome, AppError> {
+        let material = Self::ensure_material(&state.paths).await?;
+        let trust = trust_executor.install(&material).await;
+        Self::save_trust_outcome(&state.paths, trust).await?;
+        let route_proxy = RouteProxyService::status(&state.route_proxy).await;
+        let https =
+            Self::status_with_trust(&state.paths, route_proxy.base_url.clone(), trust_executor)
+                .await?;
+
+        Ok(RouteProxyHttpsOperationOutcome {
+            https,
+            route_proxy,
+            config_writes: Vec::new(),
+        })
+    }
+
+    pub async fn uninstall_root_ca(
+        state: &AppState,
+    ) -> Result<RouteProxyHttpsOperationOutcome, AppError> {
+        Self::uninstall_root_ca_with_trust(state, &SystemRouteProxyHttpsTrustExecutor).await
+    }
+
+    pub(crate) async fn uninstall_root_ca_with_trust(
+        state: &AppState,
+        trust_executor: &dyn RouteProxyHttpsTrustExecutor,
+    ) -> Result<RouteProxyHttpsOperationOutcome, AppError> {
+        let config = Self::load_config(&state.paths).await?;
+        let material = Self::ensure_material(&state.paths).await?;
+        let previous = RouteProxyService::status(&state.route_proxy).await;
+        let was_tls = previous.running && status_uses_https(&previous);
+
+        if was_tls {
+            RouteProxyService::stop(&state.route_proxy).await?;
+        }
+
+        let trust = match trust_executor.uninstall(&material).await {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                if was_tls {
+                    let _ = RouteProxyService::start(
+                        &state.route_proxy,
+                        state.pool.clone(),
+                        Self::tls_transport(&material),
+                    )
+                    .await;
+                }
+                // Do not change the saved preference when removal cannot be verified.
+                if config.enabled {
+                    Self::save_config(&state.paths, &config).await?;
+                }
+                return Err(error);
+            }
+        };
+        Self::save_trust_outcome(&state.paths, trust).await?;
+        Self::save_config(&state.paths, &RouteProxyHttpsConfig { enabled: false }).await?;
+
+        let route_proxy = if previous.running {
+            RouteProxyService::start(
+                &state.route_proxy,
+                state.pool.clone(),
+                RouteProxyTransport::Http,
+            )
+            .await?
+        } else {
+            RouteProxyService::status(&state.route_proxy).await
+        };
+        let config_writes = if route_proxy.running {
+            Self::rewrite_existing_configs(state, &route_proxy).await?
+        } else {
+            Vec::new()
+        };
+        let https =
+            Self::status_with_trust(&state.paths, route_proxy.base_url.clone(), trust_executor)
+                .await?;
+
+        Ok(RouteProxyHttpsOperationOutcome {
+            https,
+            route_proxy,
+            config_writes,
+        })
+    }
+
+    pub async fn regenerate_certificates(
+        state: &AppState,
+    ) -> Result<RouteProxyHttpsOperationOutcome, AppError> {
+        Self::regenerate_certificates_with_trust(state, &SystemRouteProxyHttpsTrustExecutor).await
+    }
+
+    pub(crate) async fn regenerate_certificates_with_trust(
+        state: &AppState,
+        trust_executor: &dyn RouteProxyHttpsTrustExecutor,
+    ) -> Result<RouteProxyHttpsOperationOutcome, AppError> {
+        let config = Self::load_config(&state.paths).await?;
+        let old_material = Self::ensure_material(&state.paths).await?;
+        let old_trust = trust_executor.inspect(&old_material).await;
+        let old_was_trusted = is_trusted(&old_trust.status);
+        let previous = RouteProxyService::status(&state.route_proxy).await;
+        let was_tls = previous.running && status_uses_https(&previous);
+
+        if was_tls {
+            RouteProxyService::stop(&state.route_proxy).await?;
+        }
+        if old_was_trusted {
+            if let Err(error) = trust_executor.uninstall(&old_material).await {
+                if was_tls {
+                    let _ = RouteProxyService::start(
+                        &state.route_proxy,
+                        state.pool.clone(),
+                        Self::tls_transport(&old_material),
+                    )
+                    .await;
+                }
+                return Err(error);
+            }
+        }
+
+        let (replacement_dir, _) = Self::create_replacement_material(&state.paths).await?;
+        let backup_dir = Self::promote_replacement_material(&state.paths, &replacement_dir).await?;
+        let replacement =
+            Self::load_material(&state.paths)
+                .await?
+                .ok_or_else(|| AppError::Validation {
+                    code: "validation.route_proxy_https_certificate",
+                    message: "Replacement local HTTPS certificate material is invalid".to_string(),
+                    details: None,
+                    recoverable: true,
+                })?;
+        let new_trust = trust_executor.install(&replacement).await;
+        Self::save_trust_outcome(&state.paths, new_trust).await?;
+
+        let route_proxy = if config.enabled {
+            match RouteProxyService::start(
+                &state.route_proxy,
+                state.pool.clone(),
+                Self::tls_transport(&replacement),
+            )
+            .await
+            {
+                Ok(status) => status,
+                Err(error) => {
+                    let rollback_error = Self::restore_replacement_after_failure(
+                        state,
+                        trust_executor,
+                        &replacement,
+                        &backup_dir,
+                        old_was_trusted,
+                        was_tls,
+                    )
+                    .await
+                    .err();
+                    return Err(with_restoration_details(error, rollback_error));
+                }
+            }
+        } else {
+            RouteProxyService::status(&state.route_proxy).await
+        };
+
+        let _ = tokio::fs::remove_dir_all(&backup_dir).await;
+        let config_writes = if route_proxy.running {
+            Self::rewrite_existing_configs(state, &route_proxy).await?
+        } else {
+            Vec::new()
+        };
+        let https =
+            Self::status_with_trust(&state.paths, route_proxy.base_url.clone(), trust_executor)
+                .await?;
+
+        Ok(RouteProxyHttpsOperationOutcome {
+            https,
+            route_proxy,
+            config_writes,
+        })
+    }
+
+    pub async fn delete_certificates(state: &AppState) -> Result<RouteProxyHttpsStatus, AppError> {
+        Self::delete_certificates_with_trust(state, &SystemRouteProxyHttpsTrustExecutor).await
+    }
+
+    pub(crate) async fn delete_certificates_with_trust(
+        state: &AppState,
+        trust_executor: &dyn RouteProxyHttpsTrustExecutor,
+    ) -> Result<RouteProxyHttpsStatus, AppError> {
+        let route_proxy = RouteProxyService::status(&state.route_proxy).await;
+        if route_proxy.running && status_uses_https(&route_proxy) {
+            return Err(AppError::Validation {
+                code: "validation.route_proxy_https_stop_required",
+                message: "Stop the HTTPS route proxy before deleting local certificate material"
+                    .to_string(),
+                details: None,
+                recoverable: true,
+            });
+        }
+        if let Some(material) = Self::load_material(&state.paths).await? {
+            let trust = trust_executor.inspect(&material).await;
+            if is_trusted(&trust.status) {
+                return Err(AppError::Validation {
+                    code: "validation.route_proxy_https_uninstall_required",
+                    message:
+                        "Uninstall the managed Root CA before deleting local certificate material"
+                            .to_string(),
+                    details: None,
+                    recoverable: true,
+                });
+            }
+        }
+        Self::delete_material(&state.paths).await?;
+        Self::status_with_trust(&state.paths, route_proxy.base_url, trust_executor).await
+    }
+
+    fn tls_transport(material: &RouteProxyHttpsMaterial) -> RouteProxyTransport {
+        RouteProxyTransport::Https {
+            certificate_pem_path: material.server_certificate_pem.clone(),
+            private_key_pem_path: material.server_private_key_pem.clone(),
+        }
+    }
+
+    async fn rewrite_existing_configs(
+        state: &AppState,
+        route_proxy: &RouteProxyStatus,
+    ) -> Result<Vec<RouteConfigWriteOutcome>, AppError> {
+        let Some(base_url) = route_proxy.base_url.as_deref() else {
+            return Ok(Vec::new());
+        };
+        RouteConfigService::write_existing_configs(&state.paths, &state.pool, base_url).await
+    }
+
+    async fn create_replacement_material(
+        paths: &AppPaths,
+    ) -> Result<(PathBuf, RouteProxyHttpsMaterial), AppError> {
+        let certificate_parent =
+            paths
+                .route_proxy_https_dir
+                .parent()
+                .ok_or_else(|| AppError::Filesystem {
+                    code: "filesystem.route_proxy_https_parent",
+                    message: "Local certificate directory has no parent".to_string(),
+                    details: None,
+                    recoverable: false,
+                })?;
+        tokio::fs::create_dir_all(certificate_parent).await?;
+        let temporary_dir = certificate_parent.join(format!(".route-proxy-{}.tmp", Uuid::new_v4()));
+        tokio::fs::create_dir(&temporary_dir).await?;
+        let generated = match generate_certificate_files(&temporary_dir).await {
+            Ok(generated) => generated,
+            Err(error) => {
+                let _ = tokio::fs::remove_dir_all(&temporary_dir).await;
+                return Err(error);
+            }
+        };
+
+        Ok((
+            temporary_dir.clone(),
+            RouteProxyHttpsMaterial {
+                root_certificate_pem: temporary_dir.join(ROOT_CERTIFICATE_FILE),
+                root_fingerprint_sha256: generated.root_fingerprint_sha256,
+                root_thumbprint_sha1: generated.root_thumbprint_sha1,
+                server_certificate_pem: temporary_dir.join(SERVER_CERTIFICATE_FILE),
+                server_private_key_pem: temporary_dir.join(SERVER_PRIVATE_KEY_FILE),
+                expires_at: generated.expires_at,
+            },
+        ))
+    }
+
+    async fn promote_replacement_material(
+        paths: &AppPaths,
+        replacement_dir: &Path,
+    ) -> Result<PathBuf, AppError> {
+        let target = &paths.route_proxy_https_dir;
+        let target_metadata = tokio::fs::symlink_metadata(target).await?;
+        if target_metadata.file_type().is_symlink() {
+            return Err(AppError::Validation {
+                code: "validation.route_proxy_https_symlink",
+                message: "Refusing to replace a linked certificate directory".to_string(),
+                details: Some(target.display().to_string()),
+                recoverable: false,
+            });
+        }
+        let certificate_parent = target.parent().ok_or_else(|| AppError::Filesystem {
+            code: "filesystem.route_proxy_https_parent",
+            message: "Local certificate directory has no parent".to_string(),
+            details: None,
+            recoverable: false,
+        })?;
+        let backup_dir = certificate_parent.join(format!(".route-proxy-{}.backup", Uuid::new_v4()));
+        tokio::fs::rename(target, &backup_dir).await?;
+        if let Err(error) = tokio::fs::rename(replacement_dir, target).await {
+            let _ = tokio::fs::rename(&backup_dir, target).await;
+            return Err(error.into());
+        }
+        Ok(backup_dir)
+    }
+
+    async fn restore_replacement_after_failure(
+        state: &AppState,
+        trust_executor: &dyn RouteProxyHttpsTrustExecutor,
+        replacement: &RouteProxyHttpsMaterial,
+        backup_dir: &Path,
+        old_was_trusted: bool,
+        restart_old_tls: bool,
+    ) -> Result<(), AppError> {
+        let mut restoration_errors = Vec::new();
+        if let Err(error) = trust_executor.uninstall(replacement).await {
+            restoration_errors.push(error.to_string());
+        }
+        if let Err(error) = tokio::fs::remove_dir_all(&state.paths.route_proxy_https_dir).await {
+            restoration_errors.push(error.to_string());
+        }
+        if let Err(error) = tokio::fs::rename(backup_dir, &state.paths.route_proxy_https_dir).await
+        {
+            restoration_errors.push(error.to_string());
+        }
+
+        // The prior paths point at the managed directory. Reload them only
+        // after the old directory is restored, so we never trust or serve the
+        // replacement Root under the old material identity.
+        let old_material = match Self::load_material(&state.paths).await {
+            Ok(Some(material)) => Some(material),
+            Ok(None) => {
+                restoration_errors.push(
+                    "Could not reload the prior local HTTPS certificate material".to_string(),
+                );
+                None
+            }
+            Err(error) => {
+                restoration_errors.push(error.to_string());
+                None
+            }
+        };
+        if old_was_trusted {
+            if let Some(material) = old_material.as_ref() {
+                let trust = trust_executor.install(material).await;
+                if !is_trusted(&trust.status) {
+                    restoration_errors.push(
+                        trust
+                            .message
+                            .unwrap_or_else(|| "Could not restore Root CA trust".to_string()),
+                    );
+                }
+            }
+        }
+        if restart_old_tls {
+            if let Some(material) = old_material.as_ref() {
+                if let Err(error) = RouteProxyService::start(
+                    &state.route_proxy,
+                    state.pool.clone(),
+                    Self::tls_transport(material),
+                )
+                .await
+                {
+                    restoration_errors.push(error.to_string());
+                }
+            }
+        }
+
+        if restoration_errors.is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::Validation {
+                code: "validation.route_proxy_https_restore",
+                message: "Could not fully restore the prior local HTTPS configuration".to_string(),
+                details: Some(restoration_errors.join(" | ")),
+                recoverable: true,
+            })
+        }
     }
 
     pub async fn status(
@@ -500,6 +980,90 @@ fn is_expired(expires_at: &str) -> Result<bool, AppError> {
     Ok(expires_at <= OffsetDateTime::now_utc())
 }
 
+fn status_uses_https(status: &RouteProxyStatus) -> bool {
+    status
+        .base_url
+        .as_deref()
+        .is_some_and(|base_url| base_url.starts_with("https://"))
+}
+
+fn is_trusted(status: &RouteProxyTrustStatus) -> bool {
+    matches!(
+        status,
+        RouteProxyTrustStatus::SystemTrusted
+            | RouteProxyTrustStatus::NssTrusted
+            | RouteProxyTrustStatus::PartiallyTrusted
+    )
+}
+
+fn with_restoration_details(primary: AppError, restoration: Option<AppError>) -> AppError {
+    let Some(restoration) = restoration else {
+        return primary;
+    };
+    match primary {
+        AppError::Validation {
+            code,
+            message,
+            details,
+            recoverable,
+        } => AppError::Validation {
+            code,
+            message,
+            details: Some(format!(
+                "{} | restoration: {}",
+                details.unwrap_or_default(),
+                restoration
+            )),
+            recoverable,
+        },
+        AppError::Filesystem {
+            code,
+            message,
+            details,
+            recoverable,
+        } => AppError::Filesystem {
+            code,
+            message,
+            details: Some(format!(
+                "{} | restoration: {}",
+                details.unwrap_or_default(),
+                restoration
+            )),
+            recoverable,
+        },
+        AppError::Database {
+            code,
+            message,
+            details,
+            recoverable,
+        } => AppError::Database {
+            code,
+            message,
+            details: Some(format!(
+                "{} | restoration: {}",
+                details.unwrap_or_default(),
+                restoration
+            )),
+            recoverable,
+        },
+        AppError::Secret {
+            code,
+            message,
+            details,
+            recoverable,
+        } => AppError::Secret {
+            code,
+            message,
+            details: Some(format!(
+                "{} | restoration: {}",
+                details.unwrap_or_default(),
+                restoration
+            )),
+            recoverable,
+        },
+    }
+}
+
 fn certificate_generation_error(error: rcgen::Error) -> AppError {
     AppError::Validation {
         code: "validation.route_proxy_https_certificate",
@@ -524,11 +1088,19 @@ fn hex_sha1(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::{create_memory_pool, run_migrations};
+    use crate::services::route_proxy_service::RouteProxyRuntimeState;
+    use crate::services::tailscale_service::TailscaleRuntimeState;
+    use crate::services::web_service::WebServiceRuntimeState;
+    use crate::terminal_manager::TerminalManager;
+    use crate::web::event_bridge::WebEventBroadcaster;
     use async_trait::async_trait;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     struct FakeTrustExecutor {
         outcome: RouteProxyTrustOutcome,
+        uninstall_error: Option<String>,
     }
 
     #[async_trait]
@@ -541,6 +1113,14 @@ mod tests {
             &self,
             _material: &RouteProxyHttpsMaterial,
         ) -> Result<RouteProxyTrustOutcome, AppError> {
+            if let Some(message) = &self.uninstall_error {
+                return Err(AppError::Validation {
+                    code: "validation.fake_route_proxy_https_uninstall",
+                    message: message.clone(),
+                    details: None,
+                    recoverable: true,
+                });
+            }
             Ok(self.outcome.clone())
         }
 
@@ -555,6 +1135,37 @@ mod tests {
             adapter: Some("fake-system-store".to_string()),
             message: Some("Managed Root CA is installed in the fake trust store".to_string()),
             manual_instructions: Vec::new(),
+        }
+    }
+
+    fn fake_trust() -> FakeTrustExecutor {
+        FakeTrustExecutor {
+            outcome: trusted_outcome(),
+            uninstall_error: None,
+        }
+    }
+
+    struct TestState {
+        _temp: tempfile::TempDir,
+        state: AppState,
+    }
+
+    async fn test_state() -> TestState {
+        let temp = tempdir().expect("temp dir");
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+
+        TestState {
+            state: AppState {
+                paths: AppPaths::from_data_dir(temp.path().join("app-data")),
+                pool,
+                route_proxy: RouteProxyRuntimeState::default(),
+                web_service: WebServiceRuntimeState::default(),
+                tailscale: TailscaleRuntimeState::default(),
+                terminals: TerminalManager::default(),
+                event_broadcaster: Arc::new(WebEventBroadcaster::default()),
+            },
+            _temp: temp,
         }
     }
 
@@ -598,6 +1209,7 @@ mod tests {
             None,
             &FakeTrustExecutor {
                 outcome: trusted_outcome(),
+                uninstall_error: None,
             },
         )
         .await
@@ -622,6 +1234,7 @@ mod tests {
             None,
             &FakeTrustExecutor {
                 outcome: trusted_outcome(),
+                uninstall_error: None,
             },
         )
         .await
@@ -664,5 +1277,79 @@ mod tests {
             .await
             .expect("delete material");
         assert!(!paths.route_proxy_https_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn enable_https_restarts_a_running_http_proxy_and_rewrites_only_existing_platforms() {
+        let fixture = test_state().await;
+        let initial = RouteProxyService::start(
+            &fixture.state.route_proxy,
+            fixture.state.pool.clone(),
+            RouteProxyTransport::Http,
+        )
+        .await
+        .expect("start HTTP proxy");
+        assert!(initial
+            .base_url
+            .as_deref()
+            .is_some_and(|url| url.starts_with("http://")));
+
+        let outcome = RouteProxyHttpsService::enable_with_trust(&fixture.state, &fake_trust())
+            .await
+            .expect("enable HTTPS");
+
+        assert!(outcome.route_proxy.running);
+        assert!(outcome
+            .route_proxy
+            .base_url
+            .as_deref()
+            .is_some_and(|url| url.starts_with("https://")));
+        assert!(outcome.https.enabled);
+        assert!(outcome.config_writes.is_empty());
+        assert!(
+            RouteProxyHttpsService::load_config(&fixture.state.paths)
+                .await
+                .expect("HTTPS config")
+                .enabled
+        );
+
+        RouteProxyService::stop(&fixture.state.route_proxy)
+            .await
+            .expect("stop HTTPS proxy");
+    }
+
+    #[tokio::test]
+    async fn failed_root_uninstall_restarts_tls_and_keeps_https_enabled() {
+        let fixture = test_state().await;
+        RouteProxyHttpsService::enable_with_trust(&fixture.state, &fake_trust())
+            .await
+            .expect("enable HTTPS");
+        let failing_trust = FakeTrustExecutor {
+            outcome: trusted_outcome(),
+            uninstall_error: Some("fake Root CA removal failure".to_string()),
+        };
+
+        let error =
+            RouteProxyHttpsService::uninstall_root_ca_with_trust(&fixture.state, &failing_trust)
+                .await
+                .expect_err("root uninstall failure");
+        assert!(error.to_string().contains("fake Root CA removal failure"));
+
+        let status = RouteProxyService::status(&fixture.state.route_proxy).await;
+        assert!(status.running);
+        assert!(status
+            .base_url
+            .as_deref()
+            .is_some_and(|url| url.starts_with("https://")));
+        assert!(
+            RouteProxyHttpsService::load_config(&fixture.state.paths)
+                .await
+                .expect("HTTPS config")
+                .enabled
+        );
+
+        RouteProxyService::stop(&fixture.state.route_proxy)
+            .await
+            .expect("stop HTTPS proxy");
     }
 }

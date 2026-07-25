@@ -15,6 +15,7 @@ pub struct RouteConfigWriteOutcome {
     pub path: String,
     pub status: String,
     pub route_proxy_key: String,
+    pub error: Option<String>,
 }
 
 type TargetRender = fn(&str, &str) -> String;
@@ -34,15 +35,7 @@ impl RouteConfigService {
         base_url: &str,
         platform: &str,
     ) -> Result<Vec<RouteConfigWriteOutcome>, AppError> {
-        let base_url = base_url.trim().trim_end_matches('/');
-        if base_url.is_empty() {
-            return Err(AppError::Validation {
-                code: "validation.route_proxy_base_url_required",
-                message: "Route proxy base URL is required before writing configs".to_string(),
-                details: None,
-                recoverable: true,
-            });
-        }
+        let base_url = normalize_base_url(base_url)?;
 
         let home = BaseDirs::new()
             .map(|dirs| dirs.home_dir().to_path_buf())
@@ -57,7 +50,6 @@ impl RouteConfigService {
         let _ = paths;
 
         let target_key = normalize_platform(platform)?;
-        let target = route_config_target(&home, &target_key)?;
         // Stable per-platform local key so the shared proxy can resolve agent pools by API key.
         let route_proxy_key = RouteProxyKeyRepository::ensure_platform_key(
             pool,
@@ -65,16 +57,113 @@ impl RouteConfigService {
             &generate_route_proxy_key(),
         )
         .await?;
-        let content = (target.render)(base_url, &route_proxy_key);
+        Ok(vec![
+            Self::write_existing_config_for_home(&home, base_url, &target_key, &route_proxy_key)
+                .await?,
+        ])
+    }
+
+    /// Rewrites only platforms that already own a managed proxy key. This is
+    /// used for HTTP/HTTPS changes and never creates additional client config.
+    pub async fn write_existing_configs(
+        paths: &AppPaths,
+        pool: &SqlitePool,
+        base_url: &str,
+    ) -> Result<Vec<RouteConfigWriteOutcome>, AppError> {
+        let home = resolve_home_dir()?;
+        Self::write_existing_configs_for_home(paths, pool, base_url, &home).await
+    }
+
+    pub(crate) async fn write_existing_configs_for_home(
+        paths: &AppPaths,
+        pool: &SqlitePool,
+        base_url: &str,
+        home: &Path,
+    ) -> Result<Vec<RouteConfigWriteOutcome>, AppError> {
+        let base_url = normalize_base_url(base_url)?;
+        let platforms = RouteProxyKeyRepository::list_platforms(pool).await?;
+        let mut outcomes = Vec::with_capacity(platforms.len());
+
+        for platform in platforms {
+            match RouteProxyKeyRepository::get_existing_platform_key(pool, &platform).await? {
+                Some(route_proxy_key) => {
+                    match Self::write_existing_config_for_home(
+                        home,
+                        base_url,
+                        &platform,
+                        &route_proxy_key,
+                    )
+                    .await
+                    {
+                        Ok(outcome) => outcomes.push(outcome),
+                        Err(error) => outcomes.push(RouteConfigWriteOutcome {
+                            target_key: platform,
+                            path: String::new(),
+                            status: "error".to_string(),
+                            route_proxy_key,
+                            error: Some(error.to_string()),
+                        }),
+                    }
+                }
+                None => outcomes.push(RouteConfigWriteOutcome {
+                    target_key: platform,
+                    path: String::new(),
+                    status: "skipped".to_string(),
+                    route_proxy_key: String::new(),
+                    error: Some(
+                        "Route proxy key was removed before HTTPS config rewrite".to_string(),
+                    ),
+                }),
+            }
+        }
+
+        Ok(outcomes)
+    }
+
+    pub(crate) async fn write_existing_config_for_home(
+        home: &Path,
+        base_url: &str,
+        platform: &str,
+        route_proxy_key: &str,
+    ) -> Result<RouteConfigWriteOutcome, AppError> {
+        let base_url = normalize_base_url(base_url)?;
+        let target_key = normalize_platform(platform)?;
+        let target = route_config_target(home, &target_key)?;
+        let content = (target.render)(base_url, route_proxy_key);
         let write = ConfigWriter::write_atomic(&target.path, &content).await?;
 
-        Ok(vec![RouteConfigWriteOutcome {
+        Ok(RouteConfigWriteOutcome {
             target_key: target.key.to_string(),
             path: write.path,
             status: write.status,
-            route_proxy_key,
-        }])
+            route_proxy_key: route_proxy_key.to_string(),
+            error: None,
+        })
     }
+}
+
+fn resolve_home_dir() -> Result<PathBuf, AppError> {
+    BaseDirs::new()
+        .map(|dirs| dirs.home_dir().to_path_buf())
+        .ok_or_else(|| AppError::Filesystem {
+            code: "filesystem.home_not_found",
+            message: "Could not resolve the current user home directory".to_string(),
+            details: None,
+            recoverable: false,
+        })
+}
+
+fn normalize_base_url(base_url: &str) -> Result<&str, AppError> {
+    let base_url = base_url.trim().trim_end_matches('/');
+    if base_url.is_empty() {
+        return Err(AppError::Validation {
+            code: "validation.route_proxy_base_url_required",
+            message: "Route proxy base URL is required before writing configs".to_string(),
+            details: None,
+            recoverable: true,
+        });
+    }
+    Ok(base_url)
 }
 
 fn route_config_target(home: &Path, target_key: &str) -> Result<RouteConfigTarget, AppError> {
@@ -292,6 +381,46 @@ mod tests {
                 .expect("lookup")
                 .as_deref(),
             Some("grok")
+        );
+    }
+
+    #[tokio::test]
+    async fn write_existing_configs_for_home_writes_only_preexisting_proxy_key_platforms() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+
+        let app_dir = tempfile::tempdir().expect("app dir");
+        let home = tempfile::tempdir().expect("home dir");
+        let paths = AppPaths::from_data_dir(app_dir.path().to_path_buf());
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-codex")
+            .await
+            .expect("codex key");
+
+        let outcomes = RouteConfigService::write_existing_configs_for_home(
+            &paths,
+            &pool,
+            "https://127.0.0.1:43111",
+            home.path(),
+        )
+        .await
+        .expect("write existing configs");
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].target_key, "codex");
+        assert_eq!(outcomes[0].route_proxy_key, "sk-codex");
+        let codex_config = tokio::fs::read_to_string(home.path().join(".codex/config.toml"))
+            .await
+            .expect("codex config");
+        assert!(codex_config.contains("https://127.0.0.1:43111"));
+        assert!(!home.path().join(".claude/settings.json").exists());
+        assert!(!home.path().join(".gemini/settings.json").exists());
+        assert!(!home.path().join(".grok/settings.json").exists());
+        assert_eq!(
+            RouteProxyKeyRepository::list_platforms(&pool)
+                .await
+                .expect("platforms"),
+            vec!["codex".to_string()]
         );
     }
 }

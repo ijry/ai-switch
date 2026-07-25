@@ -25,6 +25,7 @@ use crate::services::route_credential_service::RouteCredentialService;
 use crate::services::route_model_fetch_service::RouteModelFetchService;
 use crate::services::route_model_test_service::RouteModelTestService;
 use crate::services::route_pool_service::RoutePoolService;
+use crate::services::route_proxy_https_service::RouteProxyHttpsService;
 use crate::services::route_proxy_service::RouteProxyService;
 use crate::services::tailscale_service::TailscaleService;
 use crate::services::web_service::{WebService, WebServiceConfig};
@@ -189,7 +190,7 @@ pub async fn dispatch_command(
             )
         }
         "start_route_proxy" => to_value(
-            RouteProxyService::start(&state.route_proxy, state.pool.clone())
+            RouteProxyHttpsService::start_proxy(state.as_ref())
                 .await
                 .map_err(to_error)?,
         ),
@@ -199,6 +200,41 @@ pub async fn dispatch_command(
                 .map_err(to_error)?,
         ),
         "get_route_proxy_status" => to_value(RouteProxyService::status(&state.route_proxy).await),
+        "get_route_proxy_https_status" => to_value(
+            RouteProxyHttpsService::status_for_state(state.as_ref())
+                .await
+                .map_err(to_error)?,
+        ),
+        "enable_route_proxy_https" => to_value(
+            RouteProxyHttpsService::enable(state.as_ref())
+                .await
+                .map_err(to_error)?,
+        ),
+        "disable_route_proxy_https" => to_value(
+            RouteProxyHttpsService::disable(state.as_ref())
+                .await
+                .map_err(to_error)?,
+        ),
+        "reimport_route_proxy_root_ca" => to_value(
+            RouteProxyHttpsService::reimport_root_ca(state.as_ref())
+                .await
+                .map_err(to_error)?,
+        ),
+        "regenerate_route_proxy_https_certificates" => to_value(
+            RouteProxyHttpsService::regenerate_certificates(state.as_ref())
+                .await
+                .map_err(to_error)?,
+        ),
+        "uninstall_route_proxy_root_ca" => to_value(
+            RouteProxyHttpsService::uninstall_root_ca(state.as_ref())
+                .await
+                .map_err(to_error)?,
+        ),
+        "delete_route_proxy_https_certificates" => to_value(
+            RouteProxyHttpsService::delete_certificates(state.as_ref())
+                .await
+                .map_err(to_error)?,
+        ),
         "write_route_proxy_configs" => {
             let base_url = optional_string_arg(&args, "baseUrl");
             let platform = optional_string_arg(&args, "platform").ok_or_else(|| {
@@ -389,6 +425,38 @@ fn required_u16_arg(args: &Value, key: &str) -> Result<u16, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::{create_memory_pool, run_migrations};
+    use crate::services::route_proxy_service::RouteProxyRuntimeState;
+    use crate::services::tailscale_service::TailscaleRuntimeState;
+    use crate::services::web_service::WebServiceRuntimeState;
+    use crate::terminal_manager::TerminalManager;
+    use crate::web::event_bridge::WebEventBroadcaster;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+
+    struct TestState {
+        _temp: tempfile::TempDir,
+        state: Arc<AppState>,
+    }
+
+    async fn test_state() -> TestState {
+        let temp = tempdir().expect("temp dir");
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+
+        TestState {
+            state: Arc::new(AppState {
+                paths: crate::paths::AppPaths::from_data_dir(temp.path().join("app-data")),
+                pool,
+                route_proxy: RouteProxyRuntimeState::default(),
+                web_service: WebServiceRuntimeState::default(),
+                tailscale: TailscaleRuntimeState::default(),
+                terminals: TerminalManager::default(),
+                event_broadcaster: Arc::new(WebEventBroadcaster::default()),
+            }),
+            _temp: temp,
+        }
+    }
 
     #[test]
     fn required_raw_string_arg_preserves_terminal_control_input() {
@@ -412,5 +480,27 @@ mod tests {
             required_string_arg(&args, "data"),
             Err("Missing argument: data".to_string()),
         );
+    }
+
+    #[tokio::test]
+    async fn dispatch_get_route_proxy_https_status_returns_a_serializable_status() {
+        let fixture = test_state().await;
+        let result = dispatch_command(fixture.state, "get_route_proxy_https_status", json!({}))
+            .await
+            .expect("HTTPS status response");
+
+        assert_eq!(result.get("enabled").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            result.get("certReady").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert!(result
+            .get("certificateDir")
+            .and_then(Value::as_str)
+            .is_some());
+        assert!(result
+            .get("manualInstructions")
+            .and_then(Value::as_array)
+            .is_some());
     }
 }

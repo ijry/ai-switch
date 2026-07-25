@@ -19,6 +19,8 @@ import type {
   RoutePoolRouteOutcome,
   RoutePoolRouteRequest,
   RoutePoolState,
+  RouteProxyHttpsOperationOutcome,
+  RouteProxyHttpsStatus,
   RouteProxyStatus,
   TailscaleLogin,
   TailscaleStatus,
@@ -130,6 +132,38 @@ export function stopRouteProxy(): Promise<RouteProxyStatus> {
 
 export function getRouteProxyStatus(): Promise<RouteProxyStatus> {
   return invoke("get_route_proxy_status");
+}
+
+export function getRouteProxyHttpsStatus(): Promise<RouteProxyHttpsStatus> {
+  return invoke("get_route_proxy_https_status");
+}
+
+export function enableRouteProxyHttps(): Promise<RouteProxyHttpsOperationOutcome> {
+  return invoke("enable_route_proxy_https");
+}
+
+export function disableRouteProxyHttps(): Promise<RouteProxyHttpsOperationOutcome> {
+  return invoke("disable_route_proxy_https");
+}
+
+export function reimportRouteProxyRootCa(): Promise<RouteProxyHttpsOperationOutcome> {
+  return invoke("reimport_route_proxy_root_ca");
+}
+
+export function regenerateRouteProxyHttpsCertificates(): Promise<RouteProxyHttpsOperationOutcome> {
+  return invoke("regenerate_route_proxy_https_certificates");
+}
+
+export function uninstallRouteProxyRootCa(): Promise<RouteProxyHttpsOperationOutcome> {
+  return invoke("uninstall_route_proxy_root_ca");
+}
+
+export function deleteRouteProxyHttpsCertificates(): Promise<RouteProxyHttpsStatus> {
+  return invoke("delete_route_proxy_https_certificates");
+}
+
+export function openRouteProxyHttpsCertificateDirectory(): Promise<void> {
+  return invoke("open_route_proxy_https_certificate_dir");
 }
 
 export function writeRouteProxyConfigs(

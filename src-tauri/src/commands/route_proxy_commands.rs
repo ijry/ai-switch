@@ -1,12 +1,13 @@
 use crate::app_state::AppState;
 use crate::error::ApiError;
 use crate::services::route_config_service::{RouteConfigService, RouteConfigWriteOutcome};
+use crate::services::route_proxy_https_service::RouteProxyHttpsService;
 use crate::services::route_proxy_service::{RouteProxyService, RouteProxyStatus};
 use tauri::State;
 
 #[tauri::command]
 pub async fn start_route_proxy(state: State<'_, AppState>) -> Result<RouteProxyStatus, ApiError> {
-    RouteProxyService::start(&state.route_proxy, state.pool.clone())
+    RouteProxyHttpsService::start_proxy(&state)
         .await
         .map_err(ApiError::from)
 }

@@ -3,17 +3,26 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  disableRouteProxyHttps,
+  deleteRouteProxyHttpsCertificates,
   disconnectTailscale,
+  enableRouteProxyHttps,
+  getRouteProxyHttpsStatus,
+  getRouteProxyStatus,
   getSettings,
   getTailscaleStatus,
   getWebServerStatus,
   getWebServiceConfig,
+  openRouteProxyHttpsCertificateDirectory,
+  regenerateRouteProxyHttpsCertificates,
+  reimportRouteProxyRootCa,
   saveSettings,
   saveWebServiceConfig,
   startTailscaleLogin,
   startTailscaleWithAuthKey,
   startWebServer,
   stopWebServer,
+  uninstallRouteProxyRootCa,
 } from "../src/lib/api/client";
 import { I18nProvider } from "../src/lib/i18n";
 import { createQueryClient } from "../src/lib/query/queryClient";
@@ -32,7 +41,49 @@ vi.mock("../src/lib/api/client", () => ({
   startTailscaleLogin: vi.fn(),
   startTailscaleWithAuthKey: vi.fn(),
   disconnectTailscale: vi.fn(),
+  getRouteProxyStatus: vi.fn(),
+  getRouteProxyHttpsStatus: vi.fn(),
+  enableRouteProxyHttps: vi.fn(),
+  disableRouteProxyHttps: vi.fn(),
+  reimportRouteProxyRootCa: vi.fn(),
+  regenerateRouteProxyHttpsCertificates: vi.fn(),
+  uninstallRouteProxyRootCa: vi.fn(),
+  deleteRouteProxyHttpsCertificates: vi.fn(),
+  openRouteProxyHttpsCertificateDirectory: vi.fn(),
 }));
+
+const httpsStatusFixture = {
+  enabled: false,
+  certReady: false,
+  trustStatus: "untrusted" as const,
+  trustAdapter: null,
+  rootFingerprint: null,
+  expiresAt: null,
+  certificateDir: "C:/Users/example/.ai-switch/certs/route-proxy",
+  rootCertificatePath: null,
+  proxyBaseUrl: null,
+  message: null,
+  manualInstructions: [],
+};
+
+const httpsOutcomeFixture = {
+  https: {
+    ...httpsStatusFixture,
+    enabled: true,
+    certReady: true,
+    trustStatus: "systemTrusted" as const,
+    rootFingerprint: "a".repeat(64),
+    expiresAt: "2027-07-25T00:00:00Z",
+    proxyBaseUrl: "https://127.0.0.1:8317",
+  },
+  routeProxy: {
+    running: true,
+    bind_host: "127.0.0.1",
+    port: 8317,
+    base_url: "https://127.0.0.1:8317",
+  },
+  configWrites: [],
+};
 
 describe("SettingsScreen", () => {
   beforeEach(() => {
@@ -48,6 +99,15 @@ describe("SettingsScreen", () => {
     vi.mocked(startTailscaleLogin).mockReset();
     vi.mocked(startTailscaleWithAuthKey).mockReset();
     vi.mocked(disconnectTailscale).mockReset();
+    vi.mocked(getRouteProxyStatus).mockReset();
+    vi.mocked(getRouteProxyHttpsStatus).mockReset();
+    vi.mocked(enableRouteProxyHttps).mockReset();
+    vi.mocked(disableRouteProxyHttps).mockReset();
+    vi.mocked(reimportRouteProxyRootCa).mockReset();
+    vi.mocked(regenerateRouteProxyHttpsCertificates).mockReset();
+    vi.mocked(uninstallRouteProxyRootCa).mockReset();
+    vi.mocked(deleteRouteProxyHttpsCertificates).mockReset();
+    vi.mocked(openRouteProxyHttpsCertificateDirectory).mockReset();
     vi.mocked(getWebServiceConfig).mockResolvedValue({
       host: "127.0.0.1",
       port: 3090,
@@ -98,6 +158,20 @@ describe("SettingsScreen", () => {
       tailnetIp: null,
       message: null,
     });
+    vi.mocked(getRouteProxyStatus).mockResolvedValue({
+      running: false,
+      bind_host: "127.0.0.1",
+      port: null,
+      base_url: null,
+    });
+    vi.mocked(getRouteProxyHttpsStatus).mockResolvedValue(httpsStatusFixture);
+    vi.mocked(enableRouteProxyHttps).mockResolvedValue(httpsOutcomeFixture);
+    vi.mocked(disableRouteProxyHttps).mockResolvedValue(httpsOutcomeFixture);
+    vi.mocked(reimportRouteProxyRootCa).mockResolvedValue(httpsOutcomeFixture);
+    vi.mocked(regenerateRouteProxyHttpsCertificates).mockResolvedValue(httpsOutcomeFixture);
+    vi.mocked(uninstallRouteProxyRootCa).mockResolvedValue(httpsOutcomeFixture);
+    vi.mocked(deleteRouteProxyHttpsCertificates).mockResolvedValue(httpsStatusFixture);
+    vi.mocked(openRouteProxyHttpsCertificateDirectory).mockResolvedValue();
   });
 
   it("loads settings and saves a toggled theme value", async () => {
@@ -178,6 +252,50 @@ describe("SettingsScreen", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: /会话/ }));
     expect(onOpenFeature).toHaveBeenCalledWith("Sessions");
+  });
+
+  it("opens the HTTPS settings section and enables the local route proxy", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settingsFixture);
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <I18nProvider initialLanguage="zh-CN">
+          <SettingsScreen />
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /HTTPS/ }));
+    expect(await screen.findByRole("heading", { name: "HTTPS" })).toBeInTheDocument();
+    expect(screen.getByText("本地算力池 HTTPS")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "为本地算力池启用 HTTPS" }));
+
+    await waitFor(() => expect(enableRouteProxyHttps).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("https://127.0.0.1:8317")).toBeInTheDocument();
+  });
+
+  it("shows untrusted guidance without blocking HTTPS controls", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settingsFixture);
+    vi.mocked(getRouteProxyHttpsStatus).mockResolvedValue({
+      ...httpsStatusFixture,
+      enabled: true,
+      certReady: true,
+      manualInstructions: ["certutil.exe -user -addstore Root C:/tmp/root-ca.pem"],
+    });
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <I18nProvider initialLanguage="zh-CN">
+          <SettingsScreen />
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /HTTPS/ }));
+    expect(await screen.findByText("根证书尚未受信任")).toBeInTheDocument();
+    expect(screen.getByText("certutil.exe -user -addstore Root C:/tmp/root-ca.pem")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重新导入根证书" })).toBeEnabled();
   });
 });
 

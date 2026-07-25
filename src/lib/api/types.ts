@@ -246,6 +246,27 @@ export type RouteProxyStatus = {
   base_url?: string | null;
 };
 
+export type RouteProxyTrustStatus =
+  | "systemTrusted"
+  | "nssTrusted"
+  | "partiallyTrusted"
+  | "untrusted"
+  | "unknown";
+
+export type RouteProxyHttpsStatus = {
+  enabled: boolean;
+  certReady: boolean;
+  trustStatus: RouteProxyTrustStatus;
+  trustAdapter?: string | null;
+  rootFingerprint?: string | null;
+  expiresAt?: string | null;
+  certificateDir: string;
+  rootCertificatePath?: string | null;
+  proxyBaseUrl?: string | null;
+  message?: string | null;
+  manualInstructions: string[];
+};
+
 export type WebServiceConfig = {
   host: string;
   port: number;
@@ -289,6 +310,13 @@ export type RouteConfigWriteOutcome = {
   path: string;
   status: string;
   route_proxy_key: string;
+  error?: string | null;
+};
+
+export type RouteProxyHttpsOperationOutcome = {
+  https: RouteProxyHttpsStatus;
+  routeProxy: RouteProxyStatus;
+  configWrites: RouteConfigWriteOutcome[];
 };
 
 export type ImportJob = {

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Layers3,
+  LockKeyhole,
   Network,
   Server,
   Settings2,
@@ -8,18 +9,20 @@ import {
 import type { ComponentType } from "react";
 import { getSettings, saveSettings } from "../lib/api/client";
 import { normalizeLanguage, supportedLanguages, useI18n, type Language } from "../lib/i18n";
+import { RouteProxyHttpsSettings } from "../components/settings/route-proxy-https-settings";
 import { WebServiceSettings } from "../components/settings/web-service-settings";
 import { useState } from "react";
 
 type FeatureEntry = {
   screen?: string;
-  section?: "webService";
-  titleKey: "nav.sessions" | "nav.updates" | "nav.log" | "nav.webService";
+  section?: "webService" | "https";
+  titleKey: "nav.sessions" | "nav.updates" | "nav.log" | "nav.webService" | "settings.https.title";
   descriptionKey:
     | "settings.feature.sessions"
     | "settings.feature.updates"
     | "settings.feature.log"
-    | "settings.feature.webService";
+    | "settings.feature.webService"
+    | "settings.feature.https";
   icon: ComponentType<{ className?: string }>;
 };
 
@@ -49,6 +52,12 @@ const featureEntries: FeatureEntry[] = [
     descriptionKey: "settings.feature.webService",
     icon: Server,
   },
+  {
+    section: "https",
+    titleKey: "settings.https.title",
+    descriptionKey: "settings.feature.https",
+    icon: LockKeyhole,
+  },
 ];
 
 type SettingsScreenProps = {
@@ -58,7 +67,7 @@ type SettingsScreenProps = {
 export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
   const queryClient = useQueryClient();
   const { language, setLanguage, t } = useI18n();
-  const [activeSection, setActiveSection] = useState<"webService">("webService");
+  const [activeSection, setActiveSection] = useState<"webService" | "https">("webService");
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const saveMutation = useMutation({
     mutationFn: saveSettings,
@@ -131,6 +140,7 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
       </div>
 
       {activeSection === "webService" && <WebServiceSettings />}
+      {activeSection === "https" && <RouteProxyHttpsSettings />}
 
       <div className="space-y-3 rounded-2xl border border-stone-200 bg-white/82 p-4 shadow-sm">
         <h2 className="text-[15px] font-semibold text-stone-950">{t("settings.app.title")}</h2>

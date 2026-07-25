@@ -34,6 +34,12 @@ use commands::route_pool_commands::{
 use commands::route_proxy_commands::{
     get_route_proxy_status, start_route_proxy, stop_route_proxy, write_route_proxy_configs,
 };
+use commands::route_proxy_https_commands::{
+    delete_route_proxy_https_certificates, disable_route_proxy_https, enable_route_proxy_https,
+    get_route_proxy_https_status, open_route_proxy_https_certificate_dir,
+    regenerate_route_proxy_https_certificates, reimport_route_proxy_root_ca,
+    uninstall_route_proxy_root_ca,
+};
 use commands::session_commands::{get_session_messages, list_sessions};
 use commands::settings_commands::{get_settings, save_settings};
 use commands::target_commands::list_target_apps;
@@ -199,6 +205,14 @@ pub fn run() {
             stop_route_proxy,
             get_route_proxy_status,
             write_route_proxy_configs,
+            get_route_proxy_https_status,
+            enable_route_proxy_https,
+            disable_route_proxy_https,
+            reimport_route_proxy_root_ca,
+            regenerate_route_proxy_https_certificates,
+            uninstall_route_proxy_root_ca,
+            delete_route_proxy_https_certificates,
+            open_route_proxy_https_certificate_dir,
             list_sessions,
             get_session_messages,
             list_target_apps,

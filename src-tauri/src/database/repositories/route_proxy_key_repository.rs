@@ -68,6 +68,33 @@ impl RouteProxyKeyRepository {
             .collect())
     }
 
+    /// Lists only platforms that already have a managed local proxy key.
+    /// This read path must not create rows because HTTPS scheme changes should
+    /// not generate new client configuration files.
+    pub async fn list_platforms(pool: &SqlitePool) -> Result<Vec<String>, AppError> {
+        let rows = sqlx::query("SELECT platform FROM route_proxy_keys ORDER BY platform ASC")
+            .fetch_all(pool)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.route_proxy_key_list_platforms",
+                message: "Could not load route proxy platforms".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| row.get::<String, _>("platform"))
+            .collect())
+    }
+
+    pub async fn get_existing_platform_key(
+        pool: &SqlitePool,
+        platform: &str,
+    ) -> Result<Option<String>, AppError> {
+        Self::get_by_platform(pool, platform).await
+    }
+
     /// Return the existing key for the platform, or insert `proxy_key` if none exists.
     pub async fn ensure_platform_key(
         pool: &SqlitePool,
@@ -132,6 +159,25 @@ mod tests {
                 .expect("lookup")
                 .as_deref(),
             Some("grok")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_platforms_returns_existing_keys_without_creating_new_rows() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        RouteProxyKeyRepository::ensure_platform_key(&pool, "grok", "sk-grok")
+            .await
+            .expect("grok");
+        RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-codex")
+            .await
+            .expect("codex");
+
+        assert_eq!(
+            RouteProxyKeyRepository::list_platforms(&pool)
+                .await
+                .expect("platforms"),
+            vec!["codex".to_string(), "grok".to_string()]
         );
     }
 }

@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use crate::services::route_config_service::RouteConfigWriteOutcome;
+use crate::services::route_proxy_service::RouteProxyStatus;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RouteProxyHttpsConfig {
@@ -58,4 +61,12 @@ pub struct RouteProxyHttpsStatus {
     pub proxy_base_url: Option<String>,
     pub message: Option<String>,
     pub manual_instructions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RouteProxyHttpsOperationOutcome {
+    pub https: RouteProxyHttpsStatus,
+    pub route_proxy: RouteProxyStatus,
+    pub config_writes: Vec<RouteConfigWriteOutcome>,
 }
