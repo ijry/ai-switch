@@ -1,7 +1,7 @@
-pub mod http_client;
 pub mod batch_service;
 pub mod cpa_import_service;
 pub mod deeplink_service;
+pub mod http_client;
 pub mod import_service;
 pub mod official_agent_identity_service;
 pub mod route_config_service;
@@ -10,6 +10,7 @@ pub mod route_model_fetch_service;
 pub mod route_model_test_service;
 pub mod route_pool_service;
 pub mod route_preview_service;
+pub mod route_proxy_https_service;
 pub mod route_proxy_service;
 pub mod route_quota_service;
 pub mod settings_service;

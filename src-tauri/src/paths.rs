@@ -8,10 +8,12 @@ pub struct AppPaths {
     pub database_file: PathBuf,
     pub settings_file: PathBuf,
     pub web_service_file: PathBuf,
+    pub route_proxy_https_config_file: PathBuf,
     pub backups_dir: PathBuf,
     pub imports_dir: PathBuf,
     pub logs_dir: PathBuf,
     pub tailscale_dir: PathBuf,
+    pub route_proxy_https_dir: PathBuf,
 }
 
 impl AppPaths {
@@ -31,10 +33,12 @@ impl AppPaths {
             database_file: data_dir.join("ai-switch.db"),
             settings_file: data_dir.join("settings.json"),
             web_service_file: data_dir.join("web-service.json"),
+            route_proxy_https_config_file: data_dir.join("route-proxy-https.json"),
             backups_dir: data_dir.join("backups"),
             imports_dir: data_dir.join("imports"),
             logs_dir: data_dir.join("logs"),
             tailscale_dir: data_dir.join("tailscale"),
+            route_proxy_https_dir: data_dir.join("certs").join("route-proxy"),
             data_dir,
         }
     }
@@ -60,6 +64,20 @@ mod tests {
         assert_eq!(
             paths.tailscale_dir,
             PathBuf::from("C:/tmp/ai-switch-data/tailscale")
+        );
+    }
+
+    #[test]
+    fn app_paths_include_route_proxy_https_paths() {
+        let paths = AppPaths::from_data_dir(PathBuf::from("C:/tmp/ai-switch-data"));
+
+        assert_eq!(
+            paths.route_proxy_https_config_file,
+            PathBuf::from("C:/tmp/ai-switch-data/route-proxy-https.json")
+        );
+        assert_eq!(
+            paths.route_proxy_https_dir,
+            PathBuf::from("C:/tmp/ai-switch-data/certs/route-proxy")
         );
     }
 }
