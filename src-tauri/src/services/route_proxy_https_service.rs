@@ -4,6 +4,9 @@ use crate::models::route_proxy_https::{
     RouteProxyHttpsConfig, RouteProxyHttpsStatus, RouteProxyTrustRecord, RouteProxyTrustStatus,
 };
 use crate::paths::AppPaths;
+use crate::services::route_proxy_https_trust::{
+    RouteProxyHttpsTrustExecutor, RouteProxyTrustOutcome, SystemRouteProxyHttpsTrustExecutor,
+};
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
     KeyUsagePurpose,
@@ -86,20 +89,33 @@ impl RouteProxyHttpsService {
         paths: &AppPaths,
         proxy_base_url: Option<String>,
     ) -> Result<RouteProxyHttpsStatus, AppError> {
+        Self::status_with_trust(paths, proxy_base_url, &SystemRouteProxyHttpsTrustExecutor).await
+    }
+
+    pub(crate) async fn status_with_trust(
+        paths: &AppPaths,
+        proxy_base_url: Option<String>,
+        trust_executor: &dyn RouteProxyHttpsTrustExecutor,
+    ) -> Result<RouteProxyHttpsStatus, AppError> {
         let config = Self::load_config(paths).await?;
         let material = Self::load_material(paths).await?;
         let metadata = Self::load_metadata(paths).await?;
-        let trust = metadata
-            .as_ref()
-            .map(|value| value.trust.clone())
-            .unwrap_or_else(|| RouteProxyTrustRecord {
-                status: if material.is_some() {
-                    RouteProxyTrustStatus::Untrusted
-                } else {
-                    RouteProxyTrustStatus::Unknown
-                },
-                ..RouteProxyTrustRecord::default()
-            });
+        let trust = if let Some(material) = material.as_ref() {
+            // Inspection is deliberately best-effort. A stale trust record is less accurate than
+            // reporting an unknown state when the local trust store cannot be queried safely.
+            let inspected = trust_executor.inspect(material).await;
+            let trust = inspected.into_record();
+            let _ = Self::save_trust_record(paths, trust.clone()).await;
+            trust
+        } else {
+            metadata
+                .as_ref()
+                .map(|value| value.trust.clone())
+                .unwrap_or_else(|| RouteProxyTrustRecord {
+                    status: RouteProxyTrustStatus::Unknown,
+                    ..RouteProxyTrustRecord::default()
+                })
+        };
 
         Ok(RouteProxyHttpsStatus {
             enabled: config.enabled,
@@ -188,6 +204,27 @@ impl RouteProxyHttpsService {
             recoverable: true,
         })?;
         Ok(Some(metadata))
+    }
+
+    pub(crate) async fn save_trust_outcome(
+        paths: &AppPaths,
+        outcome: RouteProxyTrustOutcome,
+    ) -> Result<(), AppError> {
+        Self::save_trust_record(paths, outcome.into_record()).await
+    }
+
+    async fn save_trust_record(
+        paths: &AppPaths,
+        trust: RouteProxyTrustRecord,
+    ) -> Result<(), AppError> {
+        let Some(mut metadata) = Self::load_metadata(paths).await? else {
+            return Ok(());
+        };
+        metadata.trust = trust;
+        let contents = serde_json::to_string_pretty(&metadata)?;
+        ConfigWriter::write_atomic(&paths.route_proxy_https_dir.join(METADATA_FILE), &contents)
+            .await
+            .map(|_| ())
     }
 
     async fn load_material(paths: &AppPaths) -> Result<Option<RouteProxyHttpsMaterial>, AppError> {
@@ -487,7 +524,39 @@ fn hex_sha1(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use tempfile::tempdir;
+
+    struct FakeTrustExecutor {
+        outcome: RouteProxyTrustOutcome,
+    }
+
+    #[async_trait]
+    impl RouteProxyHttpsTrustExecutor for FakeTrustExecutor {
+        async fn install(&self, _material: &RouteProxyHttpsMaterial) -> RouteProxyTrustOutcome {
+            self.outcome.clone()
+        }
+
+        async fn uninstall(
+            &self,
+            _material: &RouteProxyHttpsMaterial,
+        ) -> Result<RouteProxyTrustOutcome, AppError> {
+            Ok(self.outcome.clone())
+        }
+
+        async fn inspect(&self, _material: &RouteProxyHttpsMaterial) -> RouteProxyTrustOutcome {
+            self.outcome.clone()
+        }
+    }
+
+    fn trusted_outcome() -> RouteProxyTrustOutcome {
+        RouteProxyTrustOutcome {
+            status: RouteProxyTrustStatus::SystemTrusted,
+            adapter: Some("fake-system-store".to_string()),
+            message: Some("Managed Root CA is installed in the fake trust store".to_string()),
+            manual_instructions: Vec::new(),
+        }
+    }
 
     #[tokio::test]
     async fn ensure_material_generates_root_and_loopback_leaf_without_exposing_private_key() {
@@ -524,14 +593,52 @@ mod tests {
             .iter()
             .any(|name| matches!(name, GeneralName::IPAddress(value) if *value == [127, 0, 0, 1])));
 
-        let status = RouteProxyHttpsService::status(&paths, None)
-            .await
-            .expect("status");
+        let status = RouteProxyHttpsService::status_with_trust(
+            &paths,
+            None,
+            &FakeTrustExecutor {
+                outcome: trusted_outcome(),
+            },
+        )
+        .await
+        .expect("status");
         let status_json = serde_json::to_string(&status).expect("status json");
         assert!(status.cert_ready);
         assert!(status.root_fingerprint.is_some());
         assert!(status_json.contains("rootFingerprint"));
         assert!(!status_json.contains("PRIVATE KEY"));
+    }
+
+    #[tokio::test]
+    async fn status_persists_best_effort_trust_inspection_without_exposing_private_key() {
+        let temp = tempdir().expect("temp dir");
+        let paths = AppPaths::from_data_dir(temp.path().to_path_buf());
+        RouteProxyHttpsService::ensure_material(&paths)
+            .await
+            .expect("certificate material");
+
+        let status = RouteProxyHttpsService::status_with_trust(
+            &paths,
+            None,
+            &FakeTrustExecutor {
+                outcome: trusted_outcome(),
+            },
+        )
+        .await
+        .expect("status");
+        let metadata = RouteProxyHttpsService::load_metadata(&paths)
+            .await
+            .expect("metadata")
+            .expect("metadata exists");
+
+        assert_eq!(status.trust_status, RouteProxyTrustStatus::SystemTrusted);
+        assert_eq!(metadata.trust.status, RouteProxyTrustStatus::SystemTrusted);
+        assert_eq!(metadata.trust.adapter.as_deref(), Some("fake-system-store"));
+        let metadata_contents =
+            tokio::fs::read_to_string(paths.route_proxy_https_dir.join(METADATA_FILE))
+                .await
+                .expect("metadata contents");
+        assert!(!metadata_contents.contains("PRIVATE KEY"));
     }
 
     #[tokio::test]

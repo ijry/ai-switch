@@ -11,6 +11,7 @@ pub mod route_model_test_service;
 pub mod route_pool_service;
 pub mod route_preview_service;
 pub mod route_proxy_https_service;
+pub mod route_proxy_https_trust;
 pub mod route_proxy_service;
 pub mod route_quota_service;
 pub mod settings_service;
