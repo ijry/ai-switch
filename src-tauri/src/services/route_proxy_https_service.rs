@@ -103,7 +103,51 @@ impl RouteProxyHttpsService {
 
     pub async fn start_proxy(state: &AppState) -> Result<RouteProxyStatus, AppError> {
         let transport = Self::transport(&state.paths).await?;
-        RouteProxyService::start(&state.route_proxy, state.pool.clone(), transport).await
+        let previous = RouteProxyService::status(&state.route_proxy).await;
+        let route_proxy =
+            RouteProxyService::start(&state.route_proxy, state.pool.clone(), transport).await?;
+
+        match Self::rewrite_existing_configs(state, &route_proxy).await {
+            Ok(outcomes) if outcomes.iter().all(|outcome| outcome.status != "error") => {}
+            Ok(outcomes) => {
+                if !previous.running {
+                    let _ = RouteProxyService::stop(&state.route_proxy).await;
+                }
+                let message = if previous.running {
+                    "Route proxy configuration sync failed; existing proxy remains running"
+                } else {
+                    "Route proxy configuration sync failed; proxy was stopped"
+                };
+                let details = outcomes
+                    .into_iter()
+                    .filter(|outcome| outcome.status == "error")
+                    .map(|outcome| {
+                        format!(
+                            "{}: {}",
+                            outcome.target_key,
+                            outcome
+                                .error
+                                .unwrap_or_else(|| "unknown config write failure".to_string())
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                return Err(AppError::Validation {
+                    code: "validation.route_proxy_config_sync",
+                    message: message.to_string(),
+                    details: Some(details),
+                    recoverable: true,
+                });
+            }
+            Err(error) => {
+                if !previous.running {
+                    let _ = RouteProxyService::stop(&state.route_proxy).await;
+                }
+                return Err(error);
+            }
+        }
+
+        Ok(route_proxy)
     }
 
     pub async fn status_for_state(state: &AppState) -> Result<RouteProxyHttpsStatus, AppError> {

@@ -321,13 +321,12 @@ async fn forward_request(
     let credentials = load_pool_credentials(pool, &platform)
         .await
         .map_err(|err| err.to_string())?;
+    if credentials.is_empty() {
+        return Err("No enabled route credentials in pool".to_string());
+    }
     let cursor = RoutePoolRepository::next_cursor_index(pool, &platform)
         .await
         .map_err(|err| err.to_string())?;
-    let selected = pick_credential(&credentials, cursor)
-        .ok_or_else(|| "No enabled route credentials in pool".to_string())?;
-    let next_index = (cursor.rem_euclid(credentials.len() as i64) + 1) % credentials.len() as i64;
-    let credential = maybe_refresh_official_credential(pool, selected).await?;
 
     let body_bytes = axum::body::to_bytes(body, 32 * 1024 * 1024)
         .await
@@ -340,72 +339,98 @@ async fn forward_request(
         }
         outbound_headers.append(name.clone(), value.clone());
     }
+    // The inbound key is local proxy authentication only. Never forward it upstream.
+    strip_route_proxy_auth_headers(&mut outbound_headers);
 
     let custom_tool_names = collect_custom_tool_names(&body_bytes);
-    let (target_url, outbound_headers, outbound_body) = build_upstream_request(
-        &credential,
-        &platform,
-        &path,
-        query.as_deref(),
-        outbound_headers,
-        &body_bytes,
-    )?;
-
+    let upstream_query = strip_route_proxy_auth_query(query.as_deref());
     let client = build_outbound_http_client(None)?;
-    let request = client
-        .request(
-            reqwest::Method::from_bytes(method.as_str().as_bytes())
-                .map_err(|err| format!("Unsupported method: {err}"))?,
-            &target_url,
-        )
-        .headers(map_to_reqwest_headers(&outbound_headers))
-        .body(outbound_body);
+    let request_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
+        .map_err(|err| format!("Unsupported method: {err}"))?;
+    let retry_indexes = retry_credential_indexes(credentials.len(), cursor);
+    let mut retry_errors = Vec::new();
 
-    let upstream = match request.send().await {
-        Ok(response) => response,
-        Err(err) => {
-            mark_route_credential_unavailable(pool, &credential.id).await;
-            return Err(format!("Upstream request failed: {err}"));
-        }
-    };
-
-    let status =
-        StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    if should_mark_proxy_account_unavailable(status) {
-        mark_route_credential_unavailable(pool, &credential.id).await;
-    }
-    let upstream_headers = upstream.headers().clone();
-    let mut response_bytes = upstream
-        .bytes()
-        .await
-        .map_err(|err| format!("Could not read upstream response: {err}"))?;
-    if !custom_tool_names.is_empty() {
-        response_bytes =
-            restore_custom_tools_in_responses_payload(&response_bytes, &custom_tool_names).into();
-    }
-    // Capture official subscription/quota signals (e.g. Grok free-usage-exhausted).
-    if credential.kind == "official" {
-        if let Ok(body_text) = std::str::from_utf8(&response_bytes) {
-            let _ = maybe_persist_official_quota_from_response(pool, &credential, body_text).await;
-        }
-    }
-
-    let token_count = extract_token_count(&response_bytes);
-    let cost_micros = extract_cost_micros(&response_bytes);
-    let metadata = serde_json::json!({
-        "platform": platform,
-        "route_credential_id": credential.id,
-        "route_credential_name": credential.display_name,
-        "path": path,
-        "status": status.as_u16(),
-    })
-    .to_string();
-
-    let _ =
-        insert_route_credential_usage_event(pool, &credential.id, "request", 1, "count", &metadata)
+    for credential_index in retry_indexes {
+        let selected = &credentials[credential_index];
+        let credential = match maybe_refresh_official_credential(pool, selected).await {
+            Ok(credential) => credential,
+            Err(error) => {
+                retry_errors.push(format!("{}: {error}", selected.display_name));
+                continue;
+            }
+        };
+        let upstream_request = build_upstream_request(
+            &credential,
+            &platform,
+            &path,
+            upstream_query.as_deref(),
+            outbound_headers.clone(),
+            &body_bytes,
+        );
+        let (target_url, request_headers, outbound_body) = match upstream_request {
+            Ok(request) => request,
+            Err(error) => {
+                mark_route_credential_unavailable(pool, &credential.id).await;
+                retry_errors.push(format!("{}: {error}", credential.display_name));
+                continue;
+            }
+        };
+        let upstream = client
+            .request(request_method.clone(), &target_url)
+            .headers(map_to_reqwest_headers(&request_headers))
+            .body(outbound_body)
+            .send()
             .await;
-    if let Some(tokens) = token_count {
-        if tokens > 0 {
+
+        let upstream = match upstream {
+            Ok(response) => response,
+            Err(error) => {
+                mark_route_credential_unavailable(pool, &credential.id).await;
+                retry_errors.push(format!("{}: upstream request failed: {error}", credential.display_name));
+                continue;
+            }
+        };
+        let status =
+            StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        let upstream_headers = upstream.headers().clone();
+        let mut response_bytes = upstream
+            .bytes()
+            .await
+            .map_err(|error| format!("Could not read upstream response: {error}"))?;
+        if !custom_tool_names.is_empty() {
+            response_bytes =
+                restore_custom_tools_in_responses_payload(&response_bytes, &custom_tool_names).into();
+        }
+        // Capture official subscription/quota signals (e.g. Grok free-usage-exhausted).
+        let quota_exhausted = if credential.kind == "official" {
+            if let Ok(body_text) = std::str::from_utf8(&response_bytes) {
+                maybe_persist_official_quota_from_response(pool, &credential, body_text)
+                    .await
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        let metadata = serde_json::json!({
+            "platform": platform,
+            "route_credential_id": credential.id,
+            "route_credential_name": credential.display_name,
+            "path": path,
+            "status": status.as_u16(),
+        })
+        .to_string();
+        let _ = insert_route_credential_usage_event(
+            pool,
+            &credential.id,
+            "request",
+            1,
+            "count",
+            &metadata,
+        )
+        .await;
+        if let Some(tokens) = extract_token_count(&response_bytes).filter(|tokens| *tokens > 0) {
             let _ = insert_route_credential_usage_event(
                 pool,
                 &credential.id,
@@ -416,9 +441,7 @@ async fn forward_request(
             )
             .await;
         }
-    }
-    if let Some(cost) = cost_micros {
-        if cost > 0 {
+        if let Some(cost) = extract_cost_micros(&response_bytes).filter(|cost| *cost > 0) {
             let _ = insert_route_credential_usage_event(
                 pool,
                 &credential.id,
@@ -429,22 +452,34 @@ async fn forward_request(
             )
             .await;
         }
-    }
-    let _ = RoutePoolRepository::save_cursor_index(pool, &platform, next_index).await;
 
-    let mut response = Response::builder().status(status);
-    if let Some(header_map) = response.headers_mut() {
-        for (name, value) in upstream_headers.iter() {
-            if is_hop_by_hop_header(name) {
-                continue;
-            }
-            header_map.append(name.clone(), value.clone());
+        let next_index = (credential_index + 1) % credentials.len();
+        let _ = RoutePoolRepository::save_cursor_index(pool, &platform, next_index as i64).await;
+
+        if quota_exhausted {
+            retry_errors.push(format!(
+                "{}: upstream quota exhausted",
+                credential.display_name
+            ));
+            continue;
         }
+        if should_retry_proxy_failure(status) {
+            mark_route_credential_unavailable(pool, &credential.id).await;
+            retry_errors.push(format!(
+                "{}: upstream returned {}",
+                credential.display_name,
+                status.as_u16()
+            ));
+            continue;
+        }
+
+        return proxy_upstream_response(status, upstream_headers, response_bytes.to_vec());
     }
 
-    response
-        .body(Body::from(response_bytes))
-        .map_err(|err| format!("Could not build proxy response: {err}"))
+    Err(format!(
+        "All route credentials failed for {platform}: {}",
+        retry_errors.join(" | ")
+    ))
 }
 
 fn map_to_reqwest_headers(headers: &HeaderMap) -> reqwest::header::HeaderMap {
@@ -460,7 +495,61 @@ fn map_to_reqwest_headers(headers: &HeaderMap) -> reqwest::header::HeaderMap {
     mapped
 }
 
-fn should_mark_proxy_account_unavailable(status: StatusCode) -> bool {
+fn strip_route_proxy_auth_query(query: Option<&str>) -> Option<String> {
+    let query = query?.trim();
+    if query.is_empty() {
+        return None;
+    }
+
+    let remaining: Vec<&str> = query
+        .split('&')
+        .filter(|pair| {
+            let key = pair.split_once('=').map(|(key, _)| key).unwrap_or(*pair);
+            !matches!(key, "key" | "api_key" | "apiKey")
+        })
+        .collect();
+    if remaining.is_empty() {
+        None
+    } else {
+        Some(remaining.join("&"))
+    }
+}
+
+fn strip_route_proxy_auth_headers(headers: &mut HeaderMap) {
+    headers.remove(axum::http::header::AUTHORIZATION);
+    headers.remove("x-api-key");
+    headers.remove("api-key");
+    headers.remove("x-goog-api-key");
+}
+
+fn retry_credential_indexes(len: usize, cursor: i64) -> Vec<usize> {
+    if len == 0 {
+        return Vec::new();
+    }
+    let first = cursor.rem_euclid(len as i64) as usize;
+    (0..len).map(|offset| (first + offset) % len).collect()
+}
+
+fn proxy_upstream_response(
+    status: StatusCode,
+    upstream_headers: HeaderMap,
+    response_bytes: Vec<u8>,
+) -> Result<Response, String> {
+    let mut response = Response::builder().status(status);
+    if let Some(header_map) = response.headers_mut() {
+        for (name, value) in upstream_headers.iter() {
+            if is_hop_by_hop_header(name) {
+                continue;
+            }
+            header_map.append(name.clone(), value.clone());
+        }
+    }
+    response
+        .body(Body::from(response_bytes))
+        .map_err(|error| format!("Could not build proxy response: {error}"))
+}
+
+fn should_retry_proxy_failure(status: StatusCode) -> bool {
     matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
 }
 
@@ -2136,6 +2225,47 @@ async fn insert_route_credential_usage_event(
 mod tests {
     use super::*;
 
+    async fn start_fixed_upstream(status: StatusCode, body: &'static str) -> String {
+        let app = Router::new().fallback(move || async move { (status, body) });
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind upstream");
+        let address = listener.local_addr().expect("upstream address");
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve upstream");
+        });
+        format!("http://{address}/v1")
+    }
+
+    async fn create_proxy_api_credential(
+        pool: &SqlitePool,
+        name: &str,
+        base_url: &str,
+    ) -> String {
+        let credential = RouteCredentialRepository::create(
+            pool,
+            "codex",
+            "api",
+            name,
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-upstream"}"#,
+            &json!({
+                "base_url": base_url,
+                "interface_format": "openai",
+                "model_mappings": []
+            })
+            .to_string(),
+            "{}",
+        )
+        .await
+        .expect("create credential");
+        credential.id
+    }
+
     #[tokio::test]
     async fn https_transport_serves_the_existing_route_proxy_handler_and_rejects_plain_http() {
         use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
@@ -2226,6 +2356,80 @@ mod tests {
         RouteProxyService::stop(&runtime).await.expect("stop");
     }
 
+    #[tokio::test]
+    async fn proxy_retries_next_pool_account_after_unauthorized_response() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let failed_upstream = start_fixed_upstream(StatusCode::UNAUTHORIZED, "expired").await;
+        let healthy_upstream = start_fixed_upstream(StatusCode::OK, "ai-switch-ok").await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let failed_id = create_proxy_api_credential(&pool, "failed", &failed_upstream).await;
+        let healthy_id = create_proxy_api_credential(&pool, "healthy", &healthy_upstream).await;
+        RoutePoolRepository::replace_members(
+            &pool,
+            "codex",
+            &[failed_id.clone(), healthy_id.clone()],
+        )
+        .await
+        .expect("pool members");
+        let route_key = RouteProxyKeyRepository::ensure_platform_key(
+            &pool,
+            "codex",
+            "sk-ai-switch-test",
+        )
+        .await
+        .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5","messages":[]}))
+            .send()
+            .await
+            .expect("proxy response");
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(response.text().await.expect("body"), "ai-switch-ok");
+        assert_eq!(
+            RouteCredentialRepository::get(&pool, &failed_id)
+                .await
+                .expect("failed account")
+                .status,
+            "error"
+        );
+        assert_eq!(
+            RouteCredentialRepository::get(&pool, &healthy_id)
+                .await
+                .expect("healthy account")
+                .status,
+            "ok"
+        );
+        assert_eq!(
+            RoutePoolRepository::next_cursor_index(&pool, "codex")
+                .await
+                .expect("next cursor"),
+            0
+        );
+        let usage_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM usage_events WHERE source_label = 'route_proxy'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("usage count");
+        assert_eq!(usage_count, 2);
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
     fn api_credential(name: &str, interface_format: &str) -> SelectedCredential {
         SelectedCredential {
             id: name.to_string(),
@@ -2269,6 +2473,23 @@ mod tests {
             pick_credential(&credentials, 3).map(|item| item.id.as_str()),
             Some("second")
         );
+    }
+
+    #[test]
+    fn retry_credential_indexes_wrap_once_from_the_route_cursor() {
+        assert_eq!(retry_credential_indexes(3, 0), vec![0, 1, 2]);
+        assert_eq!(retry_credential_indexes(3, 2), vec![2, 0, 1]);
+        assert_eq!(retry_credential_indexes(3, -1), vec![2, 0, 1]);
+        assert!(retry_credential_indexes(0, 0).is_empty());
+    }
+
+    #[test]
+    fn retry_policy_only_retries_credentials_that_are_known_unusable() {
+        assert!(should_retry_proxy_failure(StatusCode::UNAUTHORIZED));
+        assert!(should_retry_proxy_failure(StatusCode::FORBIDDEN));
+        assert!(!should_retry_proxy_failure(StatusCode::TOO_MANY_REQUESTS));
+        assert!(!should_retry_proxy_failure(StatusCode::BAD_GATEWAY));
+        assert!(!should_retry_proxy_failure(StatusCode::INTERNAL_SERVER_ERROR));
     }
 
     #[test]
@@ -2499,6 +2720,44 @@ mod tests {
             extract_inbound_api_key(&HeaderMap::new(), Some("key=sk-ai-switch-query&x=1"))
                 .as_deref(),
             Some("sk-ai-switch-query")
+        );
+    }
+
+    #[test]
+    fn strip_route_proxy_auth_query_keeps_unrelated_parameters() {
+        assert_eq!(
+            strip_route_proxy_auth_query(Some("key=sk-ai-switch-local&alt=sse&api_key=ignored")),
+            Some("alt=sse".to_string())
+        );
+        assert_eq!(strip_route_proxy_auth_query(Some("apiKey=local")), None);
+        assert_eq!(
+            strip_route_proxy_auth_query(Some("alt=sse")),
+            Some("alt=sse".to_string())
+        );
+    }
+
+    #[test]
+    fn strip_route_proxy_auth_headers_removes_only_local_credential_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer sk-ai-switch-local"),
+        );
+        headers.insert("x-api-key", HeaderValue::from_static("sk-ai-switch-local"));
+        headers.insert(
+            "x-goog-api-key",
+            HeaderValue::from_static("sk-ai-switch-local"),
+        );
+        headers.insert("accept", HeaderValue::from_static("application/json"));
+
+        strip_route_proxy_auth_headers(&mut headers);
+
+        assert!(headers.get("authorization").is_none());
+        assert!(headers.get("x-api-key").is_none());
+        assert!(headers.get("x-goog-api-key").is_none());
+        assert_eq!(
+            headers.get("accept"),
+            Some(&HeaderValue::from_static("application/json"))
         );
     }
 

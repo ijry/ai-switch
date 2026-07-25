@@ -132,6 +132,26 @@ impl RouteProxyKeyRepository {
 
         Ok(proxy_key.to_string())
     }
+
+    /// Removes only a key created by the current write attempt.
+    pub async fn delete_if_matches(
+        pool: &SqlitePool,
+        platform: &str,
+        proxy_key: &str,
+    ) -> Result<(), AppError> {
+        sqlx::query("DELETE FROM route_proxy_keys WHERE platform = ? AND proxy_key = ?")
+            .bind(platform)
+            .bind(proxy_key)
+            .execute(pool)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.route_proxy_key_delete",
+                message: "Could not remove unused route proxy key".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -178,6 +198,36 @@ mod tests {
                 .await
                 .expect("platforms"),
             vec!["codex".to_string(), "grok".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_if_matches_does_not_remove_a_different_platform_key() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        RouteProxyKeyRepository::ensure_platform_key(&pool, "grok", "sk-grok")
+            .await
+            .expect("grok key");
+
+        RouteProxyKeyRepository::delete_if_matches(&pool, "grok", "sk-other")
+            .await
+            .expect("delete mismatch");
+        assert_eq!(
+            RouteProxyKeyRepository::get_by_platform(&pool, "grok")
+                .await
+                .expect("get key")
+                .as_deref(),
+            Some("sk-grok")
+        );
+
+        RouteProxyKeyRepository::delete_if_matches(&pool, "grok", "sk-grok")
+            .await
+            .expect("delete match");
+        assert!(
+            RouteProxyKeyRepository::get_by_platform(&pool, "grok")
+                .await
+                .expect("get removed key")
+                .is_none()
         );
     }
 }
