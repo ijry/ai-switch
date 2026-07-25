@@ -15,6 +15,12 @@ mod session_manager;
 mod terminal_manager;
 mod web;
 
+// rfd uses TaskDialogIndirect, which requires the Common Controls v6 manifest.
+// Tauri links its generated resource into application binaries, but not lib tests.
+#[cfg(all(test, target_os = "windows"))]
+#[link(name = "resource", kind = "static")]
+unsafe extern "C" {}
+
 use app_state::AppState;
 use commands::batch_commands::{
     create_batch, create_official_account, create_provider, get_official_account,
