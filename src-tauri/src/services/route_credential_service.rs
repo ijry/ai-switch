@@ -472,7 +472,7 @@ mod tests {
             ImportOfficialTextInput {
                 platform: "codex".to_string(),
                 text: text.to_string(),
-                batch_name: None,
+                batch_name: Some("Sub2API K12".to_string()),
             },
         )
         .await
@@ -488,6 +488,7 @@ mod tests {
             Some("tallisbisaccia737@hotmail.com")
         );
         assert_eq!(imported.subscription_type.as_deref(), Some("k12"));
+        assert_eq!(imported.batch_name.as_deref(), Some("Sub2API K12"));
         assert!(imported.secret_payload_json.contains("private-key"));
         assert!(imported
             .config_json
