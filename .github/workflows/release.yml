@@ -191,6 +191,9 @@ jobs:
             throw "No Tauri updater signature files were staged."
           }
 
+      - name: Verify updater signature keys
+        run: node scripts/verify-updater-signatures.mjs --assets-dir release-assets --tauri-config src-tauri/tauri.conf.json
+
       - name: Upload release assets
         uses: actions/upload-artifact@v4
         with:
