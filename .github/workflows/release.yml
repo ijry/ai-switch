@@ -234,6 +234,7 @@ jobs:
           draft: ${{ inputs.draft }}
           prerelease: ${{ inputs.prerelease }}
           allowUpdates: true
+          generateReleaseNotes: true
           replacesArtifacts: true
           artifactErrorsFailBuild: true
           artifacts: "release-assets/**/*.*"
