@@ -191,9 +191,6 @@ jobs:
             throw "No Tauri updater signature files were staged."
           }
 
-      - name: Verify updater signature keys
-        run: node scripts/verify-updater-signatures.mjs --assets-dir release-assets --tauri-config src-tauri/tauri.conf.json
-
       - name: Upload release assets
         uses: actions/upload-artifact@v4
         with:
@@ -227,6 +224,9 @@ jobs:
             --tag "${{ inputs.tag }}" \
             --repo "${{ github.repository }}" \
             --output release-assets/latest.json
+
+      - name: Verify updater signature keys
+        run: node scripts/verify-updater-signatures.mjs --manifest release-assets/latest.json --tauri-config src-tauri/tauri.conf.json
 
       - name: Create or update release
         uses: ncipollo/release-action@v1

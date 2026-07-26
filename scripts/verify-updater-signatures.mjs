@@ -16,7 +16,7 @@ function parseArgs(argv) {
   }
 
   return {
-    assetsDir: required(args, "assets-dir"),
+    manifest: required(args, "manifest"),
     tauriConfig: required(args, "tauri-config"),
   };
 }
@@ -58,23 +58,7 @@ function updaterKeyId(pubkey) {
   return payload.subarray(2, 10).reverse().toString("hex").toUpperCase();
 }
 
-async function listFilesRecursive(root) {
-  const entries = await readdir(root, { withFileTypes: true });
-  const files = [];
-
-  for (const entry of entries) {
-    const entryPath = path.join(root, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...(await listFilesRecursive(entryPath)));
-    } else if (entry.isFile()) {
-      files.push(entryPath);
-    }
-  }
-
-  return files;
-}
-
-export async function verifyUpdaterSignatures({ assetsDir, tauriConfig }) {
+export async function verifyUpdaterSignatures({ manifest, tauriConfig }) {
   const config = JSON.parse(await readFile(tauriConfig, "utf8"));
   const pubkey = config.plugins?.updater?.pubkey;
   if (typeof pubkey !== "string") {
@@ -82,26 +66,31 @@ export async function verifyUpdaterSignatures({ assetsDir, tauriConfig }) {
   }
 
   const expectedKeyId = updaterKeyId(pubkey);
-  const rootStat = await stat(assetsDir);
-  if (!rootStat.isDirectory()) {
-    throw new Error(`Assets path is not a directory: ${assetsDir}`);
+  const manifestStat = await stat(manifest);
+  if (!manifestStat.isFile()) {
+    throw new Error(`Updater manifest is not a file: ${manifest}`);
   }
 
-  const signatureFiles = (await listFilesRecursive(assetsDir)).filter((file) => file.endsWith(".sig"));
-  if (signatureFiles.length === 0) {
-    throw new Error("No updater signature files found");
+  const updaterManifest = JSON.parse(await readFile(manifest, "utf8"));
+  const platforms = Object.entries(updaterManifest.platforms ?? {});
+  if (platforms.length === 0) {
+    throw new Error("Updater manifest has no platform signatures");
   }
 
-  for (const signatureFile of signatureFiles) {
-    const signerId = signerKeyId(await readFile(signatureFile, "utf8"));
+  for (const [platform, entry] of platforms) {
+    const signature = entry?.signature;
+    if (typeof signature !== "string") {
+      throw new Error(`Updater manifest signature is missing for ${platform}`);
+    }
+    const signerId = signerKeyId(Buffer.from(signature, "base64").toString("utf8"));
     if (signerId !== expectedKeyId) {
       throw new Error(
-        `Updater signature key mismatch for ${path.relative(assetsDir, signatureFile)}: expected ${expectedKeyId}, received ${signerId}`,
+        `Updater signature key mismatch for ${platform}: expected ${expectedKeyId}, received ${signerId}`,
       );
     }
   }
 
-  return { keyId: expectedKeyId, signatureCount: signatureFiles.length };
+  return { keyId: expectedKeyId, signatureCount: platforms.length };
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);

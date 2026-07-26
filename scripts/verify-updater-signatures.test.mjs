@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -25,16 +25,28 @@ async function writeTauriConfig(root, pubkey = matchingPublicKey) {
   return configPath;
 }
 
+async function writeUpdaterManifest(root, signature = matchingSignature) {
+  const manifestPath = path.join(root, "latest.json");
+  await writeFile(
+    manifestPath,
+    JSON.stringify({
+      platforms: {
+        "windows-x86_64": {
+          signature: Buffer.from(signature).toString("base64"),
+          url: "https://example.invalid/AI-Switch.exe",
+        },
+      },
+    }),
+  );
+  return manifestPath;
+}
+
 test("verifies updater signatures made with the configured public key", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "ai-switch-updater-signatures-"));
 
   try {
-    const assetsDir = path.join(root, "assets", "windows-x86_64");
-    await mkdir(assetsDir, { recursive: true });
-    await writeFile(path.join(assetsDir, "AI-Switch.exe.sig"), matchingSignature);
-
     const result = await verifyUpdaterSignatures({
-      assetsDir: path.dirname(assetsDir),
+      manifest: await writeUpdaterManifest(root),
       tauriConfig: await writeTauriConfig(root),
     });
 
@@ -48,14 +60,10 @@ test("rejects updater signatures made with another key", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "ai-switch-updater-signatures-"));
 
   try {
-    const assetsDir = path.join(root, "assets", "windows-x86_64");
-    await mkdir(assetsDir, { recursive: true });
-    await writeFile(path.join(assetsDir, "AI-Switch.exe.sig"), mismatchedSignature);
-
     await assert.rejects(
       async () =>
         verifyUpdaterSignatures({
-          assetsDir: path.dirname(assetsDir),
+          manifest: await writeUpdaterManifest(root, mismatchedSignature),
           tauriConfig: await writeTauriConfig(root),
         }),
       /Updater signature key mismatch/,
