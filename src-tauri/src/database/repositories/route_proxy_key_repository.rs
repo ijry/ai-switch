@@ -223,11 +223,9 @@ mod tests {
         RouteProxyKeyRepository::delete_if_matches(&pool, "grok", "sk-grok")
             .await
             .expect("delete match");
-        assert!(
-            RouteProxyKeyRepository::get_by_platform(&pool, "grok")
-                .await
-                .expect("get removed key")
-                .is_none()
-        );
+        assert!(RouteProxyKeyRepository::get_by_platform(&pool, "grok")
+            .await
+            .expect("get removed key")
+            .is_none());
     }
 }

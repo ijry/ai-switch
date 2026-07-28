@@ -386,7 +386,10 @@ async fn forward_request(
             Ok(response) => response,
             Err(error) => {
                 mark_route_credential_unavailable(pool, &credential.id).await;
-                retry_errors.push(format!("{}: upstream request failed: {error}", credential.display_name));
+                retry_errors.push(format!(
+                    "{}: upstream request failed: {error}",
+                    credential.display_name
+                ));
                 continue;
             }
         };
@@ -399,7 +402,8 @@ async fn forward_request(
             .map_err(|error| format!("Could not read upstream response: {error}"))?;
         if !custom_tool_names.is_empty() {
             response_bytes =
-                restore_custom_tools_in_responses_payload(&response_bytes, &custom_tool_names).into();
+                restore_custom_tools_in_responses_payload(&response_bytes, &custom_tool_names)
+                    .into();
         }
         // Capture official subscription/quota signals (e.g. Grok free-usage-exhausted).
         let quota_exhausted = if credential.kind == "official" {
@@ -960,14 +964,15 @@ fn build_api_upstream_request(
     })?;
     let interface_format = string_value(config, "interface_format").unwrap_or("openai");
     let mappings = model_mappings(config);
+    let upstream_path = normalize_api_upstream_path(interface_format, path);
     let mut rewritten_body = apply_model_mappings(body, &mappings);
     // API relays (e.g. Xiaomi) commonly lack Codex custom-tool support on Responses.
     if responses_custom_tool_compat_enabled(config)
-        && should_rewrite_custom_tools_for_api(interface_format, path)
+        && should_rewrite_custom_tools_for_api(interface_format, &upstream_path)
     {
         rewritten_body = apply_responses_custom_tool_compat(&rewritten_body);
     }
-    let mut target_url = build_target_url(base_url, path, query);
+    let mut target_url = build_target_url(base_url, &upstream_path, query);
 
     match interface_format {
         "anthropic" | "anthropic-messages" => {
@@ -1701,6 +1706,36 @@ fn should_rewrite_custom_tools_for_api(interface_format: &str, path: &str) -> bo
     interface_format == "openai-responses" || is_responses_path(path)
 }
 
+fn normalize_api_upstream_path(interface_format: &str, path: &str) -> String {
+    let normalized = normalize_request_path(path);
+    if !matches!(interface_format, "openai" | "openai-responses") {
+        return normalized;
+    }
+    if normalized.is_empty() {
+        return normalized;
+    }
+    if first_path_segment(&normalized).is_some_and(is_version_path_segment) {
+        return normalized;
+    }
+    if is_openai_compatible_path(&normalized) {
+        format!("/v1{normalized}")
+    } else {
+        normalized
+    }
+}
+
+fn normalize_request_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    }
+}
+
 fn responses_custom_tool_compat_enabled(config: &Value) -> bool {
     config
         .get("responses_custom_tool_compat")
@@ -1711,6 +1746,52 @@ fn responses_custom_tool_compat_enabled(config: &Value) -> bool {
 fn is_responses_path(path: &str) -> bool {
     let normalized = path.trim().trim_end_matches('/');
     normalized.ends_with("/responses") || normalized == "responses"
+}
+
+fn is_openai_compatible_path(path: &str) -> bool {
+    let normalized = path.trim().trim_end_matches('/').trim_start_matches('/');
+    if normalized.is_empty() {
+        return false;
+    }
+    matches!(
+        normalized,
+        "chat/completions"
+            | "responses"
+            | "completions"
+            | "models"
+            | "embeddings"
+            | "moderations"
+            | "files"
+            | "batches"
+            | "audio/transcriptions"
+            | "audio/translations"
+            | "images/generations"
+            | "images/edits"
+            | "images/variations"
+            | "assistants"
+            | "threads"
+            | "vector_stores"
+    ) || normalized.starts_with("chat/")
+        || normalized.starts_with("responses/")
+        || normalized.starts_with("completions/")
+        || normalized.starts_with("models/")
+        || normalized.starts_with("embeddings/")
+        || normalized.starts_with("moderations/")
+        || normalized.starts_with("audio/")
+        || normalized.starts_with("images/")
+        || normalized.starts_with("files/")
+        || normalized.starts_with("batches/")
+        || normalized.starts_with("assistants/")
+        || normalized.starts_with("threads/")
+        || normalized.starts_with("vector_stores/")
+}
+
+fn is_version_path_segment(segment: &str) -> bool {
+    let lower = segment.to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix('v') else {
+        return false;
+    };
+    !rest.is_empty() && rest.chars().next().is_some_and(|ch| ch.is_ascii_digit())
 }
 
 fn collect_custom_tool_names(body: &[u8]) -> std::collections::HashSet<String> {
@@ -2110,7 +2191,8 @@ pub fn build_target_url(base_url: &str, path: &str, query: Option<&str>) -> Stri
     } else {
         format!("/{path}")
     };
-    let mut url = format!("{base}{normalized_path}");
+    let upstream_path = upstream_path_for_base(base, &normalized_path);
+    let mut url = format!("{base}{upstream_path}");
     if let Some(query) = query {
         if !query.is_empty() {
             url.push('?');
@@ -2118,6 +2200,54 @@ pub fn build_target_url(base_url: &str, path: &str, query: Option<&str>) -> Stri
         }
     }
     url
+}
+
+fn upstream_path_for_base(base_url: &str, path: &str) -> String {
+    let first_segment = match first_path_segment(path) {
+        Some(segment) => segment,
+        None => return String::new(),
+    };
+    let base_last_segment = base_last_path_segment(base_url);
+    let should_strip_duplicate_version =
+        base_last_segment.is_some_and(|segment| segment.eq_ignore_ascii_case(first_segment));
+    let should_strip_codex_proxy_version =
+        first_segment.eq_ignore_ascii_case("v1") && is_codex_backend_base_url(base_url);
+
+    if should_strip_duplicate_version || should_strip_codex_proxy_version {
+        strip_first_path_segment(path)
+    } else {
+        path.to_string()
+    }
+}
+
+fn first_path_segment(path: &str) -> Option<&str> {
+    path.trim_start_matches('/')
+        .split('/')
+        .find(|segment| !segment.is_empty())
+}
+
+fn strip_first_path_segment(path: &str) -> String {
+    let trimmed = path.trim_start_matches('/');
+    match trimmed.split_once('/') {
+        Some((_, rest)) if !rest.is_empty() => format!("/{rest}"),
+        _ => String::new(),
+    }
+}
+
+fn base_last_path_segment(base_url: &str) -> Option<&str> {
+    let after_scheme = base_url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(base_url);
+    let path = after_scheme.split_once('/').map(|(_, path)| path)?;
+    path.trim_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .next_back()
+}
+
+fn is_codex_backend_base_url(base_url: &str) -> bool {
+    base_url.to_ascii_lowercase().contains("/backend-api/codex")
 }
 
 fn is_hop_by_hop_header(name: &HeaderName) -> bool {
@@ -2232,18 +2362,12 @@ mod tests {
             .expect("bind upstream");
         let address = listener.local_addr().expect("upstream address");
         tokio::spawn(async move {
-            axum::serve(listener, app)
-                .await
-                .expect("serve upstream");
+            axum::serve(listener, app).await.expect("serve upstream");
         });
         format!("http://{address}/v1")
     }
 
-    async fn create_proxy_api_credential(
-        pool: &SqlitePool,
-        name: &str,
-        base_url: &str,
-    ) -> String {
+    async fn create_proxy_api_credential(pool: &SqlitePool, name: &str, base_url: &str) -> String {
         let credential = RouteCredentialRepository::create(
             pool,
             "codex",
@@ -2374,13 +2498,10 @@ mod tests {
         )
         .await
         .expect("pool members");
-        let route_key = RouteProxyKeyRepository::ensure_platform_key(
-            &pool,
-            "codex",
-            "sk-ai-switch-test",
-        )
-        .await
-        .expect("route key");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
         let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
             .await
@@ -2460,6 +2581,34 @@ mod tests {
     }
 
     #[test]
+    fn build_target_url_avoids_duplicate_local_v1_prefix() {
+        assert_eq!(
+            build_target_url("https://api.example.com/v1", "/v1/responses", None),
+            "https://api.example.com/v1/responses"
+        );
+        assert_eq!(
+            build_target_url(
+                "https://generativelanguage.googleapis.com/v1beta",
+                "/v1beta/models/gemini:generateContent",
+                None
+            ),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent"
+        );
+    }
+
+    #[test]
+    fn build_target_url_keeps_v1_prefix_when_upstream_base_is_unversioned() {
+        assert_eq!(
+            build_target_url(
+                "https://api.example.com",
+                "/v1/responses",
+                Some("stream=true")
+            ),
+            "https://api.example.com/v1/responses?stream=true"
+        );
+    }
+
+    #[test]
     fn pick_credential_selects_by_cursor_round_robin() {
         let credentials = vec![
             api_credential("first", "openai"),
@@ -2489,7 +2638,9 @@ mod tests {
         assert!(should_retry_proxy_failure(StatusCode::FORBIDDEN));
         assert!(!should_retry_proxy_failure(StatusCode::TOO_MANY_REQUESTS));
         assert!(!should_retry_proxy_failure(StatusCode::BAD_GATEWAY));
-        assert!(!should_retry_proxy_failure(StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(!should_retry_proxy_failure(
+            StatusCode::INTERNAL_SERVER_ERROR
+        ));
     }
 
     #[test]
@@ -2667,6 +2818,52 @@ mod tests {
         )
         .expect("gemini request");
         assert!(url.contains("key=sk-test"));
+    }
+
+    #[test]
+    fn build_upstream_request_prefixes_v1_for_unversioned_openai_base() {
+        let mut credential = api_credential("root-openai", "openai");
+        credential.config_json = serde_json::json!({
+            "base_url": "https://api.example.com",
+            "interface_format": "openai",
+            "model_mappings": []
+        })
+        .to_string();
+
+        let (url, _, _) = build_upstream_request(
+            &credential,
+            "codex",
+            "/chat/completions",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5.5"}"#,
+        )
+        .expect("request");
+
+        assert_eq!(url, "https://api.example.com/v1/chat/completions");
+    }
+
+    #[test]
+    fn build_upstream_request_prefixes_v1_for_unversioned_responses_base() {
+        let mut credential = api_credential("root-responses", "openai-responses");
+        credential.config_json = serde_json::json!({
+            "base_url": "https://api.example.com",
+            "interface_format": "openai-responses",
+            "model_mappings": []
+        })
+        .to_string();
+
+        let (url, _, _) = build_upstream_request(
+            &credential,
+            "codex",
+            "/responses",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5.5"}"#,
+        )
+        .expect("request");
+
+        assert_eq!(url, "https://api.example.com/v1/responses");
     }
 
     #[test]
@@ -3046,7 +3243,7 @@ mod tests {
         let (url, headers, _) = build_upstream_request(
             &credential,
             "codex",
-            "/responses",
+            "/v1/responses",
             None,
             HeaderMap::new(),
             br#"{"model":"gpt-5"}"#,
@@ -3253,15 +3450,16 @@ mod tests {
             "model":"gpt-5",
             "tools":[{"type":"custom","name":"apply_patch","description":"patch files"}]
         }"#;
-        let (_, _, rewritten) = build_upstream_request(
+        let (url, _, rewritten) = build_upstream_request(
             &credential,
             "codex",
-            "/responses",
+            "/v1/responses",
             None,
             HeaderMap::new(),
             body,
         )
         .expect("request");
+        assert_eq!(url, "https://api.xiaomi.example/v1/responses");
         let value: Value = serde_json::from_slice(&rewritten).expect("json");
 
         assert_eq!(
