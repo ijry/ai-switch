@@ -44,6 +44,8 @@ const CUSTOM_TOOL_INPUT_FIELD: &str = "input";
 const CUSTOM_TOOL_INPUT_DESCRIPTION: &str =
     "Raw string input for the original custom tool. Preserve formatting exactly and follow the original tool definition embedded in the description.";
 const CUSTOM_TOOL_PRESERVED_METADATA_HEADING: &str = "Original tool definition:";
+const ROUTE_PROXY_PLATFORM_HEADER: &str = "x-ai-switch-platform";
+pub const ROUTE_PROXY_TRACE_HEADER: &str = "x-ai-switch-test-trace-id";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteProxyStatus {
@@ -289,6 +291,7 @@ async fn forward_request(
     let pool = &state.pool;
     let path = uri.path().to_string();
     let query = uri.query().map(|value| value.to_string());
+    let trace_id = route_proxy_trace_id(&headers);
     let inbound_key = extract_inbound_api_key(&headers, query.as_deref());
     let platform = resolve_platform(state, &path, &headers, inbound_key.as_deref())
         .await
@@ -349,12 +352,33 @@ async fn forward_request(
         .map_err(|err| format!("Unsupported method: {err}"))?;
     let retry_indexes = retry_credential_indexes(credentials.len(), cursor);
     let mut retry_errors = Vec::new();
+    let request_start = Instant::now();
 
     for credential_index in retry_indexes {
         let selected = &credentials[credential_index];
         let credential = match maybe_refresh_official_credential(pool, selected).await {
             Ok(credential) => credential,
             Err(error) => {
+                let metadata = route_proxy_request_metadata(
+                    &platform,
+                    selected,
+                    &path,
+                    None,
+                    None,
+                    false,
+                    trace_id.as_deref(),
+                    request_start,
+                    Some(&error),
+                );
+                let _ = insert_route_credential_usage_event(
+                    pool,
+                    &selected.id,
+                    "request",
+                    1,
+                    "count",
+                    &metadata,
+                )
+                .await;
                 retry_errors.push(format!("{}: {error}", selected.display_name));
                 continue;
             }
@@ -371,6 +395,26 @@ async fn forward_request(
             Ok(request) => request,
             Err(error) => {
                 mark_route_credential_unavailable(pool, &credential.id).await;
+                let metadata = route_proxy_request_metadata(
+                    &platform,
+                    &credential,
+                    &path,
+                    None,
+                    None,
+                    false,
+                    trace_id.as_deref(),
+                    request_start,
+                    Some(&error),
+                );
+                let _ = insert_route_credential_usage_event(
+                    pool,
+                    &credential.id,
+                    "request",
+                    1,
+                    "count",
+                    &metadata,
+                )
+                .await;
                 retry_errors.push(format!("{}: {error}", credential.display_name));
                 continue;
             }
@@ -386,10 +430,31 @@ async fn forward_request(
             Ok(response) => response,
             Err(error) => {
                 mark_route_credential_unavailable(pool, &credential.id).await;
-                retry_errors.push(format!(
+                let error_message = format!(
                     "{}: upstream request failed: {error}",
                     credential.display_name
-                ));
+                );
+                let metadata = route_proxy_request_metadata(
+                    &platform,
+                    &credential,
+                    &path,
+                    Some(&target_url),
+                    None,
+                    false,
+                    trace_id.as_deref(),
+                    request_start,
+                    Some(&error_message),
+                );
+                let _ = insert_route_credential_usage_event(
+                    pool,
+                    &credential.id,
+                    "request",
+                    1,
+                    "count",
+                    &metadata,
+                )
+                .await;
+                retry_errors.push(error_message);
                 continue;
             }
         };
@@ -417,14 +482,26 @@ async fn forward_request(
         } else {
             false
         };
-        let metadata = serde_json::json!({
-            "platform": platform,
-            "route_credential_id": credential.id,
-            "route_credential_name": credential.display_name,
-            "path": path,
-            "status": status.as_u16(),
-        })
-        .to_string();
+        let should_retry = should_retry_proxy_failure(status);
+        let proxy_success = status.is_success() && !quota_exhausted && !should_retry;
+        let retry_error = if quota_exhausted {
+            Some("upstream quota exhausted")
+        } else if should_retry {
+            Some("upstream returned retryable status")
+        } else {
+            None
+        };
+        let metadata = route_proxy_request_metadata(
+            &platform,
+            &credential,
+            &path,
+            Some(&target_url),
+            Some(status.as_u16()),
+            proxy_success,
+            trace_id.as_deref(),
+            request_start,
+            retry_error,
+        );
         let _ = insert_route_credential_usage_event(
             pool,
             &credential.id,
@@ -467,7 +544,7 @@ async fn forward_request(
             ));
             continue;
         }
-        if should_retry_proxy_failure(status) {
+        if should_retry {
             mark_route_credential_unavailable(pool, &credential.id).await;
             retry_errors.push(format!(
                 "{}: upstream returned {}",
@@ -524,6 +601,48 @@ fn strip_route_proxy_auth_headers(headers: &mut HeaderMap) {
     headers.remove("x-api-key");
     headers.remove("api-key");
     headers.remove("x-goog-api-key");
+    headers.remove(ROUTE_PROXY_PLATFORM_HEADER);
+    headers.remove(ROUTE_PROXY_TRACE_HEADER);
+}
+
+fn route_proxy_trace_id(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(ROUTE_PROXY_TRACE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn route_proxy_request_metadata(
+    platform: &str,
+    credential: &SelectedCredential,
+    path: &str,
+    target_url: Option<&str>,
+    status: Option<u16>,
+    success: bool,
+    trace_id: Option<&str>,
+    started_at: Instant,
+    error_message: Option<&str>,
+) -> String {
+    serde_json::json!({
+        "platform": platform,
+        "route_credential_id": credential.id,
+        "route_credential_name": credential.display_name,
+        "entry_path": path,
+        "path": path,
+        "target_url": target_url,
+        "status": status,
+        "success": success,
+        "duration_ms": elapsed_millis(started_at),
+        "trace_id": trace_id,
+        "error_message": error_message,
+    })
+    .to_string()
+}
+
+fn elapsed_millis(started_at: Instant) -> i64 {
+    started_at.elapsed().as_millis().min(i64::MAX as u128) as i64
 }
 
 fn retry_credential_indexes(len: usize, cursor: i64) -> Vec<usize> {
@@ -709,7 +828,7 @@ fn from_hex(byte: u8) -> Option<u8> {
 
 pub fn detect_platform(path: &str, headers: &HeaderMap) -> String {
     if let Some(value) = headers
-        .get("x-ai-switch-platform")
+        .get(ROUTE_PROXY_PLATFORM_HEADER)
         .and_then(|value| value.to_str().ok())
     {
         return normalize_route_platform(value);
@@ -1706,7 +1825,7 @@ fn should_rewrite_custom_tools_for_api(interface_format: &str, path: &str) -> bo
     interface_format == "openai-responses" || is_responses_path(path)
 }
 
-fn normalize_api_upstream_path(interface_format: &str, path: &str) -> String {
+pub fn normalize_api_upstream_path(interface_format: &str, path: &str) -> String {
     let normalized = normalize_request_path(path);
     if !matches!(interface_format, "openai" | "openai-responses") {
         return normalized;

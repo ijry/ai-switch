@@ -1053,6 +1053,25 @@ function modelTestTargetText(outcome: RoutePoolModelTestOutcome) {
   return outcome.request_path;
 }
 
+function modelTestRouteChainItems(outcome: RoutePoolModelTestOutcome) {
+  const entry =
+    outcome.route_proxy_entry_url ?? outcome.route_proxy_entry_path ?? outcome.request_path;
+  return [
+    {
+      label: "算力池入口",
+      value: entry,
+    },
+    {
+      label: "命中账号",
+      value: `${outcome.selected_account_name} · ${outcome.selected_account_id}`,
+    },
+    {
+      label: "上游接口",
+      value: modelTestTargetText(outcome),
+    },
+  ].filter((item) => item.value.trim().length > 0);
+}
+
 function prettyJsonOrText(value: string) {
   try {
     return JSON.stringify(JSON.parse(value), null, 2);
@@ -2295,6 +2314,37 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                 <p className="mt-1 rounded-lg bg-white/80 px-2 py-1 font-mono text-[11px] text-stone-800">
                   {modelTestOutcome.response_text}
                 </p>
+              </div>
+            ) : null}
+
+            {modelTestOutcome.via_route_proxy ? (
+              <div
+                aria-label="算力池请求链路"
+                className="rounded-lg bg-white/80 px-2 py-2 text-[11px] text-stone-800"
+              >
+                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="font-semibold text-stone-700">算力池请求链路</p>
+                  {modelTestOutcome.route_proxy_trace_id ? (
+                    <p className="truncate font-mono text-[10px] text-stone-500">
+                      trace {modelTestOutcome.route_proxy_trace_id}
+                    </p>
+                  ) : null}
+                </div>
+                <div className="mt-2 grid gap-2 lg:grid-cols-3">
+                  {modelTestRouteChainItems(modelTestOutcome).map((item) => (
+                    <div
+                      className="min-w-0 rounded-md border border-stone-200/80 bg-white px-2 py-1.5"
+                      key={item.label}
+                    >
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-stone-400">
+                        {item.label}
+                      </p>
+                      <p className="mt-0.5 truncate font-mono text-[11px] text-stone-800" title={item.value}>
+                        {item.value}
+                      </p>
+                    </div>
+                  ))}
+                </div>
               </div>
             ) : null}
 

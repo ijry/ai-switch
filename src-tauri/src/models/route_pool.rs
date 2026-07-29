@@ -76,6 +76,14 @@ pub struct RoutePoolModelTestOutcome {
     /// Selected route_credentials.id.
     pub selected_account_id: String,
     pub selected_account_name: String,
+    #[serde(default)]
+    pub via_route_proxy: bool,
+    #[serde(default)]
+    pub route_proxy_entry_url: Option<String>,
+    #[serde(default)]
+    pub route_proxy_entry_path: Option<String>,
+    #[serde(default)]
+    pub route_proxy_trace_id: Option<String>,
     pub interface_format: String,
     pub request_path: String,
     pub base_url: Option<String>,

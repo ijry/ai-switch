@@ -226,6 +226,10 @@ export type RoutePoolModelTestOutcome = {
   platform: string;
   selected_account_id: string;
   selected_account_name: string;
+  via_route_proxy?: boolean;
+  route_proxy_entry_url?: string | null;
+  route_proxy_entry_path?: string | null;
+  route_proxy_trace_id?: string | null;
   interface_format: string;
   request_path: string;
   base_url?: string | null;

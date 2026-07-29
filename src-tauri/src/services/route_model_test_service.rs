@@ -1,5 +1,6 @@
 use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
+use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
 use crate::error::AppError;
 use crate::models::route_credential::ModelMapping;
 use crate::models::route_pool::{RoutePoolModelTestOutcome, RoutePoolModelTestRequest};
@@ -8,12 +9,14 @@ use crate::services::route_pool_service::normalize_platform;
 use crate::services::route_proxy_service::{
     build_upstream_request, extract_cost_micros, extract_token_count,
     is_route_credential_quota_available, maybe_persist_official_quota_from_response,
-    maybe_refresh_official_credential, SelectedCredential,
+    maybe_refresh_official_credential, normalize_api_upstream_path, SelectedCredential,
+    ROUTE_PROXY_TRACE_HEADER,
 };
-use axum::http::{HeaderMap, HeaderName, HeaderValue};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 pub struct RouteModelTestService;
 
@@ -220,6 +223,173 @@ impl RouteModelTestService {
                     duration_ms,
                     None,
                     None,
+                )
+                .await
+            }
+        }
+    }
+
+    pub async fn test_model_through_proxy(
+        pool: &SqlitePool,
+        request: RoutePoolModelTestRequest,
+        route_proxy_base_url: &str,
+    ) -> Result<RoutePoolModelTestOutcome, AppError> {
+        let requested_account_id = request
+            .account_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|account_id| !account_id.is_empty());
+        if requested_account_id.is_some() {
+            return Self::test_model(pool, request).await;
+        }
+
+        let platform = normalize_platform(&request.platform)?;
+        let requested_model = request
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(str::to_string);
+        let cursor = RoutePoolRepository::next_cursor_index(pool, &platform).await?;
+        let credentials = load_pool_credentials(pool, &platform).await?;
+        if credentials.is_empty() {
+            return Err(AppError::Validation {
+                code: "validation.route_pool_empty",
+                message: "Route pool has no enabled accounts".to_string(),
+                details: Some(platform),
+                recoverable: true,
+            });
+        }
+
+        let selected_index = cursor.rem_euclid(credentials.len() as i64) as usize;
+        let credential = credentials[selected_index].clone();
+        let start = Instant::now();
+        let parts = match build_model_test_request(&credential, &platform, requested_model.as_deref())
+        {
+            Ok(parts) => parts,
+            Err(error) => {
+                let fallback_parts = fallback_request_parts(&credential, &platform);
+                return finish_proxy_outcome(
+                    pool,
+                    &platform,
+                    credential,
+                    fallback_parts,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    String::new(),
+                    None,
+                    Some(error),
+                    false,
+                    elapsed_ms(start),
+                )
+                .await;
+            }
+        };
+
+        let entry_path = normalize_api_upstream_path(&parts.interface_format, &parts.request_path);
+        let entry_url = join_proxy_entry_url(route_proxy_base_url, &entry_path);
+        let trace_id = Uuid::new_v4().to_string();
+        let proxy_key = RouteProxyKeyRepository::ensure_platform_key(
+            pool,
+            &platform,
+            &format!("sk-ai-switch-test-{}", Uuid::new_v4()),
+        )
+        .await?;
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
+        headers.insert(
+            header::AUTHORIZATION,
+            header_value(&format!("Bearer {proxy_key}"), "authorization")?,
+        );
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-ai-switch-platform"),
+            header_value(&platform, "platform")?,
+        );
+        headers.insert(
+            HeaderName::from_static(ROUTE_PROXY_TRACE_HEADER),
+            header_value(&trace_id, "trace id")?,
+        );
+
+        let client = match build_outbound_http_client(Some(Duration::from_secs(30))) {
+            Ok(client) => client,
+            Err(error) => {
+                return finish_proxy_outcome(
+                    pool,
+                    &platform,
+                    credential,
+                    parts,
+                    Some(entry_url),
+                    Some(entry_path),
+                    Some(trace_id),
+                    None,
+                    None,
+                    String::new(),
+                    None,
+                    Some(error),
+                    false,
+                    elapsed_ms(start),
+                )
+                .await;
+            }
+        };
+        let send_result = send_proxy_model_test_request(
+            client,
+            &entry_url,
+            headers,
+            parts.request_body_json.as_bytes().to_vec(),
+        )
+        .await;
+        let duration_ms = elapsed_ms(start);
+        let trace = load_route_proxy_model_test_trace(pool, &trace_id).await?;
+
+        match send_result {
+            Ok((status, success, body)) => {
+                let response_body =
+                    sanitize_for_storage(&credential, &truncate_response_body(&body));
+                let response_text =
+                    extract_model_test_response_text(&parts.interface_format, &response_body);
+                finish_proxy_outcome(
+                    pool,
+                    &platform,
+                    credential,
+                    parts,
+                    Some(entry_url),
+                    Some(entry_path),
+                    Some(trace_id),
+                    trace,
+                    Some(status),
+                    response_body,
+                    response_text,
+                    None,
+                    success,
+                    duration_ms,
+                )
+                .await
+            }
+            Err(error) => {
+                let error = sanitize_for_storage(&credential, &error);
+                finish_proxy_outcome(
+                    pool,
+                    &platform,
+                    credential,
+                    parts,
+                    Some(entry_url),
+                    Some(entry_path),
+                    Some(trace_id),
+                    trace,
+                    None,
+                    String::new(),
+                    None,
+                    Some(error),
+                    false,
+                    duration_ms,
                 )
                 .await
             }
@@ -573,6 +743,37 @@ async fn send_model_test_request(
     Ok((status.as_u16(), status.is_success(), body))
 }
 
+async fn send_proxy_model_test_request(
+    client: reqwest::Client,
+    entry_url: &str,
+    headers: HeaderMap,
+    body: Vec<u8>,
+) -> Result<(u16, bool, Vec<u8>), String> {
+    let response = client
+        .post(entry_url)
+        .headers(map_to_reqwest_headers(&headers))
+        .body(body)
+        .send()
+        .await
+        .map_err(|err| {
+            let mut message = format!("Route proxy model test request failed: {err}");
+            if err.is_connect() || err.is_timeout() {
+                message.push_str(
+                    " (check whether the local route proxy is running and reachable)",
+                );
+            }
+            message
+        })?;
+    let status = response.status();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|err| format!("Could not read route proxy test response: {err}"))?
+        .to_vec();
+
+    Ok((status.as_u16(), status.is_success(), body))
+}
+
 fn map_to_reqwest_headers(headers: &HeaderMap) -> reqwest::header::HeaderMap {
     let mut mapped = reqwest::header::HeaderMap::new();
     for (name, value) in headers.iter() {
@@ -584,6 +785,74 @@ fn map_to_reqwest_headers(headers: &HeaderMap) -> reqwest::header::HeaderMap {
         }
     }
     mapped
+}
+
+fn header_value(value: &str, label: &str) -> Result<HeaderValue, AppError> {
+    HeaderValue::from_str(value).map_err(|err| AppError::Validation {
+        code: "validation.route_model_test_header",
+        message: format!("Could not build route model test {label} header"),
+        details: Some(err.to_string()),
+        recoverable: true,
+    })
+}
+
+fn join_proxy_entry_url(base_url: &str, entry_path: &str) -> String {
+    let base = base_url.trim().trim_end_matches('/');
+    let path = if entry_path.starts_with('/') {
+        entry_path.to_string()
+    } else {
+        format!("/{entry_path}")
+    };
+    format!("{base}{path}")
+}
+
+#[derive(Debug, Clone, Default)]
+struct RouteProxyModelTestTrace {
+    route_credential_id: Option<String>,
+    route_credential_name: Option<String>,
+    target_url: Option<String>,
+}
+
+async fn load_route_proxy_model_test_trace(
+    pool: &SqlitePool,
+    trace_id: &str,
+) -> Result<Option<RouteProxyModelTestTrace>, AppError> {
+    let rows = sqlx::query(
+        "SELECT route_credential_id, metadata_json
+         FROM usage_events
+         WHERE source_label = 'route_proxy'
+           AND metric_type = 'request'
+         ORDER BY created_at DESC
+         LIMIT 50",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|err| AppError::Database {
+        code: "database.route_model_test_trace",
+        message: "Could not load route proxy model test trace".to_string(),
+        details: Some(err.to_string()),
+        recoverable: true,
+    })?;
+
+    for row in rows {
+        let row_credential_id: Option<String> = row.try_get("route_credential_id").ok();
+        let metadata_json: String = row.get("metadata_json");
+        let metadata = serde_json::from_str::<Value>(&metadata_json).unwrap_or_else(|_| json!({}));
+        if string_value(&metadata, "trace_id") != Some(trace_id) {
+            continue;
+        }
+
+        return Ok(Some(RouteProxyModelTestTrace {
+            route_credential_id: string_value(&metadata, "route_credential_id")
+                .map(str::to_string)
+                .or(row_credential_id),
+            route_credential_name: string_value(&metadata, "route_credential_name")
+                .map(str::to_string),
+            target_url: string_value(&metadata, "target_url").map(str::to_string),
+        }));
+    }
+
+    Ok(None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -674,10 +943,74 @@ async fn finish_outcome(
         platform: platform.to_string(),
         selected_account_id: credential.id,
         selected_account_name: credential.display_name,
+        via_route_proxy: false,
+        route_proxy_entry_url: None,
+        route_proxy_entry_path: None,
+        route_proxy_trace_id: None,
         interface_format: parts.interface_format,
         request_path: parts.request_path,
         base_url: parts.base_url,
         target_url: parts.target_url,
+        request_body_json: parts.request_body_json,
+        response_status,
+        response_body,
+        response_text,
+        error_message,
+        success,
+        duration_ms,
+        stats: RoutePoolRepository::stats(
+            pool,
+            platform,
+            None,
+            DEFAULT_REQUEST_PAGE,
+            DEFAULT_REQUEST_PAGE_SIZE,
+        )
+        .await?,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn finish_proxy_outcome(
+    pool: &SqlitePool,
+    platform: &str,
+    credential: SelectedCredential,
+    parts: ModelTestRequestParts,
+    route_proxy_entry_url: Option<String>,
+    route_proxy_entry_path: Option<String>,
+    route_proxy_trace_id: Option<String>,
+    trace: Option<RouteProxyModelTestTrace>,
+    response_status: Option<u16>,
+    response_body: String,
+    response_text: Option<String>,
+    error_message: Option<String>,
+    success: bool,
+    duration_ms: i64,
+) -> Result<RoutePoolModelTestOutcome, AppError> {
+    let selected_account_id = trace
+        .as_ref()
+        .and_then(|trace| trace.route_credential_id.clone())
+        .unwrap_or_else(|| credential.id.clone());
+    let selected_account_name = trace
+        .as_ref()
+        .and_then(|trace| trace.route_credential_name.clone())
+        .unwrap_or_else(|| credential.display_name.clone());
+    let target_url = trace
+        .as_ref()
+        .and_then(|trace| trace.target_url.clone())
+        .or(parts.target_url.clone());
+
+    Ok(RoutePoolModelTestOutcome {
+        platform: platform.to_string(),
+        selected_account_id,
+        selected_account_name,
+        via_route_proxy: route_proxy_entry_url.is_some(),
+        route_proxy_entry_url,
+        route_proxy_entry_path: route_proxy_entry_path.clone(),
+        route_proxy_trace_id,
+        interface_format: parts.interface_format,
+        request_path: route_proxy_entry_path.unwrap_or(parts.request_path),
+        base_url: parts.base_url,
+        target_url,
         request_body_json: parts.request_body_json,
         response_status,
         response_body,
@@ -818,6 +1151,9 @@ mod tests {
     use crate::database::{create_memory_pool, run_migrations};
     use crate::models::route_pool::{RoutePoolModelTestRequest, SetRoutePoolMembersInput};
     use crate::services::route_pool_service::RoutePoolService;
+    use crate::services::route_proxy_service::{
+        RouteProxyRuntimeState, RouteProxyService, RouteProxyTransport,
+    };
     use axum::{routing::post, Json, Router};
     use serde_json::{json, Value};
     use tokio::net::TcpListener;
@@ -862,6 +1198,13 @@ mod tests {
             axum::serve(listener, app).await.expect("serve");
         });
         format!("http://{addr}/v1")
+    }
+
+    fn unversioned_base_url(versioned_base_url: &str) -> String {
+        versioned_base_url
+            .strip_suffix("/v1")
+            .expect("versioned base url")
+            .to_string()
     }
 
     async fn create_api_credential(pool: &SqlitePool, base_url: &str) -> String {
@@ -1185,6 +1528,122 @@ mod tests {
             .unwrap_or_default()
             .contains("ai-switch-ok"));
         assert!(!outcome.stats.requests[0].metadata_json.contains("sk-test"));
+    }
+
+    #[tokio::test]
+    async fn test_model_adds_v1_for_unversioned_openai_api_base_url() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let versioned_base_url = start_json_test_server(
+            axum::http::StatusCode::OK,
+            json!({
+                "choices": [{"message": {"content": "ai-switch-ok"}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1}
+            }),
+        )
+        .await;
+        let base_url = unversioned_base_url(&versioned_base_url);
+        let credential_id = create_api_credential(&pool, &base_url).await;
+
+        RoutePoolService::set_members(
+            &pool,
+            SetRoutePoolMembersInput {
+                platform: "codex".to_string(),
+                account_ids: vec![credential_id.clone()],
+            },
+        )
+        .await
+        .expect("members");
+
+        let outcome = RouteModelTestService::test_model(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "codex".to_string(),
+                account_id: None,
+                model: None,
+            },
+        )
+        .await
+        .expect("outcome");
+
+        assert_eq!(
+            outcome.target_url.as_deref(),
+            Some(format!("{base_url}/v1/chat/completions").as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_model_through_proxy_reports_proxy_entry_and_selected_account() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let versioned_base_url = start_json_test_server(
+            axum::http::StatusCode::OK,
+            json!({
+                "choices": [{"message": {"content": "ai-switch-ok"}}],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 2, "cost_micros": 9}
+            }),
+        )
+        .await;
+        let base_url = unversioned_base_url(&versioned_base_url);
+        let credential_id = create_api_credential(&pool, &base_url).await;
+
+        RoutePoolService::set_members(
+            &pool,
+            SetRoutePoolMembersInput {
+                platform: "codex".to_string(),
+                account_ids: vec![credential_id.clone()],
+            },
+        )
+        .await
+        .expect("members");
+
+        let route_proxy_state = RouteProxyRuntimeState::default();
+        let proxy_status = RouteProxyService::start(
+            &route_proxy_state,
+            pool.clone(),
+            RouteProxyTransport::Http,
+        )
+        .await
+        .expect("proxy start");
+        let proxy_base_url = proxy_status.base_url.expect("proxy base url");
+
+        let outcome = RouteModelTestService::test_model_through_proxy(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "codex".to_string(),
+                account_id: None,
+                model: Some("gpt-4o".to_string()),
+            },
+            &proxy_base_url,
+        )
+        .await
+        .expect("outcome");
+
+        let _ = RouteProxyService::stop(&route_proxy_state).await;
+
+        let expected_entry_url = format!("{proxy_base_url}/v1/chat/completions");
+        let expected_target_url = format!("{base_url}/v1/chat/completions");
+        assert!(outcome.via_route_proxy);
+        assert_eq!(
+            outcome.route_proxy_entry_url.as_deref(),
+            Some(expected_entry_url.as_str())
+        );
+        assert_eq!(
+            outcome.route_proxy_entry_path.as_deref(),
+            Some("/v1/chat/completions")
+        );
+        assert!(outcome.route_proxy_trace_id.is_some());
+        assert_eq!(outcome.selected_account_id, credential_id);
+        assert_eq!(outcome.selected_account_name, "API Account");
+        assert_eq!(outcome.request_path, "/v1/chat/completions");
+        assert_eq!(
+            outcome.target_url.as_deref(),
+            Some(expected_target_url.as_str())
+        );
+        assert_eq!(outcome.response_status, Some(200));
+        assert_eq!(outcome.response_text.as_deref(), Some("ai-switch-ok"));
+        assert_eq!(outcome.stats.requests.len(), 1);
+        assert_eq!(outcome.stats.requests[0].source_label, "route_proxy");
     }
 
     #[tokio::test]

@@ -175,11 +175,24 @@ pub async fn dispatch_command(
         }
         "route_pool_test_model" => {
             let request: RoutePoolModelTestRequest = parse_arg(&args, "request")?;
-            to_value(
-                RouteModelTestService::test_model(&state.pool, request)
+            if route_model_test_targets_single_account(&request) {
+                to_value(
+                    RouteModelTestService::test_model(&state.pool, request)
+                        .await
+                        .map_err(to_error)?,
+                )
+            } else {
+                let base_url = route_model_test_proxy_base_url(state.as_ref()).await?;
+                to_value(
+                    RouteModelTestService::test_model_through_proxy(
+                        &state.pool,
+                        request,
+                        &base_url,
+                    )
                     .await
                     .map_err(to_error)?,
-            )
+                )
+            }
         }
         "fetch_route_models" => {
             let request: RouteModelsFetchRequest = parse_arg(&args, "request")?;
@@ -392,6 +405,45 @@ fn optional_string_arg(args: &Value, key: &str) -> Option<String> {
         })
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn route_model_test_targets_single_account(request: &RoutePoolModelTestRequest) -> bool {
+    request
+        .account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|account_id| !account_id.is_empty())
+        .is_some()
+}
+
+async fn route_model_test_proxy_base_url(state: &AppState) -> Result<String, String> {
+    let status = RouteProxyService::status(&state.route_proxy).await;
+    let status = if status
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|base_url| !base_url.is_empty())
+        .is_some()
+    {
+        status
+    } else {
+        RouteProxyHttpsService::start_proxy(state)
+            .await
+            .map_err(to_error)?
+    };
+
+    status
+        .base_url
+        .map(|base_url| base_url.trim().to_string())
+        .filter(|base_url| !base_url.is_empty())
+        .ok_or_else(|| {
+            to_error(AppError::Validation {
+                code: "validation.route_proxy_not_running",
+                message: "Start the route proxy before testing the route pool".to_string(),
+                details: None,
+                recoverable: true,
+            })
+        })
 }
 
 fn optional_i64_arg(args: &Value, key: &str) -> Option<i64> {

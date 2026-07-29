@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::error::ApiError;
+use crate::error::{ApiError, AppError};
 use crate::models::route_pool::{
     FetchedRouteModel, RouteModelsFetchRequest, RoutePoolModelTestOutcome,
     RoutePoolModelTestRequest, RoutePoolRouteOutcome, RoutePoolRouteRequest, RoutePoolState,
@@ -8,6 +8,8 @@ use crate::models::route_pool::{
 use crate::services::route_model_fetch_service::RouteModelFetchService;
 use crate::services::route_model_test_service::RouteModelTestService;
 use crate::services::route_pool_service::RoutePoolService;
+use crate::services::route_proxy_https_service::RouteProxyHttpsService;
+use crate::services::route_proxy_service::RouteProxyService;
 use tauri::State;
 
 #[tauri::command]
@@ -54,7 +56,14 @@ pub async fn route_pool_test_model(
     state: State<'_, AppState>,
     request: RoutePoolModelTestRequest,
 ) -> Result<RoutePoolModelTestOutcome, ApiError> {
-    RouteModelTestService::test_model(&state.pool, request)
+    if route_model_test_targets_single_account(&request) {
+        return RouteModelTestService::test_model(&state.pool, request)
+            .await
+            .map_err(ApiError::from);
+    }
+
+    let base_url = route_model_test_proxy_base_url(&state).await?;
+    RouteModelTestService::test_model_through_proxy(&state.pool, request, &base_url)
         .await
         .map_err(ApiError::from)
 }
@@ -66,4 +75,43 @@ pub async fn fetch_route_models(
     RouteModelFetchService::fetch(request)
         .await
         .map_err(ApiError::from)
+}
+
+fn route_model_test_targets_single_account(request: &RoutePoolModelTestRequest) -> bool {
+    request
+        .account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|account_id| !account_id.is_empty())
+        .is_some()
+}
+
+async fn route_model_test_proxy_base_url(state: &AppState) -> Result<String, ApiError> {
+    let status = RouteProxyService::status(&state.route_proxy).await;
+    let status = if status
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|base_url| !base_url.is_empty())
+        .is_some()
+    {
+        status
+    } else {
+        RouteProxyHttpsService::start_proxy(state)
+            .await
+            .map_err(ApiError::from)?
+    };
+
+    status
+        .base_url
+        .map(|base_url| base_url.trim().to_string())
+        .filter(|base_url| !base_url.is_empty())
+        .ok_or_else(|| {
+            ApiError::from(AppError::Validation {
+                code: "validation.route_proxy_not_running",
+                message: "Start the route proxy before testing the route pool".to_string(),
+                details: None,
+                recoverable: true,
+            })
+        })
 }

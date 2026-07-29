@@ -1141,6 +1141,14 @@ describe("AccountsScreen", () => {
   });
 
   it("tests the credential pool route through the internal model connectivity check", async () => {
+    vi.mocked(routePoolTestModel).mockResolvedValue(
+      modelTestOutcomeFixture({
+        via_route_proxy: true,
+        route_proxy_entry_url: "http://127.0.0.1:43111/v1/chat/completions",
+        route_proxy_entry_path: "/v1/chat/completions",
+        route_proxy_trace_id: "trace-1234",
+      }),
+    );
     renderScreen();
 
     expect(await screen.findByText("本地代理：未启动")).toBeInTheDocument();
@@ -1165,10 +1173,16 @@ describe("AccountsScreen", () => {
     expect(screen.getByText("模型输出")).toBeInTheDocument();
     expect(screen.getByText("ai-switch-ok")).toBeInTheDocument();
     expect(screen.getByText("HTTP 200 · 321 ms")).toBeInTheDocument();
-    expect(screen.getByText(/https:\/\/api\.example\.com\/v1\/chat\/completions/)).toBeInTheDocument();
+    expect(screen.getAllByText(/https:\/\/api\.example\.com\/v1\/chat\/completions/).length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/Reply with exactly: ai-switch-ok/)).toBeInTheDocument();
     expect(screen.getByText(/choices/)).toBeInTheDocument();
     expect(screen.getByText("最近路由到：Team Account")).toBeInTheDocument();
+    expect(screen.getByLabelText("算力池请求链路")).toBeInTheDocument();
+    expect(screen.getByText("算力池入口")).toBeInTheDocument();
+    expect(screen.getByText("http://127.0.0.1:43111/v1/chat/completions")).toBeInTheDocument();
+    expect(screen.getByText("命中账号")).toBeInTheDocument();
+    expect(screen.getByText(/Team Account · cred-official-1/)).toBeInTheDocument();
+    expect(screen.getByText("上游接口")).toBeInTheDocument();
     expect(screen.queryByText("请求统计")).not.toBeInTheDocument();
 
     const proxyStatus = screen.getByText("本地代理：未启动");
