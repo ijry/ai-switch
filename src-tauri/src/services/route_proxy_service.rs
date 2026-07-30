@@ -31,6 +31,7 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 const BIND_HOST: &str = "127.0.0.1";
+const DEFAULT_ROUTE_PROXY_PORT: u16 = 19527;
 const ROUTE_PROXY_KEY_CACHE_TTL: Duration = Duration::from_secs(30);
 /// Public xAI Grok CLI OAuth client ID (CLIProxyAPI / Grok CLI).
 const XAI_OAUTH_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
@@ -142,15 +143,7 @@ impl RouteProxyService {
             });
         }
 
-        let listener =
-            TcpListener::bind((BIND_HOST, 0))
-                .await
-                .map_err(|err| AppError::Filesystem {
-                    code: "filesystem.route_proxy_bind",
-                    message: "Could not bind local route proxy".to_string(),
-                    details: Some(err.to_string()),
-                    recoverable: true,
-                })?;
+        let listener = bind_route_proxy_listener().await?;
         let addr = listener.local_addr().map_err(|err| AppError::Filesystem {
             code: "filesystem.route_proxy_addr",
             message: "Could not resolve route proxy address".to_string(),
@@ -1039,6 +1032,27 @@ pub async fn select_pool_credentials(
         .take(1)
         .map(|(_, _, credential)| credential)
         .collect())
+}
+
+async fn bind_route_proxy_listener() -> Result<TcpListener, AppError> {
+    bind_route_proxy_listener_from(DEFAULT_ROUTE_PROXY_PORT).await
+}
+
+async fn bind_route_proxy_listener_from(start_port: u16) -> Result<TcpListener, AppError> {
+    let mut last_error = None;
+    for port in start_port..=u16::MAX {
+        match TcpListener::bind((BIND_HOST, port)).await {
+            Ok(listener) => return Ok(listener),
+            Err(error) => last_error = Some(format!("{BIND_HOST}:{port}: {error}")),
+        }
+    }
+
+    Err(AppError::Filesystem {
+        code: "filesystem.route_proxy_bind",
+        message: "Could not bind local route proxy".to_string(),
+        details: last_error,
+        recoverable: true,
+    })
 }
 
 pub fn pick_credential(items: &[SelectedCredential], cursor: i64) -> Option<&SelectedCredential> {
@@ -2669,6 +2683,49 @@ mod tests {
         .await
         .expect("create credential");
         credential.id
+    }
+
+    #[tokio::test]
+    async fn route_proxy_listener_falls_forward_when_start_port_is_unavailable() {
+        let occupied = TcpListener::bind((BIND_HOST, 0))
+            .await
+            .expect("bind occupied port");
+        let occupied_port = occupied.local_addr().expect("occupied address").port();
+        if occupied_port == u16::MAX {
+            return;
+        }
+
+        let listener = bind_route_proxy_listener_from(occupied_port)
+            .await
+            .expect("fallback listener");
+        let selected_port = listener.local_addr().expect("selected address").port();
+
+        assert!(selected_port > occupied_port);
+    }
+
+    #[tokio::test]
+    async fn start_uses_next_port_when_default_route_proxy_port_is_unavailable() {
+        let default_port_guard = TcpListener::bind((BIND_HOST, DEFAULT_ROUTE_PROXY_PORT)).await;
+        if default_port_guard.is_err() {
+            return;
+        }
+
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let runtime = RouteProxyRuntimeState::default();
+
+        let status = RouteProxyService::start(&runtime, pool, RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+        let port = status.port.expect("port");
+
+        assert!(port > DEFAULT_ROUTE_PROXY_PORT);
+        assert_eq!(
+            status.base_url.as_deref(),
+            Some(format!("http://{BIND_HOST}:{port}").as_str())
+        );
+
+        RouteProxyService::stop(&runtime).await.expect("stop");
     }
 
     #[tokio::test]
