@@ -5,6 +5,13 @@ use serde_json::Value;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetryState {
+    pub failure_count: i64,
+    pub next_retry_at: Option<String>,
+    pub cooldown_until: Option<String>,
+}
+
 pub struct RouteCredentialRepository;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -170,6 +177,11 @@ impl RouteCredentialRepository {
                 rc.weekly_remain,
                 rc.reset_primary,
                 rc.reset_weekly,
+                rc.transient_failure_count,
+                rc.next_retry_at,
+                rc.cooldown_until,
+                rc.last_failure_kind,
+                rc.last_failure_message,
                 rc.quota_remaining,
                 rc.quota_limit,
                 rc.quota_used,
@@ -214,6 +226,11 @@ impl RouteCredentialRepository {
                 rc.weekly_remain,
                 rc.reset_primary,
                 rc.reset_weekly,
+                rc.transient_failure_count,
+                rc.next_retry_at,
+                rc.cooldown_until,
+                rc.last_failure_kind,
+                rc.last_failure_message,
                 rc.quota_remaining,
                 rc.quota_limit,
                 rc.quota_used,
@@ -374,6 +391,119 @@ impl RouteCredentialRepository {
         Ok(())
     }
 
+    pub async fn record_transient_failure(
+        pool: &SqlitePool,
+        id: &str,
+        kind: &str,
+        message: &str,
+    ) -> Result<RetryState, AppError> {
+        let mut tx = pool.begin().await.map_err(|err| AppError::Database {
+            code: "database.route_credential_retry_tx",
+            message: "Could not start route credential retry update".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+        let current = sqlx::query_scalar::<_, i64>(
+            "SELECT transient_failure_count FROM route_credentials WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_credential_retry_read",
+            message: "Could not read route credential retry state".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+        let Some(current) = current else {
+            return Err(AppError::Validation {
+                code: "validation.route_credential_not_found",
+                message: "Route credential does not exist".to_string(),
+                details: Some(id.to_string()),
+                recoverable: true,
+            });
+        };
+
+        let failure_count = current.saturating_add(1);
+        let base_seconds = match failure_count {
+            1 => 30,
+            2 => 120,
+            _ => 600,
+        };
+        let jitter_seconds = jitter_seconds(id, failure_count, base_seconds);
+        let retry_at = Utc::now() + chrono::Duration::seconds(jitter_seconds);
+        let retry_at = retry_at.to_rfc3339();
+        let cooldown_until = if failure_count >= 3 {
+            Some(retry_at.clone())
+        } else {
+            None
+        };
+        let message = truncate_failure_message(message);
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE route_credentials
+             SET transient_failure_count = ?, next_retry_at = ?, cooldown_until = ?,
+                 last_failure_kind = ?, last_failure_message = ?, updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(failure_count)
+        .bind(&retry_at)
+        .bind(&cooldown_until)
+        .bind(kind)
+        .bind(&message)
+        .bind(&now)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_credential_retry_update",
+            message: "Could not update route credential retry state".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+        tx.commit().await.map_err(|err| AppError::Database {
+            code: "database.route_credential_retry_commit",
+            message: "Could not save route credential retry state".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+
+        Ok(RetryState {
+            failure_count,
+            next_retry_at: Some(retry_at),
+            cooldown_until,
+        })
+    }
+
+    pub async fn clear_transient_failure(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE route_credentials
+             SET transient_failure_count = 0, next_retry_at = NULL, cooldown_until = NULL,
+                 last_failure_kind = NULL, last_failure_message = NULL, updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_credential_retry_clear",
+            message: "Could not clear route credential retry state".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::Validation {
+                code: "validation.route_credential_not_found",
+                message: "Route credential does not exist".to_string(),
+                details: Some(id.to_string()),
+                recoverable: true,
+            });
+        }
+        Ok(())
+    }
+
     pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
         let result = sqlx::query("DELETE FROM route_credentials WHERE id = ?")
             .bind(id)
@@ -418,6 +548,24 @@ impl RouteCredentialRepository {
             recoverable: true,
         })
     }
+}
+
+fn truncate_failure_message(message: &str) -> String {
+    let end = message
+        .char_indices()
+        .take_while(|(index, character)| *index + character.len_utf8() <= 512)
+        .map(|(index, character)| index + character.len_utf8())
+        .last()
+        .unwrap_or(0);
+    message[..end].to_string()
+}
+
+fn jitter_seconds(id: &str, failure_count: i64, base_seconds: i64) -> i64 {
+    let seed = id
+        .bytes()
+        .fold(failure_count as u64, |value, byte| value.wrapping_mul(31).wrapping_add(byte as u64));
+    let jitter_percent = 80 + (seed % 41) as i64;
+    (base_seconds * jitter_percent / 100).max(1)
 }
 
 #[cfg(test)]
@@ -486,6 +634,75 @@ mod tests {
             created.quota_updated_at.as_deref(),
             Some("2026-07-28T00:00:00Z")
         );
+    }
+
+    #[tokio::test]
+    async fn transient_failure_state_uses_backoff_and_clears() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let created = RouteCredentialRepository::create(
+            &pool,
+            "codex",
+            "api",
+            "Retry API",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-test"}"#,
+            r#"{"base_url":"https://example.com","interface_format":"openai","model_mappings":[]}"#,
+            "{}",
+        )
+        .await
+        .unwrap();
+
+        let first = RouteCredentialRepository::record_transient_failure(
+            &pool,
+            &created.id,
+            "transport",
+            &"x".repeat(600),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.failure_count, 1);
+        assert!(first.cooldown_until.is_none());
+        let second = RouteCredentialRepository::record_transient_failure(
+            &pool,
+            &created.id,
+            "transport",
+            "temporary",
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.failure_count, 2);
+        let third = RouteCredentialRepository::record_transient_failure(
+            &pool,
+            &created.id,
+            "upstream",
+            "temporary",
+        )
+        .await
+        .unwrap();
+        assert_eq!(third.failure_count, 3);
+        assert_eq!(third.next_retry_at, third.cooldown_until);
+
+        let stored = RouteCredentialRepository::get(&pool, &created.id)
+            .await
+            .unwrap();
+        assert_eq!(stored.transient_failure_count, 3);
+        assert_eq!(stored.last_failure_kind.as_deref(), Some("upstream"));
+        assert_eq!(stored.last_failure_message.as_deref(), Some("temporary"));
+
+        RouteCredentialRepository::clear_transient_failure(&pool, &created.id)
+            .await
+            .unwrap();
+        let cleared = RouteCredentialRepository::get(&pool, &created.id)
+            .await
+            .unwrap();
+        assert_eq!(cleared.transient_failure_count, 0);
+        assert!(cleared.next_retry_at.is_none());
+        assert!(cleared.cooldown_until.is_none());
+        assert!(cleared.last_failure_kind.is_none());
+        assert!(cleared.last_failure_message.is_none());
     }
 
     #[test]

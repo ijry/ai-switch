@@ -24,6 +24,16 @@ pub struct RouteCredential {
     pub weekly_remain: Option<i64>,
     pub reset_primary: Option<String>,
     pub reset_weekly: Option<String>,
+    #[sqlx(default)]
+    pub transient_failure_count: i64,
+    #[sqlx(default)]
+    pub next_retry_at: Option<String>,
+    #[sqlx(default)]
+    pub cooldown_until: Option<String>,
+    #[sqlx(default)]
+    pub last_failure_kind: Option<String>,
+    #[sqlx(default)]
+    pub last_failure_message: Option<String>,
     // Legacy single-window fields kept for existing DBs/migrations.
     pub quota_remaining: Option<i64>,
     pub quota_limit: Option<i64>,
