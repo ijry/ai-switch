@@ -10,7 +10,7 @@ use crate::services::route_proxy_service::{
     build_upstream_request, classify_proxy_failure, credential_is_retryable_now,
     extract_cost_micros, extract_token_count, maybe_persist_official_quota_from_response,
     maybe_refresh_official_credential, normalize_api_upstream_path, select_pool_credentials,
-    ProxyFailureKind, SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
+    build_target_url, ProxyFailureKind, SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
 };
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
@@ -771,13 +771,7 @@ fn header_value(value: &str, label: &str) -> Result<HeaderValue, AppError> {
 }
 
 fn join_proxy_entry_url(base_url: &str, entry_path: &str) -> String {
-    let base = base_url.trim().trim_end_matches('/');
-    let path = if entry_path.starts_with('/') {
-        entry_path.to_string()
-    } else {
-        format!("/{entry_path}")
-    };
-    format!("{base}{path}")
+    build_target_url(base_url, entry_path, None)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1376,6 +1370,14 @@ mod tests {
             "/v1beta/models/gemini-2.5-flash:generateContent"
         );
         assert!(!request.request_path.contains("upstream-model"));
+    }
+
+    #[test]
+    fn proxy_entry_url_deduplicates_versioned_proxy_base_url() {
+        assert_eq!(
+            join_proxy_entry_url("http://127.0.0.1:43111/v1", "/v1/chat/completions"),
+            "http://127.0.0.1:43111/v1/chat/completions"
+        );
     }
 
     #[test]

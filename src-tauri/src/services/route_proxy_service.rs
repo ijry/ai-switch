@@ -2421,7 +2421,7 @@ fn append_query_param(url: &str, key: &str, value: &str) -> String {
 }
 
 pub fn build_target_url(base_url: &str, path: &str, query: Option<&str>) -> String {
-    let base = base_url.trim().trim_end_matches('/');
+    let base = collapse_duplicate_terminal_version_segments(base_url.trim().trim_end_matches('/'));
     let normalized_path = if path.is_empty() {
         "".to_string()
     } else if path.starts_with('/') {
@@ -2429,7 +2429,7 @@ pub fn build_target_url(base_url: &str, path: &str, query: Option<&str>) -> Stri
     } else {
         format!("/{path}")
     };
-    let upstream_path = upstream_path_for_base(base, &normalized_path);
+    let upstream_path = upstream_path_for_base(&base, &normalized_path);
     let mut url = format!("{base}{upstream_path}");
     if let Some(query) = query {
         if !query.is_empty() {
@@ -2438,6 +2438,31 @@ pub fn build_target_url(base_url: &str, path: &str, query: Option<&str>) -> Stri
         }
     }
     url
+}
+
+fn collapse_duplicate_terminal_version_segments(base_url: &str) -> String {
+    let mut base = base_url.to_string();
+    loop {
+        let trimmed_len = base.trim_end_matches('/').len();
+        if trimmed_len != base.len() {
+            base.truncate(trimmed_len);
+        }
+        let Some(last_slash_index) = base.rfind('/') else {
+            return base;
+        };
+        let last_segment = &base[last_slash_index + 1..];
+        if !is_version_path_segment(last_segment) {
+            return base;
+        }
+        let prefix = &base[..last_slash_index];
+        let Some(previous_segment) = base_last_path_segment(prefix) else {
+            return base;
+        };
+        if !previous_segment.eq_ignore_ascii_case(last_segment) {
+            return base;
+        }
+        base.truncate(last_slash_index);
+    }
 }
 
 fn upstream_path_for_base(base_url: &str, path: &str) -> String {
@@ -2451,7 +2476,9 @@ fn upstream_path_for_base(base_url: &str, path: &str) -> String {
     let should_strip_codex_proxy_version =
         first_segment.eq_ignore_ascii_case("v1") && is_codex_backend_base_url(base_url);
 
-    if should_strip_duplicate_version || should_strip_codex_proxy_version {
+    if should_strip_duplicate_version {
+        strip_leading_matching_path_segments(path, first_segment)
+    } else if should_strip_codex_proxy_version {
         strip_first_path_segment(path)
     } else {
         path.to_string()
@@ -2469,6 +2496,21 @@ fn strip_first_path_segment(path: &str) -> String {
     match trimmed.split_once('/') {
         Some((_, rest)) if !rest.is_empty() => format!("/{rest}"),
         _ => String::new(),
+    }
+}
+
+fn strip_leading_matching_path_segments(path: &str, segment: &str) -> String {
+    let mut remaining = path.trim_start_matches('/');
+    while let Some(first) = remaining.split('/').next() {
+        if !first.eq_ignore_ascii_case(segment) {
+            break;
+        }
+        remaining = remaining[first.len()..].trim_start_matches('/');
+    }
+    if remaining.is_empty() {
+        String::new()
+    } else {
+        format!("/{remaining}")
     }
 }
 
@@ -2945,6 +2987,26 @@ mod tests {
         assert_eq!(
             build_target_url(
                 "https://generativelanguage.googleapis.com/v1beta",
+                "/v1beta/models/gemini:generateContent",
+                None
+            ),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent"
+        );
+    }
+
+    #[test]
+    fn build_target_url_collapses_repeated_base_version_segments() {
+        assert_eq!(
+            build_target_url("https://vsllm.com/v1/v1/", "/v1/chat/completions", None),
+            "https://vsllm.com/v1/chat/completions"
+        );
+        assert_eq!(
+            build_target_url("https://vsllm.com/v1", "/v1/v1/chat/completions", None),
+            "https://vsllm.com/v1/chat/completions"
+        );
+        assert_eq!(
+            build_target_url(
+                "https://generativelanguage.googleapis.com/v1beta/v1beta",
                 "/v1beta/models/gemini:generateContent",
                 None
             ),
