@@ -9,8 +9,8 @@ use crate::services::route_pool_service::normalize_platform;
 use crate::services::route_proxy_service::{
     build_upstream_request, extract_cost_micros, extract_token_count,
     is_route_credential_quota_available, maybe_persist_official_quota_from_response,
-    maybe_refresh_official_credential, normalize_api_upstream_path, SelectedCredential,
-    ROUTE_PROXY_TRACE_HEADER,
+    maybe_refresh_official_credential, normalize_api_upstream_path, credential_is_retryable_now,
+    SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
 };
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
@@ -638,7 +638,8 @@ async fn load_pool_credentials(
     platform: &str,
 ) -> Result<Vec<SelectedCredential>, AppError> {
     let rows = sqlx::query(
-        "SELECT c.id, c.platform, c.kind, c.display_name, c.status, c.secret_payload_json, c.config_json
+        "SELECT c.id, c.platform, c.kind, c.display_name, c.status, c.secret_payload_json, c.config_json,
+                c.next_retry_at, c.cooldown_until
          FROM route_pool_members rpm
          INNER JOIN route_credentials c ON c.id = rpm.route_credential_id
          WHERE rpm.platform = ?
@@ -660,14 +661,25 @@ async fn load_pool_credentials(
 
     Ok(rows
         .into_iter()
-        .map(|row| SelectedCredential {
-            id: row.get("id"),
-            platform: row.get("platform"),
-            kind: row.get("kind"),
-            display_name: row.get("display_name"),
-            status: row.get("status"),
-            secret_payload_json: row.get("secret_payload_json"),
-            config_json: row.get("config_json"),
+        .filter_map(|row| {
+            let next_retry_at: Option<String> = row.get("next_retry_at");
+            let cooldown_until: Option<String> = row.get("cooldown_until");
+            if !credential_is_retryable_now(
+                next_retry_at.as_deref(),
+                cooldown_until.as_deref(),
+                chrono::Utc::now(),
+            ) {
+                return None;
+            }
+            Some(SelectedCredential {
+                id: row.get("id"),
+                platform: row.get("platform"),
+                kind: row.get("kind"),
+                display_name: row.get("display_name"),
+                status: row.get("status"),
+                secret_payload_json: row.get("secret_payload_json"),
+                config_json: row.get("config_json"),
+            })
         })
         // Pool routing/testing should not keep hitting free-usage exhausted accounts.
         .filter(|credential| is_route_credential_quota_available(&credential.config_json))
@@ -680,7 +692,8 @@ async fn load_account_credential(
     account_id: &str,
 ) -> Result<SelectedCredential, AppError> {
     let row = sqlx::query(
-        "SELECT id, platform, kind, display_name, status, secret_payload_json, config_json
+        "SELECT id, platform, kind, display_name, status, secret_payload_json, config_json,
+                next_retry_at, cooldown_until
          FROM route_credentials
          WHERE id = ? AND platform = ?",
     )
@@ -695,7 +708,29 @@ async fn load_account_credential(
         recoverable: true,
     })?;
 
-    row.map(|row| SelectedCredential {
+    let Some(row) = row else {
+        return Err(AppError::Validation {
+            code: "validation.route_model_test_account_not_found",
+            message: "Route credential does not exist for this platform".to_string(),
+            details: Some(account_id.to_string()),
+            recoverable: true,
+        });
+    };
+    let next_retry_at: Option<String> = row.get("next_retry_at");
+    let cooldown_until: Option<String> = row.get("cooldown_until");
+    if !credential_is_retryable_now(
+        next_retry_at.as_deref(),
+        cooldown_until.as_deref(),
+        chrono::Utc::now(),
+    ) {
+        return Err(AppError::Validation {
+            code: "validation.route_credential_cooling_down",
+            message: "Route credential is cooling down and will be retried later".to_string(),
+            details: Some(account_id.to_string()),
+            recoverable: true,
+        });
+    }
+    Ok(SelectedCredential {
         id: row.get("id"),
         platform: row.get("platform"),
         kind: row.get("kind"),
@@ -703,12 +738,6 @@ async fn load_account_credential(
         status: row.get("status"),
         secret_payload_json: row.get("secret_payload_json"),
         config_json: row.get("config_json"),
-    })
-    .ok_or_else(|| AppError::Validation {
-        code: "validation.route_model_test_account_not_found",
-        message: "Route credential does not exist for this platform".to_string(),
-        details: Some(account_id.to_string()),
-        recoverable: true,
     })
 }
 

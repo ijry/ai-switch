@@ -17,7 +17,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
@@ -394,7 +394,8 @@ async fn forward_request(
         let (target_url, request_headers, outbound_body) = match upstream_request {
             Ok(request) => request,
             Err(error) => {
-                mark_route_credential_unavailable(pool, &credential.id).await;
+                record_route_credential_failure(pool, &credential.id, "request_build", &error)
+                    .await;
                 let metadata = route_proxy_request_metadata(
                     &platform,
                     &credential,
@@ -429,11 +430,17 @@ async fn forward_request(
         let upstream = match upstream {
             Ok(response) => response,
             Err(error) => {
-                mark_route_credential_unavailable(pool, &credential.id).await;
                 let error_message = format!(
                     "{}: upstream request failed: {error}",
                     credential.display_name
                 );
+                record_route_credential_failure(
+                    pool,
+                    &credential.id,
+                    "transport",
+                    &error_message,
+                )
+                .await;
                 let metadata = route_proxy_request_metadata(
                     &platform,
                     &credential,
@@ -545,7 +552,13 @@ async fn forward_request(
             continue;
         }
         if should_retry {
-            mark_route_credential_unavailable(pool, &credential.id).await;
+            record_route_credential_failure(
+                pool,
+                &credential.id,
+                "upstream_status",
+                &format!("upstream returned {}", status.as_u16()),
+            )
+            .await;
             retry_errors.push(format!(
                 "{}: upstream returned {}",
                 credential.display_name,
@@ -672,12 +685,64 @@ fn proxy_upstream_response(
         .map_err(|error| format!("Could not build proxy response: {error}"))
 }
 
-fn should_retry_proxy_failure(status: StatusCode) -> bool {
-    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyFailureKind {
+    Transient,
+    Permanent,
+    None,
 }
 
-async fn mark_route_credential_unavailable(pool: &SqlitePool, credential_id: &str) {
-    let _ = RouteCredentialRepository::update_status(pool, credential_id, "error").await;
+pub fn classify_proxy_failure(
+    status: Option<StatusCode>,
+    message: Option<&str>,
+) -> ProxyFailureKind {
+    let lower = message.unwrap_or_default().to_ascii_lowercase();
+    if lower.contains("invalid_grant")
+        || lower.contains("refresh token has been revoked")
+        || lower.contains("token has been revoked")
+        || lower.contains("官方 oauth 凭证已失效")
+    {
+        return ProxyFailureKind::Permanent;
+    }
+    if status.is_some_and(should_retry_proxy_failure) || status.is_none() {
+        return ProxyFailureKind::Transient;
+    }
+    ProxyFailureKind::None
+}
+
+fn should_retry_proxy_failure(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::REQUEST_TIMEOUT
+            | StatusCode::UNAUTHORIZED
+            | StatusCode::FORBIDDEN
+            | StatusCode::BAD_GATEWAY
+            | StatusCode::SERVICE_UNAVAILABLE
+            | StatusCode::GATEWAY_TIMEOUT
+    )
+}
+
+pub fn credential_is_retryable_now(
+    next_retry_at: Option<&str>,
+    cooldown_until: Option<&str>,
+    now: DateTime<Utc>,
+) -> bool {
+    [next_retry_at, cooldown_until].into_iter().all(|timestamp| {
+        timestamp
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&Utc) <= now)
+            .unwrap_or(true)
+    })
+}
+
+async fn record_route_credential_failure(
+    pool: &SqlitePool,
+    credential_id: &str,
+    kind: &str,
+    message: &str,
+) {
+    let _ = RouteCredentialRepository::record_transient_failure(pool, credential_id, kind, message)
+        .await;
 }
 
 async fn mark_route_credential_revoked(pool: &SqlitePool, credential_id: &str) {
@@ -886,7 +951,8 @@ async fn load_pool_credentials(
     platform: &str,
 ) -> Result<Vec<SelectedCredential>, AppError> {
     let rows = sqlx::query(
-        "SELECT c.id, c.platform, c.kind, c.display_name, c.status, c.secret_payload_json, c.config_json
+        "SELECT c.id, c.platform, c.kind, c.display_name, c.status, c.secret_payload_json, c.config_json,
+                c.next_retry_at, c.cooldown_until
          FROM route_pool_members rpm
          INNER JOIN route_credentials c ON c.id = rpm.route_credential_id
          WHERE rpm.platform = ?
@@ -908,14 +974,25 @@ async fn load_pool_credentials(
 
     Ok(rows
         .into_iter()
-        .map(|row| SelectedCredential {
-            id: row.get("id"),
-            platform: row.get("platform"),
-            kind: row.get("kind"),
-            display_name: row.get("display_name"),
-            status: row.get("status"),
-            secret_payload_json: row.get("secret_payload_json"),
-            config_json: row.get("config_json"),
+        .filter_map(|row| {
+            let next_retry_at: Option<String> = row.get("next_retry_at");
+            let cooldown_until: Option<String> = row.get("cooldown_until");
+            if !credential_is_retryable_now(
+                next_retry_at.as_deref(),
+                cooldown_until.as_deref(),
+                Utc::now(),
+            ) {
+                return None;
+            }
+            Some(SelectedCredential {
+                id: row.get("id"),
+                platform: row.get("platform"),
+                kind: row.get("kind"),
+                display_name: row.get("display_name"),
+                status: row.get("status"),
+                secret_payload_json: row.get("secret_payload_json"),
+                config_json: row.get("config_json"),
+            })
         })
         // Skip official accounts already known to have zero remaining quota.
         .filter(|credential| is_route_credential_quota_available(&credential.config_json))
@@ -2639,13 +2716,12 @@ mod tests {
 
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         assert_eq!(response.text().await.expect("body"), "ai-switch-ok");
-        assert_eq!(
-            RouteCredentialRepository::get(&pool, &failed_id)
-                .await
-                .expect("failed account")
-                .status,
-            "error"
-        );
+        let failed = RouteCredentialRepository::get(&pool, &failed_id)
+            .await
+            .expect("failed account");
+        assert_eq!(failed.status, "ok");
+        assert_eq!(failed.transient_failure_count, 1);
+        assert!(failed.next_retry_at.is_some());
         assert_eq!(
             RouteCredentialRepository::get(&pool, &healthy_id)
                 .await
@@ -2755,10 +2831,55 @@ mod tests {
     fn retry_policy_only_retries_credentials_that_are_known_unusable() {
         assert!(should_retry_proxy_failure(StatusCode::UNAUTHORIZED));
         assert!(should_retry_proxy_failure(StatusCode::FORBIDDEN));
+        assert!(should_retry_proxy_failure(StatusCode::BAD_GATEWAY));
+        assert!(should_retry_proxy_failure(StatusCode::SERVICE_UNAVAILABLE));
         assert!(!should_retry_proxy_failure(StatusCode::TOO_MANY_REQUESTS));
-        assert!(!should_retry_proxy_failure(StatusCode::BAD_GATEWAY));
         assert!(!should_retry_proxy_failure(
             StatusCode::INTERNAL_SERVER_ERROR
+        ));
+    }
+
+    #[test]
+    fn proxy_failure_classification_separates_transient_and_permanent_errors() {
+        assert_eq!(
+            classify_proxy_failure(Some(StatusCode::BAD_GATEWAY), None),
+            ProxyFailureKind::Transient
+        );
+        assert_eq!(
+            classify_proxy_failure(None, Some("connection reset by peer")),
+            ProxyFailureKind::Transient
+        );
+        assert_eq!(
+            classify_proxy_failure(
+                Some(StatusCode::UNAUTHORIZED),
+                Some("invalid_grant: refresh token has been revoked")
+            ),
+            ProxyFailureKind::Permanent
+        );
+        assert_eq!(
+            classify_proxy_failure(Some(StatusCode::BAD_REQUEST), Some("invalid model")),
+            ProxyFailureKind::None
+        );
+    }
+
+    #[test]
+    fn retry_eligibility_accepts_missing_or_invalid_timestamps() {
+        let now = Utc::now();
+        assert!(credential_is_retryable_now(None, None, now));
+        assert!(!credential_is_retryable_now(
+            Some("2999-01-01T00:00:00Z"),
+            None,
+            now
+        ));
+        assert!(credential_is_retryable_now(
+            Some("not-a-timestamp"),
+            None,
+            now
+        ));
+        assert!(credential_is_retryable_now(
+            Some("2000-01-01T00:00:00Z"),
+            Some("2000-01-01T00:00:00Z"),
+            now
         ));
     }
 
