@@ -28,7 +28,7 @@ const CODEX_QUOTA_SEC_FETCH_MODE: &str = "no-cors";
 const CODEX_QUOTA_SEC_FETCH_DEST: &str = "empty";
 const CODEX_QUOTA_PRIORITY: &str = "u=4, i";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QuotaRefreshOutcome {
     pub credential: RouteCredential,
     pub updated: bool,

@@ -315,13 +315,13 @@ async fn forward_request(
             )
                 .into_response());
         }
-        let credentials = load_pool_credentials(pool, &platform)
+        let credentials = select_pool_credentials(pool, &platform)
             .await
             .map_err(|err| err.to_string())?;
         return Ok(json_models_list_response(&platform, &credentials));
     }
 
-    let credentials = load_pool_credentials(pool, &platform)
+    let credentials = select_pool_credentials(pool, &platform)
         .await
         .map_err(|err| err.to_string())?;
     if credentials.is_empty() {
@@ -966,7 +966,7 @@ pub struct SelectedCredential {
     pub config_json: String,
 }
 
-async fn load_pool_credentials(
+pub async fn select_pool_credentials(
     pool: &SqlitePool,
     platform: &str,
 ) -> Result<Vec<SelectedCredential>, AppError> {
@@ -992,30 +992,52 @@ async fn load_pool_credentials(
         recoverable: true,
     })?;
 
-    Ok(rows
-        .into_iter()
-        .filter_map(|row| {
-            let next_retry_at: Option<String> = row.get("next_retry_at");
-            let cooldown_until: Option<String> = row.get("cooldown_until");
-            if !credential_is_retryable_now(
-                next_retry_at.as_deref(),
-                cooldown_until.as_deref(),
-                Utc::now(),
-            ) {
-                return None;
-            }
-            Some(SelectedCredential {
-                id: row.get("id"),
-                platform: row.get("platform"),
-                kind: row.get("kind"),
-                display_name: row.get("display_name"),
-                status: row.get("status"),
-                secret_payload_json: row.get("secret_payload_json"),
-                config_json: row.get("config_json"),
-            })
-        })
+    let now = Utc::now();
+    let mut eligible = Vec::new();
+    let mut cooling = Vec::new();
+    for row in rows {
+        let next_retry_at: Option<String> = row.get("next_retry_at");
+        let cooldown_until: Option<String> = row.get("cooldown_until");
+        let credential = SelectedCredential {
+            id: row.get("id"),
+            platform: row.get("platform"),
+            kind: row.get("kind"),
+            display_name: row.get("display_name"),
+            status: row.get("status"),
+            secret_payload_json: row.get("secret_payload_json"),
+            config_json: row.get("config_json"),
+        };
         // Skip official accounts already known to have zero remaining quota.
-        .filter(|credential| is_route_credential_quota_available(&credential.config_json))
+        if !is_route_credential_quota_available(&credential.config_json) {
+            continue;
+        }
+        if credential_is_retryable_now(next_retry_at.as_deref(), cooldown_until.as_deref(), now) {
+            eligible.push(credential);
+            continue;
+        }
+
+        let retry_at = [next_retry_at.as_deref(), cooldown_until.as_deref()]
+            .into_iter()
+            .filter_map(|timestamp| {
+                DateTime::parse_from_rfc3339(timestamp?)
+                    .ok()
+                    .map(|value| value.with_timezone(&Utc))
+            })
+            .max();
+        if let Some(retry_at) = retry_at {
+            cooling.push((retry_at, cooling.len(), credential));
+        }
+    }
+
+    if !eligible.is_empty() {
+        return Ok(eligible);
+    }
+
+    cooling.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    Ok(cooling
+        .into_iter()
+        .take(1)
+        .map(|(_, _, credential)| credential)
         .collect())
 }
 
@@ -2768,7 +2790,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pool_selection_excludes_three_failure_cooldown_until_cleared() {
+    async fn pool_selection_probes_cooling_account_until_cleared() {
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
         let credential_id =
@@ -2787,20 +2809,101 @@ mod tests {
             .await
             .expect("record failure");
         }
-        assert!(load_pool_credentials(&pool, "codex")
-            .await
-            .expect("cooldown pool")
-            .is_empty());
+        assert_eq!(
+            select_pool_credentials(&pool, "codex")
+                .await
+                .expect("cooldown pool")
+                .into_iter()
+                .map(|credential| credential.id)
+                .collect::<Vec<_>>(),
+            vec![credential_id.clone()]
+        );
 
         RouteCredentialRepository::clear_transient_failure(&pool, &credential_id)
             .await
             .expect("clear retry state");
         assert_eq!(
-            load_pool_credentials(&pool, "codex")
+            select_pool_credentials(&pool, "codex")
                 .await
                 .expect("eligible pool")
                 .len(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn pool_selection_uses_earliest_cooling_account_and_pool_order_tie_breaker() {
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let first_id = create_proxy_api_credential(&pool, "first", "http://127.0.0.1:1/v1").await;
+        let second_id = create_proxy_api_credential(&pool, "second", "http://127.0.0.1:1/v1").await;
+        RoutePoolRepository::replace_members(
+            &pool,
+            "codex",
+            &[first_id.clone(), second_id.clone()],
+        )
+        .await
+        .expect("pool members");
+        sqlx::query(
+            "UPDATE route_credentials SET next_retry_at = ?, cooldown_until = ? WHERE id = ?",
+        )
+        .bind("2999-01-01T00:00:00Z")
+        .bind("2999-01-01T00:00:00Z")
+        .bind(&first_id)
+        .execute(&pool)
+        .await
+        .expect("first cooldown");
+        sqlx::query(
+            "UPDATE route_credentials SET next_retry_at = ?, cooldown_until = ? WHERE id = ?",
+        )
+        .bind("2999-01-01T00:00:00Z")
+        .bind("2999-01-01T00:00:00Z")
+        .bind(&second_id)
+        .execute(&pool)
+        .await
+        .expect("second cooldown");
+
+        let selected = select_pool_credentials(&pool, "codex")
+            .await
+            .expect("selection");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, first_id);
+    }
+
+    #[tokio::test]
+    async fn pool_selection_prefers_eligible_accounts_over_cooling_fallback() {
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let cooling_id =
+            create_proxy_api_credential(&pool, "cooling", "http://127.0.0.1:1/v1").await;
+        let ready_id = create_proxy_api_credential(&pool, "ready", "http://127.0.0.1:1/v1").await;
+        RoutePoolRepository::replace_members(
+            &pool,
+            "codex",
+            &[cooling_id.clone(), ready_id.clone()],
+        )
+        .await
+        .expect("pool members");
+        sqlx::query(
+            "UPDATE route_credentials SET next_retry_at = ?, cooldown_until = ? WHERE id = ?",
+        )
+        .bind("2999-01-01T00:00:00Z")
+        .bind("2999-01-01T00:00:00Z")
+        .bind(&cooling_id)
+        .execute(&pool)
+        .await
+        .expect("cooldown");
+
+        let selected = select_pool_credentials(&pool, "codex")
+            .await
+            .expect("selection");
+        assert_eq!(
+            selected.into_iter().map(|item| item.id).collect::<Vec<_>>(),
+            vec![ready_id]
         );
     }
 

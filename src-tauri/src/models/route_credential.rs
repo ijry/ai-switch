@@ -4,7 +4,7 @@ use sqlx::FromRow;
 pub const ANTHROPIC_API_KEY_FIELD: &str = "ANTHROPIC_API_KEY";
 pub const ANTHROPIC_AUTH_TOKEN_FIELD: &str = "ANTHROPIC_AUTH_TOKEN";
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq)]
 pub struct RouteCredential {
     pub id: String,
     pub platform: String,
@@ -34,6 +34,14 @@ pub struct RouteCredential {
     pub last_failure_kind: Option<String>,
     #[sqlx(default)]
     pub last_failure_message: Option<String>,
+    #[sqlx(default)]
+    pub request_count: i64,
+    #[sqlx(default)]
+    pub success_count: i64,
+    #[sqlx(default)]
+    pub failure_count: i64,
+    #[sqlx(default)]
+    pub success_rate: Option<f64>,
     // Legacy single-window fields kept for existing DBs/migrations.
     pub quota_remaining: Option<i64>,
     pub quota_limit: Option<i64>,
@@ -91,7 +99,7 @@ pub struct RouteCredentialImportFailure {
     pub error: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RouteCredentialImportResult {
     pub imported: Vec<RouteCredential>,
     pub failed: Vec<RouteCredentialImportFailure>,

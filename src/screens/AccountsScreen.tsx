@@ -761,6 +761,18 @@ function credentialRetryLabel(credential: RouteCredential): string | null {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+function credentialRequestStatsLabel(credential: RouteCredential): string {
+  const requestCount = credential.request_count ?? 0;
+  if (requestCount <= 0) {
+    return "暂无请求";
+  }
+  const successCount = credential.success_count ?? 0;
+  const failureCount = credential.failure_count ?? Math.max(0, requestCount - successCount);
+  const successRate = credential.success_rate ?? (successCount / requestCount) * 100;
+  const rateLabel = Number.isFinite(successRate) ? `${successRate.toFixed(1).replace(/\.0$/, "")}%` : "-";
+  return `请求 ${requestCount} · 成功 ${successCount} · 失败 ${failureCount} · 成功率 ${rateLabel}`;
+}
+
 function apiPreviewJsonFromPayloads(platform: PlatformKey, secretJson: string, configJson: string) {
   const secret = parseJsonObject(secretJson);
   const config = parseJsonObject(configJson);
@@ -2789,7 +2801,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                         )}
                       </div>
                       <p className="mt-0.5 truncate text-[12px] text-stone-500">
-                        {credential.email ?? credential.platform} · {shortId(credential.id)}
+                        {credentialRequestStatsLabel(credential)}
                       </p>
                     </div>
                     <div className="flex items-center justify-end gap-2">

@@ -8,9 +8,9 @@ use crate::services::http_client::build_outbound_http_client;
 use crate::services::route_pool_service::normalize_platform;
 use crate::services::route_proxy_service::{
     build_upstream_request, classify_proxy_failure, credential_is_retryable_now,
-    extract_cost_micros, extract_token_count, is_route_credential_quota_available,
-    maybe_persist_official_quota_from_response, maybe_refresh_official_credential,
-    normalize_api_upstream_path, ProxyFailureKind, SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
+    extract_cost_micros, extract_token_count, maybe_persist_official_quota_from_response,
+    maybe_refresh_official_credential, normalize_api_upstream_path, select_pool_credentials,
+    ProxyFailureKind, SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
 };
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
@@ -61,7 +61,7 @@ impl RouteModelTestService {
                 cursor,
             )
         } else {
-            let credentials = load_pool_credentials(pool, &platform).await?;
+            let credentials = select_pool_credentials(pool, &platform).await?;
 
             if credentials.is_empty() {
                 return Err(AppError::Validation {
@@ -251,7 +251,7 @@ impl RouteModelTestService {
             .filter(|model| !model.is_empty())
             .map(str::to_string);
         let cursor = RoutePoolRepository::next_cursor_index(pool, &platform).await?;
-        let credentials = load_pool_credentials(pool, &platform).await?;
+        let credentials = select_pool_credentials(pool, &platform).await?;
         if credentials.is_empty() {
             return Err(AppError::Validation {
                 code: "validation.route_pool_empty",
@@ -631,59 +631,6 @@ fn text_at<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|item| !item.is_empty())
-}
-
-async fn load_pool_credentials(
-    pool: &SqlitePool,
-    platform: &str,
-) -> Result<Vec<SelectedCredential>, AppError> {
-    let rows = sqlx::query(
-        "SELECT c.id, c.platform, c.kind, c.display_name, c.status, c.secret_payload_json, c.config_json,
-                c.next_retry_at, c.cooldown_until
-         FROM route_pool_members rpm
-         INNER JOIN route_credentials c ON c.id = rpm.route_credential_id
-         WHERE rpm.platform = ?
-           AND rpm.enabled = 1
-           AND c.status = 'ok'
-           AND (c.primary_remain IS NULL OR c.primary_remain > 0)
-           AND (c.weekly_remain IS NULL OR c.weekly_remain > 0)
-         ORDER BY rpm.sort_order ASC, rpm.created_at ASC",
-    )
-    .bind(platform)
-    .fetch_all(pool)
-    .await
-    .map_err(|err| AppError::Database {
-        code: "database.route_model_test_credentials",
-        message: "Could not load route credentials for model test".to_string(),
-        details: Some(err.to_string()),
-        recoverable: true,
-    })?;
-
-    Ok(rows
-        .into_iter()
-        .filter_map(|row| {
-            let next_retry_at: Option<String> = row.get("next_retry_at");
-            let cooldown_until: Option<String> = row.get("cooldown_until");
-            if !credential_is_retryable_now(
-                next_retry_at.as_deref(),
-                cooldown_until.as_deref(),
-                chrono::Utc::now(),
-            ) {
-                return None;
-            }
-            Some(SelectedCredential {
-                id: row.get("id"),
-                platform: row.get("platform"),
-                kind: row.get("kind"),
-                display_name: row.get("display_name"),
-                status: row.get("status"),
-                secret_payload_json: row.get("secret_payload_json"),
-                config_json: row.get("config_json"),
-            })
-        })
-        // Pool routing/testing should not keep hitting free-usage exhausted accounts.
-        .filter(|credential| is_route_credential_quota_available(&credential.config_json))
-        .collect())
 }
 
 async fn load_account_credential(

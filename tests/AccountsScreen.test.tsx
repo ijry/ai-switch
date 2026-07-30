@@ -73,6 +73,10 @@ const credentialsFixture: RouteCredential[] = [
     secret_payload_json: "{\"access_token\":\"at\",\"refresh_token\":\"rt\"}",
     config_json: "{\"type\":\"codex\"}",
     preview_json: "{\"auth_json\":{}}",
+    request_count: 3,
+    success_count: 2,
+    failure_count: 1,
+    success_rate: 66.6667,
     created_at: "2026-07-13T00:00:00Z",
     updated_at: "2026-07-13T00:00:00Z",
   },
@@ -89,6 +93,10 @@ const credentialsFixture: RouteCredential[] = [
     secret_payload_json: "{\"api_key\":\"sk-test\"}",
     config_json: "{\"base_url\":\"https://api.example.com/v1\",\"interface_format\":\"openai\",\"model_mappings\":[{\"from\":\"gpt-5\",\"to\":\"old-upstream\"}]}",
     preview_json: "{\"config_toml\":\"\"}",
+    request_count: 0,
+    success_count: 0,
+    failure_count: 0,
+    success_rate: null,
     created_at: "2026-07-13T00:00:00Z",
     updated_at: "2026-07-13T00:00:00Z",
   },
@@ -282,6 +290,10 @@ describe("AccountsScreen", () => {
     expect(await screen.findByText("筛选：")).toBeInTheDocument();
     expect(await screen.findByText("Team Account")).toBeInTheDocument();
     expect(screen.getByText("API Account")).toBeInTheDocument();
+    expect(screen.getByText("请求 3 · 成功 2 · 失败 1 · 成功率 66.7%"))
+      .toBeInTheDocument();
+    expect(screen.getByText("暂无请求")).toBeInTheDocument();
+    expect(screen.queryByText("team@example.com ·", { exact: false })).not.toBeInTheDocument();
     expect(screen.getByText("批量 · Codex Batch")).toBeInTheDocument();
     expect(screen.getByText("批量 Codex Batch")).toBeInTheDocument();
 

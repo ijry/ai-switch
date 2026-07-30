@@ -231,6 +231,12 @@ impl RouteCredentialRepository {
                 rc.cooldown_until,
                 rc.last_failure_kind,
                 rc.last_failure_message,
+                COUNT(ue.id) AS request_count,
+                COALESCE(SUM(CASE WHEN json_extract(ue.metadata_json, '$.success') = 1 THEN 1 ELSE 0 END), 0) AS success_count,
+                COUNT(ue.id) - COALESCE(SUM(CASE WHEN json_extract(ue.metadata_json, '$.success') = 1 THEN 1 ELSE 0 END), 0) AS failure_count,
+                CASE WHEN COUNT(ue.id) = 0 THEN NULL
+                     ELSE CAST(COALESCE(SUM(CASE WHEN json_extract(ue.metadata_json, '$.success') = 1 THEN 1 ELSE 0 END), 0) AS REAL) * 100.0 / COUNT(ue.id)
+                END AS success_rate,
                 rc.quota_remaining,
                 rc.quota_limit,
                 rc.quota_used,
@@ -239,7 +245,12 @@ impl RouteCredentialRepository {
                 rc.updated_at
              FROM route_credentials rc
              LEFT JOIN batches b ON b.id = rc.batch_id
+             LEFT JOIN usage_events ue
+               ON ue.route_credential_id = rc.id
+              AND ue.source_label IN ('route_proxy', 'route_pool_model_test')
+              AND ue.metric_type = 'request'
              WHERE rc.platform = ?
+             GROUP BY rc.id
              ORDER BY rc.sort_order ASC, rc.created_at DESC",
         )
         .bind(platform)
@@ -596,6 +607,50 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, created.id);
         assert_eq!(listed[0].kind, "api");
+        assert_eq!(listed[0].request_count, 0);
+        assert_eq!(listed[0].success_count, 0);
+        assert_eq!(listed[0].failure_count, 0);
+        assert_eq!(listed[0].success_rate, None);
+    }
+
+    #[tokio::test]
+    async fn list_includes_request_success_statistics() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let created = RouteCredentialRepository::create(
+            &pool,
+            "codex",
+            "api",
+            "Demo API",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-test"}"#,
+            r#"{"base_url":"https://example.com","interface_format":"openai","model_mappings":[]}"#,
+            r#"{}"#,
+        )
+        .await
+        .unwrap();
+        for success in [true, true, false] {
+            crate::database::repositories::route_pool_repository::RoutePoolRepository::insert_usage_event(
+                &pool,
+                &created.id,
+                "route_proxy",
+                "request",
+                1,
+                "count",
+                &serde_json::json!({"success": success}).to_string(),
+            )
+            .await
+            .unwrap();
+        }
+        let listed = RouteCredentialRepository::list_by_platform(&pool, "codex")
+            .await
+            .unwrap();
+        assert_eq!(listed[0].request_count, 3);
+        assert_eq!(listed[0].success_count, 2);
+        assert_eq!(listed[0].failure_count, 1);
+        assert!((listed[0].success_rate.unwrap() - (200.0 / 3.0)).abs() < 0.01);
     }
 
     #[tokio::test]
