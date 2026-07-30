@@ -749,6 +749,18 @@ function apiConfigJsonWithFields(
   return JSON.stringify(writeUserAgentToConfig(config, userAgent), null, 2);
 }
 
+function credentialRetryLabel(credential: RouteCredential): string | null {
+  const raw = credential.cooldown_until || credential.next_retry_at;
+  if (!raw) {
+    return null;
+  }
+  const date = new Date(raw);
+  if (!Number.isFinite(date.getTime()) || date.getTime() <= Date.now()) {
+    return null;
+  }
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 function apiPreviewJsonFromPayloads(platform: PlatformKey, secretJson: string, configJson: string) {
   const secret = parseJsonObject(secretJson);
   const config = parseJsonObject(configJson);
@@ -2695,6 +2707,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                   const primaryRemain = officialPrimaryRemain(credential);
                   const weeklyRemain = officialWeeklyRemain(credential);
                   const latestReset = officialLatestResetLabel(credential);
+                  const retryLabel = credentialRetryLabel(credential);
                   return (
                   <div className="grid gap-2 px-3 py-2.5 lg:grid-cols-[auto_1fr_auto] lg:items-center" key={credential.id}>
                     <input
@@ -2734,6 +2747,14 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                         >
                           {accountStatusLabel(credential.status)}
                         </span>
+                        {retryLabel && (
+                          <span
+                            className="rounded-full bg-orange-50 px-2 py-0.5 text-[11px] font-semibold text-orange-800"
+                            title="临时失败退避时间"
+                          >
+                            冷却至 {retryLabel}
+                          </span>
+                        )}
                         {subscriptionType && (
                           <span
                             className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-800"

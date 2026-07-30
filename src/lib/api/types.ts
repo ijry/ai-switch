@@ -133,6 +133,11 @@ export type RouteCredential = {
   quota_limit?: number | null;
   quota_used?: number | null;
   quota_updated_at?: string | null;
+  transient_failure_count?: number;
+  next_retry_at?: string | null;
+  cooldown_until?: string | null;
+  last_failure_kind?: string | null;
+  last_failure_message?: string | null;
   created_at: string;
   updated_at: string;
 };
