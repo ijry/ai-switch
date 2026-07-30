@@ -561,9 +561,9 @@ fn truncate_failure_message(message: &str) -> String {
 }
 
 fn jitter_seconds(id: &str, failure_count: i64, base_seconds: i64) -> i64 {
-    let seed = id
-        .bytes()
-        .fold(failure_count as u64, |value, byte| value.wrapping_mul(31).wrapping_add(byte as u64));
+    let seed = id.bytes().fold(failure_count as u64, |value, byte| {
+        value.wrapping_mul(31).wrapping_add(byte as u64)
+    });
     let jitter_percent = 80 + (seed % 41) as i64;
     (base_seconds * jitter_percent / 100).max(1)
 }
