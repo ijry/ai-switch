@@ -359,6 +359,12 @@ async fn forward_request(
         let credential = match maybe_refresh_official_credential(pool, selected).await {
             Ok(credential) => credential,
             Err(error) => {
+                if matches!(
+                    classify_proxy_failure(None, Some(&error)),
+                    ProxyFailureKind::Transient
+                ) {
+                    record_route_credential_failure(pool, &selected.id, "refresh", &error).await;
+                }
                 let metadata = route_proxy_request_metadata(
                     &platform,
                     selected,
@@ -434,13 +440,8 @@ async fn forward_request(
                     "{}: upstream request failed: {error}",
                     credential.display_name
                 );
-                record_route_credential_failure(
-                    pool,
-                    &credential.id,
-                    "transport",
-                    &error_message,
-                )
-                .await;
+                record_route_credential_failure(pool, &credential.id, "transport", &error_message)
+                    .await;
                 let metadata = route_proxy_request_metadata(
                     &platform,
                     &credential,
@@ -468,10 +469,19 @@ async fn forward_request(
         let status =
             StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
         let upstream_headers = upstream.headers().clone();
-        let mut response_bytes = upstream
-            .bytes()
-            .await
-            .map_err(|error| format!("Could not read upstream response: {error}"))?;
+        let mut response_bytes = match upstream.bytes().await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let error_message = format!(
+                    "{}: could not read upstream response: {error}",
+                    credential.display_name
+                );
+                record_route_credential_failure(pool, &credential.id, "transport", &error_message)
+                    .await;
+                retry_errors.push(error_message);
+                continue;
+            }
+        };
         if !custom_tool_names.is_empty() {
             response_bytes =
                 restore_custom_tools_in_responses_payload(&response_bytes, &custom_tool_names)
@@ -489,7 +499,9 @@ async fn forward_request(
         } else {
             false
         };
-        let should_retry = should_retry_proxy_failure(status);
+        let response_text = std::str::from_utf8(&response_bytes).ok();
+        let failure_kind = classify_proxy_failure(Some(status), response_text);
+        let should_retry = !matches!(failure_kind, ProxyFailureKind::None);
         let proxy_success = status.is_success() && !quota_exhausted && !should_retry;
         let retry_error = if quota_exhausted {
             Some("upstream quota exhausted")
@@ -552,13 +564,18 @@ async fn forward_request(
             continue;
         }
         if should_retry {
-            record_route_credential_failure(
-                pool,
-                &credential.id,
-                "upstream_status",
-                &format!("upstream returned {}", status.as_u16()),
-            )
-            .await;
+            let error_message = format!("upstream returned {}", status.as_u16());
+            if matches!(failure_kind, ProxyFailureKind::Permanent) {
+                mark_route_credential_revoked(pool, &credential.id).await;
+            } else {
+                record_route_credential_failure(
+                    pool,
+                    &credential.id,
+                    "upstream_status",
+                    &error_message,
+                )
+                .await;
+            }
             retry_errors.push(format!(
                 "{}: upstream returned {}",
                 credential.display_name,
@@ -567,6 +584,7 @@ async fn forward_request(
             continue;
         }
 
+        let _ = RouteCredentialRepository::clear_transient_failure(pool, &credential.id).await;
         return proxy_upstream_response(status, upstream_headers, response_bytes.to_vec());
     }
 
@@ -727,12 +745,14 @@ pub fn credential_is_retryable_now(
     cooldown_until: Option<&str>,
     now: DateTime<Utc>,
 ) -> bool {
-    [next_retry_at, cooldown_until].into_iter().all(|timestamp| {
-        timestamp
-            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-            .map(|value| value.with_timezone(&Utc) <= now)
-            .unwrap_or(true)
-    })
+    [next_retry_at, cooldown_until]
+        .into_iter()
+        .all(|timestamp| {
+            timestamp
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc) <= now)
+                .unwrap_or(true)
+        })
 }
 
 async fn record_route_credential_failure(
@@ -2550,6 +2570,7 @@ async fn insert_route_credential_usage_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::{create_memory_pool, run_migrations};
 
     async fn start_fixed_upstream(status: StatusCode, body: &'static str) -> String {
         let app = Router::new().fallback(move || async move { (status, body) });
@@ -2744,6 +2765,43 @@ mod tests {
         assert_eq!(usage_count, 2);
 
         RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn pool_selection_excludes_three_failure_cooldown_until_cleared() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id =
+            create_proxy_api_credential(&pool, "cooling", "http://127.0.0.1:1/v1").await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
+            .await
+            .expect("pool members");
+
+        for _ in 0..3 {
+            RouteCredentialRepository::record_transient_failure(
+                &pool,
+                &credential_id,
+                "transport",
+                "temporary",
+            )
+            .await
+            .expect("record failure");
+        }
+        assert!(load_pool_credentials(&pool, "codex")
+            .await
+            .expect("cooldown pool")
+            .is_empty());
+
+        RouteCredentialRepository::clear_transient_failure(&pool, &credential_id)
+            .await
+            .expect("clear retry state");
+        assert_eq!(
+            load_pool_credentials(&pool, "codex")
+                .await
+                .expect("eligible pool")
+                .len(),
+            1
+        );
     }
 
     fn api_credential(name: &str, interface_format: &str) -> SelectedCredential {

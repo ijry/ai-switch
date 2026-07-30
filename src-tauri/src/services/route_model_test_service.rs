@@ -7,10 +7,10 @@ use crate::models::route_pool::{RoutePoolModelTestOutcome, RoutePoolModelTestReq
 use crate::services::http_client::build_outbound_http_client;
 use crate::services::route_pool_service::normalize_platform;
 use crate::services::route_proxy_service::{
-    build_upstream_request, extract_cost_micros, extract_token_count,
-    is_route_credential_quota_available, maybe_persist_official_quota_from_response,
-    maybe_refresh_official_credential, normalize_api_upstream_path, credential_is_retryable_now,
-    SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
+    build_upstream_request, classify_proxy_failure, credential_is_retryable_now,
+    extract_cost_micros, extract_token_count, is_route_credential_quota_available,
+    maybe_persist_official_quota_from_response, maybe_refresh_official_credential,
+    normalize_api_upstream_path, ProxyFailureKind, SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
 };
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
@@ -264,30 +264,30 @@ impl RouteModelTestService {
         let selected_index = cursor.rem_euclid(credentials.len() as i64) as usize;
         let credential = credentials[selected_index].clone();
         let start = Instant::now();
-        let parts = match build_model_test_request(&credential, &platform, requested_model.as_deref())
-        {
-            Ok(parts) => parts,
-            Err(error) => {
-                let fallback_parts = fallback_request_parts(&credential, &platform);
-                return finish_proxy_outcome(
-                    pool,
-                    &platform,
-                    credential,
-                    fallback_parts,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    String::new(),
-                    None,
-                    Some(error),
-                    false,
-                    elapsed_ms(start),
-                )
-                .await;
-            }
-        };
+        let parts =
+            match build_model_test_request(&credential, &platform, requested_model.as_deref()) {
+                Ok(parts) => parts,
+                Err(error) => {
+                    let fallback_parts = fallback_request_parts(&credential, &platform);
+                    return finish_proxy_outcome(
+                        pool,
+                        &platform,
+                        credential,
+                        fallback_parts,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        String::new(),
+                        None,
+                        Some(error),
+                        false,
+                        elapsed_ms(start),
+                    )
+                    .await;
+                }
+            };
 
         let entry_path = normalize_api_upstream_path(&parts.interface_format, &parts.request_path);
         let entry_url = join_proxy_entry_url(route_proxy_base_url, &entry_path);
@@ -787,9 +787,7 @@ async fn send_proxy_model_test_request(
         .map_err(|err| {
             let mut message = format!("Route proxy model test request failed: {err}");
             if err.is_connect() || err.is_timeout() {
-                message.push_str(
-                    " (check whether the local route proxy is running and reachable)",
-                );
+                message.push_str(" (check whether the local route proxy is running and reachable)");
             }
             message
         })?;
@@ -904,12 +902,37 @@ async fn finish_outcome(
     if !response_body.trim().is_empty() {
         let _ = maybe_persist_official_quota_from_response(pool, &credential, &response_body).await;
     }
-    if success && should_restore_model_test_account_status(&credential.status) {
-        RouteCredentialRepository::update_status(pool, &credential.id, "ok").await?;
-    } else if !success
-        && should_mark_model_test_account_unavailable(response_status, error_message.as_deref())
-    {
-        RouteCredentialRepository::update_status(pool, &credential.id, "error").await?;
+    if success {
+        let _ = RouteCredentialRepository::clear_transient_failure(pool, &credential.id).await;
+        if should_restore_model_test_account_status(&credential.status) {
+            RouteCredentialRepository::update_status(pool, &credential.id, "ok").await?;
+        }
+    } else {
+        let status = response_status.and_then(|value| axum::http::StatusCode::from_u16(value).ok());
+        let failure_kind = classify_proxy_failure(
+            status,
+            error_message
+                .as_deref()
+                .or_else(|| (!response_body.trim().is_empty()).then_some(response_body.as_str())),
+        );
+        match failure_kind {
+            ProxyFailureKind::Permanent => {
+                RouteCredentialRepository::update_status(pool, &credential.id, "revoked").await?;
+            }
+            ProxyFailureKind::Transient => {
+                let message = error_message
+                    .as_deref()
+                    .unwrap_or("model test request failed");
+                let _ = RouteCredentialRepository::record_transient_failure(
+                    pool,
+                    &credential.id,
+                    "model_test",
+                    message,
+                )
+                .await;
+            }
+            ProxyFailureKind::None => {}
+        }
     }
 
     let error_message = error_message.map(|value| sanitize_for_storage(&credential, &value));
@@ -1056,23 +1079,6 @@ async fn finish_proxy_outcome(
         )
         .await?,
     })
-}
-
-fn should_mark_model_test_account_unavailable(
-    response_status: Option<u16>,
-    error_message: Option<&str>,
-) -> bool {
-    if matches!(response_status, Some(401 | 403)) {
-        return true;
-    }
-    let Some(message) = error_message else {
-        return false;
-    };
-    let lower = message.to_ascii_lowercase();
-    lower.contains("upstream model test request failed")
-        || lower.contains("invalid_grant")
-        || lower.contains("refresh token has been revoked")
-        || lower.contains("官方 oauth 凭证已失效")
 }
 
 fn should_restore_model_test_account_status(status: &str) -> bool {
@@ -1627,13 +1633,10 @@ mod tests {
         .expect("members");
 
         let route_proxy_state = RouteProxyRuntimeState::default();
-        let proxy_status = RouteProxyService::start(
-            &route_proxy_state,
-            pool.clone(),
-            RouteProxyTransport::Http,
-        )
-        .await
-        .expect("proxy start");
+        let proxy_status =
+            RouteProxyService::start(&route_proxy_state, pool.clone(), RouteProxyTransport::Http)
+                .await
+                .expect("proxy start");
         let proxy_base_url = proxy_status.base_url.expect("proxy base url");
 
         let outcome = RouteModelTestService::test_model_through_proxy(
@@ -1958,7 +1961,9 @@ mod tests {
         let credential = RouteCredentialRepository::get(&pool, &credential_id)
             .await
             .expect("credential");
-        assert_eq!(credential.status, "error");
+        assert_eq!(credential.status, "ok");
+        assert_eq!(credential.transient_failure_count, 1);
+        assert!(credential.next_retry_at.is_some());
     }
 
     #[tokio::test]
