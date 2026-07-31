@@ -1963,17 +1963,7 @@ pub fn normalize_api_upstream_path(interface_format: &str, path: &str) -> String
     if !matches!(interface_format, "openai" | "openai-responses") {
         return normalized;
     }
-    if normalized.is_empty() {
-        return normalized;
-    }
-    if first_path_segment(&normalized).is_some_and(is_version_path_segment) {
-        return normalized;
-    }
-    if is_openai_compatible_path(&normalized) {
-        format!("/v1{normalized}")
-    } else {
-        normalized
-    }
+    strip_leading_version_path_segments(&normalized)
 }
 
 fn normalize_request_path(path: &str) -> String {
@@ -2000,42 +1990,19 @@ fn is_responses_path(path: &str) -> bool {
     normalized.ends_with("/responses") || normalized == "responses"
 }
 
-fn is_openai_compatible_path(path: &str) -> bool {
-    let normalized = path.trim().trim_end_matches('/').trim_start_matches('/');
-    if normalized.is_empty() {
-        return false;
+fn strip_leading_version_path_segments(path: &str) -> String {
+    let mut remaining = path.trim_start_matches('/');
+    while let Some(first) = remaining.split('/').next() {
+        if !is_version_path_segment(first) {
+            break;
+        }
+        remaining = remaining[first.len()..].trim_start_matches('/');
     }
-    matches!(
-        normalized,
-        "chat/completions"
-            | "responses"
-            | "completions"
-            | "models"
-            | "embeddings"
-            | "moderations"
-            | "files"
-            | "batches"
-            | "audio/transcriptions"
-            | "audio/translations"
-            | "images/generations"
-            | "images/edits"
-            | "images/variations"
-            | "assistants"
-            | "threads"
-            | "vector_stores"
-    ) || normalized.starts_with("chat/")
-        || normalized.starts_with("responses/")
-        || normalized.starts_with("completions/")
-        || normalized.starts_with("models/")
-        || normalized.starts_with("embeddings/")
-        || normalized.starts_with("moderations/")
-        || normalized.starts_with("audio/")
-        || normalized.starts_with("images/")
-        || normalized.starts_with("files/")
-        || normalized.starts_with("batches/")
-        || normalized.starts_with("assistants/")
-        || normalized.starts_with("threads/")
-        || normalized.starts_with("vector_stores/")
+    if remaining.is_empty() {
+        String::new()
+    } else {
+        format!("/{remaining}")
+    }
 }
 
 fn is_version_path_segment(segment: &str) -> bool {
@@ -3341,7 +3308,7 @@ mod tests {
     }
 
     #[test]
-    fn build_upstream_request_prefixes_v1_for_unversioned_openai_base() {
+    fn build_upstream_request_appends_chat_completions_to_base_url() {
         let mut credential = api_credential("root-openai", "openai");
         credential.config_json = serde_json::json!({
             "base_url": "https://api.example.com",
@@ -3360,11 +3327,11 @@ mod tests {
         )
         .expect("request");
 
-        assert_eq!(url, "https://api.example.com/v1/chat/completions");
+        assert_eq!(url, "https://api.example.com/chat/completions");
     }
 
     #[test]
-    fn build_upstream_request_prefixes_v1_for_unversioned_responses_base() {
+    fn build_upstream_request_appends_responses_to_base_url() {
         let mut credential = api_credential("root-responses", "openai-responses");
         credential.config_json = serde_json::json!({
             "base_url": "https://api.example.com",
@@ -3383,7 +3350,30 @@ mod tests {
         )
         .expect("request");
 
-        assert_eq!(url, "https://api.example.com/v1/responses");
+        assert_eq!(url, "https://api.example.com/responses");
+    }
+
+    #[test]
+    fn build_upstream_request_appends_endpoint_to_openai_base_url_path() {
+        let mut credential = api_credential("path-responses", "openai-responses");
+        credential.config_json = serde_json::json!({
+            "base_url": "https://new.sharedchat.cc/codex",
+            "interface_format": "openai-responses",
+            "model_mappings": []
+        })
+        .to_string();
+
+        let (url, _, _) = build_upstream_request(
+            &credential,
+            "codex",
+            "/v1/responses",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5.5"}"#,
+        )
+        .expect("request");
+
+        assert_eq!(url, "https://new.sharedchat.cc/codex/responses");
     }
 
     #[test]

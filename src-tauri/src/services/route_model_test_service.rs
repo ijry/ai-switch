@@ -1166,10 +1166,22 @@ mod tests {
     async fn start_json_test_server(status: axum::http::StatusCode, body: Value) -> String {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
         let addr = listener.local_addr().expect("addr");
-        let app = Router::new().route(
-            "/v1/chat/completions",
-            post(move || async move { (status, Json(body.clone())) }),
-        );
+        let versioned_body = body.clone();
+        let app = Router::new()
+            .route(
+                "/v1/chat/completions",
+                post(move || {
+                    let body = versioned_body.clone();
+                    async move { (status, Json(body)) }
+                }),
+            )
+            .route(
+                "/chat/completions",
+                post(move || {
+                    let body = body.clone();
+                    async move { (status, Json(body)) }
+                }),
+            );
         tokio::spawn(async move {
             axum::serve(listener, app).await.expect("serve");
         });
@@ -1515,7 +1527,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_model_adds_v1_for_unversioned_openai_api_base_url() {
+    async fn test_model_uses_unversioned_openai_api_base_url_as_configured() {
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
         let versioned_base_url = start_json_test_server(
@@ -1552,8 +1564,9 @@ mod tests {
 
         assert_eq!(
             outcome.target_url.as_deref(),
-            Some(format!("{base_url}/v1/chat/completions").as_str())
+            Some(format!("{base_url}/chat/completions").as_str())
         );
+        assert!(outcome.success);
     }
 
     #[tokio::test]
@@ -1602,8 +1615,8 @@ mod tests {
 
         let _ = RouteProxyService::stop(&route_proxy_state).await;
 
-        let expected_entry_url = format!("{proxy_base_url}/v1/chat/completions");
-        let expected_target_url = format!("{base_url}/v1/chat/completions");
+        let expected_entry_url = format!("{proxy_base_url}/chat/completions");
+        let expected_target_url = format!("{base_url}/chat/completions");
         assert!(outcome.via_route_proxy);
         assert_eq!(
             outcome.route_proxy_entry_url.as_deref(),
@@ -1611,12 +1624,12 @@ mod tests {
         );
         assert_eq!(
             outcome.route_proxy_entry_path.as_deref(),
-            Some("/v1/chat/completions")
+            Some("/chat/completions")
         );
         assert!(outcome.route_proxy_trace_id.is_some());
         assert_eq!(outcome.selected_account_id, credential_id);
         assert_eq!(outcome.selected_account_name, "API Account");
-        assert_eq!(outcome.request_path, "/v1/chat/completions");
+        assert_eq!(outcome.request_path, "/chat/completions");
         assert_eq!(
             outcome.target_url.as_deref(),
             Some(expected_target_url.as_str())

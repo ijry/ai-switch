@@ -15,18 +15,6 @@ const FETCH_TIMEOUT_SECS: u64 = 15;
 const ERROR_BODY_MAX_CHARS: usize = 512;
 const USER_AGENT_VALUE: &str = "ai-switch/0.1";
 
-const KNOWN_COMPAT_SUFFIXES: &[&str] = &[
-    "/api/claudecode",
-    "/api/anthropic",
-    "/apps/anthropic",
-    "/api/coding",
-    "/claudecode",
-    "/anthropic",
-    "/step_plan",
-    "/coding",
-    "/claude",
-];
-
 #[derive(Debug, Deserialize)]
 struct ModelsResponse {
     data: Option<Vec<ModelEntry>>,
@@ -167,25 +155,7 @@ pub fn build_models_url_candidates(base_url: &str) -> Result<Vec<String>, String
         return Err("Base URL is empty".to_string());
     }
 
-    let mut candidates = Vec::new();
-    if ends_with_version_segment(trimmed) {
-        candidates.push(format!("{trimmed}/models"));
-        if !trimmed.ends_with("/v1") {
-            candidates.push(format!("{trimmed}/v1/models"));
-        }
-    } else {
-        candidates.push(format!("{trimmed}/v1/models"));
-    }
-
-    if let Some(stripped) = strip_compat_suffix(trimmed) {
-        let root = stripped.trim_end_matches('/');
-        if !root.is_empty() && root.contains("://") {
-            candidates.push(format!("{root}/v1/models"));
-            candidates.push(format!("{root}/models"));
-        }
-    }
-
-    Ok(deduplicate(candidates))
+    Ok(vec![format!("{trimmed}/models")])
 }
 
 pub fn build_gemini_models_url_candidates(base_url: &str) -> Result<Vec<String>, String> {
@@ -317,22 +287,6 @@ fn truncate_body(body: String) -> String {
     }
 }
 
-fn strip_compat_suffix(base_url: &str) -> Option<&str> {
-    for suffix in KNOWN_COMPAT_SUFFIXES {
-        if base_url.ends_with(*suffix) {
-            return Some(&base_url[..base_url.len() - suffix.len()]);
-        }
-    }
-    None
-}
-
-fn ends_with_version_segment(url: &str) -> bool {
-    let last = url.rsplit('/').next().unwrap_or("");
-    last.strip_prefix('v').is_some_and(|digits| {
-        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
-    })
-}
-
 fn deduplicate(candidates: Vec<String>) -> Vec<String> {
     let mut unique = Vec::with_capacity(candidates.len());
     for candidate in candidates {
@@ -360,7 +314,15 @@ mod tests {
     fn builds_plain_openai_candidates() {
         assert_eq!(
             build_models_url_candidates("https://api.example.com").expect("candidates"),
-            vec!["https://api.example.com/v1/models"]
+            vec!["https://api.example.com/models"]
+        );
+    }
+
+    #[test]
+    fn appends_models_to_openai_base_url_path() {
+        assert_eq!(
+            build_models_url_candidates("https://new.sharedchat.cc/codex").expect("candidates"),
+            vec!["https://new.sharedchat.cc/codex/models"]
         );
     }
 
@@ -369,22 +331,15 @@ mod tests {
         assert_eq!(
             build_models_url_candidates("https://open.bigmodel.cn/api/coding/paas/v4")
                 .expect("candidates"),
-            vec![
-                "https://open.bigmodel.cn/api/coding/paas/v4/models",
-                "https://open.bigmodel.cn/api/coding/paas/v4/v1/models",
-            ]
+            vec!["https://open.bigmodel.cn/api/coding/paas/v4/models"]
         );
     }
 
     #[test]
-    fn strips_anthropic_compat_suffix_candidates() {
+    fn keeps_compat_suffix_as_part_of_base_url() {
         assert_eq!(
             build_models_url_candidates("https://api.z.ai/api/anthropic").expect("candidates"),
-            vec![
-                "https://api.z.ai/api/anthropic/v1/models",
-                "https://api.z.ai/v1/models",
-                "https://api.z.ai/models",
-            ]
+            vec!["https://api.z.ai/api/anthropic/models"]
         );
     }
 
