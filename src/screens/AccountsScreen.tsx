@@ -64,6 +64,12 @@ import {
   writeUserAgentToConfig,
 } from "../lib/accountUserAgent";
 import {
+  codexModelTestInterfaceFormat,
+  loadCodexModelTestEndpoint,
+  saveCodexModelTestEndpoint,
+  type CodexModelTestEndpoint,
+} from "../lib/codexModelTestEndpoint";
+import {
   ClipboardImageReadError,
   readClipboardImageBlob,
   recognizeApiKeysFromImageBlob,
@@ -1222,6 +1228,8 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const [editPreviewJson, setEditPreviewJson] = useState("{}");
   const [lastRouteAccount, setLastRouteAccount] = useState<string | null>(null);
   const [routeTestModelsByPlatform, setRouteTestModelsByPlatform] = useState<Partial<Record<PlatformKey, string>>>({});
+  const [codexModelTestEndpoint, setCodexModelTestEndpoint] =
+    useState<CodexModelTestEndpoint>(() => loadCodexModelTestEndpoint());
   const [modelTestDialogOpen, setModelTestDialogOpen] = useState(false);
   const [modelTestAccount, setModelTestAccount] = useState<RouteCredential | null>(null);
   const [testingAccountId, setTestingAccountId] = useState<string | null>(null);
@@ -1938,6 +1946,11 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     setModelTestDialogOpen(true);
   };
 
+  const selectCodexModelTestEndpoint = (endpoint: CodexModelTestEndpoint) => {
+    setCodexModelTestEndpoint(endpoint);
+    saveCodexModelTestEndpoint(endpoint);
+  };
+
   const submitModelTest = () => {
     const accountId = modelTestAccount?.id ?? null;
     setTestingAccountId(accountId);
@@ -1947,6 +1960,9 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       platform: activePlatform,
       ...(accountId ? { account_id: accountId } : {}),
       model: routeTestModel.trim() || null,
+      ...(activePlatform === "codex"
+        ? { interface_format: codexModelTestInterfaceFormat(codexModelTestEndpoint) }
+        : {}),
     });
     setModelTestDialogOpen(false);
   };
@@ -2897,6 +2913,33 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                 <X className="h-4 w-4" />
               </button>
             </div>
+
+            {activePlatform === "codex" && (
+              <fieldset className="mt-4">
+                <legend className="text-[12px] font-semibold text-stone-600">测试接口</legend>
+                <div className="mt-1.5 grid grid-cols-2 gap-1 rounded-lg bg-stone-100 p-1">
+                  {(["/responses", "/chat/completions"] as const).map((endpoint) => {
+                    const selected = codexModelTestEndpoint === endpoint;
+                    return (
+                      <button
+                        aria-label={`测试接口 ${endpoint}`}
+                        aria-pressed={selected}
+                        className={`h-9 min-w-0 cursor-pointer whitespace-nowrap rounded-md px-1 font-mono text-[11px] font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
+                          selected
+                            ? "bg-white text-stone-950 shadow-sm"
+                            : "text-stone-600 hover:text-stone-900"
+                        }`}
+                        key={endpoint}
+                        onClick={() => selectCodexModelTestEndpoint(endpoint)}
+                        type="button"
+                      >
+                        {endpoint}
+                      </button>
+                    );
+                  })}
+                </div>
+              </fieldset>
+            )}
 
             <label className={`${labelClass} mt-4`}>
               测试模型（可选）

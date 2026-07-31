@@ -229,6 +229,7 @@ export type RoutePoolModelTestRequest = {
   platform: string;
   account_id?: string | null;
   model?: string | null;
+  interface_format?: "openai" | "openai-responses" | null;
 };
 
 export type RoutePoolModelTestOutcome = {

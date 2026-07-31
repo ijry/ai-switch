@@ -23,6 +23,7 @@ import {
   writeRouteProxyConfigs,
 } from "../src/lib/api/client";
 import { recognizeApiKeysFromImageBlob } from "../src/lib/ocr/apiKeyOcr";
+import { CODEX_MODEL_TEST_ENDPOINT_STORAGE_KEY } from "../src/lib/codexModelTestEndpoint";
 import { createQueryClient } from "../src/lib/query/queryClient";
 import { AccountsScreen } from "../src/screens/AccountsScreen";
 import type { RouteCredential, RoutePoolModelTestOutcome, RoutePoolStats } from "../src/lib/api/types";
@@ -168,6 +169,7 @@ describe("AccountsScreen", () => {
   });
 
   beforeEach(() => {
+    window.localStorage.clear();
     vi.mocked(open).mockReset();
     vi.mocked(createBatch).mockReset();
     vi.mocked(copyRouteCredential).mockReset();
@@ -1177,6 +1179,7 @@ describe("AccountsScreen", () => {
       expect(routePoolTestModel).toHaveBeenCalledWith({
         platform: "codex",
         model: null,
+        interface_format: "openai-responses",
       }),
     );
     expect(startRouteProxy).not.toHaveBeenCalled();
@@ -1216,6 +1219,7 @@ describe("AccountsScreen", () => {
       expect(routePoolTestModel).toHaveBeenCalledWith({
         platform: "codex",
         model: "gpt-4o",
+        interface_format: "openai-responses",
       }),
     );
   });
@@ -1233,9 +1237,72 @@ describe("AccountsScreen", () => {
         platform: "codex",
         account_id: "cred-api-1",
         model: null,
+        interface_format: "openai-responses",
       }),
     );
     expect(await screen.findByText("真实生成测试：通过")).toBeInTheDocument();
+  });
+
+  it("defaults Codex model tests to responses", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByLabelText("测试 API Account"));
+
+    expect(screen.getByLabelText("测试接口 /responses")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByLabelText("测试接口 /chat/completions")).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  });
+
+  it("persists Chat Completions globally for pool and account tests", async () => {
+    const first = renderScreen();
+
+    await userEvent.click(await screen.findByLabelText("测试 API Account"));
+    await userEvent.click(screen.getByLabelText("测试接口 /chat/completions"));
+    expect(window.localStorage.getItem(CODEX_MODEL_TEST_ENDPOINT_STORAGE_KEY)).toBe(
+      "/chat/completions",
+    );
+    await userEvent.click(screen.getByLabelText("开始真实生成测试"));
+    await waitFor(() =>
+      expect(routePoolTestModel).toHaveBeenLastCalledWith({
+        platform: "codex",
+        account_id: "cred-api-1",
+        model: null,
+        interface_format: "openai",
+      }),
+    );
+    first.unmount();
+
+    renderScreen();
+    await userEvent.click(await screen.findByLabelText("选择 Team Account"));
+    await userEvent.click(screen.getByLabelText("批量加入算力池"));
+    await waitFor(() => expect(screen.getByLabelText("真实生成测试算力池路由")).toBeEnabled());
+    await userEvent.click(screen.getByLabelText("真实生成测试算力池路由"));
+    expect(screen.getByLabelText("测试接口 /chat/completions")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await userEvent.click(screen.getByLabelText("开始真实生成测试"));
+    await waitFor(() =>
+      expect(routePoolTestModel).toHaveBeenLastCalledWith({
+        platform: "codex",
+        model: null,
+        interface_format: "openai",
+      }),
+    );
+  });
+
+  it("does not show the endpoint selector for Claude", async () => {
+    renderScreen("claude");
+
+    await userEvent.click(await screen.findByLabelText("测试 API Account"));
+
+    expect(screen.queryByLabelText("测试接口 /responses")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("测试接口 /chat/completions")).not.toBeInTheDocument();
   });
 
   it("keeps the optional test model separately for each agent tab", async () => {
