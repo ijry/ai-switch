@@ -68,6 +68,8 @@ pub struct RoutePoolModelTestRequest {
     pub account_id: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub interface_format: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -7,10 +7,10 @@ use crate::models::route_pool::{RoutePoolModelTestOutcome, RoutePoolModelTestReq
 use crate::services::http_client::build_outbound_http_client;
 use crate::services::route_pool_service::normalize_platform;
 use crate::services::route_proxy_service::{
-    build_upstream_request, classify_proxy_failure, credential_is_retryable_now,
+    build_target_url, build_upstream_request, classify_proxy_failure, credential_is_retryable_now,
     extract_cost_micros, extract_token_count, maybe_persist_official_quota_from_response,
     maybe_refresh_official_credential, normalize_api_upstream_path, select_pool_credentials,
-    build_target_url, ProxyFailureKind, SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
+    ProxyFailureKind, SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
 };
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
@@ -41,6 +41,8 @@ impl RouteModelTestService {
         request: RoutePoolModelTestRequest,
     ) -> Result<RoutePoolModelTestOutcome, AppError> {
         let platform = normalize_platform(&request.platform)?;
+        let interface_override =
+            validate_model_test_interface_override(&platform, request.interface_format.as_deref())?;
         let requested_model = request
             .model
             .as_deref()
@@ -86,29 +88,33 @@ impl RouteModelTestService {
             })?;
         let start = Instant::now();
 
-        let parts =
-            match build_model_test_request(&credential, &platform, requested_model.as_deref()) {
-                Ok(parts) => parts,
-                Err(error) => {
-                    let fallback_parts = fallback_request_parts(&credential, &platform);
-                    return finish_outcome(
-                        pool,
-                        &platform,
-                        credential,
-                        fallback_parts,
-                        next_index,
-                        None,
-                        String::new(),
-                        None,
-                        Some(error),
-                        false,
-                        elapsed_ms(start),
-                        None,
-                        None,
-                    )
-                    .await;
-                }
-            };
+        let parts = match build_model_test_request(
+            &credential,
+            &platform,
+            requested_model.as_deref(),
+            interface_override.as_deref(),
+        ) {
+            Ok(parts) => parts,
+            Err(error) => {
+                let fallback_parts = fallback_request_parts(&credential, &platform);
+                return finish_outcome(
+                    pool,
+                    &platform,
+                    credential,
+                    fallback_parts,
+                    next_index,
+                    None,
+                    String::new(),
+                    None,
+                    Some(error),
+                    false,
+                    elapsed_ms(start),
+                    None,
+                    None,
+                )
+                .await;
+            }
+        };
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -244,6 +250,8 @@ impl RouteModelTestService {
         }
 
         let platform = normalize_platform(&request.platform)?;
+        let interface_override =
+            validate_model_test_interface_override(&platform, request.interface_format.as_deref())?;
         let requested_model = request
             .model
             .as_deref()
@@ -264,30 +272,34 @@ impl RouteModelTestService {
         let selected_index = cursor.rem_euclid(credentials.len() as i64) as usize;
         let credential = credentials[selected_index].clone();
         let start = Instant::now();
-        let parts =
-            match build_model_test_request(&credential, &platform, requested_model.as_deref()) {
-                Ok(parts) => parts,
-                Err(error) => {
-                    let fallback_parts = fallback_request_parts(&credential, &platform);
-                    return finish_proxy_outcome(
-                        pool,
-                        &platform,
-                        credential,
-                        fallback_parts,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        String::new(),
-                        None,
-                        Some(error),
-                        false,
-                        elapsed_ms(start),
-                    )
-                    .await;
-                }
-            };
+        let parts = match build_model_test_request(
+            &credential,
+            &platform,
+            requested_model.as_deref(),
+            interface_override.as_deref(),
+        ) {
+            Ok(parts) => parts,
+            Err(error) => {
+                let fallback_parts = fallback_request_parts(&credential, &platform);
+                return finish_proxy_outcome(
+                    pool,
+                    &platform,
+                    credential,
+                    fallback_parts,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    String::new(),
+                    None,
+                    Some(error),
+                    false,
+                    elapsed_ms(start),
+                )
+                .await;
+            }
+        };
 
         let entry_path = normalize_api_upstream_path(&parts.interface_format, &parts.request_path);
         let entry_url = join_proxy_entry_url(route_proxy_base_url, &entry_path);
@@ -401,9 +413,12 @@ pub fn build_model_test_request(
     credential: &SelectedCredential,
     platform: &str,
     requested_model: Option<&str>,
+    interface_override: Option<&str>,
 ) -> Result<ModelTestRequestParts, String> {
     let config = parse_json_object(&credential.config_json, "config")?;
-    let interface_format = interface_format_for(credential, platform, &config);
+    let interface_format = interface_override
+        .map(str::to_string)
+        .unwrap_or_else(|| interface_format_for(credential, platform, &config));
     let base_url = string_value(&config, "base_url").map(str::to_string);
     let mappings = model_mappings(&config);
     let model = request_model(platform, &interface_format, &mappings, requested_model);
@@ -772,6 +787,26 @@ fn header_value(value: &str, label: &str) -> Result<HeaderValue, AppError> {
 
 fn join_proxy_entry_url(base_url: &str, entry_path: &str) -> String {
     build_target_url(base_url, entry_path, None)
+}
+
+fn validate_model_test_interface_override(
+    platform: &str,
+    requested: Option<&str>,
+) -> Result<Option<String>, AppError> {
+    let Some(requested) = requested.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+
+    if platform != "codex" || !matches!(requested, "openai" | "openai-responses") {
+        return Err(AppError::Validation {
+            code: "validation.route_model_test_interface_format",
+            message: "Unsupported model test interface format".to_string(),
+            details: Some(format!("{platform}:{requested}")),
+            recoverable: true,
+        });
+    }
+
+    Ok(Some(requested.to_string()))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1220,8 +1255,8 @@ mod tests {
 
     #[test]
     fn builds_openai_chat_test_request() {
-        let request =
-            build_model_test_request(&api_credential("openai"), "codex", None).expect("request");
+        let request = build_model_test_request(&api_credential("openai"), "codex", None, None)
+            .expect("request");
         let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
 
         assert_eq!(request.interface_format, "openai");
@@ -1242,8 +1277,9 @@ mod tests {
 
     #[test]
     fn builds_openai_chat_test_request_with_explicit_model() {
-        let request = build_model_test_request(&api_credential("openai"), "codex", Some("gpt-4o"))
-            .expect("request");
+        let request =
+            build_model_test_request(&api_credential("openai"), "codex", Some("gpt-4o"), None)
+                .expect("request");
         let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
 
         assert_eq!(
@@ -1254,8 +1290,9 @@ mod tests {
 
     #[test]
     fn builds_openai_responses_test_request() {
-        let request = build_model_test_request(&api_credential("openai-responses"), "codex", None)
-            .expect("request");
+        let request =
+            build_model_test_request(&api_credential("openai-responses"), "codex", None, None)
+                .expect("request");
         let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
 
         assert_eq!(request.interface_format, "openai-responses");
@@ -1276,7 +1313,7 @@ mod tests {
 
     #[test]
     fn builds_openai_responses_test_request_for_official_codex() {
-        let request = build_model_test_request(&official_credential("codex"), "codex", None)
+        let request = build_model_test_request(&official_credential("codex"), "codex", None, None)
             .expect("request");
         let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
 
@@ -1289,9 +1326,63 @@ mod tests {
     }
 
     #[test]
+    fn model_test_interface_override_selects_responses_request_shape() {
+        let request = build_model_test_request(
+            &api_credential("openai"),
+            "codex",
+            Some("gpt-5.5"),
+            Some("openai-responses"),
+        )
+        .expect("request");
+        let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
+
+        assert_eq!(request.interface_format, "openai-responses");
+        assert_eq!(request.request_path, "/responses");
+        assert_eq!(
+            body.pointer("/input").and_then(Value::as_str),
+            Some(MODEL_TEST_PROMPT)
+        );
+    }
+
+    #[test]
+    fn model_test_interface_override_selects_chat_completions_request_shape() {
+        let request = build_model_test_request(
+            &api_credential("openai-responses"),
+            "codex",
+            Some("gpt-5.5"),
+            Some("openai"),
+        )
+        .expect("request");
+        let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
+
+        assert_eq!(request.interface_format, "openai");
+        assert_eq!(request.request_path, "/chat/completions");
+        assert_eq!(
+            body.pointer("/messages/0/content").and_then(Value::as_str),
+            Some(MODEL_TEST_PROMPT)
+        );
+    }
+
+    #[test]
+    fn model_test_interface_override_validates_scope_and_values() {
+        assert_eq!(
+            validate_model_test_interface_override("codex", Some("openai"))
+                .expect("valid override")
+                .as_deref(),
+            Some("openai")
+        );
+        assert!(validate_model_test_interface_override("codex", Some("gemini")).is_err());
+        assert!(validate_model_test_interface_override("claude", Some("openai")).is_err());
+        assert_eq!(
+            validate_model_test_interface_override("claude", None).expect("missing override"),
+            None
+        );
+    }
+
+    #[test]
     fn builds_openai_test_request_for_official_grok() {
-        let request =
-            build_model_test_request(&official_credential("grok"), "grok", None).expect("request");
+        let request = build_model_test_request(&official_credential("grok"), "grok", None, None)
+            .expect("request");
         assert_eq!(request.interface_format, "openai");
         assert_eq!(request.request_path, "/chat/completions");
         assert!(
@@ -1304,8 +1395,9 @@ mod tests {
 
     #[test]
     fn builds_anthropic_test_request_for_official_claude() {
-        let request = build_model_test_request(&official_credential("claude"), "claude", None)
-            .expect("request");
+        let request =
+            build_model_test_request(&official_credential("claude"), "claude", None, None)
+                .expect("request");
         let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
 
         assert_eq!(request.interface_format, "anthropic");
@@ -1322,8 +1414,8 @@ mod tests {
 
     #[test]
     fn builds_gemini_test_request_and_uses_mapping_target_in_path() {
-        let request =
-            build_model_test_request(&api_credential("gemini"), "gemini", None).expect("request");
+        let request = build_model_test_request(&api_credential("gemini"), "gemini", None, None)
+            .expect("request");
         let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
 
         assert_eq!(request.interface_format, "gemini");
@@ -1345,9 +1437,13 @@ mod tests {
 
     #[test]
     fn builds_gemini_test_request_with_explicit_model_path() {
-        let request =
-            build_model_test_request(&api_credential("gemini"), "gemini", Some("gemini-1.5-pro"))
-                .expect("request");
+        let request = build_model_test_request(
+            &api_credential("gemini"),
+            "gemini",
+            Some("gemini-1.5-pro"),
+            None,
+        )
+        .expect("request");
 
         assert_eq!(
             request.request_path,
@@ -1357,8 +1453,9 @@ mod tests {
 
     #[test]
     fn builds_gemini_test_request_with_explicit_mapping_target_path() {
-        let request = build_model_test_request(&api_credential("gemini"), "gemini", Some("gpt-5"))
-            .expect("request");
+        let request =
+            build_model_test_request(&api_credential("gemini"), "gemini", Some("gpt-5"), None)
+                .expect("request");
 
         assert_eq!(
             request.request_path,
@@ -1375,7 +1472,7 @@ mod tests {
             "model_mappings": [{"from":"gpt-5","to":"upstream-model"}]
         })
         .to_string();
-        let request = build_model_test_request(&credential, "gemini", None).expect("request");
+        let request = build_model_test_request(&credential, "gemini", None, None).expect("request");
 
         assert_eq!(
             request.request_path,
@@ -1467,6 +1564,7 @@ mod tests {
                 platform: "codex".to_string(),
                 account_id: None,
                 model: None,
+                interface_format: None,
             },
         )
         .await
@@ -1557,6 +1655,7 @@ mod tests {
                 platform: "codex".to_string(),
                 account_id: None,
                 model: None,
+                interface_format: None,
             },
         )
         .await
@@ -1607,6 +1706,7 @@ mod tests {
                 platform: "codex".to_string(),
                 account_id: None,
                 model: Some("gpt-4o".to_string()),
+                interface_format: None,
             },
             &proxy_base_url,
         )
@@ -1660,6 +1760,7 @@ mod tests {
                 platform: "codex".to_string(),
                 account_id: Some(credential_id.clone()),
                 model: Some("gpt-4o".to_string()),
+                interface_format: None,
             },
         )
         .await
@@ -1693,6 +1794,7 @@ mod tests {
                 platform: "codex".to_string(),
                 account_id: Some(credential_id.clone()),
                 model: None,
+                interface_format: None,
             },
         )
         .await
@@ -1728,6 +1830,7 @@ mod tests {
                 platform: "codex".to_string(),
                 account_id: Some(credential_id.clone()),
                 model: None,
+                interface_format: None,
             },
         )
         .await
@@ -1810,6 +1913,7 @@ mod tests {
                 platform: "grok".to_string(),
                 account_id: None,
                 model: Some("grok-4.5".to_string()),
+                interface_format: None,
             },
         )
         .await
@@ -1856,6 +1960,7 @@ mod tests {
                 platform: "grok".to_string(),
                 account_id: Some(created.id.clone()),
                 model: Some("grok-4.5".to_string()),
+                interface_format: None,
             },
         )
         .await
@@ -1908,6 +2013,7 @@ mod tests {
                 platform: "codex".to_string(),
                 account_id: None,
                 model: None,
+                interface_format: None,
             },
         )
         .await
@@ -1939,6 +2045,7 @@ mod tests {
                 platform: "codex".to_string(),
                 account_id: None,
                 model: None,
+                interface_format: None,
             },
         )
         .await
