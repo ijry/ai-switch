@@ -77,6 +77,17 @@ import {
 
 type PlatformKey = "codex" | "claude" | "grok" | "gemini" | "opencode" | "openclaw" | "hermes";
 type CreateMode = "api" | "official";
+type RoutePoolAction = "add" | "remove" | "sync";
+type RoutePoolFeedback = {
+  type: "success" | "error";
+  message: string;
+} | null;
+type RoutePoolMutationInput = {
+  platform: string;
+  account_ids: string[];
+  action: RoutePoolAction;
+  affectedCount: number;
+};
 
 function formatApiError(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim()) {
@@ -1238,6 +1249,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const autoQuotaRefreshedPlatform = useRef<string | null>(null);
   const [modelTestOutcome, setModelTestOutcome] = useState<RoutePoolModelTestOutcome | null>(null);
   const [configWriteOutcomes, setConfigWriteOutcomes] = useState<RouteConfigWriteOutcome[]>([]);
+  const [routePoolFeedback, setRoutePoolFeedback] = useState<RoutePoolFeedback>(null);
   const routeTestModel = routeTestModelsByPlatform[activePlatform] ?? "";
   const statsSince = useMemo(() => routeStatsSince(statsPeriod), [statsPeriod]);
 
@@ -1283,6 +1295,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   useEffect(() => {
     setRequestPage(1);
     setSelectedAccountIds(new Set());
+    setRoutePoolFeedback(null);
   }, [activePlatform]);
 
   useEffect(() => {
@@ -1663,15 +1676,30 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   });
 
   const routePoolMutation = useMutation({
-    mutationFn: (input: { platform: string; account_ids: string[] }) => setRoutePoolMembers(input),
-    onSuccess: (state) => {
+    mutationFn: ({ platform, account_ids }: RoutePoolMutationInput) =>
+      setRoutePoolMembers({ platform, account_ids }),
+    onMutate: () => {
+      setRoutePoolFeedback(null);
+    },
+    onSuccess: (state, variables) => {
       setDraftPoolIds(new Set(state.account_ids));
+      const message =
+        variables.action === "add"
+          ? `已加入 ${variables.affectedCount} 个账号。`
+          : variables.action === "remove"
+            ? `已移出 ${variables.affectedCount} 个账号。`
+            : "算力池已同步。";
+      setRoutePoolFeedback({ type: "success", message });
       void queryClient.invalidateQueries({ queryKey: ["route-pool", activePlatform] });
     },
-    onError: () => {
+    onError: (error) => {
       if (routePoolQuery.data) {
         setDraftPoolIds(new Set(routePoolQuery.data.account_ids));
       }
+      setRoutePoolFeedback({
+        type: "error",
+        message: `算力池更新失败：${formatApiError(error, "请求未成功。")}`,
+      });
     },
   });
   const modelTestMutation = useMutation({
@@ -1886,12 +1914,18 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     copyCredentialMutation.mutate(credential.id);
   };
 
-  const applyPoolMembership = (accountIds: string[]) => {
+  const applyPoolMembership = (
+    accountIds: string[],
+    action: RoutePoolAction,
+    affectedCount: number,
+  ) => {
     const next = new Set(accountIds);
     setDraftPoolIds(next);
     routePoolMutation.mutate({
       platform: activePlatform,
       account_ids: Array.from(next),
+      action,
+      affectedCount,
     });
   };
 
@@ -1903,7 +1937,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     for (const id of selectedAccountIds) {
       next.add(id);
     }
-    applyPoolMembership(Array.from(next));
+    applyPoolMembership(Array.from(next), "add", selectedAccountIds.size);
     clearAccountSelection();
   };
 
@@ -1915,7 +1949,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     for (const id of selectedAccountIds) {
       next.delete(id);
     }
-    applyPoolMembership(Array.from(next));
+    applyPoolMembership(Array.from(next), "remove", selectedAccountIds.size);
     clearAccountSelection();
   };
 
@@ -1929,7 +1963,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     batchDeleteMutation.mutate(ids, {
       onSuccess: () => {
         if (remainingPool.length !== draftPoolIds.size) {
-          applyPoolMembership(remainingPool);
+          applyPoolMembership(remainingPool, "sync", ids.length);
         }
       },
     });
@@ -2708,6 +2742,19 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
           {quotaRefreshMessage && (
             <p className="rounded-xl bg-violet-50 px-3 py-2 text-[12px] font-medium text-violet-800">
               {quotaRefreshMessage}
+            </p>
+          )}
+          {routePoolFeedback && (
+            <p
+              aria-live="polite"
+              className={`rounded-xl px-3 py-2 text-[12px] font-semibold ${
+                routePoolFeedback.type === "error"
+                  ? "bg-red-50 text-red-700"
+                  : "bg-emerald-50 text-emerald-800"
+              }`}
+              role={routePoolFeedback.type === "error" ? "alert" : "status"}
+            >
+              {routePoolFeedback.message}
             </p>
           )}
           {credentialsQuery.isLoading && <p className="rounded-xl bg-stone-50 p-4 text-sm text-stone-500">正在加载账号...</p>}
