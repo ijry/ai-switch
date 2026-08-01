@@ -32,7 +32,7 @@ pub struct RoutePoolStats {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RoutePoolState {
     pub platform: String,
-    /// Selected route_credentials.id values for this platform pool.
+    /// Selected route_credentials.id values, independent of current credential status.
     pub account_ids: Vec<String>,
     pub stats: RoutePoolStats,
 }
@@ -40,7 +40,7 @@ pub struct RoutePoolState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SetRoutePoolMembersInput {
     pub platform: String,
-    /// route_credentials.id values to set as pool members.
+    /// route_credentials.id values to set as members; routing filters ineligible statuses.
     pub account_ids: Vec<String>,
 }
 

@@ -2898,6 +2898,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pool_selection_excludes_non_ok_members_until_they_recover() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let recovering_id =
+            create_proxy_api_credential(&pool, "recovering", "http://127.0.0.1:1/v1").await;
+        let healthy_id =
+            create_proxy_api_credential(&pool, "healthy", "http://127.0.0.1:1/v1").await;
+        RoutePoolRepository::replace_members(
+            &pool,
+            "codex",
+            &[recovering_id.clone(), healthy_id.clone()],
+        )
+        .await
+        .expect("pool members");
+        RouteCredentialRepository::update_status(&pool, &recovering_id, "error")
+            .await
+            .expect("error status");
+
+        let selected = select_pool_credentials(&pool, "codex")
+            .await
+            .expect("healthy selection");
+        assert_eq!(
+            selected.into_iter().map(|item| item.id).collect::<Vec<_>>(),
+            vec![healthy_id.clone()]
+        );
+
+        RouteCredentialRepository::update_status(&pool, &recovering_id, "ok")
+            .await
+            .expect("recovered status");
+        let selected = select_pool_credentials(&pool, "codex")
+            .await
+            .expect("recovered selection");
+        assert_eq!(
+            selected.into_iter().map(|item| item.id).collect::<Vec<_>>(),
+            vec![recovering_id, healthy_id]
+        );
+    }
+
+    #[tokio::test]
     async fn pool_selection_uses_earliest_cooling_account_and_pool_order_tie_breaker() {
         use crate::database::{create_memory_pool, run_migrations};
 

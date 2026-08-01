@@ -382,7 +382,33 @@ describe("AccountsScreen", () => {
     });
   });
 
-  it("reports route pool membership errors and rolls back optimistic state", async () => {
+  it("allows an error-status account to be added to and removed from the pool", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      { ...credentialsFixture[0], status: "error" },
+    ]);
+    renderScreen();
+
+    expect(await screen.findByText("异常")).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("选择 Team Account"));
+    await userEvent.click(screen.getByLabelText("批量加入算力池"));
+    await waitFor(() =>
+      expect(setRoutePoolMembers).toHaveBeenLastCalledWith({
+        platform: "codex",
+        account_ids: ["cred-official-1"],
+      }),
+    );
+
+    await userEvent.click(screen.getByLabelText("选择 Team Account"));
+    await userEvent.click(screen.getByLabelText("批量移出算力池"));
+    await waitFor(() =>
+      expect(setRoutePoolMembers).toHaveBeenLastCalledWith({
+        platform: "codex",
+        account_ids: [],
+      }),
+    );
+  });
+
+  it("reports route pool membership errors, rolls back, and refreshes account state", async () => {
     vi.mocked(listRouteCredentials)
       .mockResolvedValueOnce(credentialsFixture)
       .mockResolvedValue([
@@ -390,9 +416,9 @@ describe("AccountsScreen", () => {
         credentialsFixture[1],
       ]);
     vi.mocked(setRoutePoolMembers).mockRejectedValueOnce({
-      code: "validation.route_pool_credential_invalid",
-      message: "Route pool credential must be ok",
-      details: "cred-official-1:error",
+      code: "database.route_pool_commit",
+      message: "Could not save route pool members",
+      details: "disk I/O error",
       recoverable: true,
     });
 
@@ -402,7 +428,7 @@ describe("AccountsScreen", () => {
     await userEvent.click(screen.getByLabelText("批量加入算力池"));
 
     expect(
-      await screen.findByText("算力池更新失败：Route pool credential must be ok (cred-official-1:error)"),
+      await screen.findByText("算力池更新失败：Could not save route pool members (disk I/O error)"),
     ).toBeInTheDocument();
     expect(screen.queryByText("已入池")).not.toBeInTheDocument();
     expect(screen.getByText("已加入 0 个账号")).toBeInTheDocument();

@@ -48,29 +48,15 @@ impl RoutePoolService {
             .filter(|id| !id.is_empty())
             .filter(|id| seen.insert(id.clone()))
             .collect();
-        let existing_account_ids: HashSet<String> =
-            RoutePoolRepository::list_member_ids(pool, &platform)
-                .await?
-                .into_iter()
-                .collect();
 
         for account_id in &account_ids {
             let account_platform = RouteCredentialRepository::platform_of(pool, account_id).await?;
-            let credential = RouteCredentialRepository::get(pool, account_id).await?;
             let account_platform = normalize_platform(&account_platform)?;
             if account_platform != platform {
                 return Err(AppError::Validation {
                     code: "validation.route_pool_platform_mismatch",
                     message: "Route pool account belongs to another platform".to_string(),
                     details: Some(format!("{account_id}:{account_platform}")),
-                    recoverable: true,
-                });
-            }
-            if credential.status != "ok" && !existing_account_ids.contains(account_id) {
-                return Err(AppError::Validation {
-                    code: "validation.route_pool_credential_invalid",
-                    message: "Route pool credential must be ok".to_string(),
-                    details: Some(format!("{account_id}:{}", credential.status)),
                     recoverable: true,
                 });
             }
@@ -724,93 +710,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_members_rejects_non_ok_credentials() {
+    async fn set_members_accepts_credentials_in_any_status() {
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
-        let account_id = credential(&pool, "codex", "CodexWarning", "warning").await;
-
-        let error = RoutePoolService::set_members(
-            &pool,
-            SetRoutePoolMembersInput {
-                platform: "codex".to_string(),
-                account_ids: vec![account_id],
-            },
-        )
-        .await
-        .expect_err("invalid credential");
-
-        match error {
-            AppError::Validation { code, .. } => {
-                assert_eq!(code, "validation.route_pool_credential_invalid");
-            }
-            _ => panic!("expected validation error"),
-        }
-    }
-
-    #[tokio::test]
-    async fn set_members_allows_retaining_an_existing_non_ok_credential() {
-        let pool = create_memory_pool().await.expect("pool");
-        run_migrations(&pool).await.expect("migrations");
-        let existing_id = account(&pool, "codex", "ExistingCodex").await;
-        let new_id = account(&pool, "codex", "NewCodex").await;
-
-        RoutePoolService::set_members(
-            &pool,
-            SetRoutePoolMembersInput {
-                platform: "codex".to_string(),
-                account_ids: vec![existing_id.clone()],
-            },
-        )
-        .await
-        .expect("initial members");
-        RouteCredentialRepository::update_status(&pool, &existing_id, "error")
-            .await
-            .expect("status update");
+        let warning_id = credential(&pool, "codex", "CodexWarning", "warning").await;
+        let error_id = credential(&pool, "codex", "CodexError", "error").await;
+        let revoked_id = credential(&pool, "codex", "CodexRevoked", "revoked").await;
 
         let state = RoutePoolService::set_members(
             &pool,
             SetRoutePoolMembersInput {
                 platform: "codex".to_string(),
-                account_ids: vec![existing_id.clone(), new_id.clone()],
+                account_ids: vec![warning_id.clone(), error_id.clone(), revoked_id.clone()],
             },
         )
         .await
-        .expect("existing invalid member must not block adding a healthy member");
+        .expect("members in any status");
 
-        assert_eq!(state.account_ids, vec![existing_id, new_id]);
-    }
-
-    #[tokio::test]
-    async fn set_members_allows_removing_a_healthy_member_while_retaining_a_non_ok_member() {
-        let pool = create_memory_pool().await.expect("pool");
-        run_migrations(&pool).await.expect("migrations");
-        let retained_id = account(&pool, "codex", "RetainedCodex").await;
-        let removed_id = account(&pool, "codex", "RemovedCodex").await;
-
-        RoutePoolService::set_members(
-            &pool,
-            SetRoutePoolMembersInput {
-                platform: "codex".to_string(),
-                account_ids: vec![retained_id.clone(), removed_id],
-            },
-        )
-        .await
-        .expect("initial members");
-        RouteCredentialRepository::update_status(&pool, &retained_id, "error")
-            .await
-            .expect("status update");
+        assert_eq!(
+            state.account_ids,
+            vec![warning_id, error_id.clone(), revoked_id]
+        );
+        assert_eq!(state.stats.member_count, 3);
 
         let state = RoutePoolService::set_members(
             &pool,
             SetRoutePoolMembersInput {
                 platform: "codex".to_string(),
-                account_ids: vec![retained_id.clone()],
+                account_ids: vec![error_id.clone()],
             },
         )
         .await
-        .expect("existing invalid member must not block removing another member");
+        .expect("remove members regardless of retained status");
 
-        assert_eq!(state.account_ids, vec![retained_id]);
+        assert_eq!(state.account_ids, vec![error_id]);
+    }
+
+    #[tokio::test]
+    async fn route_once_skips_non_ok_pool_members() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let error_id = credential(&pool, "codex", "CodexError", "error").await;
+        let healthy_id = account(&pool, "codex", "CodexHealthy").await;
+
+        RoutePoolService::set_members(
+            &pool,
+            SetRoutePoolMembersInput {
+                platform: "codex".to_string(),
+                account_ids: vec![error_id, healthy_id.clone()],
+            },
+        )
+        .await
+        .expect("pool members");
+
+        let outcome = RoutePoolService::route_once(
+            &pool,
+            RoutePoolRouteRequest {
+                platform: "codex".to_string(),
+                token_count: None,
+                cost_micros: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .expect("healthy route member");
+
+        assert_eq!(outcome.selected_account_id, healthy_id);
     }
 
     #[tokio::test]
