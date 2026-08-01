@@ -383,6 +383,12 @@ describe("AccountsScreen", () => {
   });
 
   it("reports route pool membership errors and rolls back optimistic state", async () => {
+    vi.mocked(listRouteCredentials)
+      .mockResolvedValueOnce(credentialsFixture)
+      .mockResolvedValue([
+        { ...credentialsFixture[0], status: "error" },
+        credentialsFixture[1],
+      ]);
     vi.mocked(setRoutePoolMembers).mockRejectedValueOnce({
       code: "validation.route_pool_credential_invalid",
       message: "Route pool credential must be ok",
@@ -400,6 +406,7 @@ describe("AccountsScreen", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText("已入池")).not.toBeInTheDocument();
     expect(screen.getByText("已加入 0 个账号")).toBeInTheDocument();
+    expect(await screen.findByText("异常")).toBeInTheDocument();
   });
 
   it("imports a single official CPA credential from the add dialog", async () => {

@@ -1700,6 +1700,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
         type: "error",
         message: `算力池更新失败：${formatApiError(error, "请求未成功。")}`,
       });
+      void invalidateAccountData();
     },
   });
   const modelTestMutation = useMutation({
