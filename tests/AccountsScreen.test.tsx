@@ -978,6 +978,7 @@ describe("AccountsScreen", () => {
   });
 
   it("renders filtered route request statistics, expands request details, and paginates request rows", async () => {
+    vi.setSystemTime(new Date("2026-07-17T08:00:00Z"));
     const expectedMonthStart = new Date();
     expectedMonthStart.setHours(0, 0, 0, 0);
     expectedMonthStart.setDate(1);
