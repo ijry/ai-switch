@@ -16,7 +16,7 @@ use crate::error::{ApiError, AppError};
 use crate::models::batch::NewBatch;
 use crate::models::route_credential::{
     CreateApiRouteCredentialInput, ImportOfficialFilesInput, ImportOfficialTextInput,
-    UpdateRouteCredentialInput,
+    ReorderRouteCredentialInput, RouteCredentialPageRequest, UpdateRouteCredentialInput,
 };
 use crate::models::route_pool::{
     RouteModelsFetchRequest, RoutePoolModelTestRequest, RoutePoolRouteRequest,
@@ -138,11 +138,15 @@ pub async fn dispatch_command(
                 .map_err(to_error)?,
             )
         }
-        "get_settings" => to_value(get_settings_core(&state.paths).await.map_err(to_error)?),
+        "get_settings" => to_value(
+            get_settings_core(&state.paths, &state.deeplink_protocols)
+                .await
+                .map_err(to_error)?,
+        ),
         "save_settings" => {
             let settings: AppSettings = parse_arg(&args, "settings")?;
             to_value(
-                save_settings_core(&state.paths, settings)
+                save_settings_core(&state.paths, &state.deeplink_protocols, settings)
                     .await
                     .map_err(to_error)?,
             )
@@ -201,6 +205,22 @@ pub async fn dispatch_command(
             let platform = required_string_arg(&args, "platform")?;
             to_value(
                 RouteCredentialService::list(&state.pool, platform)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "list_route_credentials_page" => {
+            let input: RouteCredentialPageRequest = parse_arg(&args, "input")?;
+            to_value(
+                RouteCredentialService::page(&state.pool, input)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "reorder_route_credentials" => {
+            let input: ReorderRouteCredentialInput = parse_arg(&args, "input")?;
+            to_value(
+                RouteCredentialService::reorder(&state.pool, input)
                     .await
                     .map_err(to_error)?,
             )
@@ -695,6 +715,7 @@ mod tests {
                 paths: crate::paths::AppPaths::from_data_dir(temp.path().join("app-data")),
                 pool,
                 config_writes: ConfigWriteRuntimeState::default(),
+                deeplink_protocols: crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime::default(),
                 route_proxy: RouteProxyRuntimeState::default(),
                 web_service: WebServiceRuntimeState::default(),
                 tailscale: TailscaleRuntimeState::default(),

@@ -147,6 +147,29 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
         <p className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] text-stone-600">
           {t("settings.dataDir", { path: settings.data_dir })}
         </p>
+        <label className="flex max-w-xl items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-[12px] font-semibold text-stone-700">
+          <input
+            aria-label={t("settings.ccswitch.label")}
+            checked={settings.ccswitch_deeplink_compat_enabled}
+            className="mt-0.5"
+            disabled={settings.ccswitch_deeplink_compat_supported === false || saveMutation.isPending}
+            onChange={(event) =>
+              saveMutation.mutate({
+                ...settings,
+                ccswitch_deeplink_compat_enabled: event.target.checked,
+              })
+            }
+            type="checkbox"
+          />
+          <span className="grid gap-1">
+            <span>{t("settings.ccswitch.label")}</span>
+            <span className="text-[11px] font-medium text-stone-500">
+              {settings.ccswitch_deeplink_compat_supported !== false
+                ? t("settings.ccswitch.warning")
+                : t("settings.ccswitch.unsupported")}
+            </span>
+          </span>
+        </label>
         <label className="flex max-w-sm flex-col gap-1.5 text-[12px] font-semibold text-stone-600">
           <span>{t("settings.language")}</span>
           <select

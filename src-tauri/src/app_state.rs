@@ -1,5 +1,6 @@
 use crate::paths::AppPaths;
 use crate::services::config_write_service::ConfigWriteRuntimeState;
+use crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime;
 use crate::services::route_proxy_service::RouteProxyRuntimeState;
 use crate::services::tailscale_service::TailscaleRuntimeState;
 use crate::services::web_service::WebServiceRuntimeState;
@@ -13,6 +14,7 @@ pub struct AppState {
     pub paths: AppPaths,
     pub pool: SqlitePool,
     pub config_writes: ConfigWriteRuntimeState,
+    pub deeplink_protocols: DeepLinkProtocolRuntime,
     pub route_proxy: RouteProxyRuntimeState,
     pub web_service: WebServiceRuntimeState,
     pub tailscale: TailscaleRuntimeState,

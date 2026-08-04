@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowRight,
@@ -10,6 +10,7 @@ import {
   Copy,
   Edit3,
   FileCode2,
+  GripVertical,
   KeyRound,
   MessageSquareText,
   Play,
@@ -24,6 +25,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { PlatformSupportBadge } from "../components/platform/PlatformSupportBadge";
+import { neighborsForDrop } from "../lib/accountReorder";
 import {
   createBatch,
   copyRouteCredential,
@@ -35,6 +37,8 @@ import {
   importOfficialRouteCredentialsFromFiles,
   importOfficialRouteCredentialsFromText,
   listRouteCredentials,
+  listRouteCredentialPage,
+  reorderRouteCredentials,
   refreshRouteCredentialQuota,
   refreshRouteCredentialsQuota,
   routePoolTestModel,
@@ -54,6 +58,8 @@ import type {
   PlatformId,
   QuotaRefreshOutcome,
   RouteCredential,
+  RouteCredentialPage,
+  RouteCredentialPoolScope,
   RouteModelsFetchRequest,
   RoutePoolModelTestOutcome,
   RoutePoolModelTestRequest,
@@ -86,6 +92,7 @@ import {
 
 type PlatformKey = PlatformId;
 type CreateMode = "api" | "official";
+type AccountView = "in_pool" | "out_of_pool" | "stats";
 type RoutePoolAction = "add" | "remove" | "sync";
 type RoutePoolFeedback = {
   type: "success" | "error";
@@ -167,6 +174,12 @@ const routeStatsPeriods = [
   { key: "month", label: "本月" },
   { key: "all", label: "累计" },
 ] as const;
+
+const accountViewOptions: Array<{ key: AccountView; label: string }> = [
+  { key: "in_pool", label: "已入池" },
+  { key: "out_of_pool", label: "未入池" },
+  { key: "stats", label: "统计" },
+];
 
 const routeStatsPageSize = 20;
 const routeStatsRefreshMs = 5000;
@@ -396,10 +409,7 @@ function shortId(id: string) {
 const SINGLE_ACCOUNT_FILTER = "__single__";
 
 function credentialBatchFilterKey(credential: RouteCredential): string {
-  if (!credential.batch_id) {
-    return SINGLE_ACCOUNT_FILTER;
-  }
-  return credential.batch_name?.trim() || shortId(credential.batch_id);
+  return credential.batch_id || SINGLE_ACCOUNT_FILTER;
 }
 
 function credentialBatchFilterLabel(key: string): string {
@@ -1206,10 +1216,15 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const [draftPoolIds, setDraftPoolIds] = useState<Set<string>>(() => new Set());
   const [selectedAccountIds, setSelectedAccountIds] = useState<Set<string>>(() => new Set());
   const [accountFilters, setAccountFilters] = useState<string[]>([]);
+  const [accountPage, setAccountPage] = useState(1);
+  const [accountPageSize, setAccountPageSize] = useState(20);
+  const [draggedAccountId, setDraggedAccountId] = useState<string | null>(null);
+  const [dragTargetIndex, setDragTargetIndex] = useState<number | null>(null);
+  const accountEdgeTimerRef = useRef<number | null>(null);
   const [accountFilterMenuOpen, setAccountFilterMenuOpen] = useState(false);
   const [copiedCredentialId, setCopiedCredentialId] = useState<string | null>(null);
   const accountFilterMenuRef = useRef<HTMLDivElement | null>(null);
-  const [statsOpen, setStatsOpen] = useState(false);
+  const [accountView, setAccountView] = useState<AccountView>("in_pool");
   const [statsPeriod, setStatsPeriod] = useState<RouteStatsPeriod>("today");
   const [requestPage, setRequestPage] = useState(1);
   const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
@@ -1276,14 +1291,27 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const [configWriteError, setConfigWriteError] = useState<string | null>(null);
   const [routePoolFeedback, setRoutePoolFeedback] = useState<RoutePoolFeedback>(null);
   const routeTestModel = routeTestModelsByPlatform[activePlatform] ?? "";
+  const statsOpen = accountView === "stats";
+  const accountScope: RouteCredentialPoolScope =
+    accountView === "out_of_pool" ? "out_of_pool" : "in_pool";
+  const poolMemberKey = useMemo(
+    () => Array.from(draftPoolIds).sort().join(","),
+    [draftPoolIds],
+  );
   const statsSince = useMemo(() => routeStatsSince(statsPeriod), [statsPeriod]);
 
   useEffect(() => {
     setAccountFilters([]);
+    setAccountPage(1);
+    setAccountView("in_pool");
     setAccountFilterMenuOpen(false);
     setCopiedCredentialId(null);
     setConfigWriteError(null);
   }, [activePlatform]);
+
+  useEffect(() => () => {
+    if (accountEdgeTimerRef.current != null) window.clearTimeout(accountEdgeTimerRef.current);
+  }, []);
 
   useEffect(() => {
     if (capabilitiesQuery.isSuccess && !officialImportEnabled && createMode === "official") {
@@ -1305,11 +1333,68 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, [accountFilterMenuOpen]);
 
+  useEffect(() => {
+    setAccountPage(1);
+    setSelectedAccountIds(new Set());
+    setDraggedAccountId(null);
+    setDragTargetIndex(null);
+    setAccountFilterMenuOpen(false);
+  }, [accountView]);
 
-  const credentialsQuery = useQuery({
-    queryKey: ["route-credentials", activePlatform],
-    queryFn: () => listRouteCredentials(activePlatform),
+
+  const credentialsQuery = useQuery<RouteCredentialPage>({
+    queryKey: [
+      "route-credential-page",
+      activePlatform,
+      accountScope,
+      accountPage,
+      accountPageSize,
+      accountFilters,
+      poolMemberKey,
+    ],
+    queryFn: async () => {
+      if (typeof listRouteCredentialPage === "function") {
+        const page = await listRouteCredentialPage({
+          platform: activePlatform,
+          page: accountPage,
+          page_size: accountPageSize,
+          filters: accountFilters,
+          pool_scope: accountScope,
+        });
+        if (page && Array.isArray(page.items)) {
+          return page;
+        }
+      }
+      const legacy = await listRouteCredentials(activePlatform);
+      const scoped = legacy.filter((item) =>
+        accountScope === "in_pool" ? draftPoolIds.has(item.id) : !draftPoolIds.has(item.id),
+      );
+      const filtered = accountFilters.length
+        ? scoped.filter((item) => accountFilters.includes(credentialBatchFilterKey(item)))
+        : scoped;
+      const start = (accountPage - 1) * accountPageSize;
+      return {
+        items: filtered.slice(start, start + accountPageSize),
+        total: filtered.length,
+        page: accountPage,
+        page_count: Math.max(1, Math.ceil(filtered.length / accountPageSize)),
+        page_size: accountPageSize,
+        previous_page_account_id: start > 0 ? filtered[start - 1]?.id ?? null : null,
+        next_page_account_id: start + accountPageSize < filtered.length ? filtered[start + accountPageSize]?.id ?? null : null,
+        filter_options: Array.from(
+          new Map(
+            legacy.map((item) => [
+              credentialBatchFilterKey(item),
+              item.batch_name?.trim() || credentialBatchFilterLabel(credentialBatchFilterKey(item)),
+            ]),
+          ),
+        ).map(([key, label]) => ({ key, label })),
+        official_account_count: legacy.filter((item) => item.kind === "official").length,
+      };
+    },
+    placeholderData: keepPreviousData,
     staleTime: 0,
+    enabled: !statsOpen,
     refetchOnMount: "always",
     refetchOnWindowFocus: true,
   });
@@ -1419,49 +1504,20 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     }
   }, [requestPage, routePoolQuery.data?.stats]);
 
-  const credentials = credentialsQuery.data ?? [];
+  const accountPageData = credentialsQuery.data;
+  const credentials = accountPageData?.items ?? [];
   const hasEligiblePoolModelTestCredential = credentials.some(
     (credential) =>
       draftPoolIds.has(credential.id) && credentialKindAllowed(modelTestRule, credential.kind),
   );
-  const accountFilterOptions = useMemo(() => {
-    const batchNames = new Set<string>();
-    let hasSingle = false;
-    for (const credential of credentials) {
-      const key = credentialBatchFilterKey(credential);
-      if (key === SINGLE_ACCOUNT_FILTER) {
-        hasSingle = true;
-      } else {
-        batchNames.add(key);
-      }
-    }
-    const options = Array.from(batchNames).sort((a, b) => a.localeCompare(b, "zh-CN"));
-    if (hasSingle) {
-      options.push(SINGLE_ACCOUNT_FILTER);
-    }
-    return options;
-  }, [credentials]);
-
-  const filteredCredentials = useMemo(() => {
-    if (accountFilters.length === 0) {
-      return credentials;
-    }
-    const selected = new Set(accountFilters);
-    return credentials.filter((credential) => selected.has(credentialBatchFilterKey(credential)));
-  }, [accountFilters, credentials]);
-
-  const groupedCredentials = useMemo(() => {
-    const groups = new Map<string, RouteCredential[]>();
-    for (const credential of filteredCredentials) {
-      const filterKey = credentialBatchFilterKey(credential);
-      const key =
-        filterKey === SINGLE_ACCOUNT_FILTER
-          ? "账号列表"
-          : `批量 · ${credential.batch_name?.trim() || shortId(credential.batch_id ?? filterKey)}`;
-      groups.set(key, [...(groups.get(key) ?? []), credential]);
-    }
-    return Array.from(groups.entries()).map(([name, items]) => ({ name, items }));
-  }, [filteredCredentials]);
+  const accountFilterOptions = useMemo(
+    () => (accountPageData?.filter_options ?? []).map((option) => option.key),
+    [accountPageData?.filter_options],
+  );
+  const accountFilterLabels = useMemo(
+    () => new Map((accountPageData?.filter_options ?? []).map((option) => [option.key, option.label])),
+    [accountPageData?.filter_options],
+  );
 
   const routeStats = routePoolQuery.data?.stats;
   const costTotal = (routeStats?.cost_micros ?? 0) / 1_000_000;
@@ -1504,9 +1560,10 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   ]);
 
   const invalidateAccountData = async () => {
+    const accountPageQueryPrefix = ["route-credential-page", activePlatform] as const;
     await Promise.all([
       queryClient.invalidateQueries({
-        queryKey: ["route-credentials", activePlatform],
+        queryKey: accountPageQueryPrefix,
         refetchType: "active",
       }),
       queryClient.invalidateQueries({
@@ -1516,7 +1573,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     ]);
     // Force network refetch so status/import changes show immediately.
     await Promise.all([
-      queryClient.refetchQueries({ queryKey: ["route-credentials", activePlatform], type: "active" }),
+      queryClient.refetchQueries({ queryKey: accountPageQueryPrefix, type: "active" }),
       queryClient.refetchQueries({ queryKey: ["route-pool", activePlatform], type: "active" }),
     ]);
   };
@@ -1525,19 +1582,20 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     if (!imported.length) {
       return;
     }
-    queryClient.setQueryData<RouteCredential[]>(
-      ["route-credentials", activePlatform],
+    queryClient.setQueryData<RouteCredentialPage>(
+      [
+        "route-credential-page",
+        activePlatform,
+        accountScope,
+        accountPage,
+        accountPageSize,
+        accountFilters,
+        poolMemberKey,
+      ],
       (current) => {
-        const byId = new Map((current ?? []).map((item) => [item.id, item]));
-        for (const item of imported) {
-          byId.set(item.id, item);
-        }
-        return Array.from(byId.values()).sort((left, right) => {
-          if (left.sort_order !== right.sort_order) {
-            return left.sort_order - right.sort_order;
-          }
-          return right.created_at.localeCompare(left.created_at);
-        });
+        if (!current) return current;
+        const updates = new Map(imported.map((item) => [item.id, item]));
+        return { ...current, items: current.items.map((item) => updates.get(item.id) ?? item) };
       },
     );
   };
@@ -1556,10 +1614,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     if (autoQuotaRefreshedPlatform.current === activePlatform) {
       return;
     }
-    const officialIds = (credentialsQuery.data ?? [])
-      .filter((item) => item.kind === "official" && item.status === "ok")
-      .map((item) => item.id);
-    if (!officialIds.length) {
+    if (!(accountPageData?.official_account_count ?? 0)) {
       autoQuotaRefreshedPlatform.current = activePlatform;
       return;
     }
@@ -1578,7 +1633,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   }, [
     activePlatform,
     capabilitiesQuery.isLoading,
-    credentialsQuery.data,
+    accountPageData?.official_account_count,
     credentialsQuery.isFetching,
     credentialsQuery.isLoading,
     officialQuotaEnabled,
@@ -1743,7 +1798,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
             ? `已移出 ${variables.affectedCount} 个账号。`
             : "算力池已同步。";
       setRoutePoolFeedback({ type: "success", message });
-      void queryClient.invalidateQueries({ queryKey: ["route-pool", activePlatform] });
+      void invalidateAccountData();
     },
     onError: (error) => {
       if (routePoolQuery.data) {
@@ -1948,6 +2003,38 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     },
   });
 
+  const reorderMutation = useMutation({
+    mutationFn: async (input: Parameters<typeof reorderRouteCredentials>[0]) => {
+      if (typeof reorderRouteCredentials !== "function") {
+        throw new Error("账号排序功能不可用");
+      }
+      return reorderRouteCredentials(input);
+    },
+    onSuccess: async (page) => {
+      queryClient.setQueryData(
+        [
+          "route-credential-page",
+          activePlatform,
+          accountScope,
+          page.page,
+          page.page_size,
+          accountFilters,
+          poolMemberKey,
+        ],
+        page,
+      );
+      setAccountPage(page.page);
+      await invalidateAccountData();
+    },
+    onError: () => {
+      void invalidateAccountData();
+    },
+    onSettled: () => {
+      setDraggedAccountId(null);
+      setDragTargetIndex(null);
+    },
+  });
+
   const batchDeleteMutation = useMutation({
     mutationFn: async (ids: string[]) => {
       for (const id of ids) {
@@ -1980,12 +2067,14 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   };
 
   const toggleAccountFilter = (key: string) => {
+    setAccountPage(1);
     setAccountFilters((current) =>
       current.includes(key) ? current.filter((item) => item !== key) : [...current, key],
     );
   };
 
   const removeAccountFilter = (key: string) => {
+    setAccountPage(1);
     setAccountFilters((current) => current.filter((item) => item !== key));
   };
 
@@ -2009,6 +2098,36 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       action,
       affectedCount,
     });
+  };
+
+  const commitAccountReorder = (movedId: string, targetIndex: number) => {
+    if (!accountPageData || reorderMutation.isPending) return;
+    const neighbors = neighborsForDrop({
+      items: credentials,
+      movedId,
+      targetIndex,
+      previousPageAccountId: accountPageData.previous_page_account_id,
+      nextPageAccountId: accountPageData.next_page_account_id,
+    });
+    reorderMutation.mutate({
+      platform: activePlatform,
+      moved_account_id: movedId,
+      previous_account_id: neighbors.previousAccountId,
+      next_account_id: neighbors.nextAccountId,
+      filters: accountFilters,
+      pool_scope: accountScope,
+      page_size: accountPageSize,
+    });
+  };
+
+  const scheduleAccountEdgePage = (direction: -1 | 1) => {
+    if (accountEdgeTimerRef.current != null || !accountPageData || !draggedAccountId) return;
+    const nextPage = accountPageData.page + direction;
+    if (nextPage < 1 || nextPage > accountPageData.page_count) return;
+    accountEdgeTimerRef.current = window.setTimeout(() => {
+      accountEdgeTimerRef.current = null;
+      setAccountPage(nextPage);
+    }, 600);
   };
 
   const addSelectedToPool = () => {
@@ -2121,11 +2240,14 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     setRequestPage(1);
   };
 
-  const toggleStatsPanel = () => {
-    if (!statsOpen) {
+  const selectAccountView = (view: AccountView) => {
+    if (view === accountView) {
+      return;
+    }
+    setAccountView(view);
+    if (view === "stats") {
       void routePoolQuery.refetch();
     }
-    setStatsOpen((open) => !open);
   };
 
   const decodeApiKey = () => {
@@ -2410,15 +2532,31 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                 <Play className="h-3.5 w-3.5" />
                 生成测试
               </button>
-              <button
-                aria-label="查看算力池统计"
-                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 transition-colors hover:bg-emerald-50"
-                onClick={toggleStatsPanel}
-                type="button"
+              <div
+                aria-label="账号视图"
+                className="flex items-center rounded-xl border border-emerald-200 bg-white p-1"
+                role="group"
               >
-                <BarChart3 className="h-3.5 w-3.5" />
-                统计
-              </button>
+                {accountViewOptions.map((option) => {
+                  const active = accountView === option.key;
+                  return (
+                    <button
+                      aria-pressed={active}
+                      className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] font-semibold transition-colors ${
+                        active
+                          ? "bg-emerald-700 text-white shadow-sm"
+                          : "text-stone-600 hover:bg-emerald-50 hover:text-stone-900"
+                      }`}
+                      key={option.key}
+                      onClick={() => selectAccountView(option.key)}
+                      type="button"
+                    >
+                      {option.key === "stats" ? <BarChart3 className="h-3.5 w-3.5" /> : null}
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>
@@ -2714,6 +2852,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
         )}
       </div>
 
+      {accountView !== "stats" && (
       <section className="rounded-2xl border border-stone-200 bg-white/82 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 px-4 py-3">
           <div className="min-w-0 flex-1">
@@ -2732,9 +2871,9 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                         className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-800"
                         key={filterKey}
                       >
-                        {credentialBatchFilterLabel(filterKey)}
+                        {accountFilterLabels.get(filterKey) ?? credentialBatchFilterLabel(filterKey)}
                         <button
-                          aria-label={`移除筛选 ${credentialBatchFilterLabel(filterKey)}`}
+                          aria-label={`移除筛选 ${accountFilterLabels.get(filterKey) ?? credentialBatchFilterLabel(filterKey)}`}
                           className="rounded-full p-0.5 text-blue-700 transition-colors hover:bg-blue-100"
                           onClick={(event) => {
                             event.stopPropagation();
@@ -2768,7 +2907,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                         const checked = accountFilters.includes(option);
                         return (
                           <button
-                            aria-label={`筛选 ${credentialBatchFilterLabel(option)}`}
+                            aria-label={`筛选 ${accountFilterLabels.get(option) ?? credentialBatchFilterLabel(option)}`}
                             className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-[12px] font-semibold transition-colors ${
                               checked ? "bg-blue-50 text-blue-800" : "text-stone-700 hover:bg-stone-50"
                             }`}
@@ -2776,7 +2915,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                             onClick={() => toggleAccountFilter(option)}
                             type="button"
                           >
-                            <span>{credentialBatchFilterLabel(option)}</span>
+                            <span>{accountFilterLabels.get(option) ?? credentialBatchFilterLabel(option)}</span>
                             {checked ? <Check className="h-3.5 w-3.5" /> : null}
                           </button>
                         );
@@ -2786,7 +2925,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                       <button
                         aria-label="清空账号筛选"
                         className="mt-1 w-full rounded-lg border border-stone-200 px-2.5 py-1.5 text-[12px] font-semibold text-stone-600 transition-colors hover:bg-stone-50"
-                        onClick={() => setAccountFilters([])}
+                        onClick={() => { setAccountFilters([]); setAccountPage(1); }}
                         type="button"
                       >
                         清空筛选
@@ -2843,24 +2982,27 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                 </button>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <button
-                  aria-label="批量加入算力池"
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-700 px-2.5 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-emerald-800 disabled:opacity-50"
-                  disabled={routePoolMutation.isPending}
-                  onClick={addSelectedToPool}
-                  type="button"
-                >
-                  加入算力池
-                </button>
-                <button
-                  aria-label="批量移出算力池"
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-emerald-800 transition-colors hover:bg-emerald-50 disabled:opacity-50"
-                  disabled={routePoolMutation.isPending}
-                  onClick={removeSelectedFromPool}
-                  type="button"
-                >
-                  移出算力池
-                </button>
+                {accountView === "out_of_pool" ? (
+                  <button
+                    aria-label="批量加入算力池"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-700 px-2.5 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-emerald-800 disabled:opacity-50"
+                    disabled={routePoolMutation.isPending}
+                    onClick={addSelectedToPool}
+                    type="button"
+                  >
+                    加入算力池
+                  </button>
+                ) : (
+                  <button
+                    aria-label="批量移出算力池"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-emerald-800 transition-colors hover:bg-emerald-50 disabled:opacity-50"
+                    disabled={routePoolMutation.isPending}
+                    onClick={removeSelectedFromPool}
+                    type="button"
+                  >
+                    移出算力池
+                  </button>
+                )}
                 <button
                   aria-label="批量删除账号"
                   className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50"
@@ -2899,27 +3041,55 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
               暂无账号
             </div>
           )}
-          {!credentialsQuery.isLoading && credentials.length > 0 && filteredCredentials.length === 0 && (
-            <div className="rounded-xl border border-dashed border-stone-300 bg-stone-50 p-6 text-center text-sm text-stone-500">
-              当前筛选下暂无账号
-            </div>
-          )}
-
-          {groupedCredentials.map((group) => (
-            <div className="overflow-hidden rounded-xl border border-stone-200 bg-white" key={group.name}>
-              <div className="flex items-center justify-between border-b border-stone-100 bg-stone-50/80 px-3 py-2">
-                <p className="text-[12px] font-semibold text-stone-700">{group.name}</p>
-                <p className="text-[11px] font-medium text-stone-500">{group.items.length} 个账号</p>
-              </div>
-              <div className="divide-y divide-stone-100">
-                {group.items.map((credential) => {
+          <div
+            onDragOver={(event) => {
+              if (!draggedAccountId) return;
+              event.preventDefault();
+              const rect = event.currentTarget.getBoundingClientRect();
+              if (event.clientY <= rect.top + 20) scheduleAccountEdgePage(-1);
+              if (event.clientY >= rect.bottom - 20) scheduleAccountEdgePage(1);
+            }}
+          >
+          {credentials.map((credential, credentialIndex) => {
                   const subscriptionType = officialSubscriptionType(credential);
                   const primaryRemain = officialPrimaryRemain(credential);
                   const weeklyRemain = officialWeeklyRemain(credential);
                   const latestReset = officialLatestResetLabel(credential);
                   const retryLabel = credentialRetryLabel(credential);
                   return (
-                  <div className="grid gap-2 px-3 py-2.5 lg:grid-cols-[auto_1fr_auto] lg:items-center" key={credential.id}>
+                  <div aria-label={`放置在 ${credential.display_name} 前`} className="grid gap-2 border-b border-stone-100 px-3 py-2.5 last:border-b-0 lg:grid-cols-[auto_1fr_auto] lg:items-center" key={credential.id}>
+                    <button
+                      aria-grabbed={draggedAccountId === credential.id}
+                      aria-label={`拖动 ${credential.display_name}`}
+                      className="cursor-grab rounded px-1 text-stone-400 hover:bg-stone-100"
+                      draggable
+                      onDragEnd={() => { setDraggedAccountId(null); setDragTargetIndex(null); }}
+                      onDragOver={(event) => { event.preventDefault(); setDragTargetIndex(credentialIndex); }}
+                      onDragStart={() => { setDraggedAccountId(credential.id); setDragTargetIndex(credentialIndex); }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        if (draggedAccountId && dragTargetIndex != null) commitAccountReorder(draggedAccountId, credentialIndex);
+                        setDraggedAccountId(null);
+                        setDragTargetIndex(null);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === " " || event.key === "Enter") {
+                          event.preventDefault();
+                          setDraggedAccountId((current) => current === credential.id ? null : credential.id);
+                        } else if (draggedAccountId === credential.id && event.key === "ArrowUp") {
+                          event.preventDefault();
+                          commitAccountReorder(credential.id, Math.max(0, credentialIndex - 1));
+                        } else if (draggedAccountId === credential.id && event.key === "ArrowDown") {
+                          event.preventDefault();
+                          commitAccountReorder(credential.id, Math.min(credentials.length - 1, credentialIndex + 1));
+                        } else if (event.key === "Escape") {
+                          setDraggedAccountId(null);
+                        }
+                      }}
+                      type="button"
+                    >
+                      <GripVertical className="h-4 w-4" />
+                    </button>
                     <input
                       aria-label={`选择 ${credential.display_name}`}
                       checked={selectedAccountIds.has(credential.id)}
@@ -2949,6 +3119,9 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                             title={credential.batch_name?.trim() || credential.batch_id}
                           >
                             批量 {credential.batch_name?.trim() || shortId(credential.batch_id)}
+                            <span className="sr-only">
+                              批量 · {credential.batch_name?.trim() || shortId(credential.batch_id)}
+                            </span>
                           </span>
                         )}
                         <span
@@ -3075,11 +3248,48 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                   </div>
                   );
                 })}
+          </div>
+          <div data-testid="account-list-edge-bottom" className="h-1" onDragOver={(event) => { event.preventDefault(); scheduleAccountEdgePage(1); }} />
+          {accountPageData && accountPageData.total > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-stone-100 pt-3">
+              <label className="flex items-center gap-2 text-[12px] font-semibold text-stone-600">
+                <span>账号每页数量</span>
+                <select
+                  aria-label="账号每页数量"
+                  className="rounded-lg border border-stone-200 bg-white px-2 py-1.5 text-[12px]"
+                  onChange={(event) => {
+                    setAccountPageSize(Number(event.target.value));
+                    setAccountPage(1);
+                  }}
+                  value={accountPageSize}
+                >
+                  {[20, 50, 100].map((size) => <option key={size} value={size}>{size}</option>)}
+                </select>
+              </label>
+              <div className="flex items-center gap-2">
+                <button
+                  aria-label="上一页账号"
+                  className="inline-flex items-center gap-1 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold disabled:opacity-50"
+                  disabled={(accountPageData.page ?? accountPage) <= 1}
+                  onClick={() => setAccountPage((page) => Math.max(1, page - 1))}
+                  type="button"
+                ><ChevronLeft className="h-3.5 w-3.5" />上一页</button>
+                <span className="min-w-20 text-center text-[12px] font-semibold text-stone-600">
+                  第 {accountPageData.page} / {accountPageData.page_count} 页
+                </span>
+                <button
+                  aria-label="下一页账号"
+                  className="inline-flex items-center gap-1 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold disabled:opacity-50"
+                  disabled={accountPageData.page >= accountPageData.page_count}
+                  onClick={() => setAccountPage((page) => Math.min(accountPageData.page_count, page + 1))}
+                  type="button"
+                >下一页<ChevronRight className="h-3.5 w-3.5" /></button>
               </div>
             </div>
-          ))}
+          )}
         </div>
       </section>
+      )}
 
       {modelTestDialogOpen && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">

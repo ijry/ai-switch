@@ -13,6 +13,7 @@ use crate::services::official_agent_identity_service::{
     CODEX_AGENT_IDENTITY_BASE_URL,
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
+use crate::services::response_failure_service::detect_response_failed;
 use axum::body::Body;
 use axum::extract::State as AxumState;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
@@ -501,13 +502,19 @@ async fn forward_request(
             false
         };
         let response_text = std::str::from_utf8(&response_bytes).ok();
+        let semantic_failure = detect_response_failed(&response_bytes);
         let failure_kind = classify_proxy_failure(Some(status), response_text);
         let should_retry = !matches!(failure_kind, ProxyFailureKind::None);
-        let proxy_success = status.is_success() && !quota_exhausted && !should_retry;
-        let retry_error = if quota_exhausted {
-            Some("upstream quota exhausted")
+        let proxy_success = status.is_success()
+            && !quota_exhausted
+            && !should_retry
+            && semantic_failure.is_none();
+        let retry_error = if let Some(failure) = semantic_failure.as_ref() {
+            Some(failure.message.clone())
+        } else if quota_exhausted {
+            Some("upstream quota exhausted".to_string())
         } else if should_retry {
-            Some("upstream returned retryable status")
+            Some("upstream returned retryable status".to_string())
         } else {
             None
         };
@@ -520,7 +527,7 @@ async fn forward_request(
             proxy_success,
             trace_id.as_deref(),
             request_start,
-            retry_error,
+            retry_error.as_deref(),
         );
         let _ = insert_route_credential_usage_event(
             pool,
@@ -562,6 +569,16 @@ async fn forward_request(
                 "{}: upstream quota exhausted",
                 credential.display_name
             ));
+            continue;
+        }
+        if let Some(failure) = semantic_failure {
+            let _ = RouteCredentialRepository::record_semantic_failure(
+                pool,
+                &credential.id,
+                &failure.message,
+            )
+            .await;
+            retry_errors.push(format!("{}: {}", credential.display_name, failure.message));
             continue;
         }
         if should_retry {

@@ -8,11 +8,12 @@ use crate::models::route_pool::{RoutePoolModelTestOutcome, RoutePoolModelTestReq
 use crate::services::http_client::build_outbound_http_client;
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_proxy_service::{
-    build_target_url, build_upstream_request, classify_proxy_failure, credential_is_retryable_now,
+    build_target_url, build_upstream_request, classify_proxy_failure,
     extract_cost_micros, extract_token_count, maybe_persist_official_quota_from_response,
     maybe_refresh_official_credential, normalize_api_upstream_path, select_pool_credentials,
     ProxyFailureKind, SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
 };
+use crate::services::response_failure_service::detect_response_failed;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
@@ -59,6 +60,7 @@ impl RouteModelTestService {
             .map(str::trim)
             .filter(|account_id| !account_id.is_empty())
             .map(str::to_string);
+        let explicit_account_test = requested_account_id.is_some();
         let cursor = RoutePoolRepository::next_cursor_index(pool, &platform).await?;
 
         let (credential, next_index) = if let Some(account_id) = requested_account_id {
@@ -196,7 +198,9 @@ impl RouteModelTestService {
         let duration_ms = elapsed_ms(start);
 
         match send_result {
-            Ok((status, success, body)) => {
+            Ok((status, transport_success, body)) => {
+                let semantic_failure = detect_response_failed(&body);
+                let success = transport_success && semantic_failure.is_none();
                 let token_count = extract_token_count(&body);
                 let cost_micros = extract_cost_micros(&body);
                 let response_body =
@@ -204,7 +208,7 @@ impl RouteModelTestService {
                 let response_text =
                     extract_model_test_response_text(&parts.interface_format, &response_body);
 
-                finish_outcome(
+                let outcome = finish_outcome(
                     pool,
                     &platform,
                     credential,
@@ -213,13 +217,17 @@ impl RouteModelTestService {
                     Some(status),
                     response_body,
                     response_text,
-                    None,
+                    semantic_failure.map(|failure| failure.message),
                     success,
                     duration_ms,
                     token_count,
                     cost_micros,
                 )
-                .await
+                .await?;
+                if explicit_account_test && outcome.success {
+                    RouteCredentialRepository::recover_after_explicit_test(pool, &outcome.selected_account_id).await?;
+                }
+                Ok(outcome)
             }
             Err(error) => {
                 let error = sanitize_for_storage(&credential, &error);
@@ -743,20 +751,6 @@ async fn load_account_credential(
             recoverable: true,
         });
     };
-    let next_retry_at: Option<String> = row.get("next_retry_at");
-    let cooldown_until: Option<String> = row.get("cooldown_until");
-    if !credential_is_retryable_now(
-        next_retry_at.as_deref(),
-        cooldown_until.as_deref(),
-        chrono::Utc::now(),
-    ) {
-        return Err(AppError::Validation {
-            code: "validation.route_credential_cooling_down",
-            message: "Route credential is cooling down and will be retried later".to_string(),
-            details: Some(account_id.to_string()),
-            recoverable: true,
-        });
-    }
     Ok(SelectedCredential {
         id: row.get("id"),
         platform: row.get("platform"),
@@ -949,6 +943,14 @@ async fn finish_outcome(
             RouteCredentialRepository::update_status(pool, &credential.id, "ok").await?;
         }
     } else {
+        if let Some(failure) = detect_response_failed(response_body.as_bytes()) {
+            RouteCredentialRepository::record_semantic_failure(
+                pool,
+                &credential.id,
+                &failure.message,
+            )
+            .await?;
+        } else {
         let status = response_status.and_then(|value| axum::http::StatusCode::from_u16(value).ok());
         let failure_kind = classify_proxy_failure(
             status,
@@ -973,6 +975,7 @@ async fn finish_outcome(
                 .await;
             }
             ProxyFailureKind::None => {}
+        }
         }
     }
 

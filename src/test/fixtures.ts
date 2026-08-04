@@ -40,4 +40,5 @@ export const settingsFixture: AppSettings = {
   logging_enabled: true,
   secret_storage: "keyring",
   data_dir: "C:/Users/example/.ai-switch",
+  ccswitch_deeplink_compat_enabled: false,
 };

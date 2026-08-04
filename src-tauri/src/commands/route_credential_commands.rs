@@ -2,7 +2,8 @@ use crate::app_state::AppState;
 use crate::error::ApiError;
 use crate::models::route_credential::{
     CreateApiRouteCredentialInput, ImportOfficialFilesInput, ImportOfficialTextInput,
-    RouteCredential, RouteCredentialImportResult, UpdateRouteCredentialInput,
+    ReorderRouteCredentialInput, RouteCredential, RouteCredentialImportResult,
+    RouteCredentialPage, RouteCredentialPageRequest, UpdateRouteCredentialInput,
 };
 use crate::services::route_credential_service::RouteCredentialService;
 use crate::services::route_quota_service::{QuotaRefreshOutcome, RouteQuotaService};
@@ -14,6 +15,26 @@ pub async fn list_route_credentials(
     platform: String,
 ) -> Result<Vec<RouteCredential>, ApiError> {
     RouteCredentialService::list(&state.pool, platform)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn list_route_credentials_page(
+    state: State<'_, AppState>,
+    input: RouteCredentialPageRequest,
+) -> Result<RouteCredentialPage, ApiError> {
+    RouteCredentialService::page(&state.pool, input)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn reorder_route_credentials(
+    state: State<'_, AppState>,
+    input: ReorderRouteCredentialInput,
+) -> Result<RouteCredentialPage, ApiError> {
+    RouteCredentialService::reorder(&state.pool, input)
         .await
         .map_err(ApiError::from)
 }

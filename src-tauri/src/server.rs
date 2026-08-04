@@ -5,6 +5,7 @@ use crate::app_state::AppState;
 use crate::database::open_migrated_pool;
 use crate::paths::AppPaths;
 use crate::services::config_write_service::ConfigWriteRuntimeState;
+use crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime;
 use crate::services::route_proxy_service::RouteProxyRuntimeState;
 use crate::services::tailscale_service::TailscaleRuntimeState;
 use crate::services::web_service::WebServiceRuntimeState;
@@ -31,6 +32,7 @@ pub async fn run_from_env() -> Result<(), String> {
         paths,
         pool,
         config_writes: ConfigWriteRuntimeState::default(),
+        deeplink_protocols: DeepLinkProtocolRuntime::default(),
         route_proxy: RouteProxyRuntimeState::default(),
         web_service: WebServiceRuntimeState::default(),
         tailscale: TailscaleRuntimeState::default(),

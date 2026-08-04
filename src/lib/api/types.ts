@@ -224,6 +224,43 @@ export type RouteCredentialImportResult = {
   failed: Array<{ label: string; error: string }>;
 };
 
+export type RouteCredentialFilterOption = {
+  key: string;
+  label: string;
+};
+
+export type RouteCredentialPoolScope = "in_pool" | "out_of_pool";
+
+export type RouteCredentialPage = {
+  items: RouteCredential[];
+  total: number;
+  page: number;
+  page_count: number;
+  page_size: number;
+  previous_page_account_id?: string | null;
+  next_page_account_id?: string | null;
+  filter_options: RouteCredentialFilterOption[];
+  official_account_count: number;
+};
+
+export type RouteCredentialPageRequest = {
+  platform: string;
+  page: number;
+  page_size: number;
+  filters: string[];
+  pool_scope: RouteCredentialPoolScope;
+};
+
+export type ReorderRouteCredentialInput = {
+  platform: string;
+  moved_account_id: string;
+  previous_account_id?: string | null;
+  next_account_id?: string | null;
+  filters: string[];
+  pool_scope: RouteCredentialPoolScope;
+  page_size: number;
+};
+
 export type RoutePoolUsageLog = {
   id: string;
   account_id?: string | null;
@@ -445,6 +482,11 @@ export type AppSettings = {
   logging_enabled: boolean;
   secret_storage: string;
   data_dir: string;
+  ccswitch_deeplink_compat_enabled: boolean;
+};
+
+export type AppSettingsView = AppSettings & {
+  ccswitch_deeplink_compat_supported?: boolean;
 };
 
 export type SessionMeta = {

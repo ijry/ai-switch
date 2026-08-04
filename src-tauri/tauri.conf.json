@@ -52,7 +52,6 @@
     "deep-link": {
       "desktop": {
         "schemes": [
-          "ccswitch",
           "aiswitch"
         ]
       }

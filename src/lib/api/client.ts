@@ -1,6 +1,7 @@
 import { getTransport } from "../transport";
 import type {
   AppSettings,
+  AppSettingsView,
   Batch,
   BatchGroup,
   ConfigSnapshotSummary,
@@ -13,6 +14,9 @@ import type {
   OfficialAccount,
   PlatformCapability,
   RouteCredential,
+  RouteCredentialPage,
+  RouteCredentialPageRequest,
+  ReorderRouteCredentialInput,
   RouteCredentialImportResult,
   QuotaRefreshOutcome,
   RouteModelsFetchRequest,
@@ -139,11 +143,11 @@ export function fetchRouteModels(request: RouteModelsFetchRequest): Promise<Fetc
   return invoke("fetch_route_models", { request });
 }
 
-export function getSettings(): Promise<AppSettings> {
+export function getSettings(): Promise<AppSettingsView> {
   return invoke("get_settings");
 }
 
-export function saveSettings(settings: AppSettings): Promise<AppSettings> {
+export function saveSettings(settings: AppSettings): Promise<AppSettingsView> {
   return invoke("save_settings", { settings });
 }
 
@@ -200,6 +204,14 @@ export function writeRouteProxyConfigs(
 
 export function listRouteCredentials(platform: string): Promise<RouteCredential[]> {
   return invoke("list_route_credentials", { platform });
+}
+
+export function listRouteCredentialPage(input: RouteCredentialPageRequest): Promise<RouteCredentialPage> {
+  return invoke("list_route_credentials_page", { input });
+}
+
+export function reorderRouteCredentials(input: ReorderRouteCredentialInput): Promise<RouteCredentialPage> {
+  return invoke("reorder_route_credentials", { input });
 }
 
 export function createApiRouteCredential(input: CreateApiRouteCredentialInput): Promise<RouteCredential> {

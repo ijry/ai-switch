@@ -105,6 +105,75 @@ pub struct RouteCredentialImportResult {
     pub failed: Vec<RouteCredentialImportFailure>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteCredentialPoolScope {
+    InPool,
+    OutOfPool,
+}
+
+impl Default for RouteCredentialPoolScope {
+    fn default() -> Self {
+        Self::OutOfPool
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteCredentialPageRequest {
+    pub platform: String,
+    pub page: i64,
+    pub page_size: i64,
+    #[serde(default)]
+    pub filters: Vec<String>,
+    #[serde(default)]
+    pub pool_scope: RouteCredentialPoolScope,
+}
+
+impl RouteCredentialPageRequest {
+    pub fn normalized_page_size(&self) -> Result<i64, String> {
+        match self.page_size {
+            20 | 50 | 100 => Ok(self.page_size),
+            _ => Err("page_size must be 20, 50, or 100".to_string()),
+        }
+    }
+
+    pub fn normalized_page(&self) -> i64 {
+        self.page.max(1)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteCredentialFilterOption {
+    pub key: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RouteCredentialPage {
+    pub items: Vec<RouteCredential>,
+    pub total: i64,
+    pub page: i64,
+    pub page_count: i64,
+    pub page_size: i64,
+    pub previous_page_account_id: Option<String>,
+    pub next_page_account_id: Option<String>,
+    pub filter_options: Vec<RouteCredentialFilterOption>,
+    pub official_account_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReorderRouteCredentialInput {
+    pub platform: String,
+    pub moved_account_id: String,
+    pub previous_account_id: Option<String>,
+    pub next_account_id: Option<String>,
+    #[serde(default)]
+    pub filters: Vec<String>,
+    #[serde(default)]
+    pub pool_scope: RouteCredentialPoolScope,
+    pub page_size: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelMapping {
     pub from: String,

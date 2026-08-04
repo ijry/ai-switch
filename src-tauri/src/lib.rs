@@ -32,6 +32,7 @@ use commands::route_credential_commands::{
     copy_route_credential, create_api_route_credential, delete_route_credential,
     get_route_credential, import_official_route_credentials_from_files,
     import_official_route_credentials_from_text, list_route_credentials,
+    list_route_credentials_page, reorder_route_credentials,
     refresh_route_credential_quota, refresh_route_credentials_quota, update_route_credential,
 };
 use commands::route_pool_commands::{
@@ -64,6 +65,10 @@ use commands::web_service_commands::{
 use database::open_migrated_pool;
 use paths::AppPaths;
 use services::config_write_service::ConfigWriteRuntimeState;
+use services::deeplink_protocol_service::{
+    DeepLinkProtocolRegistrar, DeepLinkProtocolRuntime, DeepLinkProtocolStatus,
+    UNSUPPORTED_REASON,
+};
 use services::deeplink_service::{parse_deeplink_url, DeepLinkErrorPayload};
 use services::route_proxy_service::RouteProxyRuntimeState;
 use services::tailscale_service::TailscaleRuntimeState;
@@ -74,8 +79,13 @@ use tauri_plugin_deep_link::DeepLinkExt;
 use terminal_manager::TerminalManager;
 use web::event_bridge::WebEventBroadcaster;
 
-fn is_deeplink_url(value: &str) -> bool {
-    value.starts_with("ccswitch://") || value.starts_with("aiswitch://")
+fn is_deeplink_url(app: &tauri::AppHandle, value: &str) -> bool {
+    value.starts_with("aiswitch://")
+        || (value.starts_with("ccswitch://")
+            && app
+                .state::<AppState>()
+                .deeplink_protocols
+                .ccswitch_enabled())
 }
 
 fn focus_main_window(app: &tauri::AppHandle) {
@@ -87,7 +97,7 @@ fn focus_main_window(app: &tauri::AppHandle) {
 }
 
 fn handle_deeplink_url(app: &tauri::AppHandle, url_str: &str, source: &str) -> bool {
-    if !is_deeplink_url(url_str) {
+    if !is_deeplink_url(app, url_str) {
         return false;
     }
 
@@ -109,6 +119,87 @@ fn handle_deeplink_url(app: &tauri::AppHandle, url_str: &str, source: &str) -> b
     }
 
     true
+}
+
+struct TauriDeepLinkRegistrar {
+    app: tauri::AppHandle,
+}
+
+impl DeepLinkProtocolRegistrar for TauriDeepLinkRegistrar {
+    fn status(&self) -> DeepLinkProtocolStatus {
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        {
+            match self.app.deep_link().is_registered("ccswitch") {
+                Ok(registered) => DeepLinkProtocolStatus {
+                    supported: true,
+                    ccswitch_registered: registered,
+                    reason: None,
+                },
+                Err(error) => DeepLinkProtocolStatus {
+                    supported: false,
+                    ccswitch_registered: false,
+                    reason: Some(error.to_string()),
+                },
+            }
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        {
+            DeepLinkProtocolStatus {
+                supported: false,
+                ccswitch_registered: false,
+                reason: Some(UNSUPPORTED_REASON.to_string()),
+            }
+        }
+    }
+
+    fn set_ccswitch_enabled(&self, enabled: bool) -> Result<(), crate::error::AppError> {
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        {
+            if enabled {
+                self.app.deep_link().register("ccswitch").map_err(|error| {
+                    crate::error::AppError::Validation {
+                        code: "capability.deeplink_compat_register",
+                        message: "Could not register cc-switch deep link".into(),
+                        details: Some(error.to_string()),
+                        recoverable: true,
+                    }
+                })
+            } else {
+                let owns_scheme = self.app.deep_link().is_registered("ccswitch").map_err(|error| {
+                    crate::error::AppError::Validation {
+                        code: "capability.deeplink_compat_status",
+                        message: "Could not inspect cc-switch deep link ownership".into(),
+                        details: Some(error.to_string()),
+                        recoverable: true,
+                    }
+                })?;
+                if owns_scheme {
+                    self.app.deep_link().unregister("ccswitch").map_err(|error| {
+                        crate::error::AppError::Validation {
+                            code: "capability.deeplink_compat_unregister",
+                            message: "Could not unregister cc-switch deep link".into(),
+                            details: Some(error.to_string()),
+                            recoverable: true,
+                        }
+                    })?;
+                }
+                Ok(())
+            }
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        {
+            if enabled {
+                Err(crate::error::AppError::Validation {
+                    code: UNSUPPORTED_REASON,
+                    message: "cc-switch deep-link compatibility is unavailable on this runtime".into(),
+                    details: None,
+                    recoverable: true,
+                })
+            } else {
+                Ok(())
+            }
+        }
+    }
 }
 
 pub fn run() {
@@ -144,6 +235,7 @@ pub fn run() {
             paths,
             pool,
             config_writes: ConfigWriteRuntimeState::default(),
+            deeplink_protocols: DeepLinkProtocolRuntime::default(),
             route_proxy: RouteProxyRuntimeState::default(),
             web_service: WebServiceRuntimeState::default(),
             tailscale: TailscaleRuntimeState::default(),
@@ -152,6 +244,19 @@ pub fn run() {
         })
         .setup(|app| {
             let state = app.state::<AppState>().inner().clone();
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            {
+                state.deeplink_protocols.attach_registrar(Arc::new(TauriDeepLinkRegistrar {
+                    app: app.handle().clone(),
+                }));
+                if let Ok(settings) = tauri::async_runtime::block_on(
+                    services::settings_service::SettingsService::load(&state.paths),
+                ) {
+                    if settings.ccswitch_deeplink_compat_enabled {
+                        let _ = state.deeplink_protocols.set_ccswitch_enabled(true);
+                    }
+                }
+            }
             tauri::async_runtime::spawn(async move {
                 let Ok(config) = WebService::load_config(&state.paths).await else {
                     return;
@@ -199,6 +304,8 @@ pub fn run() {
             update_official_account,
             list_platform_capabilities,
             list_route_credentials,
+            list_route_credentials_page,
+            reorder_route_credentials,
             get_route_credential,
             create_api_route_credential,
             copy_route_credential,

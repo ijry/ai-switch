@@ -9,7 +9,8 @@ use crate::models::platform::{PlatformId, PlatformOperation};
 use crate::models::route_credential::{
     normalize_anthropic_api_key_field, CreateApiRouteCredentialInput, ImportOfficialFilesInput,
     ImportOfficialTextInput, ModelMapping, RouteCredential, RouteCredentialImportFailure,
-    RouteCredentialImportResult, UpdateRouteCredentialInput,
+    RouteCredentialImportResult, RouteCredentialPage, RouteCredentialPageRequest,
+    ReorderRouteCredentialInput, UpdateRouteCredentialInput,
 };
 use crate::services::cpa_import_service::{
     parse_cpa_file, parse_cpa_text, ParsedOfficialCredential,
@@ -37,6 +38,32 @@ impl RouteCredentialService {
 
     pub async fn get(pool: &SqlitePool, id: String) -> Result<RouteCredential, AppError> {
         RouteCredentialRepository::get(pool, &id).await
+    }
+
+    pub async fn page(
+        pool: &SqlitePool,
+        request: RouteCredentialPageRequest,
+    ) -> Result<RouteCredentialPage, AppError> {
+        let platform = PlatformId::parse(&request.platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
+        RouteCredentialRepository::page(pool, RouteCredentialPageRequest {
+            platform: platform.as_str().to_string(),
+            ..request
+        })
+        .await
+    }
+
+    pub async fn reorder(
+        pool: &SqlitePool,
+        input: ReorderRouteCredentialInput,
+    ) -> Result<RouteCredentialPage, AppError> {
+        let platform = PlatformId::parse(&input.platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
+        RouteCredentialRepository::reorder(pool, ReorderRouteCredentialInput {
+            platform: platform.as_str().to_string(),
+            ..input
+        })
+        .await
     }
 
     pub async fn create_api(
@@ -517,6 +544,32 @@ mod tests {
             .await
             .expect("batch count");
         assert_eq!(count, 0);
+    }
+
+    pub async fn page(
+        pool: &SqlitePool,
+        request: RouteCredentialPageRequest,
+    ) -> Result<RouteCredentialPage, AppError> {
+        let platform = PlatformId::parse(&request.platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
+        RouteCredentialRepository::page(pool, RouteCredentialPageRequest {
+            platform: platform.as_str().to_string(),
+            ..request
+        })
+        .await
+    }
+
+    pub async fn reorder(
+        pool: &SqlitePool,
+        input: ReorderRouteCredentialInput,
+    ) -> Result<RouteCredentialPage, AppError> {
+        let platform = PlatformId::parse(&input.platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
+        RouteCredentialRepository::reorder(pool, ReorderRouteCredentialInput {
+            platform: platform.as_str().to_string(),
+            ..input
+        })
+        .await
     }
 
     #[tokio::test]

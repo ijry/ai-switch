@@ -1182,6 +1182,7 @@ mod tests {
                 paths: AppPaths::from_data_dir(temp.path().join("app-data")),
                 pool,
                 config_writes: ConfigWriteRuntimeState::default(),
+                deeplink_protocols: crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime::default(),
                 route_proxy: RouteProxyRuntimeState::default(),
                 web_service: WebServiceRuntimeState::default(),
                 tailscale: TailscaleRuntimeState::default(),

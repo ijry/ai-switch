@@ -14,7 +14,11 @@ impl SettingsService {
         }
 
         let contents = tokio::fs::read_to_string(&paths.settings_file).await?;
-        Ok(serde_json::from_str(&contents)?)
+        let mut settings: AppSettings = serde_json::from_str(&contents)?;
+        if settings.data_dir.is_empty() {
+            settings.data_dir = paths.data_dir.display().to_string();
+        }
+        Ok(settings)
     }
 
     pub async fn save(paths: &AppPaths, settings: &AppSettings) -> Result<(), AppError> {
@@ -54,6 +58,7 @@ mod tests {
             logging_enabled: true,
             secret_storage: "keyring".to_string(),
             data_dir: paths.data_dir.display().to_string(),
+            ccswitch_deeplink_compat_enabled: false,
         };
 
         SettingsService::save(&paths, &settings)
