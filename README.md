@@ -16,6 +16,22 @@ Current foundation includes:
 - Web Service settings with token-protected HTTP access
 - Tailscale login entry for private remote access
 
+## Platform Support
+
+| Platform | Route credentials and API routing | Native config writing | Official import and quota |
+| --- | --- | --- | --- |
+| Codex | Supported | Supported | Supported |
+| Claude Code | Supported | Supported | Supported where the upstream account flow allows it |
+| Gemini CLI | Supported | Supported | Import supported; official quota is not claimed |
+| Grok | Supported | Supported | Supported where the upstream account flow allows it |
+| OpenCode | Partial: API credentials require an explicit base URL and API dialect | Not supported | Not supported |
+| OpenClaw | Partial: API credentials require an explicit base URL and API dialect | Not supported | Not supported |
+| Hermes | Partial: API credentials require an explicit base URL and API dialect | Not supported | Not supported |
+
+OpenCode, OpenClaw, and Hermes remain visible for generic API routing, terminal launch, and session workflows, but AI Switch does not claim native configuration, official-account import, or quota support for them.
+
+Native Codex, Claude Code, Gemini CLI, and Grok configuration changes use safe direct writes: AI Switch prepares a snapshot before mutation, writes atomically, detects concurrent changes, and supports guarded rollback. Phase A never resolves or modifies Hermes `config.yaml`.
+
 ## Development
 
 Install dependencies:

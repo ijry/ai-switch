@@ -13,6 +13,7 @@ import {
   getRouteProxyStatus,
   importOfficialRouteCredentialsFromFiles,
   importOfficialRouteCredentialsFromText,
+  listPlatformCapabilities,
   listRouteCredentials,
   refreshRouteCredentialsQuota,
   routePoolTestModel,
@@ -26,7 +27,15 @@ import { recognizeApiKeysFromImageBlob } from "../src/lib/ocr/apiKeyOcr";
 import { CODEX_MODEL_TEST_ENDPOINT_STORAGE_KEY } from "../src/lib/codexModelTestEndpoint";
 import { createQueryClient } from "../src/lib/query/queryClient";
 import { AccountsScreen } from "../src/screens/AccountsScreen";
-import type { RouteCredential, RoutePoolModelTestOutcome, RoutePoolStats } from "../src/lib/api/types";
+import type {
+  CapabilityAvailability,
+  CapabilityRule,
+  PlatformCapability,
+  PlatformId,
+  RouteCredential,
+  RoutePoolModelTestOutcome,
+  RoutePoolStats,
+} from "../src/lib/api/types";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(),
@@ -42,6 +51,7 @@ vi.mock("../src/lib/api/client", () => ({
   getRouteProxyStatus: vi.fn(),
   importOfficialRouteCredentialsFromFiles: vi.fn(),
   importOfficialRouteCredentialsFromText: vi.fn(),
+  listPlatformCapabilities: vi.fn(),
   listRouteCredentials: vi.fn(),
   refreshRouteCredentialsQuota: vi.fn(),
   routePoolTestModel: vi.fn(),
@@ -155,7 +165,7 @@ function modelTestOutcomeFixture(
   };
 }
 
-function renderScreen(platform: "codex" | "claude" = "codex") {
+function renderScreen(platform: PlatformId = "codex") {
   return render(
     <QueryClientProvider client={createQueryClient()}>
       <AccountsScreen platform={platform} />
@@ -180,6 +190,7 @@ describe("AccountsScreen", () => {
     vi.mocked(getRouteProxyStatus).mockReset();
     vi.mocked(importOfficialRouteCredentialsFromFiles).mockReset();
     vi.mocked(importOfficialRouteCredentialsFromText).mockReset();
+    vi.mocked(listPlatformCapabilities).mockReset();
     vi.mocked(listRouteCredentials).mockReset();
     vi.mocked(refreshRouteCredentialsQuota).mockReset();
     vi.mocked(routePoolTestModel).mockReset();
@@ -199,6 +210,63 @@ describe("AccountsScreen", () => {
     });
 
     vi.mocked(open).mockResolvedValue(null);
+    const rule = (
+      availability: CapabilityAvailability,
+      reason_code: string | null = null,
+      credential_kinds: string[] = [],
+    ): CapabilityRule => ({
+      availability,
+      reason_code,
+      credential_kinds,
+      requires_base_url: availability === "partial",
+      requires_api_dialect: availability === "partial",
+    });
+    const supportedCapability = (platform: PlatformId, display_name: string): PlatformCapability => ({
+      platform,
+      display_name,
+      support_level: "supported",
+      operations: {
+        route_credentials: rule("supported"),
+        generic_api_routing: rule("supported"),
+        config_write: rule("supported"),
+        official_import: rule("supported"),
+        official_account_routing: rule("supported"),
+        deeplink_import: rule("supported"),
+        official_quota:
+          platform === "gemini"
+            ? rule("unavailable", "capability.quota_unavailable")
+            : rule("supported"),
+        model_test: rule("supported"),
+        terminal_launch: rule("supported"),
+        session_resume: rule("supported"),
+      },
+    });
+    const partialCapability = (platform: PlatformId, display_name: string): PlatformCapability => ({
+      platform,
+      display_name,
+      support_level: "partial",
+      operations: {
+        route_credentials: rule("supported"),
+        generic_api_routing: rule("partial", "capability.api_credentials_only", ["api"]),
+        config_write: rule("unavailable", "capability.native_config_unavailable"),
+        official_import: rule("unavailable", "capability.official_account_unavailable"),
+        official_account_routing: rule("unavailable", "capability.official_account_unavailable"),
+        deeplink_import: rule("unavailable", "capability.deeplink_unavailable"),
+        official_quota: rule("unavailable", "capability.quota_unavailable"),
+        model_test: rule("partial", "capability.api_credentials_only", ["api"]),
+        terminal_launch: rule("supported"),
+        session_resume: rule("supported"),
+      },
+    });
+    vi.mocked(listPlatformCapabilities).mockResolvedValue([
+      supportedCapability("codex", "Codex"),
+      supportedCapability("claude", "Claude"),
+      supportedCapability("gemini", "Gemini"),
+      supportedCapability("grok", "Grok"),
+      partialCapability("opencode", "OpenCode"),
+      partialCapability("openclaw", "OpenClaw"),
+      partialCapability("hermes", "Hermes"),
+    ]);
     vi.mocked(createBatch).mockResolvedValue({
       id: "batch-api-1",
       name: "Upstream API 批量",
@@ -252,10 +320,16 @@ describe("AccountsScreen", () => {
     });
     vi.mocked(writeRouteProxyConfigs).mockResolvedValue([
       {
+        operation_id: "operation-1",
+        snapshot_id: "snapshot-1",
+        target_app_id: "target-codex",
         target_key: "codex",
+        platform: "codex",
         path: "C:\\Users\\test\\.codex\\config.toml",
-        status: "written",
-        route_proxy_key: "sk-ai-switch-test",
+        status: "succeeded",
+        before_hash: "before-hash",
+        after_hash: "after-hash",
+        error_code: null,
       },
     ]);
     vi.mocked(importOfficialRouteCredentialsFromText).mockResolvedValue({
@@ -380,6 +454,45 @@ describe("AccountsScreen", () => {
       const lastCall = vi.mocked(setRoutePoolMembers).mock.calls.at(-1)?.[0];
       expect(lastCall?.account_ids).toEqual([]);
     });
+  });
+
+  it("shows Hermes as partial and disables unsupported account actions", async () => {
+    const hermesCredentials: RouteCredential[] = credentialsFixture.map((credential) => ({
+      ...credential,
+      id: credential.kind === "official" ? "hermes-official" : "hermes-api",
+      platform: "hermes",
+      display_name: credential.kind === "official" ? "Hermes Official" : "Hermes API",
+    }));
+    vi.mocked(listRouteCredentials).mockResolvedValue(hermesCredentials);
+    vi.mocked(getRoutePool).mockResolvedValue({
+      platform: "hermes",
+      account_ids: hermesCredentials.map((credential) => credential.id),
+      stats: statsFixture({ member_count: 2 }),
+    });
+    vi.mocked(getRouteProxyStatus).mockResolvedValue({
+      running: true,
+      bind_host: "127.0.0.1",
+      port: 43111,
+      base_url: "http://127.0.0.1:43111",
+    });
+
+    renderScreen("hermes");
+
+    expect(await screen.findByLabelText("Hermes 部分支持")).toBeInTheDocument();
+    const writeConfig = screen.getByLabelText("写入路由配置文件");
+    expect(writeConfig).toBeDisabled();
+    expect(writeConfig).toHaveAttribute("title", expect.stringContaining("原生配置"));
+    expect(screen.getByLabelText("刷新官方账号额度")).toBeDisabled();
+    await waitFor(() => expect(refreshRouteCredentialsQuota).not.toHaveBeenCalled());
+
+    await userEvent.click(screen.getByRole("button", { name: "新增账号" }));
+    expect(screen.getByRole("button", { name: "API 账号" })).toBeEnabled();
+    const officialImport = screen.getByRole("button", { name: "官方导入" });
+    expect(officialImport).toBeDisabled();
+    expect(officialImport).toHaveAttribute("title", expect.stringContaining("官方账号"));
+
+    expect(screen.getByLabelText("测试 Hermes Official")).toBeDisabled();
+    expect(screen.getByLabelText("测试 Hermes API")).toBeEnabled();
   });
 
   it("allows an error-status account to be added to and removed from the pool", async () => {
@@ -1448,6 +1561,10 @@ describe("AccountsScreen", () => {
       await Promise.resolve();
     });
     expect(screen.getByText("配置写入结果")).toBeInTheDocument();
+    expect(screen.getByText(/operation operation-1/)).toBeInTheDocument();
+    expect(screen.getByText(/snapshot snapshot-1/)).toBeInTheDocument();
+    expect(screen.getByText(/before before-hash/)).toBeInTheDocument();
+    expect(screen.queryByText(/sk-ai-switch-test/)).not.toBeInTheDocument();
 
     act(() => {
       vi.advanceTimersByTime(2999);

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::services::route_config_service::RouteConfigWriteOutcome;
+use crate::models::config_snapshot::ConfigWriteOutcome;
 use crate::services::route_proxy_service::RouteProxyStatus;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -68,5 +68,5 @@ pub struct RouteProxyHttpsStatus {
 pub struct RouteProxyHttpsOperationOutcome {
     pub https: RouteProxyHttpsStatus,
     pub route_proxy: RouteProxyStatus,
-    pub config_writes: Vec<RouteConfigWriteOutcome>,
+    pub config_writes: Vec<ConfigWriteOutcome>,
 }

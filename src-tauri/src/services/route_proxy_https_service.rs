@@ -1,12 +1,13 @@
 use crate::app_state::AppState;
 use crate::config_writer::ConfigWriter;
 use crate::error::AppError;
+use crate::models::config_snapshot::ConfigWriteOutcome;
 use crate::models::route_proxy_https::{
     RouteProxyHttpsConfig, RouteProxyHttpsOperationOutcome, RouteProxyHttpsStatus,
     RouteProxyTrustRecord, RouteProxyTrustStatus,
 };
 use crate::paths::AppPaths;
-use crate::services::route_config_service::{RouteConfigService, RouteConfigWriteOutcome};
+use crate::services::route_config_service::RouteConfigService;
 use crate::services::route_proxy_https_trust::{
     RouteProxyHttpsTrustExecutor, RouteProxyTrustOutcome, SystemRouteProxyHttpsTrustExecutor,
 };
@@ -108,37 +109,7 @@ impl RouteProxyHttpsService {
             RouteProxyService::start(&state.route_proxy, state.pool.clone(), transport).await?;
 
         match Self::rewrite_existing_configs(state, &route_proxy).await {
-            Ok(outcomes) if outcomes.iter().all(|outcome| outcome.status != "error") => {}
-            Ok(outcomes) => {
-                if !previous.running {
-                    let _ = RouteProxyService::stop(&state.route_proxy).await;
-                }
-                let message = if previous.running {
-                    "Route proxy configuration sync failed; existing proxy remains running"
-                } else {
-                    "Route proxy configuration sync failed; proxy was stopped"
-                };
-                let details = outcomes
-                    .into_iter()
-                    .filter(|outcome| outcome.status == "error")
-                    .map(|outcome| {
-                        format!(
-                            "{}: {}",
-                            outcome.target_key,
-                            outcome
-                                .error
-                                .unwrap_or_else(|| "unknown config write failure".to_string())
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" | ");
-                return Err(AppError::Validation {
-                    code: "validation.route_proxy_config_sync",
-                    message: message.to_string(),
-                    details: Some(details),
-                    recoverable: true,
-                });
-            }
+            Ok(_) => {}
             Err(error) => {
                 if !previous.running {
                     let _ = RouteProxyService::stop(&state.route_proxy).await;
@@ -462,11 +433,17 @@ impl RouteProxyHttpsService {
     async fn rewrite_existing_configs(
         state: &AppState,
         route_proxy: &RouteProxyStatus,
-    ) -> Result<Vec<RouteConfigWriteOutcome>, AppError> {
+    ) -> Result<Vec<ConfigWriteOutcome>, AppError> {
         let Some(base_url) = route_proxy.base_url.as_deref() else {
             return Ok(Vec::new());
         };
-        RouteConfigService::write_existing_configs(&state.paths, &state.pool, base_url).await
+        RouteConfigService::write_existing_configs(
+            &state.paths,
+            &state.pool,
+            &state.config_writes,
+            base_url,
+        )
+        .await
     }
 
     async fn create_replacement_material(
@@ -1133,6 +1110,7 @@ fn hex_sha1(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::database::{create_memory_pool, run_migrations};
+    use crate::services::config_write_service::ConfigWriteRuntimeState;
     use crate::services::route_proxy_service::RouteProxyRuntimeState;
     use crate::services::tailscale_service::TailscaleRuntimeState;
     use crate::services::web_service::WebServiceRuntimeState;
@@ -1203,6 +1181,7 @@ mod tests {
             state: AppState {
                 paths: AppPaths::from_data_dir(temp.path().join("app-data")),
                 pool,
+                config_writes: ConfigWriteRuntimeState::default(),
                 route_proxy: RouteProxyRuntimeState::default(),
                 web_service: WebServiceRuntimeState::default(),
                 tailscale: TailscaleRuntimeState::default(),

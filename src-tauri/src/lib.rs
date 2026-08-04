@@ -27,6 +27,7 @@ use commands::batch_commands::{
     list_batch_groups, update_official_account,
 };
 use commands::import_commands::import_example_json;
+use commands::platform_commands::list_platform_capabilities;
 use commands::route_credential_commands::{
     copy_route_credential, create_api_route_credential, delete_route_credential,
     get_route_credential, import_official_route_credentials_from_files,
@@ -48,7 +49,9 @@ use commands::route_proxy_https_commands::{
 };
 use commands::session_commands::{get_session_messages, list_sessions};
 use commands::settings_commands::{get_settings, save_settings};
-use commands::target_commands::list_target_apps;
+use commands::target_commands::{
+    list_config_snapshots, list_target_apps, list_target_config_statuses, rollback_config_snapshot,
+};
 use commands::terminal_commands::{
     create_terminal_session, kill_terminal_session, list_terminal_sessions, resize_terminal,
     write_terminal_input,
@@ -60,6 +63,7 @@ use commands::web_service_commands::{
 };
 use database::open_migrated_pool;
 use paths::AppPaths;
+use services::config_write_service::ConfigWriteRuntimeState;
 use services::deeplink_service::{parse_deeplink_url, DeepLinkErrorPayload};
 use services::route_proxy_service::RouteProxyRuntimeState;
 use services::tailscale_service::TailscaleRuntimeState;
@@ -139,6 +143,7 @@ pub fn run() {
         .manage(AppState {
             paths,
             pool,
+            config_writes: ConfigWriteRuntimeState::default(),
             route_proxy: RouteProxyRuntimeState::default(),
             web_service: WebServiceRuntimeState::default(),
             tailscale: TailscaleRuntimeState::default(),
@@ -192,6 +197,7 @@ pub fn run() {
             create_official_account,
             get_official_account,
             update_official_account,
+            list_platform_capabilities,
             list_route_credentials,
             get_route_credential,
             create_api_route_credential,
@@ -223,6 +229,9 @@ pub fn run() {
             list_sessions,
             get_session_messages,
             list_target_apps,
+            list_target_config_statuses,
+            list_config_snapshots,
+            rollback_config_snapshot,
             create_terminal_session,
             write_terminal_input,
             resize_terminal,

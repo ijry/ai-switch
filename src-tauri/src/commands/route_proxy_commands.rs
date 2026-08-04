@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
 use crate::error::ApiError;
-use crate::services::route_config_service::{RouteConfigService, RouteConfigWriteOutcome};
+use crate::models::config_snapshot::ConfigWriteOutcome;
+use crate::services::route_config_service::RouteConfigService;
 use crate::services::route_proxy_https_service::RouteProxyHttpsService;
 use crate::services::route_proxy_service::{RouteProxyService, RouteProxyStatus};
 use tauri::State;
@@ -31,7 +32,7 @@ pub async fn write_route_proxy_configs(
     state: State<'_, AppState>,
     base_url: Option<String>,
     platform: String,
-) -> Result<Vec<RouteConfigWriteOutcome>, ApiError> {
+) -> Result<Vec<ConfigWriteOutcome>, ApiError> {
     let status = RouteProxyService::status(&state.route_proxy).await;
     let resolved = base_url
         .and_then(|value| {
@@ -52,7 +53,13 @@ pub async fn write_route_proxy_configs(
             })
         })?;
 
-    RouteConfigService::write_configs(&state.paths, &state.pool, &resolved, &platform)
-        .await
-        .map_err(ApiError::from)
+    RouteConfigService::write_configs(
+        &state.paths,
+        &state.pool,
+        &state.config_writes,
+        &resolved,
+        &platform,
+    )
+    .await
+    .map_err(ApiError::from)
 }

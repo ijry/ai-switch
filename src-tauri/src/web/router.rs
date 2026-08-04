@@ -10,6 +10,7 @@ use axum::{Json, Router};
 use serde_json::{json, Value};
 
 use crate::app_state::AppState;
+use crate::error::ApiError;
 use crate::web::auth::is_authorized;
 use crate::web::handlers::dispatch_command;
 use crate::web::static_assets::resolve_static_file;
@@ -53,7 +54,7 @@ async fn api_command(
 
     match dispatch_command(context.state, &command, args).await {
         Ok(value) => Json(value).into_response(),
-        Err(error) => error_response(StatusCode::BAD_REQUEST, &error),
+        Err(error) => api_error_response(StatusCode::BAD_REQUEST, error),
     }
 }
 
@@ -106,14 +107,60 @@ fn content_type_for(path: &std::path::Path) -> &'static str {
 }
 
 fn error_response(status: StatusCode, message: &str) -> Response {
+    let code = if status == StatusCode::UNAUTHORIZED {
+        "web.unauthorized"
+    } else {
+        "web.error"
+    };
     (
         status,
         Json(json!({
-            "code": "web.error",
+            "code": code,
             "message": message,
             "details": null,
-            "recoverable": status != StatusCode::UNAUTHORIZED
+            "recoverable": status != StatusCode::UNAUTHORIZED,
+            "operation_id": null
         })),
     )
         .into_response()
+}
+
+fn api_error_response(status: StatusCode, error: ApiError) -> Response {
+    (status, Json(error)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    #[tokio::test]
+    async fn api_error_response_serializes_structured_error_directly() {
+        let response = api_error_response(
+            StatusCode::BAD_REQUEST,
+            ApiError {
+                code: "capability.unavailable".to_string(),
+                message: "Not supported".to_string(),
+                details: Some("hermes:config_write".to_string()),
+                recoverable: true,
+                operation_id: Some("operation-1".to_string()),
+            },
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(value["code"], "capability.unavailable");
+        assert_eq!(value["details"], "hermes:config_write");
+        assert_eq!(value["operation_id"], "operation-1");
+    }
+
+    #[tokio::test]
+    async fn unauthorized_response_uses_stable_code() {
+        let response = error_response(StatusCode::UNAUTHORIZED, "Unauthorized");
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(value["code"], "web.unauthorized");
+        assert_eq!(value["recoverable"], false);
+    }
 }

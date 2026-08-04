@@ -1,4 +1,5 @@
 use crate::error::AppError;
+use crate::models::platform::PlatformId;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::path::Path;
@@ -15,7 +16,8 @@ pub fn parse_cpa_text(
     platform: &str,
     text: &str,
 ) -> Result<Vec<ParsedOfficialCredential>, AppError> {
-    let platform = normalize_platform(platform)?;
+    let platform = PlatformId::parse(platform)?;
+    let platform = platform.as_str();
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Err(validation_error(
@@ -262,33 +264,14 @@ fn value_field_option(object: &Map<String, Value>, keys: &[&str]) -> Option<Valu
     keys.iter().find_map(|key| object.get(*key).cloned())
 }
 
-fn normalize_platform(platform: &str) -> Result<String, AppError> {
-    let platform = platform.trim();
-    if platform.is_empty() {
-        return Err(validation_error(
-            "validation.platform_required",
-            "Platform is required",
-            None,
-        ));
-    }
-
-    Ok(canonicalize_cpa_platform(platform))
-}
-
-fn canonicalize_cpa_platform(platform: &str) -> String {
-    let normalized = platform.trim().to_lowercase();
-    match normalized.as_str() {
-        "anthropic" | "claude" => "claude".to_string(),
-        "openai" | "chatgpt" | "codex" => "codex".to_string(),
-        "gemini" | "google" => "gemini".to_string(),
-        "xai" | "x-ai" => "grok".to_string(),
-        _ if normalized.contains("grok") || normalized.contains("x.ai") => "grok".to_string(),
-        _ => normalized,
-    }
-}
-
 fn cpa_types_match(expected_platform: &str, raw_type: &str) -> bool {
-    canonicalize_cpa_platform(expected_platform) == canonicalize_cpa_platform(raw_type)
+    matches!(
+        (
+            PlatformId::parse(expected_platform),
+            PlatformId::parse(raw_type)
+        ),
+        (Ok(expected), Ok(actual)) if expected == actual
+    )
 }
 
 fn validation_error(code: &'static str, message: &str, details: Option<String>) -> AppError {
@@ -368,6 +351,21 @@ mod tests {
     fn rejects_platform_mismatch() {
         let text = r#"{"type":"claude","access_token":"a","refresh_token":"b"}"#;
         assert!(parse_cpa_text("codex", text).is_err());
+    }
+
+    #[test]
+    fn rejects_substring_platform_aliases() {
+        let text = r#"{"type":"my-grok-wrapper","access_token":"at","refresh_token":"rt"}"#;
+
+        let error = parse_cpa_text("grok", text).expect_err("substring aliases are unsafe");
+
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "validation.cpa_platform_mismatch",
+                ..
+            }
+        ));
     }
 
     #[test]

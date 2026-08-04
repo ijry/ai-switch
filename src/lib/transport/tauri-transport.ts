@@ -1,4 +1,5 @@
 import type { Transport, Unsubscribe } from "./types";
+import { normalizeApiError } from "../api/errors";
 
 type TauriInvoke = <T>(
   command: string,
@@ -49,7 +50,11 @@ function getTauriInternals(): ReadyTauriInternals {
 
 export class TauriTransport implements Transport {
   async call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-    return getTauriInternals().invoke<T>(command, args ?? {});
+    try {
+      return await getTauriInternals().invoke<T>(command, args ?? {});
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
   }
 
   async subscribe<T>(event: string, handler: (payload: T) => void): Promise<Unsubscribe> {

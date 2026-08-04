@@ -1,4 +1,5 @@
 import type { Transport, Unsubscribe } from "./types";
+import { ApiClientError, normalizeApiError } from "../api/errors";
 
 type WebEvent = {
   channel: string;
@@ -38,6 +39,9 @@ export function clearWebAccessToken() {
 }
 
 export function isUnauthorizedTransportError(error: unknown) {
+  if (error instanceof ApiClientError && error.code === "web.unauthorized") {
+    return true;
+  }
   if (!(error instanceof Error)) {
     return false;
   }
@@ -60,26 +64,34 @@ export class WebTransport implements Transport {
   }
 
   async call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-    const token = getWebAccessToken();
-    const response = await fetch(`${this.baseUrl}/api/${command}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify(args ?? {}),
-    });
+    try {
+      const token = getWebAccessToken();
+      const response = await fetch(`${this.baseUrl}/api/${command}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(args ?? {}),
+      });
 
-    if (!response.ok) {
-      const payload = await response.json().catch(() => null);
-      const message =
-        payload && typeof payload === "object" && "message" in payload
-          ? String(payload.message)
-          : `HTTP ${response.status}`;
-      throw new Error(message);
+      if (!response.ok) {
+        const body = await response.text();
+        let payload: unknown = body;
+        if (body) {
+          try {
+            payload = JSON.parse(body) as unknown;
+          } catch {
+            payload = body;
+          }
+        }
+        throw normalizeApiError(payload, `HTTP ${response.status}`, `web.http_${response.status}`);
+      }
+
+      return response.json() as Promise<T>;
+    } catch (error) {
+      throw normalizeApiError(error);
     }
-
-    return response.json() as Promise<T>;
   }
 
   async subscribe<T>(event: string, handler: (payload: T) => void): Promise<Unsubscribe> {

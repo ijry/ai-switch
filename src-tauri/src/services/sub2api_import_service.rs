@@ -1,4 +1,5 @@
 use crate::error::AppError;
+use crate::models::platform::PlatformId;
 use crate::services::cpa_import_service::ParsedOfficialCredential;
 use serde_json::{json, Map, Value};
 use std::path::Path;
@@ -9,7 +10,8 @@ pub fn parse_sub2api_text(
     platform: &str,
     text: &str,
 ) -> Result<Vec<ParsedOfficialCredential>, AppError> {
-    let platform = normalize_platform(platform)?;
+    let platform = PlatformId::parse(platform)?;
+    let platform = platform.as_str();
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Err(shape_error("Sub2API import text is empty", None));
@@ -111,7 +113,8 @@ fn parse_sub2api_object(
     platform: &str,
     object: &Map<String, Value>,
 ) -> Result<ParsedOfficialCredential, AppError> {
-    let selected_platform = normalize_platform(platform)?;
+    let selected_platform = PlatformId::parse(platform)?;
+    let selected_platform = selected_platform.as_str();
     let declared_platform = declared_platform(object);
     let inferred_platform = declared_platform.clone().or_else(|| infer_platform(object));
 
@@ -296,7 +299,7 @@ fn parse_sub2api_object(
     .to_string();
 
     let mut config = Map::new();
-    config.insert("type".to_string(), json!(selected_platform.clone()));
+    config.insert("type".to_string(), json!(selected_platform));
     config.insert("import_format".to_string(), json!("sub2api"));
     config.insert("raw_type".to_string(), json!(auth_kind.clone()));
     config.insert("account_id".to_string(), json!(account_id.clone()));
@@ -414,8 +417,8 @@ fn declared_platform(object: &Map<String, Value>) -> Option<String> {
     )
     .or_else(|| {
         let raw_type = first_string_path(object, &[&["type"], &["credentials", "type"]])?;
-        let canonical = canonicalize_platform(&raw_type);
-        if canonical == "oauth" || canonical == "api" || canonical == "official" {
+        let normalized = raw_type.trim().to_lowercase().replace([' ', '-'], "_");
+        if matches!(normalized.as_str(), "oauth" | "api" | "official") {
             None
         } else {
             Some(raw_type)
@@ -504,33 +507,14 @@ fn normalize_imported_headers(platform: &str, headers: &Value) -> Value {
     Value::Object(map)
 }
 
-fn normalize_platform(platform: &str) -> Result<String, AppError> {
-    let platform = platform.trim();
-    if platform.is_empty() {
-        return Err(validation_error(
-            "validation.platform_required",
-            "Platform is required",
-            None,
-        ));
-    }
-
-    Ok(canonicalize_platform(platform))
-}
-
-fn canonicalize_platform(platform: &str) -> String {
-    let normalized = platform.trim().to_lowercase();
-    match normalized.as_str() {
-        "anthropic" | "claude" => "claude".to_string(),
-        "openai" | "chatgpt" | "codex" => "codex".to_string(),
-        "gemini" | "google" => "gemini".to_string(),
-        "xai" | "x-ai" => "grok".to_string(),
-        _ if normalized.contains("grok") || normalized.contains("x.ai") => "grok".to_string(),
-        _ => normalized,
-    }
-}
-
 fn platforms_match(expected_platform: &str, raw_platform: &str) -> bool {
-    canonicalize_platform(expected_platform) == canonicalize_platform(raw_platform)
+    matches!(
+        (
+            PlatformId::parse(expected_platform),
+            PlatformId::parse(raw_platform)
+        ),
+        (Ok(expected), Ok(actual)) if expected == actual
+    )
 }
 
 fn shape_error(message: &str, details: Option<String>) -> AppError {
@@ -687,6 +671,27 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn rejects_sub2api_substring_platform_aliases() {
+        let text = r#"{
+          "platform": "my-grok-wrapper",
+          "credentials": {
+            "access_token": "at",
+            "refresh_token": "rt"
+          }
+        }"#;
+
+        let error = parse_sub2api_text("grok", text).expect_err("substring aliases are unsafe");
+
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "validation.sub2api_platform_mismatch",
+                ..
+            }
+        ));
     }
 
     #[test]

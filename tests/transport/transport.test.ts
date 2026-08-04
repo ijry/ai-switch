@@ -60,6 +60,25 @@ describe("transport", () => {
     expect(invoke).toHaveBeenCalledWith("list_route_credentials", { platform: "claude" });
   });
 
+  it("preserves Tauri API error fields", async () => {
+    const invoke = vi.fn().mockRejectedValue({
+      code: "capability.unavailable",
+      message: "Not supported",
+      details: "hermes:config_write",
+      recoverable: true,
+      operation_id: "operation-1",
+    });
+    (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
+
+    await expect(new TauriTransport().call("write_route_proxy_configs")).rejects.toMatchObject({
+      name: "ApiClientError",
+      code: "capability.unavailable",
+      details: "hermes:config_write",
+      recoverable: true,
+      operationId: "operation-1",
+    });
+  });
+
   it("subscribes to Tauri events through injected IPC", async () => {
     let tauriCallback: (message: TestTauriEvent) => void = () => {};
     const invoke = vi.fn((command: string) =>
@@ -112,6 +131,46 @@ describe("transport", () => {
         Authorization: "Bearer secret-token",
       },
       body: JSON.stringify({ scope: "test" }),
+    });
+  });
+
+  it("preserves Web API error fields", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            code: "capability.unavailable",
+            message: "Not supported",
+            details: "hermes:config_write",
+            recoverable: true,
+            operation_id: "operation-2",
+          }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new WebTransport("http://127.0.0.1:3090").call("write_route_proxy_configs"),
+    ).rejects.toEqual(
+      expect.objectContaining({
+        code: "capability.unavailable",
+        details: "hermes:config_write",
+        recoverable: true,
+        operationId: "operation-2",
+      }),
+    );
+  });
+
+  it("normalizes Web network failures", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue("connection refused"));
+
+    await expect(new WebTransport("http://127.0.0.1:3090").call("get_settings")).rejects.toMatchObject({
+      name: "ApiClientError",
+      code: "transport.error",
+      message: "connection refused",
+      recoverable: true,
     });
   });
 

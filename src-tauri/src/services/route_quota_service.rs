@@ -1,10 +1,12 @@
 use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::error::AppError;
+use crate::models::platform::{PlatformId, PlatformOperation};
 use crate::models::route_credential::RouteCredential;
 use crate::services::http_client::build_outbound_http_client;
 use crate::services::official_agent_identity_service::{
     resolve_agent_identity_headers, AgentIdentityHeaders,
 };
+use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_proxy_service::{
     apply_official_quota_snapshot, maybe_refresh_official_credential, OfficialQuotaSnapshot,
     SelectedCredential,
@@ -44,6 +46,8 @@ impl RouteQuotaService {
         id: String,
     ) -> Result<QuotaRefreshOutcome, AppError> {
         let credential = RouteCredentialRepository::get(pool, &id).await?;
+        let platform = PlatformId::parse(&credential.platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::OfficialQuota)?;
         refresh_credential(pool, credential).await
     }
 
@@ -51,8 +55,10 @@ impl RouteQuotaService {
         pool: &SqlitePool,
         platform: String,
     ) -> Result<Vec<QuotaRefreshOutcome>, AppError> {
-        let platform = normalize_platform(&platform)?;
-        let credentials = RouteCredentialRepository::list_by_platform(pool, &platform).await?;
+        let platform = PlatformId::parse(&platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::OfficialQuota)?;
+        let credentials =
+            RouteCredentialRepository::list_by_platform(pool, platform.as_str()).await?;
         let mut outcomes = Vec::with_capacity(credentials.len());
         for credential in credentials {
             if credential.kind != "official" {
@@ -76,6 +82,8 @@ async fn refresh_credential(
     pool: &SqlitePool,
     credential: RouteCredential,
 ) -> Result<QuotaRefreshOutcome, AppError> {
+    let platform = PlatformId::parse(&credential.platform)?;
+    PlatformCapabilityService::require(platform, PlatformOperation::OfficialQuota)?;
     if credential.kind != "official" {
         return Ok(QuotaRefreshOutcome {
             credential,
@@ -176,12 +184,14 @@ async fn fetch_official_quota_snapshot(
     secret_payload_json: &str,
     config_json: &str,
 ) -> Result<QuotaFetchResult, AppError> {
+    let platform = PlatformId::parse(platform)?;
+    PlatformCapabilityService::require(platform, PlatformOperation::OfficialQuota)?;
+    let platform_key = platform.as_str();
     let secret = parse_json_object(secret_payload_json, "secret")?;
     let config = parse_json_object(config_json, "config")?;
     let auth = quota_request_auth(&secret, &config)?;
 
-    let platform_key = normalize_platform(platform)?;
-    let candidates = quota_endpoint_candidates(&platform_key, &config);
+    let candidates = quota_endpoint_candidates(platform_key, &config);
     if candidates.is_empty() {
         return Ok(QuotaFetchResult {
             snapshot: None,
@@ -200,7 +210,7 @@ async fn fetch_official_quota_snapshot(
 
     let mut diagnostics: Vec<String> = Vec::new();
     for candidate in candidates {
-        match request_quota_snapshot(&client, &platform_key, &auth, &secret, &candidate).await {
+        match request_quota_snapshot(&client, platform_key, &auth, &secret, &candidate).await {
             Ok(Some(snapshot)) => {
                 return Ok(QuotaFetchResult {
                     snapshot: Some((snapshot, candidate.source)),
@@ -1063,29 +1073,6 @@ fn string_value<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
         .filter(|item| !item.is_empty())
 }
 
-fn normalize_platform(platform: &str) -> Result<String, AppError> {
-    let platform = platform.trim();
-    if platform.is_empty() {
-        return Err(AppError::Validation {
-            code: "validation.platform_required",
-            message: "Platform is required".to_string(),
-            details: None,
-            recoverable: true,
-        });
-    }
-    let lower = platform.to_lowercase();
-    if lower.contains("grok") || lower == "xai" || lower.contains("x.ai") || lower == "x-ai" {
-        return Ok("grok".to_string());
-    }
-    if lower.contains("claude") || lower.contains("anthropic") {
-        return Ok("claude".to_string());
-    }
-    if lower.contains("codex") || lower.contains("openai") || lower.contains("chatgpt") {
-        return Ok("codex".to_string());
-    }
-    Ok(platform.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1318,6 +1305,25 @@ mod tests {
         assert!(!outcome.updated);
         assert_eq!(outcome.source, "skipped");
         assert_eq!(outcome.credential.id, created.id);
+    }
+
+    #[tokio::test]
+    async fn gemini_quota_is_rejected_before_repository_or_network_work() {
+        let temp = TempDir::new().unwrap();
+        let db = temp.path().join("quota.db");
+        let pool = open_migrated_pool(&db, temp.path()).await.unwrap();
+
+        let error = RouteQuotaService::refresh_platform(&pool, "gemini".to_string())
+            .await
+            .expect_err("Gemini official quota is unavailable");
+
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "capability.unavailable",
+                ..
+            }
+        ));
     }
 
     fn assert_quota_header(headers: &axum::http::HeaderMap, name: &str, expected: &str) {

@@ -3,13 +3,15 @@ import type {
   AppSettings,
   Batch,
   BatchGroup,
+  ConfigSnapshotSummary,
+  ConfigWriteOutcome,
   FetchedRouteModel,
   ImportJob,
   CreateApiRouteCredentialInput,
   CreateTerminalSessionInput,
   NewOfficialAccount,
   OfficialAccount,
-  RouteConfigWriteOutcome,
+  PlatformCapability,
   RouteCredential,
   RouteCredentialImportResult,
   QuotaRefreshOutcome,
@@ -27,6 +29,7 @@ import type {
   SessionMessage,
   SessionMeta,
   TargetApp,
+  TargetConfigStatus,
   TerminalSession,
   WebServerStatus,
   WebServiceConfig,
@@ -79,6 +82,28 @@ export function importExampleJson(request: {
 
 export function listTargetApps(): Promise<TargetApp[]> {
   return invoke("list_target_apps");
+}
+
+export function listTargetConfigStatuses(): Promise<TargetConfigStatus[]> {
+  return invoke("list_target_config_statuses");
+}
+
+export function listConfigSnapshots(
+  targetAppId?: string | null,
+  limit?: number | null,
+): Promise<ConfigSnapshotSummary[]> {
+  return invoke("list_config_snapshots", {
+    targetAppId: targetAppId ?? null,
+    limit: limit ?? null,
+  });
+}
+
+export function rollbackConfigSnapshot(id: string): Promise<ConfigWriteOutcome> {
+  return invoke("rollback_config_snapshot", { id });
+}
+
+export function listPlatformCapabilities(): Promise<PlatformCapability[]> {
+  return invoke("list_platform_capabilities");
 }
 
 export function getRoutePool(
@@ -169,7 +194,7 @@ export function openRouteProxyHttpsCertificateDirectory(): Promise<void> {
 export function writeRouteProxyConfigs(
   baseUrl: string | null | undefined,
   platform: string,
-): Promise<RouteConfigWriteOutcome[]> {
+): Promise<ConfigWriteOutcome[]> {
   return invoke("write_route_proxy_configs", { baseUrl: baseUrl ?? null, platform });
 }
 

@@ -67,15 +67,26 @@ impl From<AppError> for ApiError {
                 message,
                 details,
                 recoverable,
-            } => Self {
-                code: code.to_string(),
-                message,
-                details,
-                recoverable,
-                operation_id: None,
-            },
+            } => {
+                let operation_id = details.as_deref().and_then(extract_operation_id);
+                Self {
+                    code: code.to_string(),
+                    message,
+                    details,
+                    recoverable,
+                    operation_id,
+                }
+            }
         }
     }
+}
+
+fn extract_operation_id(details: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(details)
+        .ok()?
+        .get("operation_id")?
+        .as_str()
+        .map(str::to_string)
 }
 
 impl From<std::io::Error> for AppError {
@@ -97,5 +108,29 @@ impl From<serde_json::Error> for AppError {
             details: Some(value.to_string()),
             recoverable: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_error_extracts_group_operation_id_without_exposing_other_fields() {
+        let error = ApiError::from(AppError::Filesystem {
+            code: "filesystem.route_config_write",
+            message: "Could not complete grouped configuration writes".to_string(),
+            details: Some(
+                serde_json::json!({
+                    "operation_id": "operation-1",
+                    "cause_code": "config.concurrent_modification"
+                })
+                .to_string(),
+            ),
+            recoverable: true,
+        });
+
+        assert_eq!(error.operation_id.as_deref(), Some("operation-1"));
+        assert_eq!(error.code, "filesystem.route_config_write");
     }
 }

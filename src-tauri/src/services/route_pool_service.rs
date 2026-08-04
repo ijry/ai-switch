@@ -1,9 +1,11 @@
 use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::error::AppError;
+use crate::models::platform::{PlatformId, PlatformOperation};
 use crate::models::route_pool::{
     RoutePoolRouteOutcome, RoutePoolRouteRequest, RoutePoolState, SetRoutePoolMembersInput,
 };
+use crate::services::platform_capability_service::PlatformCapabilityService;
 use chrono::DateTime;
 use sqlx::SqlitePool;
 use std::collections::HashSet;
@@ -22,12 +24,13 @@ impl RoutePoolService {
         request_page: Option<i64>,
         request_page_size: Option<i64>,
     ) -> Result<RoutePoolState, AppError> {
-        let platform = normalize_platform(&platform)?;
+        let platform = PlatformId::parse(&platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
         let since = normalize_since(since)?;
         let pagination = normalize_request_pagination(request_page, request_page_size);
         Self::state(
             pool,
-            &platform,
+            platform.as_str(),
             since.as_deref(),
             pagination.page,
             pagination.page_size,
@@ -39,7 +42,8 @@ impl RoutePoolService {
         pool: &SqlitePool,
         input: SetRoutePoolMembersInput,
     ) -> Result<RoutePoolState, AppError> {
-        let platform = normalize_platform(&input.platform)?;
+        let platform = PlatformId::parse(&input.platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
         let mut seen = HashSet::new();
         let account_ids: Vec<String> = input
             .account_ids
@@ -51,21 +55,21 @@ impl RoutePoolService {
 
         for account_id in &account_ids {
             let account_platform = RouteCredentialRepository::platform_of(pool, account_id).await?;
-            let account_platform = normalize_platform(&account_platform)?;
+            let account_platform = PlatformId::parse(&account_platform)?;
             if account_platform != platform {
                 return Err(AppError::Validation {
                     code: "validation.route_pool_platform_mismatch",
                     message: "Route pool account belongs to another platform".to_string(),
-                    details: Some(format!("{account_id}:{account_platform}")),
+                    details: Some(format!("{account_id}:{}", account_platform.as_str())),
                     recoverable: true,
                 });
             }
         }
 
-        RoutePoolRepository::replace_members(pool, &platform, &account_ids).await?;
+        RoutePoolRepository::replace_members(pool, platform.as_str(), &account_ids).await?;
         Self::state(
             pool,
-            &platform,
+            platform.as_str(),
             None,
             DEFAULT_REQUEST_PAGE,
             DEFAULT_REQUEST_PAGE_SIZE,
@@ -77,22 +81,24 @@ impl RoutePoolService {
         pool: &SqlitePool,
         request: RoutePoolRouteRequest,
     ) -> Result<RoutePoolRouteOutcome, AppError> {
-        let platform = normalize_platform(&request.platform)?;
+        let platform = PlatformId::parse(&request.platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::GenericApiRouting)?;
+        let platform_key = platform.as_str();
         let metadata_json = normalize_metadata_json(request.metadata_json)?;
         let token_count = non_negative(request.token_count.unwrap_or(0), "token_count")?;
         let cost_micros = non_negative(request.cost_micros.unwrap_or(0), "cost_micros")?;
-        let members = RoutePoolRepository::member_accounts(pool, &platform).await?;
+        let members = RoutePoolRepository::member_accounts(pool, platform_key).await?;
 
         if members.is_empty() {
             return Err(AppError::Validation {
                 code: "validation.route_pool_empty",
                 message: "Route pool has no enabled accounts".to_string(),
-                details: Some(platform),
+                details: Some(platform_key.to_string()),
                 recoverable: true,
             });
         }
 
-        let cursor = RoutePoolRepository::next_cursor_index(pool, &platform).await?;
+        let cursor = RoutePoolRepository::next_cursor_index(pool, platform_key).await?;
         let selected_index = cursor.rem_euclid(members.len() as i64) as usize;
         let next_index = (selected_index + 1) as i64 % members.len() as i64;
         let selected = members[selected_index].clone();
@@ -132,15 +138,15 @@ impl RoutePoolService {
             .await?;
         }
 
-        RoutePoolRepository::save_cursor_index(pool, &platform, next_index).await?;
+        RoutePoolRepository::save_cursor_index(pool, platform_key, next_index).await?;
 
         Ok(RoutePoolRouteOutcome {
-            platform: platform.clone(),
+            platform: platform_key.to_string(),
             selected_account_id: selected.id,
             selected_account_name: selected.display_name,
             stats: RoutePoolRepository::stats(
                 pool,
-                &platform,
+                platform_key,
                 None,
                 DEFAULT_REQUEST_PAGE,
                 DEFAULT_REQUEST_PAGE_SIZE,
@@ -243,37 +249,6 @@ fn non_negative(value: i64, field: &'static str) -> Result<i64, AppError> {
     Ok(value)
 }
 
-pub fn normalize_platform(platform: &str) -> Result<String, AppError> {
-    let normalized = platform.trim().to_lowercase();
-    if normalized.is_empty() {
-        return Err(AppError::Validation {
-            code: "validation.route_pool_platform_required",
-            message: "Route pool platform is required".to_string(),
-            details: None,
-            recoverable: true,
-        });
-    }
-
-    if normalized.contains("claude") {
-        Ok("claude".to_string())
-    } else if normalized.contains("grok")
-        || normalized.contains("xai")
-        || normalized.contains("x.ai")
-    {
-        Ok("grok".to_string())
-    } else if normalized.contains("gemini") {
-        Ok("gemini".to_string())
-    } else if normalized.contains("opencode") {
-        Ok("opencode".to_string())
-    } else if normalized.contains("openclaw") {
-        Ok("openclaw".to_string())
-    } else if normalized.contains("hermes") {
-        Ok("hermes".to_string())
-    } else {
-        Ok("codex".to_string())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,11 +257,22 @@ mod tests {
     use sqlx::SqlitePool;
     use uuid::Uuid;
 
-    #[test]
-    fn normalizes_grok_platform_aliases() {
-        assert_eq!(normalize_platform("grok").unwrap(), "grok");
-        assert_eq!(normalize_platform("xai").unwrap(), "grok");
-        assert_eq!(normalize_platform("x.ai").unwrap(), "grok");
+    #[tokio::test]
+    async fn route_pool_does_not_default_unknown_platform_to_codex() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+
+        let error = RoutePoolService::get(&pool, "custom-agent".to_string(), None, None, None)
+            .await
+            .expect_err("unknown platforms must fail closed");
+
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "platform.unknown",
+                ..
+            }
+        ));
     }
 
     async fn account(pool: &SqlitePool, platform: &str, name: &str) -> String {

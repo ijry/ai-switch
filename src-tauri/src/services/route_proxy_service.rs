@@ -1,7 +1,8 @@
 use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
-use crate::error::AppError;
+use crate::error::{ApiError, AppError};
+use crate::models::platform::{ApiDialect, CapabilityRule, PlatformId, PlatformOperation};
 use crate::models::route_credential::{
     normalize_anthropic_api_key_field, ModelMapping, ANTHROPIC_API_KEY_FIELD,
     ANTHROPIC_AUTH_TOKEN_FIELD,
@@ -11,6 +12,7 @@ use crate::services::official_agent_identity_service::{
     is_official_agent_identity_credential, resolve_agent_identity_headers,
     CODEX_AGENT_IDENTITY_BASE_URL,
 };
+use crate::services::platform_capability_service::PlatformCapabilityService;
 use axum::body::Body;
 use axum::extract::State as AxumState;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
@@ -286,9 +288,13 @@ async fn forward_request(
     let query = uri.query().map(|value| value.to_string());
     let trace_id = route_proxy_trace_id(&headers);
     let inbound_key = extract_inbound_api_key(&headers, query.as_deref());
-    let platform = resolve_platform(state, &path, &headers, inbound_key.as_deref())
+    let platform_id = resolve_platform(state, &headers, inbound_key.as_deref())
         .await
-        .map_err(|err| err.to_string())?;
+        .map_err(format_app_error)?;
+    let platform = platform_id.as_str().to_string();
+    let routing_rule =
+        PlatformCapabilityService::require(platform_id, PlatformOperation::GenericApiRouting)
+            .map_err(format_app_error)?;
 
     // OpenAI-compatible model listing: aggregate/dedupe client-facing model ids
     // from every enabled pool credential mapping instead of forwarding upstream.
@@ -311,12 +317,14 @@ async fn forward_request(
         let credentials = select_pool_credentials(pool, &platform)
             .await
             .map_err(|err| err.to_string())?;
+        let credentials = filter_credentials_for_rule(credentials, &routing_rule);
         return Ok(json_models_list_response(&platform, &credentials));
     }
 
     let credentials = select_pool_credentials(pool, &platform)
         .await
         .map_err(|err| err.to_string())?;
+    let credentials = filter_credentials_for_rule(credentials, &routing_rule);
     if credentials.is_empty() {
         return Err("No enabled route credentials in pool".to_string());
     }
@@ -781,18 +789,30 @@ fn json_error(status: StatusCode, message: &str) -> Response {
 
 async fn resolve_platform(
     state: &ProxyAppState,
-    path: &str,
     headers: &HeaderMap,
     inbound_key: Option<&str>,
-) -> Result<String, AppError> {
+) -> Result<PlatformId, AppError> {
     // Preferred: stable per-platform local proxy key written into CLI configs.
     // Keys are cached in memory and refreshed at most every 30s.
     if let Some(key) = inbound_key {
         if let Some(platform) = lookup_platform_by_proxy_key(state, key).await? {
-            return Ok(normalize_route_platform(&platform));
+            return PlatformId::parse(&platform);
         }
     }
-    Ok(detect_platform(path, headers))
+
+    if let Some(value) = headers
+        .get(ROUTE_PROXY_PLATFORM_HEADER)
+        .and_then(|value| value.to_str().ok())
+    {
+        return PlatformId::parse(value);
+    }
+
+    Err(AppError::Validation {
+        code: "route_proxy.platform_unresolved",
+        message: "Route proxy platform could not be resolved".to_string(),
+        details: None,
+        recoverable: true,
+    })
 }
 
 async fn lookup_platform_by_proxy_key(
@@ -904,50 +924,6 @@ fn from_hex(byte: u8) -> Option<u8> {
     }
 }
 
-pub fn detect_platform(path: &str, headers: &HeaderMap) -> String {
-    if let Some(value) = headers
-        .get(ROUTE_PROXY_PLATFORM_HEADER)
-        .and_then(|value| value.to_str().ok())
-    {
-        return normalize_route_platform(value);
-    }
-
-    let path_lower = path.to_lowercase();
-    if path_lower.contains("anthropic")
-        || path_lower.contains("claude")
-        || path_lower.contains("/messages")
-        || path_lower.contains("/v1/messages")
-    {
-        return "claude".to_string();
-    }
-    if path_lower.contains("gemini")
-        || path_lower.contains("generativelanguage")
-        || path_lower.contains(":generatecontent")
-    {
-        return "gemini".to_string();
-    }
-    if path_lower.contains("grok") || path_lower.contains("xai") || path_lower.contains("x.ai") {
-        return "grok".to_string();
-    }
-    "codex".to_string()
-}
-
-pub fn normalize_route_platform(value: &str) -> String {
-    let normalized = value.trim().to_lowercase();
-    if normalized.contains("claude") || normalized.contains("anthropic") {
-        "claude".to_string()
-    } else if normalized.contains("grok")
-        || normalized.contains("xai")
-        || normalized.contains("x.ai")
-    {
-        "grok".to_string()
-    } else if normalized.contains("gemini") || normalized.contains("google") {
-        "gemini".to_string()
-    } else {
-        "codex".to_string()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectedCredential {
     pub id: String,
@@ -1032,6 +1008,20 @@ pub async fn select_pool_credentials(
         .take(1)
         .map(|(_, _, credential)| credential)
         .collect())
+}
+
+fn filter_credentials_for_rule(
+    mut credentials: Vec<SelectedCredential>,
+    rule: &CapabilityRule,
+) -> Vec<SelectedCredential> {
+    if !rule.credential_kinds.is_empty() {
+        credentials.retain(|credential| {
+            rule.credential_kinds
+                .iter()
+                .any(|kind| kind == &credential.kind)
+        });
+    }
+    credentials
 }
 
 async fn bind_route_proxy_listener() -> Result<TcpListener, AppError> {
@@ -1202,6 +1192,22 @@ fn build_api_upstream_request(
     secret: &Value,
     config: &Value,
 ) -> Result<(String, HeaderMap, Vec<u8>), String> {
+    let platform = PlatformId::parse(platform).map_err(format_app_error)?;
+    PlatformCapabilityService::require(platform, PlatformOperation::GenericApiRouting)
+        .map_err(format_app_error)?;
+    let dialect = match string_value(config, "interface_format") {
+        Some(value) => ApiDialect::parse(value).map_err(format_app_error)?,
+        None if matches!(
+            platform,
+            PlatformId::OpenCode | PlatformId::OpenClaw | PlatformId::Hermes
+        ) =>
+        {
+            return Err("validation.api_dialect_required".to_string());
+        }
+        None => platform
+            .default_api_credential_dialect()
+            .ok_or_else(|| "validation.api_dialect_required".to_string())?,
+    };
     let api_key = string_value(secret, "api_key").ok_or_else(|| {
         format!(
             "Route credential {} is missing api_key",
@@ -1214,7 +1220,7 @@ fn build_api_upstream_request(
             credential.display_name
         )
     })?;
-    let interface_format = string_value(config, "interface_format").unwrap_or("openai");
+    let interface_format = dialect.as_str();
     let mappings = model_mappings(config);
     let upstream_path = normalize_api_upstream_path(interface_format, path);
     let mut rewritten_body = apply_model_mappings(body, &mappings);
@@ -1226,8 +1232,8 @@ fn build_api_upstream_request(
     }
     let mut target_url = build_target_url(base_url, &upstream_path, query);
 
-    match interface_format {
-        "anthropic" | "anthropic-messages" => {
+    match dialect {
+        ApiDialect::Anthropic => {
             match normalize_anthropic_api_key_field(string_value(config, "api_key_field"))
                 .map_err(|err| format!("Route credential {} {err}", credential.display_name))?
             {
@@ -1245,18 +1251,14 @@ fn build_api_upstream_request(
                 .entry(HeaderName::from_static("anthropic-version"))
                 .or_insert(HeaderValue::from_static("2023-06-01"));
         }
-        "gemini" => {
+        ApiDialect::Gemini => {
             target_url = append_query_param(&target_url, "key", api_key);
         }
-        "openai" | "openai-responses" => {
+        ApiDialect::OpenAi | ApiDialect::OpenAiResponses => {
             insert_header(headers, "authorization", &format!("Bearer {api_key}"))?;
-        }
-        other => {
-            return Err(format!("Unsupported interface format: {other}"));
         }
     }
 
-    let _ = platform;
     apply_credential_user_agent(headers, config)?;
     Ok((target_url, headers.clone(), rewritten_body))
 }
@@ -1271,6 +1273,9 @@ fn build_official_upstream_request(
     secret: &Value,
     config: &Value,
 ) -> Result<(String, HeaderMap, Vec<u8>), String> {
+    let platform = PlatformId::parse(platform).map_err(format_app_error)?;
+    PlatformCapabilityService::require(platform, PlatformOperation::OfficialAccountRouting)
+        .map_err(format_app_error)?;
     // Apply credential-provided headers first (CPA may ship extra headers).
     apply_config_headers(headers, config)?;
 
@@ -1288,29 +1293,26 @@ fn build_official_upstream_request(
         let access_token = resolve_official_access_token(credential, secret, config)?;
         insert_header(headers, "authorization", &format!("Bearer {access_token}"))?;
     }
-    if platform == "claude" {
+    if platform == PlatformId::Claude {
         headers
             .entry(HeaderName::from_static("anthropic-version"))
             .or_insert(HeaderValue::from_static("2023-06-01"));
     }
-    let base_url = string_value(config, "base_url").unwrap_or_else(|| {
-        if platform == "codex" && is_official_agent_identity_credential(secret, config) {
-            CODEX_AGENT_IDENTITY_BASE_URL
-        } else {
-            default_official_base_url(platform)
-        }
-    });
+    let base_url = if let Some(base_url) = string_value(config, "base_url") {
+        base_url
+    } else if platform == PlatformId::Codex && is_official_agent_identity_credential(secret, config)
+    {
+        CODEX_AGENT_IDENTITY_BASE_URL
+    } else {
+        default_official_base_url(platform)?
+    };
     // cli-chat-proxy rejects unversioned clients with HTTP 426 (version = none).
-    if is_official_grok_platform(platform) && is_grok_cli_chat_proxy_base_url(base_url) {
+    if platform == PlatformId::Grok && is_grok_cli_chat_proxy_base_url(base_url) {
         apply_official_grok_cli_headers(headers)?;
     }
     apply_credential_user_agent(headers, config)?;
     let target_url = build_target_url(base_url, path, query);
     Ok((target_url, headers.clone(), body.to_vec()))
-}
-
-fn is_official_grok_platform(platform: &str) -> bool {
-    matches!(platform, "grok" | "xai")
 }
 
 fn is_grok_cli_chat_proxy_base_url(base_url: &str) -> bool {
@@ -2386,14 +2388,22 @@ fn insert_header(headers: &mut HeaderMap, name: &'static str, value: &str) -> Re
     Ok(())
 }
 
-fn default_official_base_url(platform: &str) -> &'static str {
+fn default_official_base_url(platform: PlatformId) -> Result<&'static str, String> {
     match platform {
-        "claude" => "https://api.anthropic.com",
+        PlatformId::Codex => Ok("https://api.openai.com"),
+        PlatformId::Claude => Ok("https://api.anthropic.com"),
         // CLIProxyAPI xAI official API base for Grok.
-        "grok" => "https://api.x.ai/v1",
-        "gemini" => "https://generativelanguage.googleapis.com",
-        _ => "https://api.openai.com",
+        PlatformId::Grok => Ok("https://api.x.ai/v1"),
+        PlatformId::Gemini => Ok("https://generativelanguage.googleapis.com"),
+        PlatformId::OpenCode | PlatformId::OpenClaw | PlatformId::Hermes => {
+            Err("capability.unavailable: official account routing is unavailable".to_string())
+        }
     }
+}
+
+fn format_app_error(error: AppError) -> String {
+    let error = ApiError::from(error);
+    format!("{}: {}", error.code, error.message)
 }
 
 fn append_query_param(url: &str, key: &str, value: &str) -> String {
@@ -3030,6 +3040,60 @@ mod tests {
     }
 
     #[test]
+    fn partial_platform_api_requires_explicit_dialect() {
+        let credential = SelectedCredential {
+            id: "hermes-api".to_string(),
+            platform: "hermes".to_string(),
+            kind: "api".to_string(),
+            display_name: "Hermes API".to_string(),
+            status: "ok".to_string(),
+            secret_payload_json: r#"{"api_key":"sk-test"}"#.to_string(),
+            config_json: json!({
+                "base_url": "https://api.example.com/v1",
+                "model_mappings": []
+            })
+            .to_string(),
+        };
+
+        let error = build_upstream_request(
+            &credential,
+            "hermes",
+            "/chat/completions",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5"}"#,
+        )
+        .expect_err("partial platforms require an explicit API dialect");
+
+        assert!(error.contains("validation.api_dialect_required"));
+    }
+
+    #[test]
+    fn partial_platform_official_routing_is_unavailable() {
+        let credential = SelectedCredential {
+            id: "hermes-official".to_string(),
+            platform: "hermes".to_string(),
+            kind: "official".to_string(),
+            display_name: "Hermes Official".to_string(),
+            status: "ok".to_string(),
+            secret_payload_json: r#"{"access_token":"at"}"#.to_string(),
+            config_json: "{}".to_string(),
+        };
+
+        let error = build_upstream_request(
+            &credential,
+            "hermes",
+            "/chat/completions",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5"}"#,
+        )
+        .expect_err("partial platforms do not support official routing");
+
+        assert!(error.contains("capability.unavailable"));
+    }
+
+    #[test]
     fn build_target_url_joins_base_path_and_query() {
         assert_eq!(
             build_target_url(
@@ -3424,26 +3488,6 @@ mod tests {
     }
 
     #[test]
-    fn detect_platform_uses_header_and_path_hints() {
-        let mut headers = HeaderMap::new();
-        headers.insert("x-ai-switch-platform", HeaderValue::from_static("gemini"));
-        assert_eq!(detect_platform("/v1/chat/completions", &headers), "gemini");
-        assert_eq!(detect_platform("/v1/messages", &HeaderMap::new()), "claude");
-
-        let mut grok_headers = HeaderMap::new();
-        grok_headers.insert("x-ai-switch-platform", HeaderValue::from_static("xai"));
-        assert_eq!(
-            detect_platform("/v1/chat/completions", &grok_headers),
-            "grok"
-        );
-        assert_eq!(
-            detect_platform("/v1/grok/chat/completions", &HeaderMap::new()),
-            "grok"
-        );
-        assert_eq!(normalize_route_platform("Grok"), "grok");
-    }
-
-    #[test]
     fn extract_inbound_api_key_from_bearer_x_api_key_and_query() {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -3508,13 +3552,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_platform_prefers_proxy_key_over_path_default() {
+    async fn resolve_platform_preserves_hermes_proxy_key_identity() {
         use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
         use crate::database::{create_memory_pool, run_migrations};
 
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
-        RouteProxyKeyRepository::ensure_platform_key(&pool, "grok", "sk-ai-switch-grok")
+        RouteProxyKeyRepository::ensure_platform_key(&pool, "hermes", "sk-ai-switch-hermes")
             .await
             .expect("store key");
 
@@ -3526,34 +3570,41 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer sk-ai-switch-grok"),
+            HeaderValue::from_static("Bearer sk-ai-switch-hermes"),
         );
-        // Same OpenAI path would default to codex without key mapping.
-        let platform = resolve_platform(
-            &state,
-            "/v1/chat/completions",
-            &headers,
-            Some("sk-ai-switch-grok"),
-        )
-        .await
-        .expect("resolve");
-        assert_eq!(platform, "grok");
+        let platform = resolve_platform(&state, &headers, Some("sk-ai-switch-hermes"))
+            .await
+            .expect("resolve");
+        assert_eq!(platform, PlatformId::Hermes);
 
         // Second lookup should hit the in-memory cache (still within 30s TTL).
-        let cached = resolve_platform(
-            &state,
-            "/v1/chat/completions",
-            &headers,
-            Some("sk-ai-switch-grok"),
-        )
-        .await
-        .expect("cached resolve");
-        assert_eq!(cached, "grok");
-
-        let fallback = resolve_platform(&state, "/v1/chat/completions", &HeaderMap::new(), None)
+        let cached = resolve_platform(&state, &headers, Some("sk-ai-switch-hermes"))
             .await
-            .expect("fallback");
-        assert_eq!(fallback, "codex");
+            .expect("cached resolve");
+        assert_eq!(cached, PlatformId::Hermes);
+    }
+
+    #[tokio::test]
+    async fn resolve_platform_without_key_or_header_fails_closed() {
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let state = ProxyAppState {
+            pool,
+            key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
+        };
+
+        let error = resolve_platform(&state, &HeaderMap::new(), None)
+            .await
+            .expect_err("platform identity must be explicit");
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "route_proxy.platform_unresolved",
+                ..
+            }
+        ));
     }
 
     #[test]

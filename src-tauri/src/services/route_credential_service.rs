@@ -5,6 +5,7 @@ use crate::database::repositories::batch_repository::BatchRepository;
 use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::error::AppError;
 use crate::models::batch::NewBatch;
+use crate::models::platform::{PlatformId, PlatformOperation};
 use crate::models::route_credential::{
     normalize_anthropic_api_key_field, CreateApiRouteCredentialInput, ImportOfficialFilesInput,
     ImportOfficialTextInput, ModelMapping, RouteCredential, RouteCredentialImportFailure,
@@ -13,6 +14,7 @@ use crate::models::route_credential::{
 use crate::services::cpa_import_service::{
     parse_cpa_file, parse_cpa_text, ParsedOfficialCredential,
 };
+use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_preview_service::RoutePreviewService;
 use chrono::Utc;
 use serde_json::json;
@@ -28,7 +30,9 @@ impl RouteCredentialService {
         pool: &SqlitePool,
         platform: String,
     ) -> Result<Vec<RouteCredential>, AppError> {
-        RouteCredentialRepository::list_by_platform(pool, &normalize_platform(&platform)?).await
+        let platform = PlatformId::parse(&platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
+        RouteCredentialRepository::list_by_platform(pool, platform.as_str()).await
     }
 
     pub async fn get(pool: &SqlitePool, id: String) -> Result<RouteCredential, AppError> {
@@ -39,7 +43,9 @@ impl RouteCredentialService {
         pool: &SqlitePool,
         input: CreateApiRouteCredentialInput,
     ) -> Result<RouteCredential, AppError> {
-        let platform = normalize_platform(&input.platform)?;
+        let platform = PlatformId::parse(&input.platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
+        let platform = platform.as_str();
         validate_required("display_name", &input.display_name)?;
         validate_required("api_key", &input.api_key)?;
         validate_required("base_url", &input.base_url)?;
@@ -90,14 +96,16 @@ impl RouteCredentialService {
         pool: &SqlitePool,
         input: ImportOfficialTextInput,
     ) -> Result<RouteCredentialImportResult, AppError> {
-        let platform = normalize_platform(&input.platform)?;
+        let platform = PlatformId::parse(&input.platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::OfficialImport)?;
+        let platform = platform.as_str();
         let batch_id = ensure_required_batch(pool, input.batch_name).await?;
-        let parsed = parse_official_credentials_text(&platform, &input.text)?;
+        let parsed = parse_official_credentials_text(platform, &input.text)?;
         let mut imported = Vec::with_capacity(parsed.len());
 
         for credential in parsed {
             let preview_json = RoutePreviewService::generate(
-                &platform,
+                platform,
                 "official",
                 &credential.secret_payload_json,
                 &credential.config_json,
@@ -105,7 +113,7 @@ impl RouteCredentialService {
             imported.push(
                 RouteCredentialRepository::create(
                     pool,
-                    &platform,
+                    platform,
                     "official",
                     &credential.display_name,
                     credential.email,
@@ -129,18 +137,20 @@ impl RouteCredentialService {
         pool: &SqlitePool,
         input: ImportOfficialFilesInput,
     ) -> Result<RouteCredentialImportResult, AppError> {
-        let platform = normalize_platform(&input.platform)?;
+        let platform = PlatformId::parse(&input.platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::OfficialImport)?;
+        let platform = platform.as_str();
         let batch_id = ensure_required_batch(pool, input.batch_name).await?;
         let mut imported = Vec::new();
         let mut failed = Vec::new();
 
         for path in input.file_paths {
             match tokio::fs::read_to_string(&path).await {
-                Ok(content) => match parse_official_credentials_file(&platform, &path, &content) {
+                Ok(content) => match parse_official_credentials_file(platform, &path, &content) {
                     Ok(credentials) => {
                         for credential in credentials {
                             let preview_json = RoutePreviewService::generate(
-                                &platform,
+                                platform,
                                 "official",
                                 &credential.secret_payload_json,
                                 &credential.config_json,
@@ -148,7 +158,7 @@ impl RouteCredentialService {
                             imported.push(
                                 RouteCredentialRepository::create(
                                     pool,
-                                    &platform,
+                                    platform,
                                     "official",
                                     &credential.display_name,
                                     credential.email,
@@ -350,24 +360,6 @@ fn validate_model_mappings(value: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn normalize_platform(platform: &str) -> Result<String, AppError> {
-    let platform = platform.trim();
-    if platform.is_empty() {
-        return Err(AppError::Validation {
-            code: "validation.platform_required",
-            message: "Platform is required".to_string(),
-            details: None,
-            recoverable: true,
-        });
-    }
-    // Accept CLIProxyAPI xAI aliases when storing/listing route credentials.
-    let lower = platform.to_lowercase();
-    if lower.contains("grok") || lower == "xai" || lower.contains("x.ai") || lower == "x-ai" {
-        return Ok("grok".to_string());
-    }
-    Ok(platform.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,6 +485,38 @@ mod tests {
         assert!(imported
             .config_json
             .contains("\"import_format\":\"sub2api\""));
+    }
+
+    #[tokio::test]
+    async fn hermes_official_import_is_rejected_before_creating_a_batch() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+
+        let error = RouteCredentialService::import_official_text(
+            &pool,
+            ImportOfficialTextInput {
+                platform: "hermes".to_string(),
+                text: "{}".to_string(),
+                batch_name: Some("Hermes import".to_string()),
+            },
+        )
+        .await
+        .expect_err("Hermes official import is unavailable");
+
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "capability.unavailable",
+                ..
+            }
+        ));
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM batches")
+            .fetch_one(&pool)
+            .await
+            .expect("batch count");
+        assert_eq!(count, 0);
     }
 
     #[tokio::test]

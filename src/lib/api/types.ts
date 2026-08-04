@@ -20,6 +20,49 @@ export type AccountStatus = "ok" | "warning" | "error" | "revoked";
 
 export type RouteCredentialKind = "official" | "api";
 
+export type PlatformId =
+  | "codex"
+  | "claude"
+  | "gemini"
+  | "grok"
+  | "opencode"
+  | "openclaw"
+  | "hermes";
+
+export type ApiDialect = "openai" | "openai-responses" | "anthropic" | "gemini";
+
+export type CapabilityAvailability = "supported" | "partial" | "unavailable";
+
+export type PlatformSupportLevel = "supported" | "partial";
+
+export type CapabilityRule = {
+  availability: CapabilityAvailability;
+  reason_code?: string | null;
+  credential_kinds: string[];
+  requires_base_url: boolean;
+  requires_api_dialect: boolean;
+};
+
+export type PlatformOperations = {
+  route_credentials: CapabilityRule;
+  generic_api_routing: CapabilityRule;
+  config_write: CapabilityRule;
+  official_import: CapabilityRule;
+  official_account_routing: CapabilityRule;
+  deeplink_import: CapabilityRule;
+  official_quota: CapabilityRule;
+  model_test: CapabilityRule;
+  terminal_launch: CapabilityRule;
+  session_resume: CapabilityRule;
+};
+
+export type PlatformCapability = {
+  platform: PlatformId;
+  display_name: string;
+  support_level: PlatformSupportLevel;
+  operations: PlatformOperations;
+};
+
 export type InterfaceFormat =
   | "openai"
   | "openai-responses"
@@ -320,18 +363,23 @@ export type TailscaleLogin = {
   message: string;
 };
 
-export type RouteConfigWriteOutcome = {
+export type ConfigWriteOutcome = {
+  operation_id: string;
+  snapshot_id?: string | null;
+  target_app_id?: string | null;
   target_key: string;
+  platform: string;
   path: string;
   status: string;
-  route_proxy_key: string;
-  error?: string | null;
+  before_hash?: string | null;
+  after_hash?: string | null;
+  error_code?: string | null;
 };
 
 export type RouteProxyHttpsOperationOutcome = {
   https: RouteProxyHttpsStatus;
   routeProxy: RouteProxyStatus;
-  configWrites: RouteConfigWriteOutcome[];
+  configWrites: ConfigWriteOutcome[];
 };
 
 export type ImportJob = {
@@ -352,11 +400,42 @@ export type ImportJob = {
 export type TargetApp = {
   id: string;
   key: string;
+  platform?: string | null;
   display_name: string;
   enabled: number;
   sort_order: number;
   created_at: string;
   updated_at: string;
+};
+
+export type ConfigSnapshotSummary = {
+  id: string;
+  target_app_id?: string | null;
+  platform?: string | null;
+  operation: string;
+  operation_group_id?: string | null;
+  source_snapshot_id?: string | null;
+  path: string;
+  before_hash?: string | null;
+  after_hash?: string | null;
+  original_file_existed: number;
+  status: string;
+  error_code?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TargetConfigStatus = {
+  target: TargetApp;
+  support_level?: string | null;
+  adapter_available: boolean;
+  config_path?: string | null;
+  file_status: string;
+  last_write_status?: string | null;
+  last_error_code?: string | null;
+  last_written_at?: string | null;
+  snapshot_count: number;
+  latest_snapshot?: ConfigSnapshotSummary | null;
 };
 
 export type AppSettings = {

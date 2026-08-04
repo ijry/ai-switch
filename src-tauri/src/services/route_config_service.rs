@@ -1,40 +1,18 @@
-use crate::config_writer::ConfigWriter;
+use crate::adapters::route_config::{RouteConfigInput, TargetAdapter, TargetAdapterRegistry};
 use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
 use crate::error::AppError;
+use crate::models::config_snapshot::ConfigWriteOutcome;
+use crate::models::platform::{PlatformId, PlatformOperation};
 use crate::paths::AppPaths;
-use crate::services::route_pool_service::normalize_platform;
+use crate::services::config_write_service::{
+    ConfigWriteCoordinator, ConfigWriteRequest, ConfigWriteRuntimeState,
+};
+use crate::services::platform_capability_service::PlatformCapabilityService;
 use directories::BaseDirs;
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
 use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
-use toml_edit::{value, Document, Item, Table};
+use std::sync::Arc;
 use uuid::Uuid;
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RouteConfigWriteOutcome {
-    pub target_key: String,
-    pub path: String,
-    pub status: String,
-    pub route_proxy_key: String,
-    pub error: Option<String>,
-}
-
-type TargetRender = fn(&str, &str) -> String;
-
-struct RouteConfigTarget {
-    key: &'static str,
-    path: PathBuf,
-    render: TargetRender,
-}
-
-struct RouteConfigWritePlan {
-    target_key: String,
-    path: PathBuf,
-    route_proxy_key: String,
-    content: String,
-    before_content: Option<String>,
-}
 
 pub struct RouteConfigService;
 
@@ -42,9 +20,10 @@ impl RouteConfigService {
     pub async fn write_configs(
         paths: &AppPaths,
         pool: &SqlitePool,
+        runtime: &ConfigWriteRuntimeState,
         base_url: &str,
         platform: &str,
-    ) -> Result<Vec<RouteConfigWriteOutcome>, AppError> {
+    ) -> Result<Vec<ConfigWriteOutcome>, AppError> {
         let base_url = normalize_base_url(base_url)?;
 
         let home = BaseDirs::new()
@@ -56,36 +35,46 @@ impl RouteConfigService {
                 recoverable: false,
             })?;
 
-        Self::write_configs_for_home(paths, pool, base_url, platform, &home).await
+        Self::write_configs_for_home(paths, pool, runtime, base_url, platform, &home).await
     }
 
     pub(crate) async fn write_configs_for_home(
-        _paths: &AppPaths,
+        paths: &AppPaths,
         pool: &SqlitePool,
+        runtime: &ConfigWriteRuntimeState,
         base_url: &str,
         platform: &str,
         home: &Path,
-    ) -> Result<Vec<RouteConfigWriteOutcome>, AppError> {
-        // Keep a local backup root available for later snapshot wiring.
-        let target_key = normalize_platform(platform)?;
-        // Stable per-platform local key so the shared proxy can resolve agent pools by API key.
+    ) -> Result<Vec<ConfigWriteOutcome>, AppError> {
+        let base_url = normalize_base_url(base_url)?;
+        let platform = PlatformId::parse(platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::ConfigWrite)?;
+        let adapter = route_config_adapter(platform)?;
+        let platform_key = platform.as_str();
+
         let existing_route_proxy_key =
-            RouteProxyKeyRepository::get_existing_platform_key(pool, &target_key).await?;
+            RouteProxyKeyRepository::get_existing_platform_key(pool, platform_key).await?;
         let route_proxy_key = RouteProxyKeyRepository::ensure_platform_key(
             pool,
-            &target_key,
+            platform_key,
             &generate_route_proxy_key(),
         )
         .await?;
-        match Self::write_existing_config_for_home(&home, base_url, &target_key, &route_proxy_key)
-            .await
-        {
-            Ok(outcome) => Ok(vec![outcome]),
+        let request = ConfigWriteRequest {
+            adapter,
+            home: home.to_path_buf(),
+            input: RouteConfigInput {
+                base_url: base_url.to_string(),
+                route_proxy_key: route_proxy_key.clone(),
+            },
+        };
+        match ConfigWriteCoordinator::write_group(paths, pool, runtime, vec![request]).await {
+            Ok(outcomes) => Ok(outcomes),
             Err(error) => {
                 if existing_route_proxy_key.is_none() {
                     let _ = RouteProxyKeyRepository::delete_if_matches(
                         pool,
-                        &target_key,
+                        platform_key,
                         &route_proxy_key,
                     )
                     .await;
@@ -98,313 +87,146 @@ impl RouteConfigService {
     /// Rewrites only platforms that already own a managed proxy key. This is
     /// used for HTTP/HTTPS changes and never creates additional client config.
     pub async fn write_existing_configs(
-        _paths: &AppPaths,
+        paths: &AppPaths,
         pool: &SqlitePool,
+        runtime: &ConfigWriteRuntimeState,
         base_url: &str,
-    ) -> Result<Vec<RouteConfigWriteOutcome>, AppError> {
+    ) -> Result<Vec<ConfigWriteOutcome>, AppError> {
         let home = resolve_home_dir()?;
-        Self::write_existing_configs_for_home(pool, base_url, &home).await
+        Self::write_existing_configs_for_home(paths, pool, runtime, base_url, &home).await
     }
 
     pub(crate) async fn write_existing_configs_for_home(
+        paths: &AppPaths,
         pool: &SqlitePool,
+        runtime: &ConfigWriteRuntimeState,
         base_url: &str,
         home: &Path,
-    ) -> Result<Vec<RouteConfigWriteOutcome>, AppError> {
+    ) -> Result<Vec<ConfigWriteOutcome>, AppError> {
         let base_url = normalize_base_url(base_url)?;
         let platforms = RouteProxyKeyRepository::list_platforms(pool).await?;
-        let mut plans = Vec::with_capacity(platforms.len());
+        let registry = TargetAdapterRegistry::new();
+        let mut requests = Vec::with_capacity(platforms.len());
         let mut skipped = Vec::new();
 
         for platform in platforms {
-            match RouteProxyKeyRepository::get_existing_platform_key(pool, &platform).await? {
-                Some(route_proxy_key) => {
-                    // Validate every managed config before changing any client file.
-                    plans.push(
-                        prepare_route_config_for_home(home, base_url, &platform, &route_proxy_key)
-                            .await?,
-                    );
+            let parsed = match PlatformId::parse(&platform) {
+                Ok(parsed) => parsed,
+                Err(_) => {
+                    skipped.push(skipped_outcome(
+                        &platform,
+                        &platform,
+                        "config.adapter_unavailable",
+                    ));
+                    continue;
                 }
-                None => skipped.push(RouteConfigWriteOutcome {
-                    target_key: platform,
-                    path: String::new(),
-                    status: "skipped".to_string(),
-                    route_proxy_key: String::new(),
-                    error: Some(
-                        "Route proxy key was removed before HTTPS config rewrite".to_string(),
-                    ),
-                }),
+            };
+            if PlatformCapabilityService::require(parsed, PlatformOperation::ConfigWrite).is_err() {
+                skipped.push(skipped_outcome(
+                    &platform,
+                    parsed.as_str(),
+                    "config.adapter_unavailable",
+                ));
+                continue;
             }
+            let Some(adapter) = registry.for_platform(parsed) else {
+                skipped.push(skipped_outcome(
+                    &platform,
+                    parsed.as_str(),
+                    "config.adapter_unavailable",
+                ));
+                continue;
+            };
+            let Some(route_proxy_key) =
+                RouteProxyKeyRepository::get_existing_platform_key(pool, &platform).await?
+            else {
+                skipped.push(skipped_outcome(
+                    adapter.target_key(),
+                    parsed.as_str(),
+                    "config.route_proxy_key_missing",
+                ));
+                continue;
+            };
+            requests.push(ConfigWriteRequest {
+                adapter,
+                home: home.to_path_buf(),
+                input: RouteConfigInput {
+                    base_url: base_url.to_string(),
+                    route_proxy_key,
+                },
+            });
         }
 
-        let mut outcomes = write_route_config_plans(&plans).await?;
+        let mut outcomes =
+            ConfigWriteCoordinator::write_group(paths, pool, runtime, requests).await?;
+        let operation_id = outcomes
+            .first()
+            .map(|outcome| outcome.operation_id.clone())
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        for outcome in &mut skipped {
+            outcome.operation_id = operation_id.clone();
+        }
         outcomes.extend(skipped);
         Ok(outcomes)
     }
 
     pub(crate) async fn write_existing_config_for_home(
+        paths: &AppPaths,
+        pool: &SqlitePool,
+        runtime: &ConfigWriteRuntimeState,
         home: &Path,
         base_url: &str,
         platform: &str,
         route_proxy_key: &str,
-    ) -> Result<RouteConfigWriteOutcome, AppError> {
+    ) -> Result<ConfigWriteOutcome, AppError> {
         let base_url = normalize_base_url(base_url)?;
-        let target_key = normalize_platform(platform)?;
-        let plan =
-            prepare_route_config_for_home(home, base_url, &target_key, route_proxy_key).await?;
-        write_route_config_plan(&plan).await
-    }
-}
-
-async fn prepare_route_config_for_home(
-    home: &Path,
-    base_url: &str,
-    platform: &str,
-    route_proxy_key: &str,
-) -> Result<RouteConfigWritePlan, AppError> {
-    let target_key = normalize_platform(platform)?;
-    let target = route_config_target(home, &target_key)?;
-    let (before_content, content) =
-        merge_route_config_content(&target, base_url, route_proxy_key).await?;
-
-    Ok(RouteConfigWritePlan {
-        target_key: target.key.to_string(),
-        path: target.path,
-        route_proxy_key: route_proxy_key.to_string(),
-        content,
-        before_content,
-    })
-}
-
-async fn merge_route_config_content(
-    target: &RouteConfigTarget,
-    base_url: &str,
-    route_proxy_key: &str,
-) -> Result<(Option<String>, String), AppError> {
-    let existing = match tokio::fs::read_to_string(&target.path).await {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((None, (target.render)(base_url, route_proxy_key)));
-        }
-        Err(error) => return Err(error.into()),
-    };
-
-    if existing.trim().is_empty() {
-        return Ok((Some(existing), (target.render)(base_url, route_proxy_key)));
-    }
-
-    let content = match target.key {
-        "codex" => merge_codex_config(&target.path, &existing, base_url, route_proxy_key),
-        "claude" | "gemini" | "grok" => merge_json_agent_config(
-            &target.path,
-            &existing,
-            target.key,
-            base_url,
-            route_proxy_key,
-        ),
-        _ => Ok((target.render)(base_url, route_proxy_key)),
-    }?;
-    Ok((Some(existing), content))
-}
-
-async fn write_route_config_plan(
-    plan: &RouteConfigWritePlan,
-) -> Result<RouteConfigWriteOutcome, AppError> {
-    let write = ConfigWriter::write_atomic(&plan.path, &plan.content).await?;
-    Ok(RouteConfigWriteOutcome {
-        target_key: plan.target_key.clone(),
-        path: write.path,
-        status: write.status,
-        route_proxy_key: plan.route_proxy_key.clone(),
-        error: None,
-    })
-}
-
-async fn write_route_config_plans(
-    plans: &[RouteConfigWritePlan],
-) -> Result<Vec<RouteConfigWriteOutcome>, AppError> {
-    let mut outcomes = Vec::with_capacity(plans.len());
-    let mut written = Vec::with_capacity(plans.len());
-
-    for plan in plans {
-        match write_route_config_plan(plan).await {
-            Ok(outcome) => {
-                written.push(plan);
-                outcomes.push(outcome);
-            }
-            Err(error) => {
-                let rollback_errors = rollback_route_config_plans(&written).await;
-                return Err(route_config_write_error(error, rollback_errors));
-            }
-        }
-    }
-
-    Ok(outcomes)
-}
-
-async fn rollback_route_config_plans(plans: &[&RouteConfigWritePlan]) -> Vec<String> {
-    let mut errors = Vec::new();
-    for plan in plans.iter().rev() {
-        let result = match &plan.before_content {
-            Some(content) => ConfigWriter::write_atomic(&plan.path, content)
-                .await
-                .map(|_| ()),
-            None => match tokio::fs::remove_file(&plan.path).await {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error.into()),
+        let platform = PlatformId::parse(platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::ConfigWrite)?;
+        let request = ConfigWriteRequest {
+            adapter: route_config_adapter(platform)?,
+            home: home.to_path_buf(),
+            input: RouteConfigInput {
+                base_url: base_url.to_string(),
+                route_proxy_key: route_proxy_key.to_string(),
             },
         };
-        if let Err(error) = result {
-            errors.push(format!("{}: {error}", plan.path.display()));
-        }
-    }
-    errors
-}
-
-fn route_config_write_error(write_error: AppError, rollback_errors: Vec<String>) -> AppError {
-    let details = if rollback_errors.is_empty() {
-        format!("{write_error}; prior client config writes were restored")
-    } else {
-        format!(
-            "{write_error}; rollback failed for {}",
-            rollback_errors.join(" | ")
-        )
-    };
-    AppError::Filesystem {
-        code: "filesystem.route_config_write",
-        message: "Could not write route proxy configuration".to_string(),
-        details: Some(details),
-        recoverable: true,
+        ConfigWriteCoordinator::write_group(paths, pool, runtime, vec![request])
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| AppError::Filesystem {
+                code: "filesystem.route_config_write",
+                message: "Configuration write returned no target outcome".to_string(),
+                details: None,
+                recoverable: false,
+            })
     }
 }
 
-fn merge_codex_config(
-    path: &Path,
-    existing: &str,
-    base_url: &str,
-    route_proxy_key: &str,
-) -> Result<String, AppError> {
-    let base_url = codex_route_proxy_base_url(base_url);
-    let mut document = existing
-        .parse::<Document>()
-        .map_err(|error| invalid_existing_config(path, "TOML", error.to_string()))?;
-
-    document["model_provider"] = value("ai-switch");
-    if document.get("model_providers").is_none() {
-        document["model_providers"] = Item::Table(Table::new());
+fn skipped_outcome(target_key: &str, platform: &str, error_code: &str) -> ConfigWriteOutcome {
+    ConfigWriteOutcome {
+        operation_id: String::new(),
+        snapshot_id: None,
+        target_app_id: None,
+        target_key: target_key.to_string(),
+        platform: platform.to_string(),
+        path: String::new(),
+        status: "skipped".to_string(),
+        before_hash: None,
+        after_hash: None,
+        error_code: Some(error_code.to_string()),
     }
-    let providers = document["model_providers"].as_table_mut().ok_or_else(|| {
-        invalid_existing_config(
-            path,
-            "TOML",
-            "model_providers must be a table to add the ai-switch provider".to_string(),
-        )
-    })?;
-    if !providers.contains_key("ai-switch") {
-        providers.insert("ai-switch", Item::Table(Table::new()));
-    }
-    let provider = providers["ai-switch"].as_table_mut().ok_or_else(|| {
-        invalid_existing_config(
-            path,
-            "TOML",
-            "model_providers.ai-switch must be a table".to_string(),
-        )
-    })?;
-    provider["name"] = value("AI Switch Route Proxy");
-    provider["base_url"] = value(base_url);
-    provider["wire_api"] = value("responses");
-    provider["api_key"] = value(route_proxy_key);
-
-    Ok(document.to_string())
 }
 
-fn merge_json_agent_config(
-    path: &Path,
-    existing: &str,
-    platform: &str,
-    base_url: &str,
-    route_proxy_key: &str,
-) -> Result<String, AppError> {
-    let mut config: Value = serde_json::from_str(existing)
-        .map_err(|error| invalid_existing_config(path, "JSON", error.to_string()))?;
-    let root = config.as_object_mut().ok_or_else(|| {
-        invalid_existing_config(path, "JSON", "root value must be an object".to_string())
-    })?;
-
-    let ai_switch = object_entry(root, "aiSwitch", path, "JSON")?;
-    let route_proxy = object_entry(ai_switch, "routeProxy", path, "JSON")?;
-    route_proxy.insert("enabled".to_string(), Value::Bool(true));
-    route_proxy.insert("baseUrl".to_string(), Value::String(base_url.to_string()));
-    route_proxy.insert("platform".to_string(), Value::String(platform.to_string()));
-    route_proxy.insert(
-        "apiKey".to_string(),
-        Value::String(route_proxy_key.to_string()),
-    );
-
-    let env = object_entry(root, "env", path, "JSON")?;
-    match platform {
-        "claude" => {
-            env.insert(
-                "ANTHROPIC_BASE_URL".to_string(),
-                Value::String(base_url.to_string()),
-            );
-        }
-        "gemini" => {
-            env.insert(
-                "GEMINI_API_BASE_URL".to_string(),
-                Value::String(base_url.to_string()),
-            );
-            env.insert(
-                "GOOGLE_GEMINI_BASE_URL".to_string(),
-                Value::String(base_url.to_string()),
-            );
-        }
-        "grok" => {
-            env.insert(
-                "XAI_API_BASE_URL".to_string(),
-                Value::String(base_url.to_string()),
-            );
-            env.insert(
-                "GROK_API_BASE_URL".to_string(),
-                Value::String(base_url.to_string()),
-            );
-        }
-        _ => {}
-    }
-    env.insert(
-        "AI_SWITCH_ROUTE_PROXY".to_string(),
-        Value::String(base_url.to_string()),
-    );
-    env.insert(
-        "AI_SWITCH_ROUTE_PROXY_API_KEY".to_string(),
-        Value::String(route_proxy_key.to_string()),
-    );
-
-    serde_json::to_string_pretty(&config).map_err(AppError::from)
-}
-
-fn object_entry<'a>(
-    parent: &'a mut Map<String, Value>,
-    key: &str,
-    path: &Path,
-    format: &str,
-) -> Result<&'a mut Map<String, Value>, AppError> {
-    let value = parent
-        .entry(key.to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-    value
-        .as_object_mut()
-        .ok_or_else(|| invalid_existing_config(path, format, format!("{key} must be an object")))
-}
-
-fn invalid_existing_config(path: &Path, format: &str, details: String) -> AppError {
-    AppError::Validation {
-        code: "validation.route_config_existing_invalid",
-        message: "Existing CLI configuration is invalid; refusing to overwrite it".to_string(),
-        details: Some(format!("{} ({format}): {details}", path.display())),
-        recoverable: true,
-    }
+fn route_config_adapter(platform: PlatformId) -> Result<Arc<dyn TargetAdapter>, AppError> {
+    TargetAdapterRegistry::new()
+        .for_platform(platform)
+        .ok_or_else(|| AppError::Validation {
+            code: "config.adapter_unavailable",
+            message: "No verified native configuration adapter is available".to_string(),
+            details: Some(platform.as_str().to_string()),
+            recoverable: true,
+        })
 }
 
 fn resolve_home_dir() -> Result<PathBuf, AppError> {
@@ -431,172 +253,16 @@ fn normalize_base_url(base_url: &str) -> Result<&str, AppError> {
     Ok(base_url)
 }
 
-fn route_config_target(home: &Path, target_key: &str) -> Result<RouteConfigTarget, AppError> {
-    match target_key {
-        "codex" => Ok(RouteConfigTarget {
-            key: "codex",
-            path: home.join(".codex").join("config.toml"),
-            render: render_codex_config,
-        }),
-        "claude" => Ok(RouteConfigTarget {
-            key: "claude",
-            path: home.join(".claude").join("settings.json"),
-            render: render_claude_config,
-        }),
-        "gemini" => Ok(RouteConfigTarget {
-            key: "gemini",
-            path: home.join(".gemini").join("settings.json"),
-            render: render_gemini_config,
-        }),
-        "grok" => Ok(RouteConfigTarget {
-            key: "grok",
-            path: home.join(".grok").join("settings.json"),
-            render: render_grok_config,
-        }),
-        other => Err(AppError::Validation {
-            code: "validation.route_config_target_unsupported",
-            message: "Route config writing is not supported for this target".to_string(),
-            details: Some(other.to_string()),
-            recoverable: true,
-        }),
-    }
-}
-
 pub fn generate_route_proxy_key() -> String {
     format!("sk-ai-switch-{}", Uuid::new_v4().simple())
-}
-
-pub fn render_codex_config(base_url: &str, route_proxy_key: &str) -> String {
-    let base_url = codex_route_proxy_base_url(base_url);
-    format!(
-        r#"# Generated by AI Switch route proxy
-model_provider = "ai-switch"
-
-[model_providers.ai-switch]
-name = "AI Switch Route Proxy"
-base_url = "{base_url}"
-wire_api = "responses"
-api_key = "{route_proxy_key}"
-"#
-    )
-}
-
-fn codex_route_proxy_base_url(base_url: &str) -> String {
-    let trimmed = base_url.trim().trim_end_matches('/');
-    if base_last_path_segment(trimmed).is_some_and(|segment| segment.eq_ignore_ascii_case("v1")) {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed}/v1")
-    }
-}
-
-fn base_last_path_segment(base_url: &str) -> Option<&str> {
-    let after_scheme = base_url
-        .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or(base_url);
-    let path = after_scheme.split_once('/').map(|(_, path)| path)?;
-    path.trim_matches('/')
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .next_back()
-}
-
-pub fn render_claude_config(base_url: &str, route_proxy_key: &str) -> String {
-    serde_json::json!({
-        "aiSwitch": {
-            "routeProxy": {
-                "enabled": true,
-                "baseUrl": base_url,
-                "platform": "claude",
-                "apiKey": route_proxy_key
-            }
-        },
-        "env": {
-            "ANTHROPIC_BASE_URL": base_url,
-            "AI_SWITCH_ROUTE_PROXY": base_url,
-            "AI_SWITCH_ROUTE_PROXY_API_KEY": route_proxy_key
-        }
-    })
-    .to_string()
-}
-
-pub fn render_gemini_config(base_url: &str, route_proxy_key: &str) -> String {
-    serde_json::json!({
-        "aiSwitch": {
-            "routeProxy": {
-                "enabled": true,
-                "baseUrl": base_url,
-                "platform": "gemini",
-                "apiKey": route_proxy_key
-            }
-        },
-        "env": {
-            "GEMINI_API_BASE_URL": base_url,
-            "GOOGLE_GEMINI_BASE_URL": base_url,
-            "AI_SWITCH_ROUTE_PROXY": base_url,
-            "AI_SWITCH_ROUTE_PROXY_API_KEY": route_proxy_key
-        }
-    })
-    .to_string()
-}
-
-pub fn render_grok_config(base_url: &str, route_proxy_key: &str) -> String {
-    serde_json::json!({
-        "aiSwitch": {
-            "routeProxy": {
-                "enabled": true,
-                "baseUrl": base_url,
-                "platform": "grok",
-                "apiKey": route_proxy_key
-            }
-        },
-        "env": {
-            "XAI_API_BASE_URL": base_url,
-            "GROK_API_BASE_URL": base_url,
-            "AI_SWITCH_ROUTE_PROXY": base_url,
-            "AI_SWITCH_ROUTE_PROXY_API_KEY": route_proxy_key
-        }
-    })
-    .to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config_writer::ConfigWriter;
     use crate::database::{create_memory_pool, run_migrations};
-
-    #[test]
-    fn render_codex_config_points_model_provider_to_proxy() {
-        let rendered = render_codex_config("http://127.0.0.1:43111", "sk-ai-switch-test");
-        assert!(rendered.contains("model_provider = \"ai-switch\""));
-        assert!(rendered.contains("base_url = \"http://127.0.0.1:43111/v1\""));
-    }
-
-    #[test]
-    fn render_codex_config_keeps_existing_v1_suffix() {
-        let rendered = render_codex_config("http://127.0.0.1:43111/v1/", "sk-ai-switch-test");
-        assert!(rendered.contains("base_url = \"http://127.0.0.1:43111/v1\""));
-        assert!(!rendered.contains("/v1/v1"));
-    }
-
-    #[test]
-    fn render_grok_includes_route_metadata() {
-        let grok = render_grok_config("http://127.0.0.1:43111", "sk-ai-switch-test");
-        assert!(grok.contains("XAI_API_BASE_URL"));
-        assert!(grok.contains("\"platform\":\"grok\""));
-        assert!(grok.contains("\"apiKey\":\"sk-ai-switch-test\""));
-    }
-
-    #[test]
-    fn render_claude_and_gemini_include_route_metadata() {
-        let claude = render_claude_config("http://127.0.0.1:43111", "sk-ai-switch-test");
-        let gemini = render_gemini_config("http://127.0.0.1:43111", "sk-ai-switch-test");
-        assert!(claude.contains("ANTHROPIC_BASE_URL"));
-        assert!(claude.contains("\"platform\":\"claude\""));
-        assert!(gemini.contains("GEMINI_API_BASE_URL"));
-        assert!(gemini.contains("\"platform\":\"gemini\""));
-    }
+    use crate::services::config_write_service::ConfigWriteRuntimeState;
 
     #[test]
     fn generated_route_proxy_key_uses_sk_shape() {
@@ -605,44 +271,97 @@ mod tests {
         assert!(key.len() > "sk-ai-switch-".len() + 20);
     }
 
-    #[test]
-    fn render_codex_config_uses_responses_and_route_proxy_key() {
-        let rendered = render_codex_config("http://127.0.0.1:43111", "sk-ai-switch-test");
-        assert!(rendered.contains("model_provider = \"ai-switch\""));
-        assert!(rendered.contains("base_url = \"http://127.0.0.1:43111/v1\""));
-        assert!(rendered.contains("wire_api = \"responses\""));
-        assert!(rendered.contains("api_key = \"sk-ai-switch-test\""));
-        assert!(!rendered.contains("wire_api = \"chat\""));
-    }
-
-    #[test]
-    fn render_claude_and_gemini_include_route_proxy_key_metadata() {
-        let claude = render_claude_config("http://127.0.0.1:43111", "sk-ai-switch-test");
-        let gemini = render_gemini_config("http://127.0.0.1:43111", "sk-ai-switch-test");
-        assert!(claude.contains("\"apiKey\":\"sk-ai-switch-test\""));
-        assert!(claude.contains("AI_SWITCH_ROUTE_PROXY_API_KEY"));
-        assert!(gemini.contains("\"apiKey\":\"sk-ai-switch-test\""));
-        assert!(gemini.contains("AI_SWITCH_ROUTE_PROXY_API_KEY"));
-    }
-
     #[tokio::test]
     async fn write_configs_rejects_unsupported_platform_without_writing_all_targets() {
         let temp = tempfile::tempdir().expect("temp dir");
         let paths = AppPaths::from_data_dir(temp.path().to_path_buf());
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
-        let error =
-            RouteConfigService::write_configs(&paths, &pool, "http://127.0.0.1:43111", "opencode")
-                .await
-                .expect_err("unsupported target");
+        let runtime = ConfigWriteRuntimeState::default();
+        let error = RouteConfigService::write_configs_for_home(
+            &paths,
+            &pool,
+            &runtime,
+            "http://127.0.0.1:43111",
+            "opencode",
+            temp.path(),
+        )
+        .await
+        .expect_err("unsupported target");
 
         match error {
             AppError::Validation { code, details, .. } => {
-                assert_eq!(code, "validation.route_config_target_unsupported");
-                assert_eq!(details.as_deref(), Some("opencode"));
+                assert_eq!(code, "capability.unavailable");
+                assert_eq!(
+                    details.as_deref(),
+                    Some("capability.native_config_unavailable")
+                );
             }
             other => panic!("expected validation error, got {other:?}"),
         }
+        assert!(
+            RouteProxyKeyRepository::get_existing_platform_key(&pool, "opencode")
+                .await
+                .expect("key lookup")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn every_route_config_entry_point_leaves_hermes_config_untouched() {
+        let fixture = tempfile::tempdir().unwrap();
+        let home = fixture.path().join("home");
+        let paths = AppPaths::from_data_dir(fixture.path().join("app-data"));
+        paths.ensure().await.unwrap();
+        let pool = create_memory_pool().await.unwrap();
+        run_migrations(&pool).await.unwrap();
+        let runtime = ConfigWriteRuntimeState::default();
+        let hermes = home.join(".hermes").join("config.yaml");
+        tokio::fs::create_dir_all(hermes.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&hermes, b"model: sentinel\n")
+            .await
+            .unwrap();
+        let before = ConfigWriter::inspect(&hermes).await.unwrap();
+
+        let error = RouteConfigService::write_configs_for_home(
+            &paths,
+            &pool,
+            &runtime,
+            "http://127.0.0.1:43111",
+            "hermes",
+            &home,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "capability.unavailable",
+                ..
+            }
+        ));
+
+        RouteProxyKeyRepository::ensure_platform_key(&pool, "hermes", "sk-ai-switch-hermes")
+            .await
+            .unwrap();
+        let outcomes = RouteConfigService::write_existing_configs_for_home(
+            &paths,
+            &pool,
+            &runtime,
+            "http://127.0.0.1:43111",
+            &home,
+        )
+        .await
+        .unwrap();
+        assert!(outcomes
+            .iter()
+            .any(|item| item.platform == "hermes" && item.status == "skipped"));
+
+        let after = ConfigWriter::inspect(&hermes).await.unwrap();
+        assert_eq!(after.hash, before.hash);
+        assert_eq!(after.bytes, before.bytes);
     }
 
     #[tokio::test]
@@ -658,12 +377,15 @@ mod tests {
             .expect("seed invalid config");
 
         let paths = AppPaths::from_data_dir(app_dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
+        let runtime = ConfigWriteRuntimeState::default();
 
         let error = RouteConfigService::write_configs_for_home(
             &paths,
             &pool,
+            &runtime,
             "http://127.0.0.1:43111",
             "codex",
             home.path(),
@@ -671,7 +393,14 @@ mod tests {
         .await
         .expect_err("invalid config must fail");
 
-        assert!(error.to_string().contains("refusing to overwrite"));
+        assert!(matches!(
+            error,
+            AppError::Filesystem {
+                code: "filesystem.route_config_write",
+                details: Some(details),
+                ..
+            } if details.contains("validation.route_config_existing_invalid")
+        ));
         assert!(
             RouteProxyKeyRepository::get_existing_platform_key(&pool, "codex")
                 .await
@@ -719,15 +448,19 @@ mod tests {
 
         let app_dir = tempfile::tempdir().expect("app dir");
         let home = tempfile::tempdir().expect("home dir");
-        let _paths = AppPaths::from_data_dir(app_dir.path().to_path_buf());
+        let paths = AppPaths::from_data_dir(app_dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
+        let runtime = ConfigWriteRuntimeState::default();
         RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-codex")
             .await
             .expect("codex key");
 
         let outcomes = RouteConfigService::write_existing_configs_for_home(
+            &paths,
             &pool,
+            &runtime,
             "https://127.0.0.1:43111",
             home.path(),
         )
@@ -736,7 +469,12 @@ mod tests {
 
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].target_key, "codex");
-        assert_eq!(outcomes[0].route_proxy_key, "sk-codex");
+        assert_eq!(outcomes[0].status, "succeeded");
+        assert!(outcomes[0].snapshot_id.is_some());
+        assert!(serde_json::to_value(&outcomes[0])
+            .unwrap()
+            .get("route_proxy_key")
+            .is_none());
         let codex_config = tokio::fs::read_to_string(home.path().join(".codex/config.toml"))
             .await
             .expect("codex config");
@@ -754,6 +492,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_existing_codex_config_preserves_unmanaged_toml() {
+        let (_app_dir, paths, pool, runtime) = config_write_context().await;
         let home = tempfile::tempdir().expect("home dir");
         let codex_dir = home.path().join(".codex");
         tokio::fs::create_dir_all(&codex_dir).await.expect("mkdir");
@@ -776,6 +515,9 @@ command = "npx"
         .expect("seed config");
 
         RouteConfigService::write_existing_config_for_home(
+            &paths,
+            &pool,
+            &runtime,
             home.path(),
             "http://127.0.0.1:43111",
             "codex",
@@ -799,6 +541,7 @@ command = "npx"
 
     #[tokio::test]
     async fn write_existing_json_config_preserves_unmanaged_settings_and_env() {
+        let (_app_dir, paths, pool, runtime) = config_write_context().await;
         let home = tempfile::tempdir().expect("home dir");
         let claude_dir = home.path().join(".claude");
         tokio::fs::create_dir_all(&claude_dir).await.expect("mkdir");
@@ -819,6 +562,9 @@ command = "npx"
         .expect("seed settings");
 
         RouteConfigService::write_existing_config_for_home(
+            &paths,
+            &pool,
+            &runtime,
             home.path(),
             "https://127.0.0.1:43111",
             "claude",
@@ -847,6 +593,7 @@ command = "npx"
 
     #[tokio::test]
     async fn write_existing_config_refuses_to_overwrite_invalid_user_config() {
+        let (_app_dir, paths, pool, runtime) = config_write_context().await;
         let home = tempfile::tempdir().expect("home dir");
         let codex_dir = home.path().join(".codex");
         tokio::fs::create_dir_all(&codex_dir).await.expect("mkdir");
@@ -857,6 +604,9 @@ command = "npx"
             .expect("seed invalid config");
 
         let error = RouteConfigService::write_existing_config_for_home(
+            &paths,
+            &pool,
+            &runtime,
             home.path(),
             "http://127.0.0.1:43111",
             "codex",
@@ -865,12 +615,14 @@ command = "npx"
         .await
         .expect_err("invalid existing config must not be overwritten");
 
-        match error {
-            AppError::Validation { code, .. } => {
-                assert_eq!(code, "validation.route_config_existing_invalid");
-            }
-            other => panic!("expected validation error, got {other:?}"),
-        }
+        assert!(matches!(
+            error,
+            AppError::Filesystem {
+                code: "filesystem.route_config_write",
+                details: Some(details),
+                ..
+            } if details.contains("validation.route_config_existing_invalid")
+        ));
         assert_eq!(
             tokio::fs::read_to_string(&codex_path)
                 .await
@@ -894,19 +646,32 @@ command = "npx"
 
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
+        let app_dir = tempfile::tempdir().expect("app dir");
+        let paths = AppPaths::from_data_dir(app_dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
+        let runtime = ConfigWriteRuntimeState::default();
         RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-codex")
             .await
             .expect("codex key");
 
         let error = RouteConfigService::write_existing_configs_for_home(
+            &paths,
             &pool,
+            &runtime,
             "http://127.0.0.1:43111",
             home.path(),
         )
         .await
         .expect_err("invalid config must fail the batch before writes");
 
-        assert!(error.to_string().contains("refusing to overwrite"));
+        assert!(matches!(
+            error,
+            AppError::Filesystem {
+                code: "filesystem.route_config_write",
+                details: Some(details),
+                ..
+            } if details.contains("validation.route_config_existing_invalid")
+        ));
         assert_eq!(
             tokio::fs::read_to_string(&codex_path)
                 .await
@@ -941,6 +706,10 @@ command = "npx"
 
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
+        let app_dir = tempfile::tempdir().expect("app dir");
+        let paths = AppPaths::from_data_dir(app_dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
+        let runtime = ConfigWriteRuntimeState::default();
         RouteProxyKeyRepository::ensure_platform_key(&pool, "claude", "sk-claude")
             .await
             .expect("claude key");
@@ -949,14 +718,23 @@ command = "npx"
             .expect("grok key");
 
         let error = RouteConfigService::write_existing_configs_for_home(
+            &paths,
             &pool,
+            &runtime,
             "http://127.0.0.1:43111",
             home.path(),
         )
         .await
         .expect_err("invalid Grok config must prevent all writes");
 
-        assert!(error.to_string().contains("refusing to overwrite"));
+        assert!(matches!(
+            error,
+            AppError::Filesystem {
+                code: "filesystem.route_config_write",
+                details: Some(details),
+                ..
+            } if details.contains("validation.route_config_existing_invalid")
+        ));
         assert_eq!(
             tokio::fs::read_to_string(&claude_path)
                 .await
@@ -969,5 +747,19 @@ command = "npx"
                 .expect("read grok"),
             grok_original
         );
+    }
+
+    async fn config_write_context() -> (
+        tempfile::TempDir,
+        AppPaths,
+        sqlx::SqlitePool,
+        ConfigWriteRuntimeState,
+    ) {
+        let app_dir = tempfile::tempdir().expect("app dir");
+        let paths = AppPaths::from_data_dir(app_dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        (app_dir, paths, pool, ConfigWriteRuntimeState::default())
     }
 }

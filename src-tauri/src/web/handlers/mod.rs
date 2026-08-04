@@ -4,13 +4,16 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::app_state::AppState;
+use crate::commands::batch_commands::{CreateAccountRequest, UpdateAccountRequest};
 use crate::core::sessions::{get_session_messages_core, list_sessions_core};
 use crate::core::settings::{get_settings_core, save_settings_core};
 use crate::core::terminals::{
     create_terminal_session_core, kill_terminal_session_core, list_terminal_sessions_core,
     resize_terminal_core, write_terminal_input_core,
 };
-use crate::error::AppError;
+use crate::database::repositories::config_snapshot_repository::ConfigSnapshotRepository;
+use crate::error::{ApiError, AppError};
+use crate::models::batch::NewBatch;
 use crate::models::route_credential::{
     CreateApiRouteCredentialInput, ImportOfficialFilesInput, ImportOfficialTextInput,
     UpdateRouteCredentialInput,
@@ -20,6 +23,10 @@ use crate::models::route_pool::{
     SetRoutePoolMembersInput,
 };
 use crate::models::settings::AppSettings;
+use crate::services::batch_service::BatchService;
+use crate::services::config_write_service::ConfigWriteCoordinator;
+use crate::services::import_service::{ExampleJsonImportRequest, ImportService};
+use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_config_service::RouteConfigService;
 use crate::services::route_credential_service::RouteCredentialService;
 use crate::services::route_model_fetch_service::RouteModelFetchService;
@@ -27,7 +34,9 @@ use crate::services::route_model_test_service::RouteModelTestService;
 use crate::services::route_pool_service::RoutePoolService;
 use crate::services::route_proxy_https_service::RouteProxyHttpsService;
 use crate::services::route_proxy_service::RouteProxyService;
+use crate::services::route_quota_service::RouteQuotaService;
 use crate::services::tailscale_service::TailscaleService;
+use crate::services::target_service::TargetService;
 use crate::services::web_service::{WebService, WebServiceConfig};
 use crate::terminal_manager::CreateTerminalSessionInput;
 use crate::web::event_bridge::EventEmitter;
@@ -36,9 +45,99 @@ pub async fn dispatch_command(
     state: Arc<AppState>,
     command: &str,
     args: Value,
-) -> Result<Value, String> {
+) -> Result<Value, ApiError> {
     match command {
         "health" => to_value(json!({ "ok": true })),
+        "list_batch_groups" => {
+            let search = optional_string_arg(&args, "search")?;
+            to_value(
+                BatchService::list_groups(&state.pool, search)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "create_batch" => {
+            let input: NewBatch = parse_arg(&args, "input")?;
+            to_value(
+                BatchService::create_batch(&state.pool, input)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "create_official_account" => {
+            let request: CreateAccountRequest = parse_arg(&args, "request")?;
+            to_value(
+                BatchService::create_official_account(
+                    &state.pool,
+                    request.account,
+                    request.batch_id,
+                )
+                .await
+                .map_err(to_error)?,
+            )
+        }
+        "get_official_account" => {
+            let id = required_string_arg(&args, "id")?;
+            to_value(
+                BatchService::get_official_account(&state.pool, id)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "update_official_account" => {
+            let input: UpdateAccountRequest = parse_arg(&args, "input")?;
+            to_value(
+                BatchService::update_official_account(&state.pool, input.id, input.account)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "import_example_json" => {
+            let request: ExampleJsonImportRequest = parse_arg(&args, "request")?;
+            to_value(
+                ImportService::import_example_json(&state.pool, request)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "list_platform_capabilities" => to_value(PlatformCapabilityService::list()),
+        "list_target_apps" => to_value(
+            TargetService::list_targets(&state.pool)
+                .await
+                .map_err(to_error)?,
+        ),
+        "list_target_config_statuses" => to_value(
+            TargetService::list_config_statuses(&state.pool, &state.config_writes)
+                .await
+                .map_err(to_error)?,
+        ),
+        "list_config_snapshots" => {
+            let target_app_id = optional_string_arg(&args, "targetAppId")?;
+            let limit = optional_i64_arg(&args, "limit")?
+                .unwrap_or(50)
+                .clamp(1, 200);
+            ConfigWriteCoordinator::reconcile_prepared(&state.pool, &state.config_writes)
+                .await
+                .map_err(to_error)?;
+            to_value(
+                ConfigSnapshotRepository::list(&state.pool, target_app_id.as_deref(), limit)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "rollback_config_snapshot" => {
+            let id = required_string_arg(&args, "id")?;
+            to_value(
+                ConfigWriteCoordinator::rollback(
+                    &state.paths,
+                    &state.pool,
+                    &state.config_writes,
+                    &id,
+                )
+                .await
+                .map_err(to_error)?,
+            )
+        }
         "get_settings" => to_value(get_settings_core(&state.paths).await.map_err(to_error)?),
         "save_settings" => {
             let settings: AppSettings = parse_arg(&args, "settings")?;
@@ -49,38 +148,52 @@ pub async fn dispatch_command(
             )
         }
         "list_sessions" => {
-            let platform = optional_string_arg(&args, "platform");
-            to_value(list_sessions_core(platform).await?)
+            let platform = optional_string_arg(&args, "platform")?;
+            to_value(
+                list_sessions_core(platform)
+                    .await
+                    .map_err(|message| command_error("web.session_scan", message))?,
+            )
         }
         "get_session_messages" => {
             let provider_id = required_string_arg(&args, "providerId")?;
             let source_path = required_string_arg(&args, "sourcePath")?;
-            to_value(get_session_messages_core(provider_id, source_path).await?)
+            to_value(
+                get_session_messages_core(provider_id, source_path)
+                    .await
+                    .map_err(|message| command_error("web.session_read", message))?,
+            )
         }
         "create_terminal_session" => {
             let input: CreateTerminalSessionInput = parse_arg(&args, "input")?;
-            to_value(create_terminal_session_core(
-                &state.terminals,
-                EventEmitter::Web(Arc::clone(&state.event_broadcaster)),
-                input,
-            )?)
+            to_value(
+                create_terminal_session_core(
+                    &state.terminals,
+                    EventEmitter::Web(Arc::clone(&state.event_broadcaster)),
+                    input,
+                )
+                .map_err(|message| command_error("web.terminal_create", message))?,
+            )
         }
         "write_terminal_input" => {
             let session_id = required_string_arg(&args, "sessionId")?;
             let data = required_raw_string_arg(&args, "data")?;
-            write_terminal_input_core(&state.terminals, &session_id, &data)?;
+            write_terminal_input_core(&state.terminals, &session_id, &data)
+                .map_err(|message| command_error("web.terminal_write", message))?;
             to_value(())
         }
         "resize_terminal" => {
             let session_id = required_string_arg(&args, "sessionId")?;
             let cols = required_u16_arg(&args, "cols")?;
             let rows = required_u16_arg(&args, "rows")?;
-            resize_terminal_core(&state.terminals, &session_id, cols, rows)?;
+            resize_terminal_core(&state.terminals, &session_id, cols, rows)
+                .map_err(|message| command_error("web.terminal_resize", message))?;
             to_value(())
         }
         "kill_terminal_session" => {
             let session_id = required_string_arg(&args, "sessionId")?;
-            kill_terminal_session_core(&state.terminals, &session_id)?;
+            kill_terminal_session_core(&state.terminals, &session_id)
+                .map_err(|message| command_error("web.terminal_kill", message))?;
             to_value(())
         }
         "list_terminal_sessions" => to_value(list_terminal_sessions_core(&state.terminals)),
@@ -133,6 +246,14 @@ pub async fn dispatch_command(
                     .map_err(to_error)?,
             )
         }
+        "copy_route_credential" => {
+            let id = required_string_arg(&args, "id")?;
+            to_value(
+                RouteCredentialService::copy(&state.pool, id)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
         "delete_route_credential" => {
             let id = required_string_arg(&args, "id")?;
             RouteCredentialService::delete(&state.pool, id)
@@ -140,11 +261,27 @@ pub async fn dispatch_command(
                 .map_err(to_error)?;
             to_value(())
         }
+        "refresh_route_credential_quota" => {
+            let id = required_string_arg(&args, "id")?;
+            to_value(
+                RouteQuotaService::refresh_one(&state.pool, id)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "refresh_route_credentials_quota" => {
+            let platform = required_string_arg(&args, "platform")?;
+            to_value(
+                RouteQuotaService::refresh_platform(&state.pool, platform)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
         "get_route_pool" => {
             let platform = required_string_arg(&args, "platform")?;
-            let since = optional_string_arg(&args, "since");
-            let request_page = optional_i64_arg(&args, "request_page");
-            let request_page_size = optional_i64_arg(&args, "request_page_size");
+            let since = optional_string_arg(&args, "since")?;
+            let request_page = optional_i64_arg(&args, "request_page")?;
+            let request_page_size = optional_i64_arg(&args, "request_page_size")?;
             to_value(
                 RoutePoolService::get(
                     &state.pool,
@@ -249,8 +386,8 @@ pub async fn dispatch_command(
                 .map_err(to_error)?,
         ),
         "write_route_proxy_configs" => {
-            let base_url = optional_string_arg(&args, "baseUrl");
-            let platform = optional_string_arg(&args, "platform").ok_or_else(|| {
+            let base_url = optional_string_arg(&args, "baseUrl")?;
+            let platform = optional_string_arg(&args, "platform")?.ok_or_else(|| {
                 to_error(AppError::Validation {
                     code: "validation.route_config_platform_required",
                     message: "Route config platform is required".to_string(),
@@ -271,9 +408,15 @@ pub async fn dispatch_command(
                     })
                 })?;
             to_value(
-                RouteConfigService::write_configs(&state.paths, &state.pool, &resolved, &platform)
-                    .await
-                    .map_err(to_error)?,
+                RouteConfigService::write_configs(
+                    &state.paths,
+                    &state.pool,
+                    &state.config_writes,
+                    &resolved,
+                    &platform,
+                )
+                .await
+                .map_err(to_error)?,
             )
         }
         "get_web_service_config" => to_value(
@@ -367,7 +510,7 @@ pub async fn dispatch_command(
                     auth_key,
                 )
                 .await
-                .map_err(|message| message)?,
+                .map_err(|message| command_error("web.tailscale_start", message))?,
             )
         }
         "disconnect_tailscale" => {
@@ -376,35 +519,55 @@ pub async fn dispatch_command(
                 .map_err(to_error)?;
             to_value(TailscaleService::disconnect(&state.tailscale, &state.paths, &config).await)
         }
-        other => Err(format!("Unknown command: {other}")),
+        other => Err(ApiError::from(AppError::Validation {
+            code: "web.command_unknown",
+            message: "Web command is not recognized".to_string(),
+            details: Some(other.to_string()),
+            recoverable: false,
+        })),
     }
 }
 
-fn to_error(error: AppError) -> String {
-    error.to_string()
+fn command_error(code: &'static str, message: String) -> ApiError {
+    ApiError::from(AppError::Validation {
+        code,
+        message,
+        details: None,
+        recoverable: true,
+    })
 }
 
-fn to_value<T: Serialize>(value: T) -> Result<Value, String> {
-    serde_json::to_value(value).map_err(|error| format!("Could not serialize response: {error}"))
+fn to_error(error: AppError) -> ApiError {
+    ApiError::from(error)
 }
 
-fn parse_arg<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> Result<T, String> {
+fn to_value<T: Serialize>(value: T) -> Result<Value, ApiError> {
+    serde_json::to_value(value).map_err(|error| {
+        ApiError::from(AppError::Validation {
+            code: "web.response_serialize",
+            message: "Could not serialize the Web response".to_string(),
+            details: Some(error.to_string()),
+            recoverable: false,
+        })
+    })
+}
+
+fn parse_arg<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> Result<T, ApiError> {
     let value = args
         .get(key)
         .cloned()
-        .ok_or_else(|| format!("Missing argument: {key}"))?;
-    serde_json::from_value(value).map_err(|error| format!("Invalid argument {key}: {error}"))
+        .ok_or_else(|| missing_argument(key))?;
+    serde_json::from_value(value).map_err(|error| invalid_argument(key, Some(error.to_string())))
 }
 
-fn optional_string_arg(args: &Value, key: &str) -> Option<String> {
-    args.get(key)
-        .and_then(|value| match value {
-            Value::Null => None,
-            Value::String(text) => Some(text.clone()),
-            other => Some(other.to_string()),
-        })
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+fn optional_string_arg(args: &Value, key: &str) -> Result<Option<String>, ApiError> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) => {
+            Ok(Some(text.trim().to_string()).filter(|value| !value.is_empty()))
+        }
+        Some(_) => Err(invalid_argument(key, Some("expected string".to_string()))),
+    }
 }
 
 fn route_model_test_targets_single_account(request: &RoutePoolModelTestRequest) -> bool {
@@ -416,7 +579,7 @@ fn route_model_test_targets_single_account(request: &RoutePoolModelTestRequest) 
         .is_some()
 }
 
-async fn route_model_test_proxy_base_url(state: &AppState) -> Result<String, String> {
+async fn route_model_test_proxy_base_url(state: &AppState) -> Result<String, ApiError> {
     let status = RouteProxyService::status(&state.route_proxy).await;
     let status = if status
         .base_url
@@ -429,7 +592,7 @@ async fn route_model_test_proxy_base_url(state: &AppState) -> Result<String, Str
     } else {
         RouteProxyHttpsService::start_proxy(state)
             .await
-            .map_err(to_error)?
+            .map_err(ApiError::from)?
     };
 
     status
@@ -437,7 +600,7 @@ async fn route_model_test_proxy_base_url(state: &AppState) -> Result<String, Str
         .map(|base_url| base_url.trim().to_string())
         .filter(|base_url| !base_url.is_empty())
         .ok_or_else(|| {
-            to_error(AppError::Validation {
+            ApiError::from(AppError::Validation {
                 code: "validation.route_proxy_not_running",
                 message: "Start the route proxy before testing the route pool".to_string(),
                 details: None,
@@ -446,38 +609,69 @@ async fn route_model_test_proxy_base_url(state: &AppState) -> Result<String, Str
         })
 }
 
-fn optional_i64_arg(args: &Value, key: &str) -> Option<i64> {
+fn optional_i64_arg(args: &Value, key: &str) -> Result<Option<i64>, ApiError> {
     match args.get(key) {
-        Some(Value::Number(number)) => number.as_i64(),
-        Some(Value::String(text)) => text.trim().parse::<i64>().ok(),
-        _ => None,
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(number)) => number
+            .as_i64()
+            .map(Some)
+            .ok_or_else(|| invalid_argument(key, Some("expected integer".to_string()))),
+        Some(Value::String(text)) => text
+            .trim()
+            .parse::<i64>()
+            .map(Some)
+            .map_err(|_| invalid_argument(key, Some("expected integer".to_string()))),
+        Some(_) => Err(invalid_argument(key, Some("expected integer".to_string()))),
     }
 }
 
-fn required_string_arg(args: &Value, key: &str) -> Result<String, String> {
-    optional_string_arg(args, key).ok_or_else(|| format!("Missing argument: {key}"))
+fn required_string_arg(args: &Value, key: &str) -> Result<String, ApiError> {
+    optional_string_arg(args, key)?.ok_or_else(|| missing_argument(key))
 }
 
-fn required_raw_string_arg(args: &Value, key: &str) -> Result<String, String> {
+fn required_raw_string_arg(args: &Value, key: &str) -> Result<String, ApiError> {
     match args.get(key) {
         Some(Value::String(text)) => Ok(text.clone()),
-        Some(Value::Null) | None => Err(format!("Missing argument: {key}")),
-        Some(_) => Err(format!("Invalid argument {key}: expected string")),
+        Some(Value::Null) | None => Err(missing_argument(key)),
+        Some(_) => Err(invalid_argument(key, Some("expected string".to_string()))),
     }
 }
 
-fn required_u16_arg(args: &Value, key: &str) -> Result<u16, String> {
+fn required_u16_arg(args: &Value, key: &str) -> Result<u16, ApiError> {
     let value = args
         .get(key)
-        .and_then(Value::as_u64)
-        .ok_or_else(|| format!("Missing argument: {key}"))?;
-    u16::try_from(value).map_err(|_| format!("Argument {key} is outside u16 range"))
+        .ok_or_else(|| missing_argument(key))?
+        .as_u64()
+        .ok_or_else(|| invalid_argument(key, Some("expected unsigned integer".to_string())))?;
+    u16::try_from(value).map_err(|_| invalid_argument(key, Some("outside u16 range".to_string())))
+}
+
+fn missing_argument(key: &str) -> ApiError {
+    ApiError::from(AppError::Validation {
+        code: "web.argument_missing",
+        message: "A required Web command argument is missing".to_string(),
+        details: Some(key.to_string()),
+        recoverable: true,
+    })
+}
+
+fn invalid_argument(key: &str, reason: Option<String>) -> ApiError {
+    ApiError::from(AppError::Validation {
+        code: "web.argument_invalid",
+        message: "A Web command argument is invalid".to_string(),
+        details: Some(match reason {
+            Some(reason) => format!("{key}: {reason}"),
+            None => key.to_string(),
+        }),
+        recoverable: true,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::database::{create_memory_pool, run_migrations};
+    use crate::services::config_write_service::ConfigWriteRuntimeState;
     use crate::services::route_proxy_service::RouteProxyRuntimeState;
     use crate::services::tailscale_service::TailscaleRuntimeState;
     use crate::services::web_service::WebServiceRuntimeState;
@@ -500,6 +694,7 @@ mod tests {
             state: Arc::new(AppState {
                 paths: crate::paths::AppPaths::from_data_dir(temp.path().join("app-data")),
                 pool,
+                config_writes: ConfigWriteRuntimeState::default(),
                 route_proxy: RouteProxyRuntimeState::default(),
                 web_service: WebServiceRuntimeState::default(),
                 tailscale: TailscaleRuntimeState::default(),
@@ -514,24 +709,46 @@ mod tests {
     fn required_raw_string_arg_preserves_terminal_control_input() {
         let args = json!({ "data": "\r" });
 
-        assert_eq!(required_raw_string_arg(&args, "data"), Ok("\r".to_string()));
+        assert_eq!(required_raw_string_arg(&args, "data").unwrap(), "\r");
     }
 
     #[test]
     fn required_raw_string_arg_allows_empty_terminal_input() {
         let args = json!({ "data": "" });
 
-        assert_eq!(required_raw_string_arg(&args, "data"), Ok(String::new()));
+        assert_eq!(required_raw_string_arg(&args, "data").unwrap(), "");
     }
 
     #[test]
     fn required_string_arg_still_rejects_blank_regular_input() {
         let args = json!({ "data": "\r" });
 
-        assert_eq!(
-            required_string_arg(&args, "data"),
-            Err("Missing argument: data".to_string()),
-        );
+        let error = required_string_arg(&args, "data").unwrap_err();
+        assert_eq!(error.code, "web.argument_missing");
+        assert_eq!(error.details.as_deref(), Some("data"));
+    }
+
+    #[test]
+    fn argument_helpers_report_stable_missing_and_invalid_codes() {
+        let missing = parse_arg::<String>(&json!({}), "value").unwrap_err();
+        assert_eq!(missing.code, "web.argument_missing");
+        assert_eq!(missing.details.as_deref(), Some("value"));
+
+        let invalid = optional_i64_arg(&json!({ "limit": [] }), "limit").unwrap_err();
+        assert_eq!(invalid.code, "web.argument_invalid");
+        assert_eq!(invalid.details.as_deref(), Some("limit: expected integer"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_unknown_command_returns_structured_error() {
+        let fixture = test_state().await;
+        let error = dispatch_command(fixture.state, "not_a_command", json!({}))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, "web.command_unknown");
+        assert_eq!(error.details.as_deref(), Some("not_a_command"));
+        assert!(!error.recoverable);
     }
 
     #[tokio::test]
@@ -554,5 +771,54 @@ mod tests {
             .get("manualInstructions")
             .and_then(Value::as_array)
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn dispatch_list_platform_capabilities_returns_phase_a_matrix() {
+        let fixture = test_state().await;
+        let result = dispatch_command(fixture.state, "list_platform_capabilities", json!({}))
+            .await
+            .expect("platform capability response");
+
+        let rows = result.as_array().expect("capability rows");
+        assert_eq!(rows.len(), 7);
+        let hermes = rows
+            .iter()
+            .find(|row| row.get("platform").and_then(Value::as_str) == Some("hermes"))
+            .expect("Hermes capability");
+        assert_eq!(
+            hermes.get("support_level").and_then(Value::as_str),
+            Some("partial")
+        );
+        assert_eq!(
+            hermes
+                .pointer("/operations/config_write/availability")
+                .and_then(Value::as_str),
+            Some("unavailable")
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatches_target_config_statuses_and_snapshot_summaries() {
+        let fixture = test_state().await;
+        let statuses = dispatch_command(
+            Arc::clone(&fixture.state),
+            "list_target_config_statuses",
+            json!({}),
+        )
+        .await
+        .expect("target statuses");
+        assert!(statuses.as_array().is_some_and(|rows| rows
+            .iter()
+            .any(|row| row.pointer("/target/key") == Some(&json!("codex")))));
+
+        let snapshots = dispatch_command(
+            fixture.state,
+            "list_config_snapshots",
+            json!({ "limit": 5 }),
+        )
+        .await
+        .expect("snapshot summaries");
+        assert_eq!(snapshots, json!([]));
     }
 }

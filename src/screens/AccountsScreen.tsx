@@ -23,6 +23,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { PlatformSupportBadge } from "../components/platform/PlatformSupportBadge";
 import {
   createBatch,
   copyRouteCredential,
@@ -46,10 +47,11 @@ import {
 import type {
   AccountStatus,
   AnthropicApiKeyField,
+  ConfigWriteOutcome,
   FetchedRouteModel,
   InterfaceFormat,
   ModelMapping,
-  RouteConfigWriteOutcome,
+  PlatformId,
   QuotaRefreshOutcome,
   RouteCredential,
   RouteModelsFetchRequest,
@@ -57,6 +59,13 @@ import type {
   RoutePoolModelTestRequest,
   RoutePoolUsageLog,
 } from "../lib/api/types";
+import {
+  capabilityReason,
+  credentialKindAllowed,
+  findPlatformCapability,
+  operationEnabled,
+} from "../lib/platformCapabilities";
+import { usePlatformCapabilities } from "../lib/query/platformCapabilities";
 import {
   matchUserAgentPreset,
   readUserAgentFromConfig,
@@ -75,7 +84,7 @@ import {
   recognizeApiKeysFromImageBlob,
 } from "../lib/ocr/apiKeyOcr";
 
-type PlatformKey = "codex" | "claude" | "grok" | "gemini" | "opencode" | "openclaw" | "hermes";
+type PlatformKey = PlatformId;
 type CreateMode = "api" | "official";
 type RoutePoolAction = "add" | "remove" | "sync";
 type RoutePoolFeedback = {
@@ -1179,6 +1188,21 @@ function UserAgentFields({
 export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsScreenProps) {
   const queryClient = useQueryClient();
   const activePlatform = platform;
+  const capabilitiesQuery = usePlatformCapabilities();
+  const activeCapability = findPlatformCapability(capabilitiesQuery.data, activePlatform);
+  const capabilityReady = capabilitiesQuery.isSuccess && Boolean(activeCapability);
+  const configWriteRule = activeCapability?.operations.config_write;
+  const officialImportRule = activeCapability?.operations.official_import;
+  const officialQuotaRule = activeCapability?.operations.official_quota;
+  const modelTestRule = activeCapability?.operations.model_test;
+  const configWriteEnabled = capabilityReady && operationEnabled(configWriteRule);
+  const officialImportEnabled = capabilityReady && operationEnabled(officialImportRule);
+  const officialQuotaEnabled = capabilityReady && operationEnabled(officialQuotaRule);
+  const modelTestEnabled = capabilityReady && operationEnabled(modelTestRule);
+  const configWriteReason = capabilityReason(configWriteRule);
+  const officialImportReason = capabilityReason(officialImportRule);
+  const officialQuotaReason = capabilityReason(officialQuotaRule);
+  const modelTestReason = capabilityReason(modelTestRule);
   const [draftPoolIds, setDraftPoolIds] = useState<Set<string>>(() => new Set());
   const [selectedAccountIds, setSelectedAccountIds] = useState<Set<string>>(() => new Set());
   const [accountFilters, setAccountFilters] = useState<string[]>([]);
@@ -1248,7 +1272,8 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const [quotaRefreshMessage, setQuotaRefreshMessage] = useState<string | null>(null);
   const autoQuotaRefreshedPlatform = useRef<string | null>(null);
   const [modelTestOutcome, setModelTestOutcome] = useState<RoutePoolModelTestOutcome | null>(null);
-  const [configWriteOutcomes, setConfigWriteOutcomes] = useState<RouteConfigWriteOutcome[]>([]);
+  const [configWriteOutcomes, setConfigWriteOutcomes] = useState<ConfigWriteOutcome[]>([]);
+  const [configWriteError, setConfigWriteError] = useState<string | null>(null);
   const [routePoolFeedback, setRoutePoolFeedback] = useState<RoutePoolFeedback>(null);
   const routeTestModel = routeTestModelsByPlatform[activePlatform] ?? "";
   const statsSince = useMemo(() => routeStatsSince(statsPeriod), [statsPeriod]);
@@ -1257,7 +1282,14 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     setAccountFilters([]);
     setAccountFilterMenuOpen(false);
     setCopiedCredentialId(null);
+    setConfigWriteError(null);
   }, [activePlatform]);
+
+  useEffect(() => {
+    if (capabilitiesQuery.isSuccess && !officialImportEnabled && createMode === "official") {
+      setCreateMode("api");
+    }
+  }, [capabilitiesQuery.isSuccess, createMode, officialImportEnabled]);
 
   useEffect(() => {
     if (!accountFilterMenuOpen) {
@@ -1388,6 +1420,10 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   }, [requestPage, routePoolQuery.data?.stats]);
 
   const credentials = credentialsQuery.data ?? [];
+  const hasEligiblePoolModelTestCredential = credentials.some(
+    (credential) =>
+      draftPoolIds.has(credential.id) && credentialKindAllowed(modelTestRule, credential.kind),
+  );
   const accountFilterOptions = useMemo(() => {
     const batchNames = new Set<string>();
     let hasSingle = false;
@@ -1507,6 +1543,13 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   };
 
   useEffect(() => {
+    if (capabilitiesQuery.isLoading) {
+      return;
+    }
+    if (!officialQuotaEnabled) {
+      autoQuotaRefreshedPlatform.current = activePlatform;
+      return;
+    }
     if (credentialsQuery.isLoading || credentialsQuery.isFetching) {
       return;
     }
@@ -1532,7 +1575,14 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       .catch(() => {
         // Keep page usable when vendor usage endpoints are unavailable.
       });
-  }, [activePlatform, credentialsQuery.data, credentialsQuery.isFetching, credentialsQuery.isLoading]);
+  }, [
+    activePlatform,
+    capabilitiesQuery.isLoading,
+    credentialsQuery.data,
+    credentialsQuery.isFetching,
+    credentialsQuery.isLoading,
+    officialQuotaEnabled,
+  ]);
 
   const createModelsFetchRequest = (): RouteModelsFetchRequest => {
     const firstKey = apiKeyLines(apiKey)[0] ?? "";
@@ -1600,6 +1650,9 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   const createMutation = useMutation({
     mutationFn: async () => {
       if (createMode === "official") {
+        if (!officialImportEnabled) {
+          throw new Error(officialImportReason);
+        }
         const batchName = officialBatchName.trim();
         if (!batchName) {
           throw new Error("批量名称不能为空");
@@ -1704,7 +1757,18 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     },
   });
   const modelTestMutation = useMutation({
-    mutationFn: (request: RoutePoolModelTestRequest) => routePoolTestModel(request),
+    mutationFn: (request: RoutePoolModelTestRequest) => {
+      const credential = request.account_id
+        ? credentials.find((item) => item.id === request.account_id)
+        : null;
+      if (
+        !modelTestEnabled ||
+        (credential && !credentialKindAllowed(modelTestRule, credential.kind))
+      ) {
+        throw new Error(modelTestReason);
+      }
+      return routePoolTestModel(request);
+    },
     onSuccess: (outcome) => {
       setModelTestOutcome(outcome);
       setLastRouteAccount(outcome.selected_account_name);
@@ -1725,7 +1789,12 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   });
 
   const quotaRefreshMutation = useMutation({
-    mutationFn: (id: string) => refreshRouteCredentialQuota(id),
+    mutationFn: (id: string) => {
+      if (!officialQuotaEnabled) {
+        throw new Error(officialQuotaReason);
+      }
+      return refreshRouteCredentialQuota(id);
+    },
     onMutate: (id) => {
       setRefreshingQuotaId(id);
       setQuotaRefreshMessage(null);
@@ -1750,7 +1819,12 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   });
 
   const quotaRefreshPlatformMutation = useMutation({
-    mutationFn: () => refreshRouteCredentialsQuota(activePlatform),
+    mutationFn: () => {
+      if (!officialQuotaEnabled) {
+        throw new Error(officialQuotaReason);
+      }
+      return refreshRouteCredentialsQuota(activePlatform);
+    },
     onMutate: () => {
       setRefreshingQuotaId('__platform__');
       setQuotaRefreshMessage(null);
@@ -1788,8 +1862,15 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     },
   });
   const writeConfigsMutation = useMutation({
-    mutationFn: () => writeRouteProxyConfigs(routeProxyQuery.data?.base_url ?? null, activePlatform),
+    mutationFn: () => {
+      if (!configWriteEnabled) {
+        throw new Error(configWriteReason);
+      }
+      return writeRouteProxyConfigs(routeProxyQuery.data?.base_url ?? null, activePlatform);
+    },
+    onMutate: () => setConfigWriteError(null),
     onSuccess: setConfigWriteOutcomes,
+    onError: (error) => setConfigWriteError(formatApiError(error, "配置写入失败。")),
   });
   const updateMutation = useMutation({
     mutationFn: async () => {
@@ -1971,12 +2052,18 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   };
 
   const openRouteTestDialog = () => {
+    if (!modelTestEnabled || !hasEligiblePoolModelTestCredential) {
+      return;
+    }
     setTestingAccountId(null);
     setModelTestAccount(null);
     setModelTestDialogOpen(true);
   };
 
   const openAccountTestDialog = (credential: RouteCredential) => {
+    if (!credentialKindAllowed(modelTestRule, credential.kind)) {
+      return;
+    }
     setModelTestAccount(credential);
     setModelTestDialogOpen(true);
   };
@@ -1987,6 +2074,12 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   };
 
   const submitModelTest = () => {
+    if (
+      !modelTestEnabled ||
+      (modelTestAccount && !credentialKindAllowed(modelTestRule, modelTestAccount.kind))
+    ) {
+      return;
+    }
     const accountId = modelTestAccount?.id ?? null;
     setTestingAccountId(accountId);
     setModelTestOutcome(null);
@@ -2213,9 +2306,17 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
       <div className="rounded-2xl border border-stone-200 bg-white/82 shadow-sm">
         <div className="flex flex-col gap-3 border-b border-stone-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
-              {platformLabels[activePlatform]}
-            </p>
+            <div className="flex items-center gap-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
+                {platformLabels[activePlatform]}
+              </p>
+              {activeCapability ? (
+                <PlatformSupportBadge
+                  displayName={activeCapability.display_name}
+                  supportLevel={activeCapability.support_level}
+                />
+              ) : null}
+            </div>
             <h1 className="mt-0.5 text-lg font-semibold tracking-tight text-stone-950">算力中心</h1>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -2286,8 +2387,13 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
               <button
                 aria-label="写入路由配置文件"
                 className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 transition-colors hover:bg-emerald-50 disabled:opacity-50"
-                disabled={!routeProxyQuery.data?.running || writeConfigsMutation.isPending}
+                disabled={
+                  !routeProxyQuery.data?.running ||
+                  !configWriteEnabled ||
+                  writeConfigsMutation.isPending
+                }
                 onClick={() => writeConfigsMutation.mutate()}
+                title={!configWriteEnabled ? configWriteReason : undefined}
                 type="button"
               >
                 <FileCode2 className="h-3.5 w-3.5" />
@@ -2296,8 +2402,9 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
               <button
                 aria-label="真实生成测试算力池路由"
                 className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-emerald-700 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-emerald-800 disabled:opacity-50"
-                disabled={draftPoolIds.size === 0 || modelTestMutation.isPending}
+                disabled={!hasEligiblePoolModelTestCredential || modelTestMutation.isPending}
                 onClick={openRouteTestDialog}
+                title={!modelTestEnabled ? modelTestReason : undefined}
                 type="button"
               >
                 <Play className="h-3.5 w-3.5" />
@@ -2320,12 +2427,34 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
           <div className="mx-4 mb-3 space-y-1 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] text-stone-600">
             <p className="font-semibold text-stone-950">配置写入结果</p>
             {configWriteOutcomes.map((outcome) => (
-              <p key={`${outcome.target_key}:${outcome.path}`}>
-                {outcome.target_key}: {outcome.path} ({outcome.status}) · {outcome.route_proxy_key}
-              </p>
+              <div
+                className="rounded-lg border border-stone-200 bg-white px-2.5 py-2"
+                key={`${outcome.operation_id}:${outcome.target_key}:${outcome.snapshot_id ?? "none"}`}
+              >
+                <p>
+                  {outcome.target_key} · {outcome.platform}: {outcome.path || "未解析路径"} ({outcome.status})
+                </p>
+                <p className="mt-1 font-mono text-[11px] text-stone-500">
+                  operation {outcome.operation_id} · snapshot {outcome.snapshot_id ?? "none"}
+                </p>
+                <p className="mt-1 font-mono text-[11px] text-stone-500">
+                  before {outcome.before_hash ?? "none"} · after {outcome.after_hash ?? "none"}
+                </p>
+                {outcome.error_code ? (
+                  <p className="mt-1 font-mono text-[11px] text-red-600">{outcome.error_code}</p>
+                ) : null}
+              </div>
             ))}
           </div>
         )}
+        {configWriteError ? (
+          <p
+            className="mx-4 mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700"
+            role="alert"
+          >
+            {configWriteError}
+          </p>
+        ) : null}
         {modelTestMutation.isPending ? (
           <div
             aria-label="真实生成测试进行中"
@@ -2684,8 +2813,13 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
             <button
               aria-label="刷新官方账号额度"
               className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-violet-700 transition-colors hover:bg-violet-50 disabled:opacity-50"
-              disabled={quotaRefreshPlatformMutation.isPending || credentialsQuery.isFetching}
+              disabled={
+                !officialQuotaEnabled ||
+                quotaRefreshPlatformMutation.isPending ||
+                credentialsQuery.isFetching
+              }
               onClick={() => quotaRefreshPlatformMutation.mutate()}
+              title={!officialQuotaEnabled ? officialQuotaReason : undefined}
               type="button"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${quotaRefreshPlatformMutation.isPending ? "animate-spin" : ""}`} />
@@ -2873,8 +3007,13 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                         <button
                           aria-label={`刷新 ${credential.display_name} 额度`}
                           className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-violet-200 px-2.5 py-1.5 text-[12px] font-semibold text-violet-700 transition-colors hover:bg-violet-50 disabled:opacity-50"
-                          disabled={quotaRefreshMutation.isPending || quotaRefreshPlatformMutation.isPending}
+                          disabled={
+                            !officialQuotaEnabled ||
+                            quotaRefreshMutation.isPending ||
+                            quotaRefreshPlatformMutation.isPending
+                          }
                           onClick={() => quotaRefreshMutation.mutate(credential.id)}
+                          title={!officialQuotaEnabled ? officialQuotaReason : undefined}
                           type="button"
                         >
                           <RefreshCw className={`h-3.5 w-3.5 ${refreshingQuotaId === credential.id ? "animate-spin" : ""}`} />
@@ -2904,8 +3043,16 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                       <button
                         aria-label={`测试 ${credential.display_name}`}
                         className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 px-2.5 py-1.5 text-[12px] font-semibold text-emerald-700 transition-colors hover:bg-emerald-50 disabled:opacity-50"
-                        disabled={modelTestMutation.isPending}
+                        disabled={
+                          !credentialKindAllowed(modelTestRule, credential.kind) ||
+                          modelTestMutation.isPending
+                        }
                         onClick={() => openAccountTestDialog(credential)}
+                        title={
+                          !credentialKindAllowed(modelTestRule, credential.kind)
+                            ? modelTestReason
+                            : undefined
+                        }
                         type="button"
                       >
                         <Play className="h-3.5 w-3.5" />
@@ -3021,8 +3168,15 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
               <button
                 aria-label="开始真实生成测试"
                 className={primaryButtonClass}
-                disabled={modelTestMutation.isPending || (!modelTestAccount && draftPoolIds.size === 0)}
+                disabled={
+                  modelTestMutation.isPending ||
+                  !modelTestEnabled ||
+                  (modelTestAccount
+                    ? !credentialKindAllowed(modelTestRule, modelTestAccount.kind)
+                    : !hasEligiblePoolModelTestCredential)
+                }
                 onClick={submitModelTest}
+                title={!modelTestEnabled ? modelTestReason : undefined}
                 type="button"
               >
                 {modelTestMutation.isPending ? "测试中..." : "开始测试"}
@@ -3061,8 +3215,10 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                   className={`rounded-lg px-3 py-1.5 text-[13px] font-semibold transition-colors ${
                     createMode === mode ? "bg-white text-stone-950 shadow-sm" : "text-stone-500"
                   }`}
+                  disabled={mode === "official" && !officialImportEnabled}
                   key={mode}
                   onClick={() => setCreateMode(mode as CreateMode)}
+                  title={mode === "official" && !officialImportEnabled ? officialImportReason : undefined}
                   type="button"
                 >
                   {label}
@@ -3353,7 +3509,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
               </button>
               <button
                 className={primaryButtonClass}
-                disabled={createMutation.isPending}
+                disabled={createMutation.isPending || (createMode === "official" && !officialImportEnabled)}
                 onClick={() => createMutation.mutate()}
                 type="button"
               >

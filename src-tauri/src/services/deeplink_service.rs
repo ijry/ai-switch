@@ -1,4 +1,7 @@
+use crate::error::{ApiError, AppError};
+use crate::models::platform::{ApiDialect, PlatformId, PlatformOperation};
 use crate::models::route_credential::{CreateApiRouteCredentialInput, ModelMapping};
+use crate::services::platform_capability_service::PlatformCapabilityService;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use url::Url;
@@ -54,7 +57,7 @@ pub fn parse_deeplink_url(url_str: &str) -> Result<DeepLinkProviderImport, Strin
 
     let app = required_param(&params, "app")?;
     let display_name = required_param(&params, "name")?;
-    let (platform, interface_format) = map_app(&app)?;
+    let (platform, interface_format) = map_app(&app).map_err(format_deeplink_app_error)?;
     let base_url = first_valid_endpoint(params.get("endpoint").map(String::as_str))?;
     let api_key = required_param(&params, "apiKey")?;
     let model_mappings_json = build_model_mappings_json(&app, &platform, &params)?;
@@ -136,15 +139,24 @@ pub fn sanitize_source_url(url_str: &str) -> String {
     url.to_string()
 }
 
-fn map_app(app: &str) -> Result<(String, String), String> {
-    match app {
-        "claude" => Ok(("claude".into(), "anthropic".into())),
-        "codex" => Ok(("codex".into(), "openai-responses".into())),
-        "gemini" => Ok(("gemini".into(), "gemini".into())),
-        "grok" | "xai" => Ok(("grok".into(), "openai".into())),
-        "opencode" | "openclaw" => Err(format!("不支持的应用: {app}")),
-        other => Err(format!("不支持的应用: {other}")),
-    }
+fn map_app(app: &str) -> Result<(String, String), AppError> {
+    let platform = PlatformId::parse(app)?;
+    PlatformCapabilityService::require(platform, PlatformOperation::DeeplinkImport)?;
+    let dialect = match platform {
+        PlatformId::Codex => ApiDialect::OpenAiResponses,
+        PlatformId::Claude => ApiDialect::Anthropic,
+        PlatformId::Gemini => ApiDialect::Gemini,
+        PlatformId::Grok => ApiDialect::OpenAi,
+        PlatformId::OpenCode | PlatformId::OpenClaw | PlatformId::Hermes => {
+            unreachable!("capability guard rejects unsupported Deeplink platforms")
+        }
+    };
+    Ok((platform.as_str().to_string(), dialect.as_str().to_string()))
+}
+
+fn format_deeplink_app_error(error: AppError) -> String {
+    let error = ApiError::from(error);
+    format!("{}: {}", error.code, error.message)
 }
 
 fn first_valid_endpoint(raw: Option<&str>) -> Result<String, String> {
@@ -348,6 +360,18 @@ mod tests {
             "ccswitch://v1/import?resource=provider&app=claude&name=A&endpoint=https://a"
         )
         .is_err());
+    }
+
+    #[test]
+    fn partial_platform_deeplinks_return_capability_error() {
+        for app in ["opencode", "openclaw", "hermes"] {
+            let url = format!(
+                "ccswitch://v1/import?resource=provider&app={app}&name=A&endpoint=https://a&apiKey=sk"
+            );
+            let error = parse_deeplink_url(&url)
+                .expect_err("partial platforms do not support Deeplink import");
+            assert!(error.contains("capability.unavailable"), "{app}: {error}");
+        }
     }
 
     #[test]

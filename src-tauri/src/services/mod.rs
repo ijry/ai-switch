@@ -1,9 +1,11 @@
 pub mod batch_service;
+pub mod config_write_service;
 pub mod cpa_import_service;
 pub mod deeplink_service;
 pub mod http_client;
 pub mod import_service;
 pub mod official_agent_identity_service;
+pub mod platform_capability_service;
 pub mod route_config_service;
 pub mod route_credential_service;
 pub mod route_model_fetch_service;

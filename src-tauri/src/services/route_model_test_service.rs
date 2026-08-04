@@ -1,11 +1,12 @@
 use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
-use crate::error::AppError;
+use crate::error::{ApiError, AppError};
+use crate::models::platform::{ApiDialect, CapabilityRule, PlatformId, PlatformOperation};
 use crate::models::route_credential::ModelMapping;
 use crate::models::route_pool::{RoutePoolModelTestOutcome, RoutePoolModelTestRequest};
 use crate::services::http_client::build_outbound_http_client;
-use crate::services::route_pool_service::normalize_platform;
+use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_proxy_service::{
     build_target_url, build_upstream_request, classify_proxy_failure, credential_is_retryable_now,
     extract_cost_micros, extract_token_count, maybe_persist_official_quota_from_response,
@@ -40,7 +41,10 @@ impl RouteModelTestService {
         pool: &SqlitePool,
         request: RoutePoolModelTestRequest,
     ) -> Result<RoutePoolModelTestOutcome, AppError> {
-        let platform = normalize_platform(&request.platform)?;
+        let platform_id = PlatformId::parse(&request.platform)?;
+        let model_test_rule =
+            PlatformCapabilityService::require(platform_id, PlatformOperation::ModelTest)?;
+        let platform = platform_id.as_str().to_string();
         let interface_override =
             validate_model_test_interface_override(&platform, request.interface_format.as_deref())?;
         let requested_model = request
@@ -63,7 +67,10 @@ impl RouteModelTestService {
                 cursor,
             )
         } else {
-            let credentials = select_pool_credentials(pool, &platform).await?;
+            let credentials = filter_model_test_credentials(
+                select_pool_credentials(pool, &platform).await?,
+                &model_test_rule,
+            );
 
             if credentials.is_empty() {
                 return Err(AppError::Validation {
@@ -78,6 +85,7 @@ impl RouteModelTestService {
             let next_index = (selected_index + 1) as i64 % credentials.len() as i64;
             (credentials[selected_index].clone(), next_index)
         };
+        validate_model_test_credential(platform_id, &credential)?;
         let credential = maybe_refresh_official_credential(pool, &credential)
             .await
             .map_err(|error| AppError::Validation {
@@ -249,7 +257,10 @@ impl RouteModelTestService {
             return Self::test_model(pool, request).await;
         }
 
-        let platform = normalize_platform(&request.platform)?;
+        let platform_id = PlatformId::parse(&request.platform)?;
+        let model_test_rule =
+            PlatformCapabilityService::require(platform_id, PlatformOperation::ModelTest)?;
+        let platform = platform_id.as_str().to_string();
         let interface_override =
             validate_model_test_interface_override(&platform, request.interface_format.as_deref())?;
         let requested_model = request
@@ -259,7 +270,10 @@ impl RouteModelTestService {
             .filter(|model| !model.is_empty())
             .map(str::to_string);
         let cursor = RoutePoolRepository::next_cursor_index(pool, &platform).await?;
-        let credentials = select_pool_credentials(pool, &platform).await?;
+        let credentials = filter_model_test_credentials(
+            select_pool_credentials(pool, &platform).await?,
+            &model_test_rule,
+        );
         if credentials.is_empty() {
             return Err(AppError::Validation {
                 code: "validation.route_pool_empty",
@@ -271,6 +285,7 @@ impl RouteModelTestService {
 
         let selected_index = cursor.rem_euclid(credentials.len() as i64) as usize;
         let credential = credentials[selected_index].clone();
+        validate_model_test_credential(platform_id, &credential)?;
         let start = Instant::now();
         let parts = match build_model_test_request(
             &credential,
@@ -415,11 +430,31 @@ pub fn build_model_test_request(
     requested_model: Option<&str>,
     interface_override: Option<&str>,
 ) -> Result<ModelTestRequestParts, String> {
+    let platform_id = PlatformId::parse(platform).map_err(format_app_error)?;
+    let rule = PlatformCapabilityService::require(platform_id, PlatformOperation::ModelTest)
+        .map_err(format_app_error)?;
+    if !rule.credential_kinds.is_empty()
+        && !rule
+            .credential_kinds
+            .iter()
+            .any(|kind| kind == &credential.kind)
+    {
+        return Err("capability.unavailable: credential kind is not supported".to_string());
+    }
+    if credential.kind != "api" {
+        PlatformCapabilityService::require(platform_id, PlatformOperation::OfficialAccountRouting)
+            .map_err(format_app_error)?;
+    }
     let config = parse_json_object(&credential.config_json, "config")?;
-    let interface_format = interface_override
-        .map(str::to_string)
-        .unwrap_or_else(|| interface_format_for(credential, platform, &config));
+    let dialect = match interface_override {
+        Some(value) => ApiDialect::parse(value).map_err(format_app_error)?,
+        None => interface_format_for(credential, platform_id, &config).map_err(format_app_error)?,
+    };
+    let interface_format = dialect.as_str().to_string();
     let base_url = string_value(&config, "base_url").map(str::to_string);
+    if rule.requires_base_url && base_url.is_none() {
+        return Err("validation.base_url_required: API base URL is required".to_string());
+    }
     let mappings = model_mappings(&config);
     let model = request_model(platform, &interface_format, &mappings, requested_model);
 
@@ -565,20 +600,50 @@ fn is_placeholder_model(value: &str) -> bool {
     value.is_empty() || value == "upstream-model"
 }
 
-fn interface_format_for(credential: &SelectedCredential, platform: &str, config: &Value) -> String {
+fn interface_format_for(
+    credential: &SelectedCredential,
+    platform: PlatformId,
+    config: &Value,
+) -> Result<ApiDialect, AppError> {
     if credential.kind == "api" {
-        return string_value(config, "interface_format")
-            .unwrap_or("openai")
-            .to_string();
+        return match string_value(config, "interface_format") {
+            Some(value) => ApiDialect::parse(value),
+            None if matches!(
+                platform,
+                PlatformId::OpenCode | PlatformId::OpenClaw | PlatformId::Hermes
+            ) =>
+            {
+                Err(api_dialect_required())
+            }
+            None => platform
+                .default_api_credential_dialect()
+                .ok_or_else(api_dialect_required),
+        };
     }
 
+    PlatformCapabilityService::require(platform, PlatformOperation::OfficialAccountRouting)?;
     match platform {
-        "codex" => "openai-responses".to_string(),
-        "claude" => "anthropic".to_string(),
-        // Grok/xAI defaults to OpenAI-compatible chat completions.
-        "grok" => "openai".to_string(),
-        "gemini" => "gemini".to_string(),
-        _ => "openai".to_string(),
+        PlatformId::Codex => Ok(ApiDialect::OpenAiResponses),
+        PlatformId::Claude => Ok(ApiDialect::Anthropic),
+        PlatformId::Grok => Ok(ApiDialect::OpenAi),
+        PlatformId::Gemini => Ok(ApiDialect::Gemini),
+        PlatformId::OpenCode | PlatformId::OpenClaw | PlatformId::Hermes => {
+            Err(AppError::Validation {
+                code: "capability.unavailable",
+                message: "Official account routing is unavailable".to_string(),
+                details: Some(platform.as_str().to_string()),
+                recoverable: true,
+            })
+        }
+    }
+}
+
+fn api_dialect_required() -> AppError {
+    AppError::Validation {
+        code: "validation.api_dialect_required",
+        message: "API dialect is required".to_string(),
+        details: None,
+        recoverable: true,
     }
 }
 
@@ -1102,12 +1167,59 @@ fn fallback_request_parts(
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}));
     ModelTestRequestParts {
-        interface_format: interface_format_for(credential, platform, &config),
+        interface_format: PlatformId::parse(platform)
+            .ok()
+            .and_then(|platform| interface_format_for(credential, platform, &config).ok())
+            .map(|dialect| dialect.as_str().to_string())
+            .unwrap_or_default(),
         request_path: String::new(),
         base_url: string_value(&config, "base_url").map(str::to_string),
         target_url: None,
         request_body_json: String::new(),
     }
+}
+
+fn filter_model_test_credentials(
+    mut credentials: Vec<SelectedCredential>,
+    rule: &CapabilityRule,
+) -> Vec<SelectedCredential> {
+    if !rule.credential_kinds.is_empty() {
+        credentials.retain(|credential| {
+            rule.credential_kinds
+                .iter()
+                .any(|kind| kind == &credential.kind)
+        });
+    }
+    credentials
+}
+
+fn validate_model_test_credential(
+    platform: PlatformId,
+    credential: &SelectedCredential,
+) -> Result<(), AppError> {
+    let rule = PlatformCapabilityService::require(platform, PlatformOperation::ModelTest)?;
+    if !rule.credential_kinds.is_empty()
+        && !rule
+            .credential_kinds
+            .iter()
+            .any(|kind| kind == &credential.kind)
+    {
+        return Err(AppError::Validation {
+            code: "capability.unavailable",
+            message: "Credential kind is unavailable for this platform operation".to_string(),
+            details: Some(credential.kind.clone()),
+            recoverable: true,
+        });
+    }
+    if credential.kind != "api" {
+        PlatformCapabilityService::require(platform, PlatformOperation::OfficialAccountRouting)?;
+    }
+    Ok(())
+}
+
+fn format_app_error(error: AppError) -> String {
+    let error = ApiError::from(error);
+    format!("{}: {}", error.code, error.message)
 }
 
 fn pretty_json_bytes(body: &[u8]) -> String {
@@ -1196,6 +1308,42 @@ mod tests {
             secret_payload_json: r#"{"access_token":"at"}"#.to_string(),
             config_json: "{}".to_string(),
         }
+    }
+
+    #[test]
+    fn partial_platform_api_model_test_uses_explicit_dialect() {
+        let mut credential = api_credential("openai");
+        credential.platform = "hermes".to_string();
+
+        let request = build_model_test_request(&credential, "hermes", None, None)
+            .expect("explicit Hermes API dialect");
+
+        assert_eq!(request.interface_format, "openai");
+        assert_eq!(request.request_path, "/chat/completions");
+    }
+
+    #[test]
+    fn partial_platform_official_model_test_is_unavailable() {
+        let error = build_model_test_request(&official_credential("hermes"), "hermes", None, None)
+            .expect_err("Hermes official model testing is unavailable");
+
+        assert!(error.contains("capability.unavailable"));
+    }
+
+    #[test]
+    fn partial_platform_api_model_test_requires_explicit_dialect() {
+        let mut credential = api_credential("openai");
+        credential.platform = "hermes".to_string();
+        credential.config_json = json!({
+            "base_url": "https://api.example.com/v1",
+            "model_mappings": []
+        })
+        .to_string();
+
+        let error = build_model_test_request(&credential, "hermes", None, None)
+            .expect_err("Hermes API model tests require a dialect");
+
+        assert!(error.contains("validation.api_dialect_required"));
     }
 
     async fn start_json_test_server(status: axum::http::StatusCode, body: Value) -> String {
