@@ -63,9 +63,23 @@ pub async fn route_pool_test_model(
     }
 
     let base_url = route_model_test_proxy_base_url(&state).await?;
-    RouteModelTestService::test_model_through_proxy(&state.pool, request, &base_url)
-        .await
-        .map_err(ApiError::from)
+    let root_certificate_pem = if base_url.starts_with("https://") {
+        Some(
+            RouteProxyHttpsService::load_root_certificate_pem(&state.paths)
+                .await
+                .map_err(ApiError::from)?,
+        )
+    } else {
+        None
+    };
+    RouteModelTestService::test_model_through_proxy_with_root_certificate(
+        &state.pool,
+        request,
+        &base_url,
+        root_certificate_pem.as_deref(),
+    )
+    .await
+    .map_err(ApiError::from)
 }
 
 #[tauri::command]

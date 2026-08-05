@@ -43,11 +43,24 @@ impl CookieStore for ChatGptCloudflareCookieStore {
 /// `HTTP(S)_PROXY` env vars. reqwest's system-proxy path typically
 /// reads WinHTTP, which may still be "direct". Detect WinINET here.
 pub fn build_outbound_http_client(timeout: Option<Duration>) -> Result<Client, String> {
+    build_outbound_http_client_with_root_certificate(timeout, None)
+}
+
+pub fn build_outbound_http_client_with_root_certificate(
+    timeout: Option<Duration>,
+    root_certificate_pem: Option<&[u8]>,
+) -> Result<Client, String> {
     let mut builder = Client::builder()
         .use_rustls_tls()
         .cookie_provider(chatgpt_cloudflare_cookie_store());
     if let Some(timeout) = timeout {
         builder = builder.timeout(timeout);
+    }
+
+    if let Some(root_certificate_pem) = root_certificate_pem {
+        let certificate = reqwest::Certificate::from_pem(root_certificate_pem)
+            .map_err(|error| format!("Could not load local route proxy Root CA: {error}"))?;
+        builder = builder.add_root_certificate(certificate);
     }
 
     if let Some((proxy_url, no_proxy)) = detect_windows_wininet_proxy() {

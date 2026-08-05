@@ -15,7 +15,7 @@
         "title": "AI Switch",
         "width": 1180,
         "height": 760,
-        "minWidth": 960,
+        "minWidth": 320,
         "minHeight": 640
       }
     ],

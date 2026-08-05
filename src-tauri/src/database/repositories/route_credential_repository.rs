@@ -46,7 +46,7 @@ const PAGE_SELECT: &str = "SELECT
     CASE WHEN COUNT(ue.id) = 0 THEN NULL
          ELSE CAST(COALESCE(SUM(CASE WHEN json_extract(ue.metadata_json, '$.success') = 1 THEN 1 ELSE 0 END), 0) AS REAL) * 100.0 / COUNT(ue.id)
     END AS success_rate,
-    rc.quota_remaining, rc.quota_limit, rc.quota_used, rc.quota_updated_at,
+    rc.quota_remaining, rc.quota_limit, rc.quota_used, rc.quota_updated_at, rc.archived_at,
     rc.created_at, rc.updated_at
  FROM route_credentials rc
  LEFT JOIN batches b ON b.id = rc.batch_id
@@ -79,17 +79,25 @@ fn push_pool_scope_predicate(
     scope: RouteCredentialPoolScope,
 ) {
     builder.push(" AND ");
-    if matches!(scope, RouteCredentialPoolScope::OutOfPool) {
-        builder.push("NOT ");
+    match scope {
+        RouteCredentialPoolScope::Archived => {
+            builder.push("rc.archived_at IS NOT NULL");
+        }
+        RouteCredentialPoolScope::InPool | RouteCredentialPoolScope::OutOfPool => {
+            builder.push("rc.archived_at IS NULL AND ");
+            if matches!(scope, RouteCredentialPoolScope::OutOfPool) {
+                builder.push("NOT ");
+            }
+            builder.push(
+                "EXISTS (
+                    SELECT 1 FROM route_pool_members rpm
+                    WHERE rpm.platform = rc.platform
+                      AND rpm.route_credential_id = rc.id
+                      AND rpm.enabled = 1
+                )",
+            );
+        }
     }
-    builder.push(
-        "EXISTS (
-            SELECT 1 FROM route_pool_members rpm
-            WHERE rpm.platform = rc.platform
-              AND rpm.route_credential_id = rc.id
-              AND rpm.enabled = 1
-        )",
-    );
 }
 
 fn database_error(code: &'static str, message: &str, error: impl ToString) -> AppError {
@@ -332,6 +340,7 @@ async fn create_with_connection(
             rc.quota_limit,
             rc.quota_used,
             rc.quota_updated_at,
+            rc.archived_at,
             rc.created_at,
             rc.updated_at
          FROM route_credentials rc
@@ -448,6 +457,7 @@ impl RouteCredentialRepository {
                 rc.quota_limit,
                 rc.quota_used,
                 rc.quota_updated_at,
+                rc.archived_at,
                 rc.created_at,
                 rc.updated_at
              FROM route_credentials rc
@@ -507,6 +517,7 @@ impl RouteCredentialRepository {
                 rc.quota_limit,
                 rc.quota_used,
                 rc.quota_updated_at,
+                rc.archived_at,
                 rc.created_at,
                 rc.updated_at
              FROM route_credentials rc
@@ -576,6 +587,7 @@ impl RouteCredentialRepository {
                 rc.quota_limit,
                 rc.quota_used,
                 rc.quota_updated_at,
+                rc.archived_at,
                 rc.created_at,
                 rc.updated_at
              FROM route_credentials rc
@@ -639,6 +651,7 @@ impl RouteCredentialRepository {
                 rc.quota_limit,
                 rc.quota_used,
                 rc.quota_updated_at,
+                rc.archived_at,
                 rc.created_at,
                 rc.updated_at
              FROM route_credentials rc
@@ -647,7 +660,7 @@ impl RouteCredentialRepository {
                ON ue.route_credential_id = rc.id
               AND ue.source_label IN ('route_proxy', 'route_pool_model_test')
               AND ue.metric_type = 'request'
-             WHERE rc.platform = ?
+             WHERE rc.platform = ? AND rc.archived_at IS NULL
              GROUP BY rc.id
              ORDER BY rc.sort_order ASC, rc.created_at DESC",
         )
@@ -717,7 +730,7 @@ impl RouteCredentialRepository {
 
         let filter_options = load_filter_options(pool, &request.platform).await?;
         let official_account_count = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM route_credentials WHERE platform = ? AND kind = 'official'",
+            "SELECT COUNT(*) FROM route_credentials WHERE platform = ? AND kind = 'official' AND archived_at IS NULL",
         )
         .bind(&request.platform)
         .fetch_one(pool)
@@ -751,14 +764,15 @@ impl RouteCredentialRepository {
             }),
         };
         let mut tx = pool.begin().await.map_err(|err| database_error("database.route_credential_reorder_tx", "Could not start account reorder", err))?;
-        let rows = sqlx::query_as::<_, (String, Option<String>, i64)>(
+        let rows = sqlx::query_as::<_, (String, Option<String>, i64, i64)>(
             "SELECT rc.id, rc.batch_id,
                     EXISTS (
                         SELECT 1 FROM route_pool_members rpm
                         WHERE rpm.platform = rc.platform
                           AND rpm.route_credential_id = rc.id
                           AND rpm.enabled = 1
-                    ) AS in_pool
+                    ) AS in_pool,
+                    rc.archived_at IS NOT NULL AS archived
              FROM route_credentials rc
              WHERE rc.platform = ?
              ORDER BY rc.sort_order ASC, rc.created_at DESC, rc.id ASC",
@@ -767,23 +781,24 @@ impl RouteCredentialRepository {
         .fetch_all(&mut *tx)
         .await
         .map_err(|err| database_error("database.route_credential_reorder_read", "Could not load account order", err))?;
-        let all_ids: Vec<String> = rows.iter().map(|(id, _, _)| id.clone()).collect();
-        let pool_matches = |in_pool: i64| match input.pool_scope {
-            RouteCredentialPoolScope::InPool => in_pool != 0,
-            RouteCredentialPoolScope::OutOfPool => in_pool == 0,
+        let all_ids: Vec<String> = rows.iter().map(|(id, _, _, _)| id.clone()).collect();
+        let pool_matches = |in_pool: i64, archived: i64| match input.pool_scope {
+            RouteCredentialPoolScope::InPool => archived == 0 && in_pool != 0,
+            RouteCredentialPoolScope::OutOfPool => archived == 0 && in_pool == 0,
+            RouteCredentialPoolScope::Archived => archived != 0,
         };
-        let matches = |batch_id: &Option<String>, in_pool: i64| {
+        let matches = |batch_id: &Option<String>, in_pool: i64, archived: i64| {
             (input.filters.is_empty()
                 || input.filters.iter().any(|filter| {
                     (filter == "__single__" && batch_id.is_none())
                         || batch_id.as_deref() == Some(filter.as_str())
                 }))
-                && pool_matches(in_pool)
+                && pool_matches(in_pool, archived)
         };
         let filtered_ids: Vec<String> = rows
             .iter()
-            .filter(|(_, batch_id, in_pool)| matches(batch_id, *in_pool))
-            .map(|(id, _, _)| id.clone())
+            .filter(|(_, batch_id, in_pool, archived)| matches(batch_id, *in_pool, *archived))
+            .map(|(id, _, _, _)| id.clone())
             .collect();
         let Some(moved_index) = filtered_ids.iter().position(|id| id == &input.moved_account_id) else {
             return Err(reorder_validation_error("Moved route credential is not in the active filter"));
@@ -829,8 +844,8 @@ impl RouteCredentialRepository {
         let mut reordered = all_ids.clone();
         let mut filtered_cursor = 0;
         for id in &mut reordered {
-            let (_, batch_id, in_pool) = rows.iter().find(|(row_id, _, _)| row_id == id).unwrap();
-            if matches(batch_id, *in_pool) {
+            let (_, batch_id, in_pool, archived) = rows.iter().find(|(row_id, _, _, _)| row_id == id).unwrap();
+            if matches(batch_id, *in_pool, *archived) {
                 *id = remaining[filtered_cursor].clone();
                 filtered_cursor += 1;
             }
@@ -1173,6 +1188,102 @@ impl RouteCredentialRepository {
                 });
             }
         }
+        Ok(())
+    }
+
+    pub async fn set_archived(
+        pool: &SqlitePool,
+        ids: &[String],
+        archived: bool,
+    ) -> Result<(), AppError> {
+        let mut seen = HashSet::with_capacity(ids.len());
+        let unique_ids = ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .filter(|id| seen.insert((*id).to_string()))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if unique_ids.is_empty() {
+            return Err(AppError::Validation {
+                code: "validation.route_credential_selection_empty",
+                message: "At least one route credential is required".to_string(),
+                details: None,
+                recoverable: true,
+            });
+        }
+
+        let mut tx = pool.begin().await.map_err(|err| {
+            database_error(
+                "database.route_credential_archive_tx",
+                "Could not start route credential archive transaction",
+                err,
+            )
+        })?;
+
+        let mut count_query = QueryBuilder::<Sqlite>::new(
+            "SELECT COUNT(*) FROM route_credentials WHERE id IN (",
+        );
+        let mut count_ids = count_query.separated(", ");
+        for id in &unique_ids {
+            count_ids.push_bind(id);
+        }
+        count_ids.push_unseparated(")");
+        let existing_count: i64 = count_query
+            .build_query_scalar()
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|err| {
+                database_error(
+                    "database.route_credential_archive_verify",
+                    "Could not verify route credentials",
+                    err,
+                )
+            })?;
+        if existing_count != unique_ids.len() as i64 {
+            return Err(AppError::Validation {
+                code: "validation.route_credential_not_found",
+                message: "One or more route credentials do not exist".to_string(),
+                details: None,
+                recoverable: true,
+            });
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let archived_at = archived.then_some(now.clone());
+        let mut update_query = QueryBuilder::<Sqlite>::new(
+            "UPDATE route_credentials SET archived_at = ",
+        );
+        update_query
+            .push_bind(archived_at)
+            .push(", updated_at = ")
+            .push_bind(&now)
+            .push(" WHERE id IN (");
+        let mut update_ids = update_query.separated(", ");
+        for id in &unique_ids {
+            update_ids.push_bind(id);
+        }
+        update_ids.push_unseparated(")");
+        update_query
+            .build()
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| {
+                database_error(
+                    "database.route_credential_archive_update",
+                    "Could not update route credential archive state",
+                    err,
+                )
+            })?;
+
+        tx.commit().await.map_err(|err| {
+            database_error(
+                "database.route_credential_archive_commit",
+                "Could not commit route credential archive state",
+                err,
+            )
+        })?;
+
         Ok(())
     }
 
@@ -1661,6 +1772,129 @@ mod tests {
         assert!(empty.items.is_empty());
         assert!(empty.previous_page_account_id.is_none());
         assert!(empty.next_page_account_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn archive_scope_hides_active_views_preserves_pool_membership_and_restores() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let in_pool = create_api_credential(&pool, "codex", "In pool").await;
+        let out_of_pool = create_api_credential(&pool, "codex", "Out of pool").await;
+        crate::database::repositories::route_pool_repository::RoutePoolRepository::replace_members(
+            &pool,
+            "codex",
+            std::slice::from_ref(&in_pool.id),
+        )
+        .await
+        .unwrap();
+
+        RouteCredentialRepository::set_archived(
+            &pool,
+            &[in_pool.id.clone(), out_of_pool.id.clone(), in_pool.id.clone()],
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            RouteCredentialRepository::page(
+                &pool,
+                page_request("codex", 1, RouteCredentialPoolScope::InPool),
+            )
+            .await
+            .unwrap()
+            .total,
+            0
+        );
+        assert_eq!(
+            RouteCredentialRepository::page(
+                &pool,
+                page_request("codex", 1, RouteCredentialPoolScope::OutOfPool),
+            )
+            .await
+            .unwrap()
+            .total,
+            0
+        );
+        let archived = RouteCredentialRepository::page(
+            &pool,
+            page_request("codex", 1, RouteCredentialPoolScope::Archived),
+        )
+        .await
+        .unwrap();
+        assert_eq!(archived.total, 2);
+        assert!(archived.items.iter().all(|item| item.archived_at.is_some()));
+
+        let member_ids = crate::database::repositories::route_pool_repository::RoutePoolRepository::list_member_ids(
+            &pool,
+            "codex",
+        )
+        .await
+        .unwrap();
+        assert_eq!(member_ids, vec![in_pool.id.clone()]);
+        assert!(
+            RouteCredentialRepository::list_by_platform(&pool, "codex")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let empty_error = RouteCredentialRepository::set_archived(&pool, &[], true)
+            .await
+            .unwrap_err();
+        assert!(matches!(empty_error, AppError::Validation { code: "validation.route_credential_selection_empty", .. }));
+
+        let missing_error = RouteCredentialRepository::set_archived(
+            &pool,
+            &[out_of_pool.id.clone(), "missing".to_string()],
+            true,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(missing_error, AppError::Validation { code: "validation.route_credential_not_found", .. }));
+        assert!(RouteCredentialRepository::get(&pool, &out_of_pool.id)
+            .await
+            .unwrap()
+            .archived_at
+            .is_some());
+
+        RouteCredentialRepository::set_archived(
+            &pool,
+            &[in_pool.id.clone(), out_of_pool.id.clone()],
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            RouteCredentialRepository::page(
+                &pool,
+                page_request("codex", 1, RouteCredentialPoolScope::InPool),
+            )
+            .await
+            .unwrap()
+            .total,
+            1
+        );
+        assert_eq!(
+            RouteCredentialRepository::page(
+                &pool,
+                page_request("codex", 1, RouteCredentialPoolScope::OutOfPool),
+            )
+            .await
+            .unwrap()
+            .total,
+            1
+        );
+        assert_eq!(
+            RouteCredentialRepository::page(
+                &pool,
+                page_request("codex", 1, RouteCredentialPoolScope::Archived),
+            )
+            .await
+            .unwrap()
+            .total,
+            0
+        );
     }
 
     #[tokio::test]

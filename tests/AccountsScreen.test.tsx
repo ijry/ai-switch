@@ -4,12 +4,14 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  archiveRouteCredentials,
   createBatch,
   copyRouteCredential,
   createApiRouteCredential,
   deleteRouteCredential,
   fetchRouteModels,
   getRoutePool,
+  getRouteProxyKey,
   getRouteProxyStatus,
   importOfficialRouteCredentialsFromFiles,
   importOfficialRouteCredentialsFromText,
@@ -17,6 +19,7 @@ import {
   listRouteCredentials,
   listRouteCredentialPage,
   refreshRouteCredentialsQuota,
+  restoreRouteCredentials,
   routePoolTestModel,
   setRoutePoolMembers,
   startRouteProxy,
@@ -43,12 +46,14 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }));
 
 vi.mock("../src/lib/api/client", () => ({
+  archiveRouteCredentials: vi.fn(),
   createBatch: vi.fn(),
   copyRouteCredential: vi.fn(),
   createApiRouteCredential: vi.fn(),
   deleteRouteCredential: vi.fn(),
   fetchRouteModels: vi.fn(),
   getRoutePool: vi.fn(),
+  getRouteProxyKey: vi.fn(),
   getRouteProxyStatus: vi.fn(),
   importOfficialRouteCredentialsFromFiles: vi.fn(),
   importOfficialRouteCredentialsFromText: vi.fn(),
@@ -56,6 +61,7 @@ vi.mock("../src/lib/api/client", () => ({
   listRouteCredentials: vi.fn(),
   listRouteCredentialPage: vi.fn(),
   refreshRouteCredentialsQuota: vi.fn(),
+  restoreRouteCredentials: vi.fn(),
   routePoolTestModel: vi.fn(),
   setRoutePoolMembers: vi.fn(),
   startRouteProxy: vi.fn(),
@@ -171,22 +177,25 @@ function modelTestOutcomeFixture(
 
 function renderScreen(
   platform: PlatformId = "codex",
-  initialView: "in_pool" | "out_of_pool" = "out_of_pool",
+  initialView: "in_pool" | "out_of_pool" | "archived" = "out_of_pool",
+  sidebarCollapsed = false,
 ) {
   const result = render(
     <QueryClientProvider client={createQueryClient()}>
-      <AccountsScreen platform={platform} />
+      <AccountsScreen platform={platform} sidebarCollapsed={sidebarCollapsed} />
     </QueryClientProvider>,
   );
-  if (initialView === "out_of_pool") {
+  if (initialView !== "in_pool") {
     act(() => {
-      fireEvent.click(screen.getByRole("button", { name: "未入池" }));
+      fireEvent.click(
+        screen.getByRole("button", { name: initialView === "archived" ? "已归档" : "未入池" }),
+      );
     });
   }
   return result;
 }
 
-async function selectAccountView(name: "已入池" | "未入池" | "统计") {
+async function selectAccountView(name: "算力池" | "未入池" | "已归档" | "统计") {
   const button = screen.getByRole("button", { name });
   if (button.getAttribute("aria-pressed") !== "true") {
     await userEvent.click(button);
@@ -204,12 +213,14 @@ describe("AccountsScreen", () => {
   beforeEach(() => {
     window.localStorage.clear();
     vi.mocked(open).mockReset();
+    vi.mocked(archiveRouteCredentials).mockReset();
     vi.mocked(createBatch).mockReset();
     vi.mocked(copyRouteCredential).mockReset();
     vi.mocked(createApiRouteCredential).mockReset();
     vi.mocked(deleteRouteCredential).mockReset();
     vi.mocked(fetchRouteModels).mockReset();
     vi.mocked(getRoutePool).mockReset();
+    vi.mocked(getRouteProxyKey).mockReset();
     vi.mocked(getRouteProxyStatus).mockReset();
     vi.mocked(importOfficialRouteCredentialsFromFiles).mockReset();
     vi.mocked(importOfficialRouteCredentialsFromText).mockReset();
@@ -217,6 +228,7 @@ describe("AccountsScreen", () => {
     vi.mocked(listRouteCredentials).mockReset();
     vi.mocked(listRouteCredentialPage).mockReset();
     vi.mocked(refreshRouteCredentialsQuota).mockReset();
+    vi.mocked(restoreRouteCredentials).mockReset();
     vi.mocked(routePoolTestModel).mockReset();
     vi.mocked(setRoutePoolMembers).mockReset();
     vi.mocked(startRouteProxy).mockReset();
@@ -301,7 +313,9 @@ describe("AccountsScreen", () => {
       updated_at: "2026-07-13T00:00:00Z",
     });
     vi.mocked(listRouteCredentials).mockResolvedValue(credentialsFixture);
+    vi.mocked(archiveRouteCredentials).mockResolvedValue(undefined);
     vi.mocked(refreshRouteCredentialsQuota).mockResolvedValue([]);
+    vi.mocked(restoreRouteCredentials).mockResolvedValue(undefined);
     poolStateByPlatform = new Map<string, string[]>([["codex", []]]);
     vi.mocked(getRoutePool).mockImplementation(async (platform) => ({
       platform,
@@ -313,9 +327,14 @@ describe("AccountsScreen", () => {
     vi.mocked(listRouteCredentialPage).mockImplementation(async (input) => {
       const poolIds = poolStateByPlatform.get(input.platform) ?? [];
       const source = await vi.mocked(listRouteCredentials)(input.platform);
-      const scoped = source.filter((credential) =>
-        input.pool_scope === "in_pool" ? poolIds.includes(credential.id) : !poolIds.includes(credential.id),
-      );
+      const scoped = source.filter((credential) => {
+        if (input.pool_scope === "archived") {
+          return Boolean(credential.archived_at);
+        }
+        return input.pool_scope === "in_pool"
+          ? !credential.archived_at && poolIds.includes(credential.id)
+          : !credential.archived_at && !poolIds.includes(credential.id);
+      });
       const filtered = input.filters.length
         ? scoped.filter((credential) => input.filters.includes(credential.batch_id ?? "__single__"))
         : scoped;
@@ -346,6 +365,7 @@ describe("AccountsScreen", () => {
       port: null,
       base_url: null,
     });
+    vi.mocked(getRouteProxyKey).mockResolvedValue("sk-ai-switch-codex-key");
     vi.mocked(setRoutePoolMembers).mockImplementation(async (input) => {
       poolStateByPlatform.set(input.platform, [...input.account_ids]);
       return {
@@ -417,23 +437,47 @@ describe("AccountsScreen", () => {
   it("renders route credentials under the selected first-level agent tab and toggles pool membership", async () => {
     renderScreen();
 
-    expect(await screen.findByText("筛选：")).toBeInTheDocument();
-    expect(screen.getByTestId("account-workspace").children).toHaveLength(3);
-    expect(screen.getByTestId("account-workspace-scroll-region").parentElement).toBe(
-      screen.getByTestId("account-workspace"),
+    expect(await screen.findByText("筛选：")).toHaveClass("max-[599px]:hidden");
+    const workspace = screen.getByTestId("account-workspace");
+    const scrollRegion = screen.getByTestId("account-workspace-scroll-region");
+    expect(workspace.children).toHaveLength(3);
+    expect(scrollRegion.parentElement).toBe(workspace);
+    expect(workspace).toHaveClass("bg-transparent");
+    expect(scrollRegion).toHaveClass("bg-transparent");
+    expect(screen.getByTestId("account-workspace-toolbar")).toContainElement(
+      screen.getByRole("button", { name: "会话管理" }),
     );
+    expect(screen.getByTestId("pool-status-strip")).toHaveClass(
+      "max-[599px]:mx-0",
+      "max-[599px]:max-w-none",
+      "max-[599px]:flex-1",
+    );
+    expect(screen.getByRole("button", { name: "会话管理" }).parentElement).toHaveClass("max-[599px]:hidden");
+    expect(screen.getByLabelText("刷新账号列表")).toBeInTheDocument();
+    expect(screen.queryByRole("menu", { name: "刷新操作" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("打开刷新菜单"));
+    expect(screen.getByRole("menu", { name: "刷新操作" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "刷新账号列表" })).toBeInTheDocument();
+    expect(screen.getByText("刷新账号额度")).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("打开刷新菜单"));
+    expect(screen.queryByLabelText("Codex 已支持")).not.toBeInTheDocument();
     expect(await screen.findByText("Team Account")).toBeInTheDocument();
     expect(screen.getByText("API Account")).toBeInTheDocument();
-    expect(screen.getByText("请求 3 · 成功 2 · 失败 1 · 成功率 66.7%"))
-      .toBeInTheDocument();
+    expect(screen.getByText("算力中心")).toBeInTheDocument();
+    expect(screen.getByText("请求 3")).toBeInTheDocument();
+    expect(screen.getByText(/成功 2/)).toBeInTheDocument();
+    expect(screen.getByText(/失败 1/)).toBeInTheDocument();
+    expect(screen.getByText(/成功率 66\.7%/)).toBeInTheDocument();
     expect(screen.getByText("暂无请求")).toBeInTheDocument();
     expect(screen.queryByText("team@example.com ·", { exact: false })).not.toBeInTheDocument();
     expect(screen.getByText("批量 · Codex Batch")).toBeInTheDocument();
     expect(screen.getByText("批量 Codex Batch")).toBeInTheDocument();
 
+    expect(screen.queryByLabelText("导出选中账号")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("批量加入算力池")).not.toBeInTheDocument();
     await userEvent.click(screen.getByLabelText("选择 Team Account"));
     expect(screen.getByText("已选 1 个账号")).toBeInTheDocument();
+    expect(screen.getByLabelText("导出选中账号")).toBeInTheDocument();
     await userEvent.click(screen.getByLabelText("批量加入算力池"));
 
     await waitFor(() =>
@@ -443,8 +487,42 @@ describe("AccountsScreen", () => {
       }),
     );
     expect(screen.getByText("已加入 1 个账号")).toBeInTheDocument();
-    expect(screen.getByText("已入池")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "算力池" })).toBeInTheDocument();
     expect(screen.queryByLabelText("批量加入算力池")).not.toBeInTheDocument();
+  });
+
+  it("hides the workspace toolbar label when the sidebar is collapsed", async () => {
+    renderScreen("codex", "out_of_pool", true);
+
+    await screen.findByTestId("pool-status-strip");
+    expect(screen.getByTestId("workspace-toolbar-leading")).toHaveClass("hidden", "max-[599px]:hidden");
+  });
+
+  it("keeps side toolbar content visible when the window is not pinned to the top", () => {
+    vi.useFakeTimers();
+    renderScreen();
+
+    const workspace = screen.getByTestId("account-workspace");
+    const toolbar = screen.getByTestId("account-workspace-toolbar");
+    expect(workspace).toHaveStyle("grid-template-rows: 60px minmax(0, 1fr) 32px");
+
+    act(() => {
+      vi.advanceTimersByTime(2600);
+    });
+    expect(workspace).toHaveStyle("grid-template-rows: 60px minmax(0, 1fr) 32px");
+    expect(toolbar).toContainElement(screen.getByTestId("pool-status-strip"));
+    expect(screen.getByTestId("workspace-toolbar-leading")).toHaveClass("opacity-100");
+    expect(screen.getByRole("button", { name: "会话管理" }).parentElement).toHaveClass("opacity-100");
+  });
+
+  it("fills the account list area and centers the empty state when no accounts exist", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([]);
+
+    renderScreen();
+
+    const emptyState = await screen.findByTestId("account-empty-state");
+    expect(emptyState).toHaveTextContent("空空如也");
+    expect(emptyState).toHaveClass("flex-1", "items-center", "justify-center");
   });
 
   it("filters accounts by batch name and single-account option", async () => {
@@ -489,7 +567,7 @@ describe("AccountsScreen", () => {
       expect(lastCall?.platform).toBe("codex");
       expect(new Set(lastCall?.account_ids ?? [])).toEqual(new Set(["cred-official-1", "cred-api-1"]));
     });
-    await selectAccountView("已入池");
+    await selectAccountView("算力池");
     expect(await screen.findByText("Team Account")).toBeInTheDocument();
     expect(screen.getByText("API Account")).toBeInTheDocument();
 
@@ -517,10 +595,58 @@ describe("AccountsScreen", () => {
     });
   });
 
+  it("archives selected active accounts in one batch", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByLabelText("选择 Team Account"));
+    expect(screen.getByLabelText("批量归档账号")).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("批量归档账号"));
+
+    await waitFor(() =>
+      expect(archiveRouteCredentials).toHaveBeenCalledWith(["cred-official-1"]),
+    );
+    expect(screen.queryByText("已选 1 个账号")).not.toBeInTheDocument();
+  });
+
+  it("restores selected archived accounts without pool actions", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      { ...credentialsFixture[0], archived_at: "2026-08-05T00:00:00Z" },
+      credentialsFixture[1],
+    ]);
+    poolStateByPlatform.set("codex", ["cred-official-1"]);
+    renderScreen("codex", "archived");
+
+    expect(await screen.findByText("Team Account")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(listRouteCredentialPage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ pool_scope: "archived" }),
+      ),
+    );
+    await userEvent.click(screen.getByLabelText("选择 Team Account"));
+    expect(screen.getByLabelText("批量恢复账号")).toBeInTheDocument();
+    expect(screen.queryByLabelText("批量加入算力池")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("批量移出算力池")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("批量恢复账号"));
+    await waitFor(() =>
+      expect(restoreRouteCredentials).toHaveBeenCalledWith(["cred-official-1"]),
+    );
+    expect(screen.queryByText("已选 1 个账号")).not.toBeInTheDocument();
+  });
+
+  it("shows a centered empty state for archived accounts", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([]);
+    renderScreen("codex", "archived");
+
+    const emptyState = await screen.findByTestId("account-empty-state");
+    expect(emptyState).toHaveTextContent("空空如也");
+    expect(emptyState).toHaveClass("flex-1", "items-center", "justify-center");
+  });
+
   it("switches between pooled, unpooled, and statistics segments with scoped actions", async () => {
     renderScreen("codex", "in_pool");
 
-    expect(screen.getByRole("button", { name: "已入池" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "算力池" })).toHaveAttribute("aria-pressed", "true");
     await waitFor(() =>
       expect(listRouteCredentialPage).toHaveBeenLastCalledWith(
         expect.objectContaining({ platform: "codex", pool_scope: "in_pool" }),
@@ -534,6 +660,14 @@ describe("AccountsScreen", () => {
     await userEvent.click(screen.getByLabelText("选择 Team Account"));
     expect(screen.getByLabelText("批量加入算力池")).toBeInTheDocument();
     expect(screen.queryByLabelText("批量移出算力池")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "已归档" }));
+    expect(screen.getByRole("button", { name: "已归档" })).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() =>
+      expect(listRouteCredentialPage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ pool_scope: "archived" }),
+      ),
+    );
 
     await userEvent.click(screen.getByRole("button", { name: "统计" }));
     expect(await screen.findByText("请求统计")).toBeInTheDocument();
@@ -568,12 +702,13 @@ describe("AccountsScreen", () => {
     const writeConfig = screen.getByLabelText("写入路由配置文件");
     expect(writeConfig).toBeDisabled();
     expect(writeConfig).toHaveAttribute("title", expect.stringContaining("原生配置"));
+    await userEvent.click(screen.getByLabelText("打开刷新菜单"));
     expect(screen.getByLabelText("刷新官方账号额度")).toBeDisabled();
     await waitFor(() => expect(refreshRouteCredentialsQuota).not.toHaveBeenCalled());
 
     await userEvent.click(screen.getByRole("button", { name: "新增账号" }));
     expect(screen.getByRole("button", { name: "API 账号" })).toBeEnabled();
-    const officialImport = screen.getByRole("button", { name: "官方导入" });
+    const officialImport = screen.getByRole("button", { name: "批量导入" });
     expect(officialImport).toBeDisabled();
     expect(officialImport).toHaveAttribute("title", expect.stringContaining("官方账号"));
 
@@ -597,7 +732,7 @@ describe("AccountsScreen", () => {
       }),
     );
 
-    await selectAccountView("已入池");
+    await selectAccountView("算力池");
     expect(await screen.findByText("Team Account")).toBeInTheDocument();
     await userEvent.click(screen.getByLabelText("选择 Team Account"));
     await userEvent.click(screen.getByLabelText("批量移出算力池"));
@@ -644,7 +779,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
-    await userEvent.click(screen.getByRole("button", { name: "官方导入" }));
+    await userEvent.click(screen.getByRole("button", { name: "批量导入" }));
     fireEvent.change(screen.getByLabelText("账号 JSON"), {
       target: {
         value: "{\"type\":\"codex\",\"email\":\"new@example.com\",\"access_token\":\"at\"}",
@@ -666,7 +801,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
-    await userEvent.click(screen.getByRole("button", { name: "官方导入" }));
+    await userEvent.click(screen.getByRole("button", { name: "批量导入" }));
     vi.mocked(open).mockResolvedValue(["C:\\one.json", "C:\\two.json"]);
     await userEvent.click(screen.getByRole("button", { name: "导入 JSON 文件" }));
     await userEvent.type(screen.getByLabelText("导入批量名称"), "File Batch");
@@ -733,6 +868,42 @@ describe("AccountsScreen", () => {
         user_agent: null,
       }),
     );
+  });
+
+  it("adds a newly created API account to the selected pool by default", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    expect(screen.getByLabelText("创建后加入算力池")).toBeChecked();
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Pooled API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-pooled");
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() =>
+      expect(setRoutePoolMembers).toHaveBeenCalledWith({
+        platform: "codex",
+        account_ids: ["cred-api-1"],
+      }),
+    );
+    expect(screen.getByRole("button", { name: "算力池" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("keeps a newly created API account out of the pool when unchecked", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByLabelText("创建后加入算力池"));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Unpooled API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-unpooled");
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() =>
+      expect(setRoutePoolMembers).toHaveBeenCalledWith({
+        platform: "codex",
+        account_ids: [],
+      }),
+    );
+    expect(screen.getByRole("button", { name: "未入池" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("creates an API route credential with custom User-Agent", async () => {
@@ -1465,6 +1636,71 @@ describe("AccountsScreen", () => {
     expect(recentRouteStatus.className).not.toContain("bg-white");
   });
 
+  it("keeps pool testing available outside the pool list and copies a curl command", async () => {
+    poolStateByPlatform.set("codex", ["cred-official-1"]);
+    vi.mocked(getRouteProxyStatus).mockResolvedValue({
+      running: true,
+      bind_host: "127.0.0.1",
+      port: 43111,
+      base_url: "https://127.0.0.1:43111",
+    });
+    renderScreen("codex", "out_of_pool");
+
+    const sendTest = await screen.findByLabelText("真实生成测试算力池路由");
+    await waitFor(() => expect(sendTest).toBeEnabled());
+
+    await userEvent.click(screen.getByLabelText("打开算力池测试菜单"));
+    expect(screen.getByRole("menu", { name: "算力池测试菜单" })).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("复制 curl 执行语句"));
+
+    await waitFor(() =>
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+        expect.stringContaining("curl.exe 'https://127.0.0.1:43111/responses'"),
+      ),
+    );
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining("--ssl-no-revoke"),
+    );
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining("--data-raw '{\"model\""),
+    );
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining('x-ai-switch-platform: codex'),
+    );
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining('Authorization: Bearer sk-ai-switch-codex-key'),
+    );
+
+    await userEvent.click(screen.getByLabelText("打开算力池测试菜单"));
+    await userEvent.click(screen.getByLabelText("复制 CMD curl 执行语句"));
+    await waitFor(() =>
+      expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith(
+        expect.stringContaining('--data-raw "{""model""'),
+      ),
+    );
+  });
+
+  it("copies the running route proxy Base URL and platform sk", async () => {
+    vi.mocked(getRouteProxyStatus).mockResolvedValue({
+      running: true,
+      bind_host: "127.0.0.1",
+      port: 43111,
+      base_url: "https://127.0.0.1:43111",
+    });
+    poolStateByPlatform.set("codex", ["cred-official-1"]);
+    renderScreen("codex", "out_of_pool");
+
+    await waitFor(() => expect(screen.getByLabelText("真实生成测试算力池路由")).toBeEnabled());
+    await userEvent.click(screen.getByLabelText("打开算力池测试菜单"));
+    await userEvent.click(screen.getByLabelText("复制 Base URL"));
+    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("https://127.0.0.1:43111");
+
+    await userEvent.click(screen.getByLabelText("打开算力池测试菜单"));
+    await userEvent.click(screen.getByLabelText("复制 sk"));
+    expect(getRouteProxyKey).toHaveBeenCalledWith("codex");
+    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("sk-ai-switch-codex-key");
+  });
+
   it("tests the credential pool route with a user-specified model", async () => {
     poolStateByPlatform.set("codex", ["cred-official-1"]);
     renderScreen("codex", "in_pool");
@@ -1585,7 +1821,7 @@ describe("AccountsScreen", () => {
       </QueryClientProvider>,
     );
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "已入池" })).toHaveAttribute("aria-pressed", "true"),
+      expect(screen.getByRole("button", { name: "算力池" })).toHaveAttribute("aria-pressed", "true"),
     );
     await selectAccountView("未入池");
     await userEvent.click(await screen.findByLabelText("测试 API Account"));
@@ -1600,7 +1836,7 @@ describe("AccountsScreen", () => {
       </QueryClientProvider>,
     );
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "已入池" })).toHaveAttribute("aria-pressed", "true"),
+      expect(screen.getByRole("button", { name: "算力池" })).toHaveAttribute("aria-pressed", "true"),
     );
     await selectAccountView("未入池");
     await userEvent.click(await screen.findByLabelText("测试 API Account"));
@@ -1672,5 +1908,22 @@ describe("AccountsScreen", () => {
       vi.advanceTimersByTime(1);
     });
     expect(screen.queryByText("配置写入结果")).not.toBeInTheDocument();
+  });
+
+  it("uses distinct service start, stop, and send-test controls", async () => {
+    poolStateByPlatform.set("codex", ["cred-official-1"]);
+    renderScreen("codex", "in_pool");
+
+    const startButton = await screen.findByLabelText("启动本地路由代理");
+    expect(startButton).toHaveClass("bg-emerald-600");
+    expect(screen.getByLabelText("真实生成测试算力池路由")).toHaveClass("bg-transparent");
+
+    await userEvent.click(startButton);
+    const stopButton = await screen.findByLabelText("停止本地路由代理");
+    expect(stopButton).toHaveClass("bg-red-600");
+    expect(screen.queryByLabelText("启动本地路由代理")).not.toBeInTheDocument();
+
+    await userEvent.click(stopButton);
+    await waitFor(() => expect(stopRouteProxy).toHaveBeenCalledTimes(1));
   });
 });

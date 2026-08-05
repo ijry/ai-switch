@@ -196,7 +196,7 @@ impl RoutePoolRepository {
             "SELECT a.id, a.display_name
              FROM route_pool_members rpm
              INNER JOIN route_credentials a ON a.id = rpm.route_credential_id
-             WHERE rpm.platform = ? AND rpm.enabled = 1 AND a.status = 'ok'
+             WHERE rpm.platform = ? AND rpm.enabled = 1 AND a.archived_at IS NULL AND a.status = 'ok'
              ORDER BY rpm.sort_order ASC, rpm.created_at ASC",
         )
         .bind(platform)
@@ -308,15 +308,16 @@ impl RoutePoolRepository {
         };
         let summary_sql = format!(
             "SELECT
-               (SELECT COUNT(DISTINCT route_credential_id)
-                FROM route_pool_members
-                WHERE platform = ? AND enabled = 1) AS member_count,
+               (SELECT COUNT(DISTINCT rpm.route_credential_id)
+                FROM route_pool_members rpm
+                INNER JOIN route_credentials a ON a.id = rpm.route_credential_id
+                WHERE rpm.platform = ? AND rpm.enabled = 1 AND a.archived_at IS NULL) AS member_count,
                COALESCE(SUM(CASE WHEN ue.metric_type = 'request' THEN CASE WHEN ue.amount > 0 THEN ue.amount ELSE 1 END ELSE 0 END), 0) AS request_count,
                COALESCE(SUM(CASE WHEN ue.metric_type = 'token' OR ue.unit = 'token' THEN ue.amount ELSE 0 END), 0) AS token_count,
                COALESCE(SUM(CASE WHEN ue.metric_type = 'cost' AND ue.unit = 'usd_micros' THEN ue.amount ELSE 0 END), 0) AS cost_micros
              FROM usage_events ue
              INNER JOIN route_credentials a ON a.id = ue.route_credential_id
-             WHERE a.platform = ?{usage_since_clause}"
+             WHERE a.platform = ? AND a.archived_at IS NULL{usage_since_clause}"
         );
         let mut summary_query = sqlx::query(&summary_sql).bind(platform).bind(platform);
         if let Some(since) = since {
@@ -337,7 +338,7 @@ impl RoutePoolRepository {
                     ue.source_label, ue.metric_type, ue.amount, ue.unit, ue.metadata_json, ue.created_at
              FROM usage_events ue
              INNER JOIN route_credentials a ON a.id = ue.route_credential_id
-             WHERE a.platform = ?{usage_since_clause}
+             WHERE a.platform = ? AND a.archived_at IS NULL{usage_since_clause}
              ORDER BY ue.created_at DESC, ue.id DESC
              LIMIT 10"
         );
@@ -359,7 +360,7 @@ impl RoutePoolRepository {
             "SELECT COUNT(*) AS request_row_count
              FROM usage_events ue
              INNER JOIN route_credentials a ON a.id = ue.route_credential_id
-             WHERE a.platform = ? AND ue.metric_type = 'request'{usage_since_clause}"
+             WHERE a.platform = ? AND a.archived_at IS NULL AND ue.metric_type = 'request'{usage_since_clause}"
         );
         let mut request_count_query = sqlx::query(&request_count_sql).bind(platform);
         if let Some(since) = since {
@@ -382,7 +383,7 @@ impl RoutePoolRepository {
                     ue.source_label, ue.metric_type, ue.amount, ue.unit, ue.metadata_json, ue.created_at
              FROM usage_events ue
              INNER JOIN route_credentials a ON a.id = ue.route_credential_id
-             WHERE a.platform = ? AND ue.metric_type = 'request'{usage_since_clause}
+             WHERE a.platform = ? AND a.archived_at IS NULL AND ue.metric_type = 'request'{usage_since_clause}
              ORDER BY ue.created_at DESC, ue.id DESC
              LIMIT ? OFFSET ?"
         );
@@ -450,6 +451,36 @@ mod tests {
         .await
         .unwrap()
         .id
+    }
+
+    #[tokio::test]
+    async fn member_accounts_excludes_archived_but_membership_ids_are_preserved() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let archived = create_credential(&pool, "codex", "Archived").await;
+        let active = create_credential(&pool, "codex", "Active").await;
+        RoutePoolRepository::replace_members(
+            &pool,
+            "codex",
+            &[archived.clone(), active.clone()],
+        )
+        .await
+        .unwrap();
+        RouteCredentialRepository::set_archived(&pool, std::slice::from_ref(&archived), true)
+            .await
+            .unwrap();
+
+        let runtime_members = RoutePoolRepository::member_accounts(&pool, "codex")
+            .await
+            .unwrap();
+        assert_eq!(runtime_members.len(), 1);
+        assert_eq!(runtime_members[0].id, active);
+        assert_eq!(
+            RoutePoolRepository::list_member_ids(&pool, "codex")
+                .await
+                .unwrap(),
+            vec![archived, runtime_members[0].id.clone()]
+        );
     }
 
     #[tokio::test]

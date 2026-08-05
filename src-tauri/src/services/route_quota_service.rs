@@ -46,6 +46,14 @@ impl RouteQuotaService {
         id: String,
     ) -> Result<QuotaRefreshOutcome, AppError> {
         let credential = RouteCredentialRepository::get(pool, &id).await?;
+        if credential.archived_at.is_some() {
+            return Err(AppError::Validation {
+                code: "validation.route_credential_archived",
+                message: "Archived route credentials cannot refresh quota".to_string(),
+                details: Some(id),
+                recoverable: true,
+            });
+        }
         let platform = PlatformId::parse(&credential.platform)?;
         PlatformCapabilityService::require(platform, PlatformOperation::OfficialQuota)?;
         refresh_credential(pool, credential).await

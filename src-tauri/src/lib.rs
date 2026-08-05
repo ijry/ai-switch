@@ -29,11 +29,13 @@ use commands::batch_commands::{
 use commands::import_commands::import_example_json;
 use commands::platform_commands::list_platform_capabilities;
 use commands::route_credential_commands::{
-    copy_route_credential, create_api_route_credential, delete_route_credential,
+    archive_route_credentials, copy_route_credential, create_api_route_credential,
+    delete_route_credential,
     get_route_credential, import_official_route_credentials_from_files,
     import_official_route_credentials_from_text, list_route_credentials,
     list_route_credentials_page, reorder_route_credentials,
     refresh_route_credential_quota, refresh_route_credentials_quota, update_route_credential,
+    restore_route_credentials,
 };
 use commands::route_credential_transfer_commands::{
     export_route_credentials, import_route_credentials, preview_route_credential_import,
@@ -44,7 +46,8 @@ use commands::route_pool_commands::{
     set_route_pool_members,
 };
 use commands::route_proxy_commands::{
-    get_route_proxy_status, start_route_proxy, stop_route_proxy, write_route_proxy_configs,
+    get_route_proxy_key, get_route_proxy_status, start_route_proxy, stop_route_proxy,
+    write_route_proxy_configs,
 };
 use commands::route_proxy_https_commands::{
     delete_route_proxy_https_certificates, disable_route_proxy_https, enable_route_proxy_https,
@@ -75,6 +78,7 @@ use services::deeplink_protocol_service::{
 };
 use services::deeplink_service::{parse_deeplink_url, DeepLinkErrorPayload};
 use services::route_proxy_service::RouteProxyRuntimeState;
+use services::route_proxy_https_service::RouteProxyHttpsService;
 use services::tailscale_service::TailscaleRuntimeState;
 use services::web_service::{WebService, WebServiceRuntimeState};
 use std::sync::Arc;
@@ -271,6 +275,19 @@ pub fn run() {
                 let _ = WebService::start(Arc::new(state)).await;
             });
 
+            let route_proxy_state = app.state::<AppState>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                let Ok(config) = RouteProxyHttpsService::load_config(&route_proxy_state.paths).await else {
+                    return;
+                };
+                if !config.auto_start {
+                    return;
+                }
+                if let Err(error) = RouteProxyHttpsService::start_proxy(&route_proxy_state).await {
+                    eprintln!("failed to restore route proxy: {error}");
+                }
+            });
+
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             {
                 if let Err(err) = app.deep_link().register_all() {
@@ -317,6 +334,8 @@ pub fn run() {
             import_official_route_credentials_from_files,
             update_route_credential,
             delete_route_credential,
+            archive_route_credentials,
+            restore_route_credentials,
             refresh_route_credential_quota,
             refresh_route_credentials_quota,
             export_route_credentials,
@@ -332,6 +351,7 @@ pub fn run() {
             start_route_proxy,
             stop_route_proxy,
             get_route_proxy_status,
+            get_route_proxy_key,
             write_route_proxy_configs,
             get_route_proxy_https_status,
             enable_route_proxy_https,

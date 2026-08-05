@@ -1,13 +1,11 @@
 use crate::app_state::AppState;
 use crate::config_writer::ConfigWriter;
 use crate::error::AppError;
-use crate::models::config_snapshot::ConfigWriteOutcome;
 use crate::models::route_proxy_https::{
     RouteProxyHttpsConfig, RouteProxyHttpsOperationOutcome, RouteProxyHttpsStatus,
     RouteProxyTrustRecord, RouteProxyTrustStatus,
 };
 use crate::paths::AppPaths;
-use crate::services::route_config_service::RouteConfigService;
 use crate::services::route_proxy_https_trust::{
     RouteProxyHttpsTrustExecutor, RouteProxyTrustOutcome, SystemRouteProxyHttpsTrustExecutor,
 };
@@ -67,12 +65,25 @@ impl RouteProxyHttpsService {
         }
 
         let contents = tokio::fs::read_to_string(&paths.route_proxy_https_config_file).await?;
-        serde_json::from_str(&contents).map_err(|error| AppError::Validation {
+        let raw: serde_json::Value = serde_json::from_str(&contents).map_err(|error| AppError::Validation {
             code: "validation.route_proxy_https_config",
             message: "Local route proxy HTTPS configuration is invalid".to_string(),
             details: Some(error.to_string()),
             recoverable: true,
-        })
+        })?;
+        let mut config: RouteProxyHttpsConfig = serde_json::from_value(raw.clone()).map_err(|error| AppError::Validation {
+            code: "validation.route_proxy_https_config",
+            message: "Local route proxy HTTPS configuration is invalid".to_string(),
+            details: Some(error.to_string()),
+            recoverable: true,
+        })?;
+        // Older versions only persisted the HTTPS flag. Preserve their active
+        // proxy intent on the first restart while allowing an explicit stop to
+        // persist `autoStart: false` going forward.
+        if raw.get("autoStart").is_none() {
+            config.auto_start = config.enabled;
+        }
+        Ok(config)
     }
 
     pub async fn save_config(
@@ -92,6 +103,18 @@ impl RouteProxyHttpsService {
         Self::generate_material(paths).await
     }
 
+    pub async fn load_root_certificate_pem(paths: &AppPaths) -> Result<Vec<u8>, AppError> {
+        let material = Self::load_material(paths)
+            .await?
+            .ok_or_else(|| AppError::Validation {
+                code: "validation.route_proxy_https_material",
+                message: "Local route proxy HTTPS certificate material is unavailable".to_string(),
+                details: Some(paths.route_proxy_https_dir.display().to_string()),
+                recoverable: true,
+            })?;
+        Ok(tokio::fs::read(&material.root_certificate_pem).await?)
+    }
+
     pub async fn transport(paths: &AppPaths) -> Result<RouteProxyTransport, AppError> {
         let config = Self::load_config(paths).await?;
         if !config.enabled {
@@ -104,21 +127,20 @@ impl RouteProxyHttpsService {
 
     pub async fn start_proxy(state: &AppState) -> Result<RouteProxyStatus, AppError> {
         let transport = Self::transport(&state.paths).await?;
-        let previous = RouteProxyService::status(&state.route_proxy).await;
         let route_proxy =
             RouteProxyService::start(&state.route_proxy, state.pool.clone(), transport).await?;
 
-        match Self::rewrite_existing_configs(state, &route_proxy).await {
-            Ok(_) => {}
-            Err(error) => {
-                if !previous.running {
-                    let _ = RouteProxyService::stop(&state.route_proxy).await;
-                }
-                return Err(error);
-            }
-        }
+        let mut config = Self::load_config(&state.paths).await?;
+        config.auto_start = true;
+        Self::save_config(&state.paths, &config).await?;
 
         Ok(route_proxy)
+    }
+
+    pub async fn clear_auto_start(paths: &AppPaths) -> Result<(), AppError> {
+        let mut config = Self::load_config(paths).await?;
+        config.auto_start = false;
+        Self::save_config(paths, &config).await
     }
 
     pub async fn status_for_state(state: &AppState) -> Result<RouteProxyHttpsStatus, AppError> {
@@ -164,13 +186,26 @@ impl RouteProxyHttpsService {
                     )
                     .await;
                 }
-                Self::save_config(&state.paths, &RouteProxyHttpsConfig { enabled: false }).await?;
+                Self::save_config(
+                    &state.paths,
+                    &RouteProxyHttpsConfig {
+                        enabled: false,
+                        auto_start: previous.running,
+                    },
+                )
+                .await?;
                 return Err(error);
             }
         };
 
-        Self::save_config(&state.paths, &RouteProxyHttpsConfig { enabled: true }).await?;
-        let config_writes = Self::rewrite_existing_configs(state, &route_proxy).await?;
+        Self::save_config(
+            &state.paths,
+            &RouteProxyHttpsConfig {
+                enabled: true,
+                auto_start: true,
+            },
+        )
+        .await?;
         let https =
             Self::status_with_trust(&state.paths, route_proxy.base_url.clone(), trust_executor)
                 .await?;
@@ -178,7 +213,7 @@ impl RouteProxyHttpsService {
         Ok(RouteProxyHttpsOperationOutcome {
             https,
             route_proxy,
-            config_writes,
+            config_writes: Vec::new(),
         })
     }
 
@@ -187,7 +222,14 @@ impl RouteProxyHttpsService {
         if previous.running {
             RouteProxyService::stop(&state.route_proxy).await?;
         }
-        Self::save_config(&state.paths, &RouteProxyHttpsConfig { enabled: false }).await?;
+        Self::save_config(
+            &state.paths,
+            &RouteProxyHttpsConfig {
+                enabled: false,
+                auto_start: true,
+            },
+        )
+        .await?;
 
         let route_proxy = RouteProxyService::start(
             &state.route_proxy,
@@ -195,13 +237,12 @@ impl RouteProxyHttpsService {
             RouteProxyTransport::Http,
         )
         .await?;
-        let config_writes = Self::rewrite_existing_configs(state, &route_proxy).await?;
         let https = Self::status_for_state(state).await?;
 
         Ok(RouteProxyHttpsOperationOutcome {
             https,
             route_proxy,
-            config_writes,
+            config_writes: Vec::new(),
         })
     }
 
@@ -268,7 +309,14 @@ impl RouteProxyHttpsService {
             }
         };
         Self::save_trust_outcome(&state.paths, trust).await?;
-        Self::save_config(&state.paths, &RouteProxyHttpsConfig { enabled: false }).await?;
+        Self::save_config(
+            &state.paths,
+            &RouteProxyHttpsConfig {
+                enabled: false,
+                auto_start: previous.running,
+            },
+        )
+        .await?;
 
         let route_proxy = if previous.running {
             RouteProxyService::start(
@@ -280,11 +328,6 @@ impl RouteProxyHttpsService {
         } else {
             RouteProxyService::status(&state.route_proxy).await
         };
-        let config_writes = if route_proxy.running {
-            Self::rewrite_existing_configs(state, &route_proxy).await?
-        } else {
-            Vec::new()
-        };
         let https =
             Self::status_with_trust(&state.paths, route_proxy.base_url.clone(), trust_executor)
                 .await?;
@@ -292,7 +335,7 @@ impl RouteProxyHttpsService {
         Ok(RouteProxyHttpsOperationOutcome {
             https,
             route_proxy,
-            config_writes,
+            config_writes: Vec::new(),
         })
     }
 
@@ -372,11 +415,6 @@ impl RouteProxyHttpsService {
         };
 
         let _ = tokio::fs::remove_dir_all(&backup_dir).await;
-        let config_writes = if route_proxy.running {
-            Self::rewrite_existing_configs(state, &route_proxy).await?
-        } else {
-            Vec::new()
-        };
         let https =
             Self::status_with_trust(&state.paths, route_proxy.base_url.clone(), trust_executor)
                 .await?;
@@ -384,7 +422,7 @@ impl RouteProxyHttpsService {
         Ok(RouteProxyHttpsOperationOutcome {
             https,
             route_proxy,
-            config_writes,
+            config_writes: Vec::new(),
         })
     }
 
@@ -428,22 +466,6 @@ impl RouteProxyHttpsService {
             certificate_pem_path: material.server_certificate_pem.clone(),
             private_key_pem_path: material.server_private_key_pem.clone(),
         }
-    }
-
-    async fn rewrite_existing_configs(
-        state: &AppState,
-        route_proxy: &RouteProxyStatus,
-    ) -> Result<Vec<ConfigWriteOutcome>, AppError> {
-        let Some(base_url) = route_proxy.base_url.as_deref() else {
-            return Ok(Vec::new());
-        };
-        RouteConfigService::write_existing_configs(
-            &state.paths,
-            &state.pool,
-            &state.config_writes,
-            base_url,
-        )
-        .await
     }
 
     async fn create_replacement_material(
@@ -1194,6 +1216,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn load_config_migrates_legacy_enabled_proxy_to_auto_start() {
+        let temp = tempdir().expect("temp dir");
+        let paths = AppPaths::from_data_dir(temp.path().join("app-data"));
+        paths.ensure().await.expect("paths");
+
+        tokio::fs::write(
+            &paths.route_proxy_https_config_file,
+            r#"{"enabled":true}"#,
+        )
+        .await
+        .expect("legacy config");
+        let migrated = RouteProxyHttpsService::load_config(&paths)
+            .await
+            .expect("load legacy config");
+        assert!(migrated.enabled);
+        assert!(migrated.auto_start);
+
+        RouteProxyHttpsService::save_config(
+            &paths,
+            &RouteProxyHttpsConfig {
+                enabled: true,
+                auto_start: false,
+            },
+        )
+        .await
+        .expect("save explicit stop");
+        let stopped = RouteProxyHttpsService::load_config(&paths)
+            .await
+            .expect("load explicit stop");
+        assert!(!stopped.auto_start);
+    }
+
+    #[tokio::test]
     async fn ensure_material_generates_root_and_loopback_leaf_without_exposing_private_key() {
         let temp = tempdir().expect("temp dir");
         let paths = AppPaths::from_data_dir(temp.path().to_path_buf());
@@ -1285,7 +1340,13 @@ mod tests {
         RouteProxyHttpsService::ensure_material(&paths)
             .await
             .expect("material");
-        RouteProxyHttpsService::save_config(&paths, &RouteProxyHttpsConfig { enabled: true })
+        RouteProxyHttpsService::save_config(
+            &paths,
+            &RouteProxyHttpsConfig {
+                enabled: true,
+                auto_start: false,
+            },
+        )
             .await
             .expect("save");
 
@@ -1294,7 +1355,13 @@ mod tests {
             .expect_err("enabled error");
         assert!(error.to_string().contains("Disable HTTPS"));
 
-        RouteProxyHttpsService::save_config(&paths, &RouteProxyHttpsConfig { enabled: false })
+        RouteProxyHttpsService::save_config(
+            &paths,
+            &RouteProxyHttpsConfig {
+                enabled: false,
+                auto_start: false,
+            },
+        )
             .await
             .expect("save disabled");
         RouteProxyHttpsService::delete_material(&paths)
@@ -1304,7 +1371,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enable_https_restarts_a_running_http_proxy_and_rewrites_only_existing_platforms() {
+    async fn enable_https_restarts_a_running_http_proxy_without_writing_agent_configs() {
         let fixture = test_state().await;
         let initial = RouteProxyService::start(
             &fixture.state.route_proxy,

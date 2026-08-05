@@ -50,6 +50,7 @@ pub fn is_sensitive_command(command: &str) -> bool {
         "export_route_credentials"
             | "preview_route_credential_import"
             | "import_route_credentials"
+            | "get_route_proxy_key"
     )
 }
 
@@ -301,6 +302,20 @@ pub async fn dispatch_command(
                 .map_err(to_error)?;
             to_value(())
         }
+        "archive_route_credentials" => {
+            let ids: Vec<String> = parse_arg(&args, "ids")?;
+            RouteCredentialService::archive(&state.pool, ids)
+                .await
+                .map_err(to_error)?;
+            to_value(())
+        }
+        "restore_route_credentials" => {
+            let ids: Vec<String> = parse_arg(&args, "ids")?;
+            RouteCredentialService::restore(&state.pool, ids)
+                .await
+                .map_err(to_error)?;
+            to_value(())
+        }
         "refresh_route_credential_quota" => {
             let id = required_string_arg(&args, "id")?;
             to_value(
@@ -382,11 +397,21 @@ pub async fn dispatch_command(
                 )
             } else {
                 let base_url = route_model_test_proxy_base_url(state.as_ref()).await?;
+                let root_certificate_pem = if base_url.starts_with("https://") {
+                    Some(
+                        RouteProxyHttpsService::load_root_certificate_pem(&state.paths)
+                            .await
+                            .map_err(to_error)?,
+                    )
+                } else {
+                    None
+                };
                 to_value(
-                    RouteModelTestService::test_model_through_proxy(
+                    RouteModelTestService::test_model_through_proxy_with_root_certificate(
                         &state.pool,
                         request,
                         &base_url,
+                        root_certificate_pem.as_deref(),
                     )
                     .await
                     .map_err(to_error)?,
@@ -406,12 +431,24 @@ pub async fn dispatch_command(
                 .await
                 .map_err(to_error)?,
         ),
-        "stop_route_proxy" => to_value(
-            RouteProxyService::stop(&state.route_proxy)
+        "stop_route_proxy" => {
+            let status = RouteProxyService::stop(&state.route_proxy)
                 .await
-                .map_err(to_error)?,
-        ),
+                .map_err(to_error)?;
+            RouteProxyHttpsService::clear_auto_start(&state.paths)
+                .await
+                .map_err(to_error)?;
+            to_value(status)
+        }
         "get_route_proxy_status" => to_value(RouteProxyService::status(&state.route_proxy).await),
+        "get_route_proxy_key" => {
+            let platform = required_string_arg(&args, "platform")?;
+            to_value(
+                RouteProxyService::get_or_create_platform_key(&state.pool, &platform)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
         "get_route_proxy_https_status" => to_value(
             RouteProxyHttpsService::status_for_state(state.as_ref())
                 .await

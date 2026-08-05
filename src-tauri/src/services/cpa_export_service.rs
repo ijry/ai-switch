@@ -717,6 +717,7 @@ mod tests {
             quota_limit: None,
             quota_used: None,
             quota_updated_at: None,
+            archived_at: None,
             created_at: "2026-08-04T00:00:00Z".to_string(),
             updated_at: "2026-08-04T00:00:00Z".to_string(),
         }

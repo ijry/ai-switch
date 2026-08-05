@@ -43,19 +43,38 @@ impl RouteProxyKeyRepository {
                 recoverable: true,
             })?;
 
+        if let Some(row) = row {
+            return Ok(Some(row.get::<String, _>("platform")));
+        }
+
+        let row = sqlx::query("SELECT platform FROM route_proxy_key_aliases WHERE proxy_key = ?")
+            .bind(key)
+            .fetch_optional(pool)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.route_proxy_key_alias_lookup",
+                message: "Could not resolve route proxy key alias".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })?;
+
         Ok(row.map(|row| row.get::<String, _>("platform")))
     }
 
     pub async fn list_all(pool: &SqlitePool) -> Result<Vec<(String, String)>, AppError> {
-        let rows = sqlx::query("SELECT platform, proxy_key FROM route_proxy_keys")
-            .fetch_all(pool)
-            .await
-            .map_err(|err| AppError::Database {
-                code: "database.route_proxy_key_list",
-                message: "Could not load route proxy keys".to_string(),
-                details: Some(err.to_string()),
-                recoverable: true,
-            })?;
+        let rows = sqlx::query(
+            "SELECT platform, proxy_key FROM route_proxy_keys
+             UNION ALL
+             SELECT platform, proxy_key FROM route_proxy_key_aliases",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_proxy_key_list",
+            message: "Could not load route proxy keys".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
 
         Ok(rows
             .into_iter()
@@ -131,6 +150,70 @@ impl RouteProxyKeyRepository {
         }
 
         Ok(proxy_key.to_string())
+    }
+
+    pub async fn replace_platform_key(
+        pool: &SqlitePool,
+        platform: &str,
+        proxy_key: &str,
+    ) -> Result<Option<String>, AppError> {
+        let Some(previous_key) = Self::get_by_platform(pool, platform).await? else {
+            return Ok(None);
+        };
+        if previous_key == proxy_key {
+            return Ok(Some(previous_key));
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let mut transaction = pool.begin().await.map_err(|err| AppError::Database {
+            code: "database.route_proxy_key_rotate_begin",
+            message: "Could not rotate route proxy key".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO route_proxy_key_aliases (proxy_key, platform, created_at)
+             VALUES (?, ?, ?)",
+        )
+        .bind(&previous_key)
+        .bind(platform)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_proxy_key_alias_insert",
+            message: "Could not preserve the previous route proxy key".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+        sqlx::query(
+            "UPDATE route_proxy_keys
+             SET proxy_key = ?, updated_at = ?
+             WHERE platform = ? AND proxy_key = ?",
+        )
+        .bind(proxy_key)
+        .bind(&now)
+        .bind(platform)
+        .bind(&previous_key)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_proxy_key_rotate",
+            message: "Could not save the new route proxy key".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+        transaction
+            .commit()
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.route_proxy_key_rotate_commit",
+                message: "Could not finish route proxy key rotation".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })?;
+
+        Ok(Some(previous_key))
     }
 
     /// Removes only a key created by the current write attempt.
@@ -227,5 +310,35 @@ mod tests {
             .await
             .expect("get removed key")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn replacing_a_legacy_key_preserves_it_as_an_alias() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test-old")
+            .await
+            .expect("legacy key");
+
+        let previous =
+            RouteProxyKeyRepository::replace_platform_key(&pool, "codex", "sk-ai-switch-new")
+                .await
+                .expect("replace key");
+
+        assert_eq!(previous.as_deref(), Some("sk-ai-switch-test-old"));
+        assert_eq!(
+            RouteProxyKeyRepository::get_by_platform(&pool, "codex")
+                .await
+                .expect("current key")
+                .as_deref(),
+            Some("sk-ai-switch-new")
+        );
+        assert_eq!(
+            RouteProxyKeyRepository::get_platform_by_key(&pool, "sk-ai-switch-test-old")
+                .await
+                .expect("legacy alias")
+                .as_deref(),
+            Some("codex")
+        );
     }
 }

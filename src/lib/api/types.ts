@@ -176,6 +176,7 @@ export type RouteCredential = {
   quota_limit?: number | null;
   quota_used?: number | null;
   quota_updated_at?: string | null;
+  archived_at?: string | null;
   transient_failure_count?: number;
   next_retry_at?: string | null;
   cooldown_until?: string | null;
@@ -229,7 +230,7 @@ export type RouteCredentialFilterOption = {
   label: string;
 };
 
-export type RouteCredentialPoolScope = "in_pool" | "out_of_pool";
+export type RouteCredentialPoolScope = "in_pool" | "out_of_pool" | "archived";
 
 export type TransferPlatformChoice = {
   item_index: number;

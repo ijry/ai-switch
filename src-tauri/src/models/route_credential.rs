@@ -47,6 +47,7 @@ pub struct RouteCredential {
     pub quota_limit: Option<i64>,
     pub quota_used: Option<i64>,
     pub quota_updated_at: Option<String>,
+    pub archived_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -110,6 +111,7 @@ pub struct RouteCredentialImportResult {
 pub enum RouteCredentialPoolScope {
     InPool,
     OutOfPool,
+    Archived,
 }
 
 impl Default for RouteCredentialPoolScope {

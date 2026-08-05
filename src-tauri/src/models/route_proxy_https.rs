@@ -8,11 +8,16 @@ use crate::services::route_proxy_service::RouteProxyStatus;
 pub struct RouteProxyHttpsConfig {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default)]
+    pub auto_start: bool,
 }
 
 impl Default for RouteProxyHttpsConfig {
     fn default() -> Self {
-        Self { enabled: false }
+        Self {
+            enabled: false,
+            auto_start: false,
+        }
     }
 }
 

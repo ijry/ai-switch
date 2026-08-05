@@ -244,6 +244,14 @@ impl RouteCredentialService {
     pub async fn delete(pool: &SqlitePool, id: String) -> Result<(), AppError> {
         RouteCredentialRepository::delete(pool, &id).await
     }
+
+    pub async fn archive(pool: &SqlitePool, ids: Vec<String>) -> Result<(), AppError> {
+        RouteCredentialRepository::set_archived(pool, &ids, true).await
+    }
+
+    pub async fn restore(pool: &SqlitePool, ids: Vec<String>) -> Result<(), AppError> {
+        RouteCredentialRepository::set_archived(pool, &ids, false).await
+    }
 }
 
 fn duplicated_display_name(name: &str) -> String {
@@ -742,5 +750,75 @@ mod tests {
 
         let config: serde_json::Value = serde_json::from_str(&created.config_json).expect("config");
         assert!(config.get("headers").is_none());
+    }
+
+    #[tokio::test]
+    async fn archive_and_restore_batch_preserves_pool_membership() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let first = RouteCredentialRepository::create(
+            &pool,
+            "codex",
+            "api",
+            "First",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"first"}"#,
+            r#"{"base_url":"https://example.com","interface_format":"openai","model_mappings":[]}"#,
+            "{}",
+        )
+        .await
+        .expect("first");
+        let second = RouteCredentialRepository::create(
+            &pool,
+            "codex",
+            "api",
+            "Second",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"second"}"#,
+            r#"{"base_url":"https://example.com","interface_format":"openai","model_mappings":[]}"#,
+            "{}",
+        )
+        .await
+        .expect("second");
+        crate::database::repositories::route_pool_repository::RoutePoolRepository::replace_members(
+            &pool,
+            "codex",
+            std::slice::from_ref(&first.id),
+        )
+        .await
+        .expect("pool membership");
+
+        RouteCredentialService::archive(&pool, vec![first.id.clone(), second.id.clone()])
+            .await
+            .expect("archive");
+        assert!(RouteCredentialRepository::get(&pool, &first.id)
+            .await
+            .expect("first archived")
+            .archived_at
+            .is_some());
+        assert_eq!(
+            crate::database::repositories::route_pool_repository::RoutePoolRepository::list_member_ids(
+                &pool,
+                "codex",
+            )
+            .await
+            .expect("members"),
+            vec![first.id.clone()]
+        );
+
+        RouteCredentialService::restore(&pool, vec![first.id.clone(), second.id.clone()])
+            .await
+            .expect("restore");
+        assert!(RouteCredentialRepository::get(&pool, &first.id)
+            .await
+            .expect("first restored")
+            .archived_at
+            .is_none());
     }
 }

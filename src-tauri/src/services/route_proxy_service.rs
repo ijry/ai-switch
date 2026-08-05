@@ -14,6 +14,7 @@ use crate::services::official_agent_identity_service::{
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::response_failure_service::detect_response_failed;
+use crate::services::route_config_service::generate_route_proxy_key;
 use axum::body::Body;
 use axum::extract::State as AxumState;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
@@ -50,6 +51,9 @@ const CUSTOM_TOOL_INPUT_DESCRIPTION: &str =
 const CUSTOM_TOOL_PRESERVED_METADATA_HEADING: &str = "Original tool definition:";
 const ROUTE_PROXY_PLATFORM_HEADER: &str = "x-ai-switch-platform";
 pub const ROUTE_PROXY_TRACE_HEADER: &str = "x-ai-switch-test-trace-id";
+const ROUTE_PROXY_CORS_ALLOW_METHODS: &str = "GET, POST, PUT, PATCH, DELETE, OPTIONS";
+const ROUTE_PROXY_CORS_DEFAULT_ALLOW_HEADERS: &str =
+    "Authorization, Content-Type, X-API-Key, API-Key, X-Google-API-Key, X-AI-Switch-Platform, X-AI-Switch-Test-Trace-Id, Accept";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteProxyStatus {
@@ -121,6 +125,39 @@ impl RouteProxyKeyCache {
 pub struct RouteProxyService;
 
 impl RouteProxyService {
+    pub async fn get_or_create_platform_key(
+        pool: &SqlitePool,
+        platform: &str,
+    ) -> Result<String, AppError> {
+        let platform = PlatformId::parse(platform)?;
+        if let Some(existing) =
+            RouteProxyKeyRepository::get_by_platform(pool, platform.as_str()).await?
+        {
+            if !existing.starts_with("sk-ai-switch-test-") {
+                return Ok(existing);
+            }
+
+            let replacement = generate_route_proxy_key();
+            RouteProxyKeyRepository::replace_platform_key(pool, platform.as_str(), &replacement)
+                .await?;
+            return RouteProxyKeyRepository::get_by_platform(pool, platform.as_str())
+                .await?
+                .ok_or_else(|| AppError::Database {
+                    code: "database.route_proxy_key_missing_after_rotate",
+                    message: "Could not load the new route proxy key".to_string(),
+                    details: None,
+                    recoverable: true,
+                });
+        }
+
+        RouteProxyKeyRepository::ensure_platform_key(
+            pool,
+            platform.as_str(),
+            &generate_route_proxy_key(),
+        )
+        .await
+    }
+
     pub async fn status(state: &RouteProxyRuntimeState) -> RouteProxyStatus {
         let inner = state.inner.lock().await;
         RouteProxyStatus {
@@ -271,10 +308,82 @@ async fn proxy_handler(
     uri: axum::http::Uri,
     body: Body,
 ) -> Response {
-    match forward_request(&state, method, headers, uri, body).await {
-        Ok(response) => response,
-        Err(err) => json_error(StatusCode::BAD_GATEWAY, &err),
+    let origin = cors_request_origin(&headers);
+    if method == Method::OPTIONS {
+        return cors_preflight_response(&headers);
     }
+
+    let mut response = match forward_request(&state, method, headers, uri, body).await {
+        Ok(response) => response,
+        Err(err) => json_error(route_proxy_error_status(&err), &err),
+    };
+    add_cors_headers(&mut response, origin.as_ref());
+    response
+}
+
+fn cors_request_origin(headers: &HeaderMap) -> Option<HeaderValue> {
+    let origin = headers.get("origin")?.to_str().ok()?.trim();
+    if origin.is_empty() {
+        return None;
+    }
+    HeaderValue::from_str(origin).ok()
+}
+
+fn add_cors_headers(response: &mut Response, origin: Option<&HeaderValue>) {
+    let Some(origin) = origin else {
+        return;
+    };
+
+    let headers = response.headers_mut();
+    headers.insert(
+        HeaderName::from_static("access-control-allow-origin"),
+        origin.clone(),
+    );
+    headers.append(
+        HeaderName::from_static("vary"),
+        HeaderValue::from_static("Origin"),
+    );
+}
+
+fn cors_preflight_response(headers: &HeaderMap) -> Response {
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    let Some(origin) = cors_request_origin(headers) else {
+        return response;
+    };
+
+    let response_headers = response.headers_mut();
+    response_headers.insert(
+        HeaderName::from_static("access-control-allow-origin"),
+        origin,
+    );
+    response_headers.insert(
+        HeaderName::from_static("access-control-allow-methods"),
+        HeaderValue::from_static(ROUTE_PROXY_CORS_ALLOW_METHODS),
+    );
+    response_headers.insert(
+        HeaderName::from_static("access-control-allow-headers"),
+        headers
+            .get("access-control-request-headers")
+            .cloned()
+            .unwrap_or_else(|| HeaderValue::from_static(ROUTE_PROXY_CORS_DEFAULT_ALLOW_HEADERS)),
+    );
+    response_headers.insert(
+        HeaderName::from_static("access-control-max-age"),
+        HeaderValue::from_static("600"),
+    );
+    response_headers.insert(
+        HeaderName::from_static("vary"),
+        HeaderValue::from_static(
+            "Origin, Access-Control-Request-Headers, Access-Control-Request-Method",
+        ),
+    );
+    if headers.contains_key("access-control-request-private-network") {
+        response_headers.insert(
+            HeaderName::from_static("access-control-allow-private-network"),
+            HeaderValue::from_static("true"),
+        );
+    }
+    response
 }
 
 async fn forward_request(
@@ -788,7 +897,10 @@ async fn mark_route_credential_revoked(pool: &SqlitePool, credential_id: &str) {
 }
 
 fn json_error(status: StatusCode, message: &str) -> Response {
-    let code = if message.contains("No enabled route credentials in pool") {
+    let platform_unresolved = message.contains("route_proxy.platform_unresolved");
+    let code = if platform_unresolved {
+        "route_proxy.auth_required"
+    } else if message.contains("No enabled route credentials in pool") {
         "route_pool.empty"
     } else {
         "route_proxy.error"
@@ -801,7 +913,22 @@ fn json_error(status: StatusCode, message: &str) -> Response {
         }
     })
     .to_string();
-    (status, [("content-type", "application/json")], body).into_response()
+    let mut response = (status, [("content-type", "application/json")], body).into_response();
+    if platform_unresolved {
+        response.headers_mut().insert(
+            axum::http::header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("Bearer"),
+        );
+    }
+    response
+}
+
+fn route_proxy_error_status(message: &str) -> StatusCode {
+    if message.contains("route_proxy.platform_unresolved") {
+        StatusCode::UNAUTHORIZED
+    } else {
+        StatusCode::BAD_GATEWAY
+    }
 }
 
 async fn resolve_platform(
@@ -826,7 +953,7 @@ async fn resolve_platform(
 
     Err(AppError::Validation {
         code: "route_proxy.platform_unresolved",
-        message: "Route proxy platform could not be resolved".to_string(),
+        message: "Route proxy platform could not be resolved; provide the local route proxy key with Authorization: Bearer, x-api-key, or x-ai-switch-platform".to_string(),
         details: None,
         recoverable: true,
     })
@@ -963,6 +1090,7 @@ pub async fn select_pool_credentials(
          INNER JOIN route_credentials c ON c.id = rpm.route_credential_id
          WHERE rpm.platform = ?
            AND rpm.enabled = 1
+           AND c.archived_at IS NULL
            AND c.status = 'ok'
            AND (c.primary_remain IS NULL OR c.primary_remain > 0)
            AND (c.weekly_remain IS NULL OR c.weekly_remain > 0)
@@ -2813,6 +2941,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn route_proxy_answers_cors_preflight_without_platform_authentication() {
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let runtime = RouteProxyRuntimeState::default();
+        let status = RouteProxyService::start(&runtime, pool, RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .request(
+                reqwest::Method::OPTIONS,
+                format!(
+                    "{}/v1/responses",
+                    status.base_url.as_deref().expect("base url")
+                ),
+            )
+            .header("Origin", "https://fastview.lingyun.net")
+            .header("Access-Control-Request-Method", "POST")
+            .header(
+                "Access-Control-Request-Headers",
+                "authorization,content-type,x-ai-switch-platform",
+            )
+            .header("Access-Control-Request-Private-Network", "true")
+            .send()
+            .await
+            .expect("preflight response");
+
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("https://fastview.lingyun.net")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-private-network")
+                .and_then(|value| value.to_str().ok()),
+            Some("true")
+        );
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
     async fn proxy_retries_next_pool_account_after_unauthorized_response() {
         use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
         use crate::database::{create_memory_pool, run_migrations};
@@ -3565,6 +3742,69 @@ mod tests {
         assert_eq!(
             headers.get("accept"),
             Some(&HeaderValue::from_static("application/json"))
+        );
+    }
+
+    #[test]
+    fn cors_preflight_echoes_origin_requested_headers_and_private_network_access() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "origin",
+            HeaderValue::from_static("https://fastview.lingyun.net"),
+        );
+        headers.insert(
+            "access-control-request-method",
+            HeaderValue::from_static("POST"),
+        );
+        headers.insert(
+            "access-control-request-headers",
+            HeaderValue::from_static("authorization,content-type,x-ai-switch-platform"),
+        );
+        headers.insert(
+            "access-control-request-private-network",
+            HeaderValue::from_static("true"),
+        );
+
+        let response = cors_preflight_response(&headers);
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("https://fastview.lingyun.net")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-methods")
+                .and_then(|value| value.to_str().ok()),
+            Some("GET, POST, PUT, PATCH, DELETE, OPTIONS")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-headers")
+                .and_then(|value| value.to_str().ok()),
+            Some("authorization,content-type,x-ai-switch-platform")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-private-network")
+                .and_then(|value| value.to_str().ok()),
+            Some("true")
+        );
+
+        let mut actual = StatusCode::OK.into_response();
+        add_cors_headers(&mut actual, cors_request_origin(&headers).as_ref());
+        assert_eq!(
+            actual
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("https://fastview.lingyun.net")
         );
     }
 

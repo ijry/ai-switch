@@ -111,6 +111,26 @@ pub async fn delete_route_credential(
 }
 
 #[tauri::command]
+pub async fn archive_route_credentials(
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+) -> Result<(), ApiError> {
+    RouteCredentialService::archive(&state.pool, ids)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn restore_route_credentials(
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+) -> Result<(), ApiError> {
+    RouteCredentialService::restore(&state.pool, ids)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
 pub async fn refresh_route_credential_quota(
     state: State<'_, AppState>,
     id: String,

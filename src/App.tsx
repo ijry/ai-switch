@@ -1,6 +1,7 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { useCallback, useEffect, useState } from "react";
 import { DeepLinkImportDialog } from "./components/deeplink/DeepLinkImportDialog";
+import { AutoUpdatePrompt } from "./components/updates/AutoUpdatePrompt";
 import {
   AppLayout,
   agentScreenByPlatform,
@@ -60,6 +61,7 @@ function canSkipWebAuthGate() {
 export function App() {
   const [screen, setScreen] = useState("Codex");
   const [sessionPlatform, setSessionPlatform] = useState<string | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [webReady, setWebReady] = useState(canSkipWebAuthGate);
   const agentPlatform = platformByAgentScreen[screen];
 
@@ -95,13 +97,26 @@ export function App() {
     <QueryClientProvider client={queryClient}>
       <I18nProvider>
         <DeepLinkImportDialog onImported={handleDeepLinkImported} />
+        <AutoUpdatePrompt />
         {!webReady ? (
           <WebAuthGate onAuthenticated={handleWebAuthenticated} />
         ) : screen === "Vibe" ? (
           <VibeScreen onExitVibe={() => setScreen("Codex")} />
         ) : (
-          <AppLayout activeScreen={screen} onNavigate={navigate} onOpenVibe={() => setScreen("Vibe")}>
-            {agentPlatform && <AccountsScreen onOpenSessions={openSessions} platform={agentPlatform} />}
+          <AppLayout
+            activeScreen={screen}
+            onNavigate={navigate}
+            onOpenVibe={() => setScreen("Vibe")}
+            onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+            sidebarCollapsed={sidebarCollapsed}
+          >
+            {agentPlatform && (
+              <AccountsScreen
+                onOpenSessions={openSessions}
+                platform={agentPlatform}
+                sidebarCollapsed={sidebarCollapsed}
+              />
+            )}
             {screen === "Dashboard" && <DashboardScreen />}
             {screen === "Batches" && <BatchesScreen />}
             {screen === "Providers" && <ProvidersScreen />}

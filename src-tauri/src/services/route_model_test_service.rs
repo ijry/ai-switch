@@ -1,17 +1,18 @@
 use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
-use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
 use crate::error::{ApiError, AppError};
 use crate::models::platform::{ApiDialect, CapabilityRule, PlatformId, PlatformOperation};
 use crate::models::route_credential::ModelMapping;
 use crate::models::route_pool::{RoutePoolModelTestOutcome, RoutePoolModelTestRequest};
-use crate::services::http_client::build_outbound_http_client;
+use crate::services::http_client::{
+    build_outbound_http_client, build_outbound_http_client_with_root_certificate,
+};
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_proxy_service::{
     build_target_url, build_upstream_request, classify_proxy_failure,
     extract_cost_micros, extract_token_count, maybe_persist_official_quota_from_response,
     maybe_refresh_official_credential, normalize_api_upstream_path, select_pool_credentials,
-    ProxyFailureKind, SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
+    ProxyFailureKind, RouteProxyService, SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
 };
 use crate::services::response_failure_service::detect_response_failed;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue};
@@ -256,6 +257,21 @@ impl RouteModelTestService {
         request: RoutePoolModelTestRequest,
         route_proxy_base_url: &str,
     ) -> Result<RoutePoolModelTestOutcome, AppError> {
+        Self::test_model_through_proxy_with_root_certificate(
+            pool,
+            request,
+            route_proxy_base_url,
+            None,
+        )
+        .await
+    }
+
+    pub async fn test_model_through_proxy_with_root_certificate(
+        pool: &SqlitePool,
+        request: RoutePoolModelTestRequest,
+        route_proxy_base_url: &str,
+        root_certificate_pem: Option<&[u8]>,
+    ) -> Result<RoutePoolModelTestOutcome, AppError> {
         let requested_account_id = request
             .account_id
             .as_deref()
@@ -327,12 +343,7 @@ impl RouteModelTestService {
         let entry_path = normalize_api_upstream_path(&parts.interface_format, &parts.request_path);
         let entry_url = join_proxy_entry_url(route_proxy_base_url, &entry_path);
         let trace_id = Uuid::new_v4().to_string();
-        let proxy_key = RouteProxyKeyRepository::ensure_platform_key(
-            pool,
-            &platform,
-            &format!("sk-ai-switch-test-{}", Uuid::new_v4()),
-        )
-        .await?;
+        let proxy_key = RouteProxyService::get_or_create_platform_key(pool, &platform).await?;
         let mut headers = HeaderMap::new();
         headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
         headers.insert(
@@ -352,7 +363,10 @@ impl RouteModelTestService {
             header_value(&trace_id, "trace id")?,
         );
 
-        let client = match build_outbound_http_client(Some(Duration::from_secs(30))) {
+        let client = match build_outbound_http_client_with_root_certificate(
+            Some(Duration::from_secs(30)),
+            root_certificate_pem,
+        ) {
             Ok(client) => client,
             Err(error) => {
                 return finish_proxy_outcome(
@@ -730,7 +744,7 @@ async fn load_account_credential(
         "SELECT id, platform, kind, display_name, status, secret_payload_json, config_json,
                 next_retry_at, cooldown_until
          FROM route_credentials
-         WHERE id = ? AND platform = ?",
+         WHERE id = ? AND platform = ? AND archived_at IS NULL",
     )
     .bind(account_id)
     .bind(platform)
@@ -1276,7 +1290,9 @@ mod tests {
     use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
     use crate::database::{create_memory_pool, run_migrations};
     use crate::models::route_pool::{RoutePoolModelTestRequest, SetRoutePoolMembersInput};
+    use crate::paths::AppPaths;
     use crate::services::route_pool_service::RoutePoolService;
+    use crate::services::route_proxy_https_service::RouteProxyHttpsService;
     use crate::services::route_proxy_service::{
         RouteProxyRuntimeState, RouteProxyService, RouteProxyTransport,
     };
@@ -1889,6 +1905,74 @@ mod tests {
         assert_eq!(outcome.response_text.as_deref(), Some("ai-switch-ok"));
         assert_eq!(outcome.stats.requests.len(), 1);
         assert_eq!(outcome.stats.requests[0].source_label, "route_proxy");
+    }
+
+    #[tokio::test]
+    async fn test_model_through_https_proxy_uses_local_root_certificate() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let versioned_base_url = start_json_test_server(
+            axum::http::StatusCode::OK,
+            json!({
+                "choices": [{"message": {"content": "ai-switch-ok"}}],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 2, "cost_micros": 9}
+            }),
+        )
+        .await;
+        let base_url = unversioned_base_url(&versioned_base_url);
+        let credential_id = create_api_credential(&pool, &base_url).await;
+
+        RoutePoolService::set_members(
+            &pool,
+            SetRoutePoolMembersInput {
+                platform: "codex".to_string(),
+                account_ids: vec![credential_id],
+            },
+        )
+        .await
+        .expect("members");
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let paths = AppPaths::from_data_dir(temp.path().to_path_buf());
+        let material = RouteProxyHttpsService::ensure_material(&paths)
+            .await
+            .expect("https material");
+        let root_certificate_pem = tokio::fs::read(&material.root_certificate_pem)
+            .await
+            .expect("root certificate");
+        let route_proxy_state = RouteProxyRuntimeState::default();
+        let proxy_status = RouteProxyService::start(
+            &route_proxy_state,
+            pool.clone(),
+            RouteProxyTransport::Https {
+                certificate_pem_path: material.server_certificate_pem,
+                private_key_pem_path: material.server_private_key_pem,
+            },
+        )
+        .await
+        .expect("proxy start");
+        let proxy_base_url = proxy_status.base_url.expect("proxy base url");
+
+        let outcome = RouteModelTestService::test_model_through_proxy_with_root_certificate(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "codex".to_string(),
+                account_id: None,
+                model: Some("gpt-4o".to_string()),
+                interface_format: None,
+            },
+            &proxy_base_url,
+            Some(&root_certificate_pem),
+        )
+        .await
+        .expect("outcome");
+
+        let _ = RouteProxyService::stop(&route_proxy_state).await;
+
+        assert!(proxy_base_url.starts_with("https://"));
+        assert!(outcome.success);
+        assert_eq!(outcome.response_status, Some(200));
+        assert_eq!(outcome.response_text.as_deref(), Some("ai-switch-ok"));
     }
 
     #[tokio::test]

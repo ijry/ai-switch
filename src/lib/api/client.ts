@@ -170,6 +170,10 @@ export function getRouteProxyStatus(): Promise<RouteProxyStatus> {
   return invoke("get_route_proxy_status");
 }
 
+export function getRouteProxyKey(platform: string): Promise<string> {
+  return invoke("get_route_proxy_key", { platform });
+}
+
 export function getRouteProxyHttpsStatus(): Promise<RouteProxyHttpsStatus> {
   return invoke("get_route_proxy_https_status");
 }
@@ -282,6 +286,14 @@ export function copyRouteCredential(id: string): Promise<RouteCredential> {
 
 export function deleteRouteCredential(id: string): Promise<void> {
   return invoke("delete_route_credential", { id });
+}
+
+export function archiveRouteCredentials(ids: string[]): Promise<void> {
+  return invoke("archive_route_credentials", { ids });
+}
+
+export function restoreRouteCredentials(ids: string[]): Promise<void> {
+  return invoke("restore_route_credentials", { ids });
 }
 
 export function refreshRouteCredentialQuota(id: string): Promise<QuotaRefreshOutcome> {
