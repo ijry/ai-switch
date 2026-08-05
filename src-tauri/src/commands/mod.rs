@@ -2,6 +2,7 @@ pub mod batch_commands;
 pub mod import_commands;
 pub mod platform_commands;
 pub mod route_credential_commands;
+pub mod route_credential_transfer_commands;
 pub mod route_pool_commands;
 pub mod route_proxy_commands;
 pub mod route_proxy_https_commands;

@@ -231,6 +231,107 @@ export type RouteCredentialFilterOption = {
 
 export type RouteCredentialPoolScope = "in_pool" | "out_of_pool";
 
+export type TransferPlatformChoice = {
+  item_index: number;
+  platform: string;
+  interface_format?: string | null;
+};
+
+export type RouteCredentialSelectionContext = {
+  platform: string;
+  pool_scope: RouteCredentialPoolScope;
+};
+
+export type ExportRouteCredentialsInput = {
+  selection_context: RouteCredentialSelectionContext;
+  credential_ids: string[];
+  include_enhanced_metadata?: boolean;
+};
+
+export type RouteCredentialTransferIssue = {
+  item_index?: number | null;
+  display_name?: string | null;
+  code: string;
+  field?: string | null;
+};
+
+export type RouteCredentialExportCounts = {
+  total: number;
+  official: number;
+  api: number;
+};
+
+export type RouteCredentialSchemeLink = {
+  credential_id: string;
+  display_name: string;
+  url?: string | null;
+  issue_code?: string | null;
+};
+
+export type RouteCredentialExportResult = {
+  json_text: string | null;
+  suggested_file_name: string;
+  counts: RouteCredentialExportCounts;
+  scheme_links: RouteCredentialSchemeLink[];
+  warnings: RouteCredentialTransferIssue[];
+  errors: RouteCredentialTransferIssue[];
+};
+
+export type SaveRouteCredentialExportResult = {
+  cancelled: boolean;
+  file_name?: string | null;
+};
+
+export type PreviewRouteCredentialImportInput = {
+  text: string;
+  ambiguous_platform_choices: TransferPlatformChoice[];
+};
+
+export type RouteCredentialImportPreviewItem = {
+  item_index: number;
+  display_name_masked: string;
+  platform?: string | null;
+  kind?: string | null;
+  cpa_section?: string | null;
+  disposition: string;
+  issue_codes: string[];
+};
+
+export type RouteCredentialImportPreviewCounts = {
+  total: number;
+  official: number;
+  api: number;
+  importable: number;
+  duplicates: number;
+  conflicts: number;
+  errors: number;
+  restorable_pool_count: number;
+  batch_count: number;
+  platform_counts: Record<string, number>;
+  cpa_section_counts: Record<string, number>;
+  legacy_type_counts: Record<string, number>;
+  restorable_pool_counts: Record<string, number>;
+};
+
+export type RouteCredentialImportPreview = {
+  counts: RouteCredentialImportPreviewCounts;
+  items: RouteCredentialImportPreviewItem[];
+};
+
+export type ImportRouteCredentialsInput = {
+  text: string;
+  ambiguous_platform_choices: TransferPlatformChoice[];
+  restore_pool_membership: boolean;
+};
+
+export type RouteCredentialImportOutcome = {
+  imported: number;
+  skipped_duplicates: number;
+  conflicts: number;
+  failed: number;
+  restored_pool_members: number;
+};
+
 export type RouteCredentialPage = {
   items: RouteCredential[];
   total: number;
@@ -372,6 +473,9 @@ export type WebServiceConfig = {
   tailscaleAuthKeyPresent?: boolean;
   /** private = tailnet only; public = Tailscale Funnel */
   tailscaleExposureMode?: "private" | "public";
+  tlsEnabled?: boolean;
+  tlsCertPath?: string | null;
+  tlsKeyPath?: string | null;
 };
 
 export type WebServerStatus = {

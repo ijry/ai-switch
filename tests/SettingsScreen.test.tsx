@@ -114,6 +114,9 @@ describe("SettingsScreen", () => {
       token: "secret",
       autoStart: false,
       tailscaleEnabled: true,
+      tlsEnabled: false,
+      tlsCertPath: null,
+      tlsKeyPath: null,
     });
     vi.mocked(getWebServerStatus).mockResolvedValue({
       running: false,
@@ -297,5 +300,36 @@ describe("SettingsScreen", () => {
     expect(screen.getByText("certutil.exe -user -addstore Root C:/tmp/root-ca.pem")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重新导入根证书" })).toBeEnabled();
   });
-});
 
+  it("preserves advanced Web TLS fields when saving unrelated settings", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settingsFixture);
+    vi.mocked(getWebServiceConfig).mockResolvedValue({
+      host: "127.0.0.1",
+      port: 3090,
+      token: "secret",
+      autoStart: false,
+      tailscaleEnabled: false,
+      tlsEnabled: true,
+      tlsCertPath: " C:/secure/web-cert.pem ",
+      tlsKeyPath: " C:/secure/web-key.pem ",
+    });
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <I18nProvider initialLanguage="zh-CN">
+          <SettingsScreen />
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByRole("heading", { name: "Web 服务" });
+    await userEvent.click(await screen.findByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(saveWebServiceConfig).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(saveWebServiceConfig).mock.calls[0][0]).toMatchObject({
+      tlsEnabled: true,
+      tlsCertPath: "C:/secure/web-cert.pem",
+      tlsKeyPath: "C:/secure/web-key.pem",
+    });
+  });
+});

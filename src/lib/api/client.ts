@@ -13,6 +13,12 @@ import type {
   NewOfficialAccount,
   OfficialAccount,
   PlatformCapability,
+  ExportRouteCredentialsInput,
+  RouteCredentialExportResult,
+  ImportRouteCredentialsInput,
+  PreviewRouteCredentialImportInput,
+  RouteCredentialImportOutcome,
+  RouteCredentialImportPreview,
   RouteCredential,
   RouteCredentialPage,
   RouteCredentialPageRequest,
@@ -28,6 +34,7 @@ import type {
   RouteProxyHttpsOperationOutcome,
   RouteProxyHttpsStatus,
   RouteProxyStatus,
+  SaveRouteCredentialExportResult,
   TailscaleLogin,
   TailscaleStatus,
   SessionMessage,
@@ -204,6 +211,34 @@ export function writeRouteProxyConfigs(
 
 export function listRouteCredentials(platform: string): Promise<RouteCredential[]> {
   return invoke("list_route_credentials", { platform });
+}
+
+export function exportRouteCredentials(
+  input: ExportRouteCredentialsInput,
+): Promise<RouteCredentialExportResult> {
+  return invoke("export_route_credentials", { input });
+}
+
+export function saveRouteCredentialExport(input: {
+  suggested_file_name: string;
+  json_text: string;
+}): Promise<SaveRouteCredentialExportResult> {
+  return invoke("save_route_credential_export", {
+    suggested_file_name: input.suggested_file_name,
+    json_text: input.json_text,
+  });
+}
+
+export function previewRouteCredentialImport(
+  input: PreviewRouteCredentialImportInput,
+): Promise<RouteCredentialImportPreview> {
+  return invoke("preview_route_credential_import", { input });
+}
+
+export function importRouteCredentials(
+  input: ImportRouteCredentialsInput,
+): Promise<RouteCredentialImportOutcome> {
+  return invoke("import_route_credentials", { input });
 }
 
 export function listRouteCredentialPage(input: RouteCredentialPageRequest): Promise<RouteCredentialPage> {

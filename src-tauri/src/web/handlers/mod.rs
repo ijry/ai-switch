@@ -18,6 +18,9 @@ use crate::models::route_credential::{
     CreateApiRouteCredentialInput, ImportOfficialFilesInput, ImportOfficialTextInput,
     ReorderRouteCredentialInput, RouteCredentialPageRequest, UpdateRouteCredentialInput,
 };
+use crate::models::route_credential_transfer::{
+    ExportRouteCredentialsInput, ImportRouteCredentialsInput, PreviewRouteCredentialImportInput,
+};
 use crate::models::route_pool::{
     RouteModelsFetchRequest, RoutePoolModelTestRequest, RoutePoolRouteRequest,
     SetRoutePoolMembersInput,
@@ -29,17 +32,26 @@ use crate::services::import_service::{ExampleJsonImportRequest, ImportService};
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_config_service::RouteConfigService;
 use crate::services::route_credential_service::RouteCredentialService;
+use crate::services::route_credential_transfer_service;
 use crate::services::route_model_fetch_service::RouteModelFetchService;
 use crate::services::route_model_test_service::RouteModelTestService;
 use crate::services::route_pool_service::RoutePoolService;
 use crate::services::route_proxy_https_service::RouteProxyHttpsService;
 use crate::services::route_proxy_service::RouteProxyService;
 use crate::services::route_quota_service::RouteQuotaService;
-use crate::services::tailscale_service::TailscaleService;
 use crate::services::target_service::TargetService;
 use crate::services::web_service::{WebService, WebServiceConfig};
 use crate::terminal_manager::CreateTerminalSessionInput;
 use crate::web::event_bridge::EventEmitter;
+
+pub fn is_sensitive_command(command: &str) -> bool {
+    matches!(
+        command,
+        "export_route_credentials"
+            | "preview_route_credential_import"
+            | "import_route_credentials"
+    )
+}
 
 pub async fn dispatch_command(
     state: Arc<AppState>,
@@ -209,6 +221,14 @@ pub async fn dispatch_command(
                     .map_err(to_error)?,
             )
         }
+        "export_route_credentials" => {
+            let input: ExportRouteCredentialsInput = parse_arg(&args, "input")?;
+            to_value(
+                route_credential_transfer_service::export_route_credentials(&state.pool, input)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
         "list_route_credentials_page" => {
             let input: RouteCredentialPageRequest = parse_arg(&args, "input")?;
             to_value(
@@ -309,6 +329,28 @@ pub async fn dispatch_command(
                     since,
                     request_page,
                     request_page_size,
+                )
+                .await
+                .map_err(to_error)?,
+            )
+        }
+        "preview_route_credential_import" => {
+            let input: PreviewRouteCredentialImportInput = parse_arg(&args, "input")?;
+            to_value(
+                crate::services::route_credential_transfer_import_service::preview_route_credential_import(
+                    &state.pool,
+                    input,
+                )
+                .await
+                .map_err(to_error)?,
+            )
+        }
+        "import_route_credentials" => {
+            let input: ImportRouteCredentialsInput = parse_arg(&args, "input")?;
+            to_value(
+                crate::services::route_credential_transfer_import_service::import_route_credentials(
+                    &state.pool,
+                    input,
                 )
                 .await
                 .map_err(to_error)?,
@@ -446,21 +488,9 @@ pub async fn dispatch_command(
         ),
         "save_web_service_config" => {
             let config: WebServiceConfig = parse_arg(&args, "config")?;
-            let saved = WebService::save_config(&state.paths, &config)
+            let saved = WebService::save_config_and_reconcile(&state, &config)
                 .await
                 .map_err(to_error)?;
-            if saved.tailscale_enabled {
-                let web_status = WebService::status(&state.web_service, &saved).await;
-                if web_status.running {
-                    let _ = TailscaleService::ensure_started(
-                        &state.tailscale,
-                        &state.paths,
-                        &saved,
-                        Some(&web_status),
-                    )
-                    .await;
-                }
-            }
             to_value(saved)
         }
         "get_web_server_status" => {
@@ -469,76 +499,35 @@ pub async fn dispatch_command(
                 .map_err(to_error)?;
             to_value(WebService::status(&state.web_service, &config).await)
         }
-        "start_web_server" => {
-            let config = WebService::load_config(&state.paths)
+        "start_web_server" => to_value(
+            WebService::start(Arc::clone(&state))
                 .await
-                .map_err(to_error)?;
+                .map_err(to_error)?,
+        ),
+        "stop_web_server" => to_value(WebService::stop(state.as_ref()).await),
+        "get_tailscale_status" => to_value(
+            WebService::tailscale_status(state.as_ref())
+                .await
+                .map_err(to_error)?,
+        ),
+        "start_tailscale_login" => to_value(
+            WebService::start_tailscale_login(state.as_ref())
+                .await
+                .map_err(to_error)?,
+        ),
+        "start_tailscale_with_auth_key" => {
+            let auth_key = required_string_arg(&args, "authKey")?;
             to_value(
-                WebService::start(Arc::clone(&state), config)
+                WebService::start_tailscale_with_auth_key(state.as_ref(), auth_key)
                     .await
                     .map_err(to_error)?,
             )
         }
-        "stop_web_server" => {
-            let config = WebService::load_config(&state.paths)
+        "disconnect_tailscale" => to_value(
+            WebService::disconnect_tailscale(state.as_ref())
                 .await
-                .map_err(to_error)?;
-            to_value(WebService::stop(state.as_ref(), &config).await)
-        }
-        "get_tailscale_status" => {
-            let config = WebService::load_config(&state.paths)
-                .await
-                .map_err(to_error)?;
-            let web_status = WebService::status(&state.web_service, &config).await;
-            to_value(
-                TailscaleService::status(
-                    &state.tailscale,
-                    &state.paths,
-                    &config,
-                    Some(&web_status),
-                )
-                .await,
-            )
-        }
-        "start_tailscale_login" => {
-            let config = WebService::load_config(&state.paths)
-                .await
-                .map_err(to_error)?;
-            let web_status = WebService::status(&state.web_service, &config).await;
-            to_value(
-                TailscaleService::start_login(
-                    &state.tailscale,
-                    &state.paths,
-                    &config,
-                    Some(&web_status),
-                )
-                .await,
-            )
-        }
-        "start_tailscale_with_auth_key" => {
-            let auth_key = required_string_arg(&args, "authKey")?;
-            let mut config = WebService::load_config(&state.paths)
-                .await
-                .map_err(to_error)?;
-            let web_status = WebService::status(&state.web_service, &config).await;
-            to_value(
-                TailscaleService::start_with_auth_key(
-                    &state.tailscale,
-                    &state.paths,
-                    &mut config,
-                    Some(&web_status),
-                    auth_key,
-                )
-                .await
-                .map_err(|message| command_error("web.tailscale_start", message))?,
-            )
-        }
-        "disconnect_tailscale" => {
-            let config = WebService::load_config(&state.paths)
-                .await
-                .map_err(to_error)?;
-            to_value(TailscaleService::disconnect(&state.tailscale, &state.paths, &config).await)
-        }
+                .map_err(to_error)?,
+        ),
         other => Err(ApiError::from(AppError::Validation {
             code: "web.command_unknown",
             message: "Web command is not recognized".to_string(),
@@ -715,7 +704,8 @@ mod tests {
                 paths: crate::paths::AppPaths::from_data_dir(temp.path().join("app-data")),
                 pool,
                 config_writes: ConfigWriteRuntimeState::default(),
-                deeplink_protocols: crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime::default(),
+                deeplink_protocols:
+                    crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime::default(),
                 route_proxy: RouteProxyRuntimeState::default(),
                 web_service: WebServiceRuntimeState::default(),
                 tailscale: TailscaleRuntimeState::default(),
@@ -770,6 +760,87 @@ mod tests {
         assert_eq!(error.code, "web.command_unknown");
         assert_eq!(error.details.as_deref(), Some("not_a_command"));
         assert!(!error.recoverable);
+    }
+
+    #[tokio::test]
+    async fn dispatches_export_with_the_exact_input_argument() {
+        let fixture = test_state().await;
+        let result = dispatch_command(
+            Arc::clone(&fixture.state),
+            "export_route_credentials",
+            json!({
+                "input": {
+                    "selection_context": {"platform": "claude", "pool_scope": "in_pool"},
+                    "credential_ids": []
+                }
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(result["json_text"].is_null());
+        assert_eq!(result["errors"][0]["code"], "transfer.selection_empty");
+
+        let error = dispatch_command(
+            fixture.state,
+            "export_route_credentials",
+            json!({"Input": {}}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "web.argument_missing");
+        assert_eq!(error.details.as_deref(), Some("input"));
+    }
+
+    #[tokio::test]
+    async fn dispatches_import_preview_and_commit_with_the_exact_input_argument() {
+        let fixture = test_state().await;
+        let input = json!({
+            "text": "[]",
+            "ambiguous_platform_choices": [],
+            "restore_pool_membership": false
+        });
+
+        let preview = dispatch_command(
+            Arc::clone(&fixture.state),
+            "preview_route_credential_import",
+            json!({
+                "input": {
+                    "text": "[]",
+                    "ambiguous_platform_choices": []
+                }
+            }),
+        )
+        .await
+        .expect("import preview");
+        assert_eq!(preview["counts"]["total"], 0);
+
+        let outcome = dispatch_command(
+            fixture.state,
+            "import_route_credentials",
+            json!({ "input": input }),
+        )
+        .await
+        .expect("import commit");
+        assert_eq!(outcome["imported"], 0);
+        assert_eq!(outcome["failed"], 0);
+    }
+
+    #[tokio::test]
+    async fn web_dispatch_never_exposes_the_desktop_save_command() {
+        let fixture = test_state().await;
+        let error = dispatch_command(
+            fixture.state,
+            "save_route_credential_export",
+            json!({
+                "suggested_file_name": "credentials.json",
+                "json_text": "[]"
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.code, "web.command_unknown");
     }
 
     #[tokio::test]

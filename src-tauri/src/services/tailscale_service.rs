@@ -3,7 +3,7 @@ use crate::services::tailscale_sidecar::{
     resolve_sidecar_path, HttpSidecarControlClient, SidecarControlClient,
 };
 use crate::services::tailscale_types::TailscaleStartRequest;
-use crate::services::web_service::{WebServerStatus, WebService, WebServiceConfig};
+use crate::services::web_service::{WebServerStatus, WebServiceConfig};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -192,9 +192,6 @@ impl TailscaleService {
 
         Self::persist_auth_key(paths, &auth_key).await?;
         config.tailscale_auth_key_present = true;
-        WebService::save_config(paths, config)
-            .await
-            .map_err(|error| error.to_string())?;
 
         let request = Self::build_start_request(paths, config, web_status, Some(auth_key));
         let status = client.start(request).await?;
@@ -365,10 +362,7 @@ impl TailscaleService {
                 let port = web_status
                     .and_then(|status| status.port)
                     .unwrap_or(config.port);
-                let public = config
-                    .tailscale_exposure_mode
-                    .eq_ignore_ascii_case("public")
-                    || status.public
+                let public = status.public
                     || status
                         .exposure_mode
                         .as_deref()
@@ -448,6 +442,13 @@ impl TailscaleService {
     }
 }
 
+#[cfg(test)]
+impl TailscaleRuntimeState {
+    pub(crate) async fn set_client_for_test(&self, client: Arc<dyn SidecarControlClient>) {
+        self.inner.lock().await.client = Some(client);
+    }
+}
+
 fn resolve_live_client() -> Option<Arc<dyn SidecarControlClient>> {
     let path = resolve_sidecar_path()?;
     match HttpSidecarControlClient::new(path) {
@@ -458,7 +459,7 @@ fn resolve_live_client() -> Option<Arc<dyn SidecarControlClient>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TailscaleRuntimeState, TailscaleService};
+    use super::{TailscaleRuntimeState, TailscaleService, TailscaleStatus};
     use crate::paths::AppPaths;
     use crate::services::tailscale_sidecar::{FakeSidecarControlClient, SidecarControlClient};
     use crate::services::web_service::{WebServerStatus, WebServiceConfig};
@@ -576,6 +577,48 @@ mod tests {
             .iter()
             .any(|url| url == "https://ai-switch.tailnet.ts.net"));
         assert!(status.serving);
+    }
+
+    #[test]
+    fn requested_public_mode_does_not_override_private_sidecar_status() {
+        let config = WebServiceConfig {
+            tailscale_enabled: true,
+            tailscale_exposure_mode: "public".to_string(),
+            ..WebServiceConfig::default()
+        };
+        let web_status = WebServerStatus {
+            running: true,
+            host: "127.0.0.1".to_string(),
+            port: Some(3090),
+            base_url: Some("http://127.0.0.1:3090".to_string()),
+        };
+        let raw_status = TailscaleStatus {
+            state: "connected".to_string(),
+            device_name: Some("ai-switch".to_string()),
+            tailnet_ip: Some("100.64.0.12".to_string()),
+            magic_dns_name: Some("ai-switch.tailnet.ts.net".to_string()),
+            login_url: None,
+            access_urls: Vec::new(),
+            serving: true,
+            public: false,
+            exposure_mode: Some("private".to_string()),
+            public_port: None,
+            message: None,
+        };
+
+        let status = TailscaleService::finalize_status(
+            raw_status,
+            &config,
+            Some(&web_status),
+            &AppPaths::from_data_dir(std::path::PathBuf::from("unused")),
+        );
+
+        assert!(!status.public);
+        assert_eq!(status.exposure_mode.as_deref(), Some("private"));
+        assert!(status
+            .access_urls
+            .iter()
+            .all(|url| !url.starts_with("https://")));
     }
 
     #[tokio::test]

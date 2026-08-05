@@ -418,6 +418,10 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     expect(await screen.findByText("筛选：")).toBeInTheDocument();
+    expect(screen.getByTestId("account-workspace").children).toHaveLength(3);
+    expect(screen.getByTestId("account-workspace-scroll-region").parentElement).toBe(
+      screen.getByTestId("account-workspace"),
+    );
     expect(await screen.findByText("Team Account")).toBeInTheDocument();
     expect(screen.getByText("API Account")).toBeInTheDocument();
     expect(screen.getByText("请求 3 · 成功 2 · 失败 1 · 成功率 66.7%"))
@@ -1303,8 +1307,11 @@ describe("AccountsScreen", () => {
     expect(screen.getByRole("button", { name: "本周" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "本月" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "累计" })).toBeInTheDocument();
-    expect(screen.getByText("共 42 条 · 每页 20 条")).toBeInTheDocument();
-    expect(screen.getByText("第 1 / 3 页")).toBeInTheDocument();
+    expect(await screen.findByText("42 条请求")).toBeInTheDocument();
+    expect(await screen.findByText("请求 1/3")).toBeInTheDocument();
+    const statusBar = screen.getByTestId("account-workspace-status-bar");
+    expect(statusBar).toContainElement(screen.getByText("请求 1/3"));
+    expect(statusBar).toContainElement(screen.getByRole("button", { name: "下一页请求" }));
     expect(screen.getByText(/\/chat\/completions/)).toBeInTheDocument();
     expect(screen.getByText("200")).toBeInTheDocument();
     expect(screen.getAllByText("route_proxy")).toHaveLength(2);

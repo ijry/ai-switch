@@ -35,6 +35,10 @@ use commands::route_credential_commands::{
     list_route_credentials_page, reorder_route_credentials,
     refresh_route_credential_quota, refresh_route_credentials_quota, update_route_credential,
 };
+use commands::route_credential_transfer_commands::{
+    export_route_credentials, import_route_credentials, preview_route_credential_import,
+    save_route_credential_export,
+};
 use commands::route_pool_commands::{
     fetch_route_models, get_route_pool, route_pool_route_once, route_pool_test_model,
     set_route_pool_members,
@@ -264,7 +268,7 @@ pub fn run() {
                 if !config.auto_start {
                     return;
                 }
-                let _ = WebService::start(Arc::new(state), config).await;
+                let _ = WebService::start(Arc::new(state)).await;
             });
 
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
@@ -315,6 +319,10 @@ pub fn run() {
             delete_route_credential,
             refresh_route_credential_quota,
             refresh_route_credentials_quota,
+            export_route_credentials,
+            preview_route_credential_import,
+            import_route_credentials,
+            save_route_credential_export,
             import_example_json,
             get_route_pool,
             set_route_pool_members,

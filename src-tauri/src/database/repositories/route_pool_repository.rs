@@ -1,7 +1,8 @@
 use crate::error::AppError;
 use crate::models::route_pool::{RoutePoolMemberAccount, RoutePoolStats, RoutePoolUsageLog};
 use chrono::Utc;
-use sqlx::{Row, SqlitePool};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
+use std::collections::HashSet;
 use uuid::Uuid;
 
 pub struct RoutePoolRepository;
@@ -31,6 +32,47 @@ impl RoutePoolRepository {
             .into_iter()
             .map(|row| row.get::<String, _>("route_credential_id"))
             .collect())
+    }
+
+    pub async fn pool_membership_map(
+        pool: &SqlitePool,
+        platform: &str,
+        ids: &[String],
+    ) -> Result<HashSet<String>, AppError> {
+        let mut seen = HashSet::with_capacity(ids.len());
+        let unique_ids = ids
+            .iter()
+            .filter(|id| seen.insert(id.as_str()))
+            .collect::<Vec<_>>();
+        if unique_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT route_credential_id
+             FROM route_pool_members
+             WHERE platform = ",
+        );
+        query
+            .push_bind(platform)
+            .push(" AND enabled = 1 AND route_credential_id IN (");
+        let mut separated = query.separated(", ");
+        for id in unique_ids {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+
+        query
+            .build_query_scalar::<String>()
+            .fetch_all(pool)
+            .await
+            .map(|rows| rows.into_iter().collect())
+            .map_err(|err| AppError::Database {
+                code: "database.route_pool_membership_map",
+                message: "Could not load route pool membership".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })
     }
 
     pub async fn replace_members(
@@ -87,6 +129,63 @@ impl RoutePoolRepository {
         })?;
 
         Self::list_member_ids(pool, platform).await
+    }
+
+    pub async fn append_members_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        platform: &str,
+        credential_ids: &[String],
+    ) -> Result<usize, AppError> {
+        if credential_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut current_max = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT MAX(sort_order) FROM route_pool_members WHERE platform = ?",
+        )
+        .bind(platform)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_pool_append_order",
+            message: "Could not allocate route pool member order".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?
+        .unwrap_or(-1);
+        let now = Utc::now().to_rfc3339();
+        let mut inserted = 0usize;
+
+        for credential_id in credential_ids {
+            let next_sort_order = current_max.saturating_add(1);
+            let result = sqlx::query(
+                "INSERT INTO route_pool_members
+                 (id, platform, route_credential_id, enabled, sort_order, created_at, updated_at)
+                 VALUES (?, ?, ?, 1, ?, ?, ?)
+                 ON CONFLICT(platform, route_credential_id) DO NOTHING",
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(platform)
+            .bind(credential_id)
+            .bind(next_sort_order)
+            .bind(&now)
+            .bind(&now)
+            .execute(&mut **tx)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.route_pool_append",
+                message: "Could not append route pool member".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })?;
+
+            if result.rows_affected() == 1 {
+                current_max = next_sort_order;
+                inserted += 1;
+            }
+        }
+
+        Ok(inserted)
     }
 
     pub async fn member_accounts(
@@ -327,5 +426,168 @@ impl RoutePoolRepository {
             request_page,
             request_page_size,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
+
+    async fn create_credential(pool: &SqlitePool, platform: &str, display_name: &str) -> String {
+        RouteCredentialRepository::create(
+            pool,
+            platform,
+            "api",
+            display_name,
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-test"}"#,
+            r#"{"base_url":"https://example.com","interface_format":"openai","model_mappings":[]}"#,
+            "{}",
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    #[tokio::test]
+    async fn pool_membership_map_uses_enabled_members_from_full_selection() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let mut ids = Vec::new();
+        for index in 0..21 {
+            ids.push(create_credential(&pool, "codex", &format!("Credential {index}")).await);
+        }
+        let other_platform_id = create_credential(&pool, "claude", "Claude credential").await;
+        RoutePoolRepository::replace_members(&pool, "codex", &[ids[0].clone(), ids[20].clone()])
+            .await
+            .unwrap();
+        RoutePoolRepository::replace_members(&pool, "claude", &[other_platform_id.clone()])
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE route_pool_members SET enabled = 0 WHERE platform = ? AND route_credential_id = ?",
+        )
+        .bind("codex")
+        .bind(&ids[0])
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut selected_ids = ids.clone();
+        selected_ids.push(ids[20].clone());
+        selected_ids.push(other_platform_id.clone());
+        selected_ids.push("missing".to_string());
+        let memberships = RoutePoolRepository::pool_membership_map(&pool, "codex", &selected_ids)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            memberships,
+            std::collections::HashSet::from([ids[20].clone()])
+        );
+    }
+
+    #[tokio::test]
+    async fn pool_membership_map_returns_empty_for_empty_input() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+
+        let memberships = RoutePoolRepository::pool_membership_map(&pool, "codex", &[])
+            .await
+            .unwrap();
+
+        assert!(memberships.is_empty());
+    }
+
+    #[tokio::test]
+    async fn append_members_tx_appends_after_max_without_consuming_duplicate_positions() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let existing = create_credential(&pool, "codex", "Existing").await;
+        let high = create_credential(&pool, "codex", "High").await;
+        let first = create_credential(&pool, "codex", "First append").await;
+        let second = create_credential(&pool, "codex", "Second append").await;
+        RoutePoolRepository::replace_members(&pool, "codex", &[existing.clone(), high.clone()])
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE route_pool_members SET sort_order = 7 WHERE platform = ? AND route_credential_id = ?",
+        )
+        .bind("codex")
+        .bind(&high)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        let inserted = RoutePoolRepository::append_members_tx(
+            &mut tx,
+            "codex",
+            &[
+                existing.clone(),
+                first.clone(),
+                first.clone(),
+                second.clone(),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(inserted, 2);
+        tx.commit().await.unwrap();
+
+        let rows = sqlx::query_as::<_, (String, i64)>(
+            "SELECT route_credential_id, sort_order FROM route_pool_members WHERE platform = ? ORDER BY sort_order, route_credential_id",
+        )
+        .bind("codex")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![(existing, 0), (high, 7), (first, 8), (second, 9)]
+        );
+    }
+
+    #[tokio::test]
+    async fn append_members_tx_obeys_caller_rollback() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let existing = create_credential(&pool, "claude", "Existing").await;
+        let appended = create_credential(&pool, "claude", "Appended").await;
+        RoutePoolRepository::replace_members(&pool, "claude", &[existing.clone()])
+            .await
+            .unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        assert_eq!(
+            RoutePoolRepository::append_members_tx(
+                &mut tx,
+                "claude",
+                std::slice::from_ref(&appended),
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM route_pool_members WHERE platform = ? AND route_credential_id = ?",
+            )
+            .bind("claude")
+            .bind(&appended)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap(),
+            1
+        );
+        tx.rollback().await.unwrap();
+
+        let members = RoutePoolRepository::list_member_ids(&pool, "claude")
+            .await
+            .unwrap();
+        assert_eq!(members, vec![existing]);
     }
 }

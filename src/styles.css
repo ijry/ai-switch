@@ -1,5 +1,29 @@
 @import "@xterm/xterm/css/xterm.css";
 
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:where(h1, h2, h3, h4, h5, h6, p, figure, blockquote, dl, dd) {
+  margin: 0;
+}
+
+:where(ul, ol) {
+  margin: 0;
+  padding: 0;
+}
+
+:where(button, input:not([type="checkbox"]):not([type="radio"]), optgroup, select, textarea) {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+}
+
 html,
 body,
 #root {
@@ -35,14 +59,56 @@ select,
 input,
 textarea {
   font: inherit;
+  color: inherit;
 }
 
-button {
+button,
+input:not([type="checkbox"]):not([type="radio"]),
+textarea {
   cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+input:not([type="checkbox"]):not([type="radio"]),
+textarea {
+  cursor: text;
 }
 
 button:disabled {
   cursor: not-allowed;
+}
+
+.accounts-screen button[class*="border"],
+.accounts-screen button:not([class*="border"]) {
+  border-radius: 0.5rem;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.accounts-screen button:not([class*="border"]) {
+  border: 1px solid transparent;
+}
+
+.accounts-screen input:not([type="checkbox"]):not([type="radio"]),
+.accounts-screen select,
+.accounts-screen textarea {
+  border-radius: 0.5rem;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+.accounts-screen input:not([type="checkbox"]):not([type="radio"]):not([class*="border"]),
+.accounts-screen select:not([class*="border"]),
+.accounts-screen textarea:not([class*="border"]) {
+  border: 1px solid #e7e5e4;
+  background: #fff;
+}
+
+.accounts-screen input:not([type="checkbox"]):not([type="radio"]):focus-visible,
+.accounts-screen select:focus-visible,
+.accounts-screen textarea:focus-visible {
+  outline: none;
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.18), 0 1px 2px rgba(15, 23, 42, 0.08);
 }
 
 .vibe-scrollbar {

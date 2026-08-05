@@ -39,4 +39,50 @@ describe("command contract", () => {
       "get_route_credential",
     ]);
   });
+
+  it("exposes export in both transports and save only on desktop", () => {
+    const clientSource = readSource("src/lib/api/client.ts");
+    const tauriSource = readSource("src-tauri/src/lib.rs");
+    const webSource = readSource("src-tauri/src/web/handlers/mod.rs");
+    const commandModule = readSource(
+      "src-tauri/src/commands/route_credential_transfer_commands.rs",
+    );
+
+    expect(commandModule).toContain("pub async fn export_route_credentials(");
+    expect(commandModule).toContain("input: ExportRouteCredentialsInput");
+    expect(commandModule).toContain("pub async fn save_route_credential_export(");
+    expect(commandModule).toMatch(
+      /#\[tauri::command\(rename_all = "snake_case"\)\]\s*pub async fn save_route_credential_export\(/,
+    );
+    expect(commandModule).toContain("suggested_file_name: String");
+    expect(commandModule).toContain("json_text: String");
+    expect(tauriSource).toMatch(/generate_handler!\[[\s\S]*\bexport_route_credentials\b/);
+    expect(tauriSource).toMatch(/generate_handler!\[[\s\S]*\bsave_route_credential_export\b/);
+    expect(webSource).toMatch(/^\s*"export_route_credentials"\s*=>/m);
+    expect(webSource).not.toMatch(/^\s*"save_route_credential_export"\s*=>/m);
+    expect(clientSource).toContain('invoke("export_route_credentials", { input })');
+    expect(clientSource).toContain('invoke("save_route_credential_export", {');
+    expect(clientSource).toContain("suggested_file_name: input.suggested_file_name");
+    expect(clientSource).toContain("json_text: input.json_text");
+    expect(desktopOnlyCommands).toContain("save_route_credential_export");
+  });
+
+  it("exposes import preview and commit in both transports", () => {
+    const clientSource = readSource("src/lib/api/client.ts");
+    const tauriSource = readSource("src-tauri/src/lib.rs");
+    const webSource = readSource("src-tauri/src/web/handlers/mod.rs");
+    const commandModule = readSource(
+      "src-tauri/src/commands/route_credential_transfer_commands.rs",
+    );
+
+    for (const command of ["preview_route_credential_import", "import_route_credentials"]) {
+      expect(commandModule).toContain(`pub async fn ${command}(`);
+      expect(tauriSource).toMatch(new RegExp(`generate_handler![\\s\\S]*\\b${command}\\b`));
+      expect(webSource).toMatch(new RegExp(`^\\s*"${command}"\\s*=>`, "m"));
+    }
+    expect(clientSource).toContain('invoke("preview_route_credential_import", { input })');
+    expect(clientSource).toContain('invoke("import_route_credentials", { input })');
+    expect(desktopOnlyCommands).not.toContain("preview_route_credential_import");
+    expect(desktopOnlyCommands).not.toContain("import_route_credentials");
+  });
 });

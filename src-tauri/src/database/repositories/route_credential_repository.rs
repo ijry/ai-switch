@@ -4,9 +4,11 @@ use crate::models::route_credential::{
     RouteCredentialPage, RouteCredentialPageRequest, RouteCredentialPoolScope,
     UpdateRouteCredentialInput,
 };
+use crate::models::route_credential_transfer::RouteCredentialSelectionContext;
 use chrono::Utc;
 use serde_json::Value;
-use sqlx::{QueryBuilder, Sqlite, SqlitePool};
+use sqlx::{QueryBuilder, Sqlite, SqliteConnection, SqlitePool, Transaction};
+use std::collections::HashSet;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -231,6 +233,122 @@ fn json_string(value: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+async fn create_with_connection(
+    connection: &mut SqliteConnection,
+    platform: &str,
+    kind: &str,
+    display_name: &str,
+    email: Option<String>,
+    status: &str,
+    batch_id: Option<String>,
+    secret_payload_json: &str,
+    config_json: &str,
+    preview_json: &str,
+) -> Result<RouteCredential, AppError> {
+    let now = Utc::now().to_rfc3339();
+    let id = Uuid::new_v4().to_string();
+    let quota = quota_columns_from_config_json(config_json);
+    let sort_order = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT MAX(sort_order) FROM route_credentials WHERE platform = ?",
+    )
+    .bind(platform)
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(|err| AppError::Database {
+        code: "database.route_credential_sort_order",
+        message: "Could not allocate route credential order".to_string(),
+        details: Some(err.to_string()),
+        recoverable: true,
+    })?
+    .unwrap_or(-1)
+    .saturating_add(1);
+
+    sqlx::query(
+        "INSERT INTO route_credentials (
+            id, platform, kind, display_name, email, status, sort_order, batch_id,
+            secret_payload_json, config_json, preview_json,
+            subscription_type, primary_remain, weekly_remain, reset_primary, reset_weekly,
+            quota_remaining, quota_limit, quota_used, quota_updated_at,
+            created_at, updated_at
+         )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(platform)
+    .bind(kind)
+    .bind(display_name)
+    .bind(email)
+    .bind(status)
+    .bind(sort_order)
+    .bind(batch_id)
+    .bind(secret_payload_json)
+    .bind(config_json)
+    .bind(preview_json)
+    .bind(quota.subscription_type)
+    .bind(quota.primary_remain)
+    .bind(quota.weekly_remain)
+    .bind(quota.reset_primary)
+    .bind(quota.reset_weekly)
+    .bind(quota.quota_remaining)
+    .bind(quota.quota_limit)
+    .bind(quota.quota_used)
+    .bind(quota.quota_updated_at)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *connection)
+    .await
+    .map_err(|err| AppError::Database {
+        code: "database.route_credential_create",
+        message: "Could not create route credential".to_string(),
+        details: Some(err.to_string()),
+        recoverable: true,
+    })?;
+
+    sqlx::query_as::<_, RouteCredential>(
+        "SELECT
+            rc.id,
+            rc.platform,
+            rc.kind,
+            rc.display_name,
+            rc.email,
+            rc.status,
+            rc.sort_order,
+            rc.batch_id,
+            b.name AS batch_name,
+            rc.secret_payload_json,
+            rc.config_json,
+            rc.preview_json,
+            rc.subscription_type,
+            rc.primary_remain,
+            rc.weekly_remain,
+            rc.reset_primary,
+            rc.reset_weekly,
+            rc.transient_failure_count,
+            rc.next_retry_at,
+            rc.cooldown_until,
+            rc.last_failure_kind,
+            rc.last_failure_message,
+            rc.quota_remaining,
+            rc.quota_limit,
+            rc.quota_used,
+            rc.quota_updated_at,
+            rc.created_at,
+            rc.updated_at
+         FROM route_credentials rc
+         LEFT JOIN batches b ON b.id = rc.batch_id
+         WHERE rc.id = ?",
+    )
+    .bind(id)
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(|err| AppError::Database {
+        code: "database.route_credential_get",
+        message: "Could not load route credential".to_string(),
+        details: Some(err.to_string()),
+        recoverable: true,
+    })
+}
+
 impl RouteCredentialRepository {
     pub async fn create(
         pool: &SqlitePool,
@@ -244,70 +362,25 @@ impl RouteCredentialRepository {
         config_json: &str,
         preview_json: &str,
     ) -> Result<RouteCredential, AppError> {
-        let now = Utc::now().to_rfc3339();
-        let id = Uuid::new_v4().to_string();
-
-        let quota = quota_columns_from_config_json(config_json);
         let mut tx = pool.begin().await.map_err(|err| AppError::Database {
             code: "database.route_credential_create_tx",
             message: "Could not start route credential create transaction".to_string(),
             details: Some(err.to_string()),
             recoverable: true,
         })?;
-        let sort_order = sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT MAX(sort_order) FROM route_credentials WHERE platform = ?",
+        let created = create_with_connection(
+            &mut *tx,
+            platform,
+            kind,
+            display_name,
+            email,
+            status,
+            batch_id,
+            secret_payload_json,
+            config_json,
+            preview_json,
         )
-        .bind(platform)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|err| AppError::Database {
-            code: "database.route_credential_sort_order",
-            message: "Could not allocate route credential order".to_string(),
-            details: Some(err.to_string()),
-            recoverable: true,
-        })?
-        .unwrap_or(-1)
-        .saturating_add(1);
-        sqlx::query(
-            "INSERT INTO route_credentials (
-                id, platform, kind, display_name, email, status, sort_order, batch_id,
-                secret_payload_json, config_json, preview_json,
-                subscription_type, primary_remain, weekly_remain, reset_primary, reset_weekly,
-                quota_remaining, quota_limit, quota_used, quota_updated_at,
-                created_at, updated_at
-             )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(platform)
-        .bind(kind)
-        .bind(display_name)
-        .bind(email)
-        .bind(status)
-        .bind(sort_order)
-        .bind(batch_id)
-        .bind(secret_payload_json)
-        .bind(config_json)
-        .bind(preview_json)
-        .bind(quota.subscription_type)
-        .bind(quota.primary_remain)
-        .bind(quota.weekly_remain)
-        .bind(quota.reset_primary)
-        .bind(quota.reset_weekly)
-        .bind(quota.quota_remaining)
-        .bind(quota.quota_limit)
-        .bind(quota.quota_used)
-        .bind(quota.quota_updated_at)
-        .bind(&now)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await
-        .map_err(|err| AppError::Database {
-            code: "database.route_credential_create",
-            message: "Could not create route credential".to_string(),
-            details: Some(err.to_string()),
-            recoverable: true,
-        })?;
+        .await?;
 
         tx.commit().await.map_err(|err| AppError::Database {
             code: "database.route_credential_create_commit",
@@ -316,7 +389,34 @@ impl RouteCredentialRepository {
             recoverable: true,
         })?;
 
-        Self::get(pool, &id).await
+        Ok(created)
+    }
+
+    pub async fn create_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        platform: &str,
+        kind: &str,
+        display_name: &str,
+        email: Option<String>,
+        status: &str,
+        batch_id: Option<String>,
+        secret_payload_json: &str,
+        config_json: &str,
+        preview_json: &str,
+    ) -> Result<RouteCredential, AppError> {
+        create_with_connection(
+            &mut **tx,
+            platform,
+            kind,
+            display_name,
+            email,
+            status,
+            batch_id,
+            secret_payload_json,
+            config_json,
+            preview_json,
+        )
+        .await
     }
 
     pub async fn get(pool: &SqlitePool, id: &str) -> Result<RouteCredential, AppError> {
@@ -363,6 +463,142 @@ impl RouteCredentialRepository {
             details: Some(err.to_string()),
             recoverable: true,
         })
+    }
+
+    pub async fn list_by_ids(
+        pool: &SqlitePool,
+        ids: &[String],
+        selection: &RouteCredentialSelectionContext,
+    ) -> Result<Vec<RouteCredential>, AppError> {
+        let mut seen = HashSet::with_capacity(ids.len());
+        let unique_ids = ids
+            .iter()
+            .filter(|id| seen.insert(id.as_str()))
+            .collect::<Vec<_>>();
+        if unique_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT
+                rc.id,
+                rc.platform,
+                rc.kind,
+                rc.display_name,
+                rc.email,
+                rc.status,
+                rc.sort_order,
+                rc.batch_id,
+                b.name AS batch_name,
+                rc.secret_payload_json,
+                rc.config_json,
+                rc.preview_json,
+                rc.subscription_type,
+                rc.primary_remain,
+                rc.weekly_remain,
+                rc.reset_primary,
+                rc.reset_weekly,
+                rc.transient_failure_count,
+                rc.next_retry_at,
+                rc.cooldown_until,
+                rc.last_failure_kind,
+                rc.last_failure_message,
+                rc.quota_remaining,
+                rc.quota_limit,
+                rc.quota_used,
+                rc.quota_updated_at,
+                rc.created_at,
+                rc.updated_at
+             FROM route_credentials rc
+             LEFT JOIN batches b ON b.id = rc.batch_id
+             WHERE rc.platform = ",
+        );
+        query.push_bind(&selection.platform).push(" AND rc.id IN (");
+        let mut separated = query.separated(", ");
+        for id in unique_ids {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+        push_pool_scope_predicate(&mut query, selection.pool_scope);
+        query.push(" ORDER BY rc.sort_order ASC, rc.created_at DESC, rc.id ASC");
+
+        query
+            .build_query_as::<RouteCredential>()
+            .fetch_all(pool)
+            .await
+            .map_err(|err| {
+                database_error(
+                    "database.route_credential_list_by_ids",
+                    "Could not load selected route credentials",
+                    err,
+                )
+            })
+    }
+
+    pub async fn list_transfer_fingerprint_candidates(
+        pool: &SqlitePool,
+        platforms: &[String],
+    ) -> Result<Vec<RouteCredential>, AppError> {
+        let mut seen = HashSet::with_capacity(platforms.len());
+        let unique_platforms = platforms
+            .iter()
+            .filter(|platform| seen.insert(platform.as_str()))
+            .collect::<Vec<_>>();
+        if unique_platforms.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT
+                rc.id,
+                rc.platform,
+                rc.kind,
+                rc.display_name,
+                rc.email,
+                rc.status,
+                rc.sort_order,
+                rc.batch_id,
+                b.name AS batch_name,
+                rc.secret_payload_json,
+                rc.config_json,
+                rc.preview_json,
+                rc.subscription_type,
+                rc.primary_remain,
+                rc.weekly_remain,
+                rc.reset_primary,
+                rc.reset_weekly,
+                rc.transient_failure_count,
+                rc.next_retry_at,
+                rc.cooldown_until,
+                rc.last_failure_kind,
+                rc.last_failure_message,
+                rc.quota_remaining,
+                rc.quota_limit,
+                rc.quota_used,
+                rc.quota_updated_at,
+                rc.created_at,
+                rc.updated_at
+             FROM route_credentials rc
+             LEFT JOIN batches b ON b.id = rc.batch_id
+             WHERE rc.platform IN (",
+        );
+        let mut separated = query.separated(", ");
+        for platform in unique_platforms {
+            separated.push_bind(platform);
+        }
+        separated.push_unseparated(")");
+        query.push(" ORDER BY rc.platform ASC, rc.kind ASC, rc.id ASC");
+
+        query
+            .build_query_as::<RouteCredential>()
+            .fetch_all(pool)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.route_credential_transfer_candidates",
+                message: "Could not load route credential transfer candidates".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })
     }
 
     pub async fn list_by_platform(
@@ -1007,6 +1243,7 @@ fn jitter_seconds(id: &str, failure_count: i64, base_seconds: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::route_credential_transfer::RouteCredentialSelectionContext;
 
     async fn create_api_credential(
         pool: &SqlitePool,
@@ -1041,6 +1278,266 @@ mod tests {
             filters: Vec::new(),
             pool_scope,
         }
+    }
+
+    #[tokio::test]
+    async fn create_tx_preserves_quota_allocates_order_and_obeys_rollback() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let config = r#"{"subscription_type":"team","primary_remain":11,"weekly_remain":22,"reset_primary":"2026-08-05T00:00:00Z","reset_weekly":"2026-08-12T00:00:00Z","quota_limit":100,"quota_used":67}"#;
+        let direct = RouteCredentialRepository::create(
+            &pool,
+            "codex",
+            "official",
+            "Direct",
+            Some("direct@example.com".to_string()),
+            "ok",
+            None,
+            r#"{"access_token":"direct"}"#,
+            config,
+            "{}",
+        )
+        .await
+        .unwrap();
+        assert_eq!(direct.sort_order, 0);
+        assert_eq!(direct.subscription_type.as_deref(), Some("team"));
+        assert_eq!(direct.primary_remain, Some(11));
+        assert_eq!(direct.weekly_remain, Some(22));
+        assert_eq!(direct.quota_remaining, Some(11));
+
+        let mut tx = pool.begin().await.unwrap();
+        let first = RouteCredentialRepository::create_tx(
+            &mut tx,
+            "codex",
+            "official",
+            "Transactional one",
+            Some("one@example.com".to_string()),
+            "ok",
+            None,
+            r#"{"access_token":"one"}"#,
+            config,
+            "{}",
+        )
+        .await
+        .unwrap();
+        let second = RouteCredentialRepository::create_tx(
+            &mut tx,
+            "codex",
+            "api",
+            "Transactional two",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"two"}"#,
+            r#"{"base_url":"https://example.com"}"#,
+            "{}",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(first.sort_order, 1);
+        assert_eq!(second.sort_order, 2);
+        assert_eq!(first.subscription_type, direct.subscription_type);
+        assert_eq!(first.primary_remain, direct.primary_remain);
+        assert_eq!(first.weekly_remain, direct.weekly_remain);
+        assert_eq!(first.reset_primary, direct.reset_primary);
+        assert_eq!(first.reset_weekly, direct.reset_weekly);
+        assert_eq!(first.quota_remaining, direct.quota_remaining);
+        assert_eq!(first.quota_limit, direct.quota_limit);
+        assert_eq!(first.quota_used, direct.quota_used);
+
+        tx.rollback().await.unwrap();
+
+        let remaining = RouteCredentialRepository::list_by_platform(&pool, "codex")
+            .await
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, direct.id);
+    }
+
+    #[tokio::test]
+    async fn transfer_fingerprint_candidates_filter_and_sort_deterministically() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let codex_official = RouteCredentialRepository::create(
+            &pool,
+            "codex",
+            "official",
+            "Codex official",
+            None,
+            "ok",
+            None,
+            "{}",
+            "{}",
+            "{}",
+        )
+        .await
+        .unwrap();
+        let codex_api = create_api_credential(&pool, "codex", "Codex API").await;
+        let claude_api = create_api_credential(&pool, "claude", "Claude API").await;
+        let _grok_api = create_api_credential(&pool, "grok", "Grok API").await;
+
+        let candidates = RouteCredentialRepository::list_transfer_fingerprint_candidates(
+            &pool,
+            &[
+                "codex".to_string(),
+                "claude".to_string(),
+                "codex".to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+        let actual = candidates
+            .iter()
+            .map(|item| (item.platform.as_str(), item.kind.as_str(), item.id.as_str()))
+            .collect::<Vec<_>>();
+        let mut expected = vec![
+            ("codex", "official", codex_official.id.as_str()),
+            ("codex", "api", codex_api.id.as_str()),
+            ("claude", "api", claude_api.id.as_str()),
+        ];
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+
+        let empty = RouteCredentialRepository::list_transfer_fingerprint_candidates(&pool, &[])
+            .await
+            .unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_by_ids_deduplicates_and_filters_by_selection_context() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let pool_primary = create_api_credential(&pool, "codex", "Pool primary").await;
+        let pool_created_old = create_api_credential(&pool, "codex", "Pool created old").await;
+        let pool_tie_a = create_api_credential(&pool, "codex", "Pool tie A").await;
+        let pool_tie_b = create_api_credential(&pool, "codex", "Pool tie B").await;
+        let outside = create_api_credential(&pool, "codex", "Outside").await;
+        let disabled_member = create_api_credential(&pool, "codex", "Disabled member").await;
+        let other_platform = create_api_credential(&pool, "claude", "Claude pool").await;
+        crate::database::repositories::route_pool_repository::RoutePoolRepository::replace_members(
+            &pool,
+            "codex",
+            &[
+                pool_primary.id.clone(),
+                pool_created_old.id.clone(),
+                pool_tie_a.id.clone(),
+                pool_tie_b.id.clone(),
+                disabled_member.id.clone(),
+            ],
+        )
+        .await
+        .unwrap();
+        crate::database::repositories::route_pool_repository::RoutePoolRepository::replace_members(
+            &pool,
+            "claude",
+            &[other_platform.id.clone()],
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE route_pool_members SET enabled = 0 WHERE platform = ? AND route_credential_id = ?",
+        )
+        .bind("codex")
+        .bind(&disabled_member.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for (id, sort_order, created_at) in [
+            (&pool_primary.id, 0, "2026-08-04T00:00:00Z"),
+            (&outside.id, 1, "2026-08-04T03:00:00Z"),
+            (&disabled_member.id, 2, "2026-08-04T04:00:00Z"),
+            (&pool_created_old.id, 10, "2026-08-04T01:00:00Z"),
+            (&pool_tie_a.id, 10, "2026-08-04T02:00:00Z"),
+            (&pool_tie_b.id, 10, "2026-08-04T02:00:00Z"),
+        ] {
+            sqlx::query(
+                "UPDATE route_credentials SET sort_order = ?, created_at = ?, updated_at = ? WHERE id = ?",
+            )
+            .bind(sort_order)
+            .bind(created_at)
+            .bind(created_at)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let mut all_ids = vec![
+            outside.id.clone(),
+            disabled_member.id.clone(),
+            pool_primary.id.clone(),
+            pool_created_old.id.clone(),
+            pool_tie_b.id.clone(),
+            other_platform.id.clone(),
+            pool_tie_a.id.clone(),
+            pool_tie_b.id.clone(),
+            "missing".to_string(),
+        ];
+        all_ids.extend(std::iter::repeat(pool_tie_b.id.clone()).take(40_000));
+        let in_pool = RouteCredentialRepository::list_by_ids(
+            &pool,
+            &all_ids,
+            &RouteCredentialSelectionContext {
+                platform: "codex".to_string(),
+                pool_scope: RouteCredentialPoolScope::InPool,
+            },
+        )
+        .await
+        .unwrap();
+        let mut tied_ids = [pool_tie_a.id.as_str(), pool_tie_b.id.as_str()];
+        tied_ids.sort_unstable();
+        assert_eq!(
+            in_pool
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                pool_primary.id.as_str(),
+                tied_ids[0],
+                tied_ids[1],
+                pool_created_old.id.as_str(),
+            ]
+        );
+
+        let out_of_pool = RouteCredentialRepository::list_by_ids(
+            &pool,
+            &all_ids,
+            &RouteCredentialSelectionContext {
+                platform: "codex".to_string(),
+                pool_scope: RouteCredentialPoolScope::OutOfPool,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out_of_pool
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![outside.id.as_str(), disabled_member.id.as_str()]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_by_ids_returns_empty_for_empty_input() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+
+        let rows = RouteCredentialRepository::list_by_ids(
+            &pool,
+            &[],
+            &RouteCredentialSelectionContext {
+                platform: "codex".to_string(),
+                pool_scope: RouteCredentialPoolScope::InPool,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(rows.is_empty());
     }
 
     #[tokio::test]

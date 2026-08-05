@@ -19,6 +19,9 @@ const defaultConfig: WebServiceConfig = {
   autoStart: false,
   tailscaleEnabled: false,
   tailscaleExposureMode: "private",
+  tlsEnabled: false,
+  tlsCertPath: null,
+  tlsKeyPath: null,
 };
 
 function normalizeConfig(config: WebServiceConfig): WebServiceConfig {
@@ -31,6 +34,9 @@ function normalizeConfig(config: WebServiceConfig): WebServiceConfig {
     tailscaleHostname: config.tailscaleHostname?.trim() || null,
     tailscaleAuthKeyPresent: Boolean(config.tailscaleAuthKeyPresent),
     tailscaleExposureMode: config.tailscaleExposureMode === "public" ? "public" : "private",
+    tlsEnabled: Boolean(config.tlsEnabled),
+    tlsCertPath: config.tlsCertPath?.trim() || null,
+    tlsKeyPath: config.tlsKeyPath?.trim() || null,
   };
 }
 

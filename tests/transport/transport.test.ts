@@ -163,6 +163,23 @@ describe("transport", () => {
     );
   });
 
+  it("never dispatches desktop-only save commands over Web transport", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      new WebTransport("http://127.0.0.1:3090").call("save_route_credential_export", {
+        suggested_file_name: "route-credentials.json",
+        json_text: "[]",
+      }),
+    ).rejects.toMatchObject({
+      name: "ApiClientError",
+      code: "transport.desktop_only",
+      recoverable: false,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("normalizes Web network failures", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue("connection refused"));
 

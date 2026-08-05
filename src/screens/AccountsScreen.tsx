@@ -8,6 +8,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  Download,
   Edit3,
   FileCode2,
   GripVertical,
@@ -20,11 +21,14 @@ import {
   RefreshCw,
   ScanText,
   Trash2,
+  Upload,
   Wand2,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { PlatformSupportBadge } from "../components/platform/PlatformSupportBadge";
+import { RouteCredentialExportDialog } from "../components/accounts/RouteCredentialExportDialog";
+import { RouteCredentialImportDialog } from "../components/accounts/RouteCredentialImportDialog";
 import { neighborsForDrop } from "../lib/accountReorder";
 import {
   createBatch,
@@ -60,6 +64,8 @@ import type {
   RouteCredential,
   RouteCredentialPage,
   RouteCredentialPoolScope,
+  RouteCredentialImportOutcome,
+  RouteCredentialSelectionContext,
   RouteModelsFetchRequest,
   RoutePoolModelTestOutcome,
   RoutePoolModelTestRequest,
@@ -1282,6 +1288,11 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
     useState<CodexModelTestEndpoint>(() => loadCodexModelTestEndpoint());
   const [modelTestDialogOpen, setModelTestDialogOpen] = useState(false);
   const [modelTestAccount, setModelTestAccount] = useState<RouteCredential | null>(null);
+  const [exportRequest, setExportRequest] = useState<{
+    selection_context: RouteCredentialSelectionContext;
+    credential_ids: string[];
+  } | null>(null);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [testingAccountId, setTestingAccountId] = useState<string | null>(null);
   const [refreshingQuotaId, setRefreshingQuotaId] = useState<string | null>(null);
   const [quotaRefreshMessage, setQuotaRefreshMessage] = useState<string | null>(null);
@@ -1598,6 +1609,28 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
         return { ...current, items: current.items.map((item) => updates.get(item.id) ?? item) };
       },
     );
+  };
+
+  const openExport = () => {
+    if (accountView === "stats" || selectedAccountIds.size === 0) {
+      return;
+    }
+    setExportRequest({
+      selection_context: { platform: activePlatform, pool_scope: accountScope },
+      credential_ids: Array.from(selectedAccountIds),
+    });
+  };
+
+  const handleImported = (outcome: RouteCredentialImportOutcome) => {
+    setRoutePoolFeedback({
+      type: "success",
+      message: `已导入 ${outcome.imported} 个账号 · 跳过重复 ${outcome.skipped_duplicates} · 冲突 ${outcome.conflicts} · 失败 ${outcome.failed} · 恢复入池 ${outcome.restored_pool_members}`,
+    });
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["route-credential-page"], refetchType: "active" }),
+      queryClient.invalidateQueries({ queryKey: ["route-pool"], refetchType: "active" }),
+      queryClient.invalidateQueries({ queryKey: ["batch-groups"], refetchType: "active" }),
+    ]);
   };
 
   useEffect(() => {
@@ -2424,10 +2457,16 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
   };
 
   return (
-    <section className="space-y-3">
-      <div className="rounded-2xl border border-stone-200 bg-white/82 shadow-sm">
-        <div className="flex flex-col gap-3 border-b border-stone-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
+    <section className="accounts-screen flex h-full min-h-0 flex-col overflow-hidden">
+      <div
+        className="account-workspace grid h-full min-h-0 grid-rows-[52px_minmax(0,1fr)_32px] overflow-hidden rounded-lg border border-stone-200 bg-white shadow-sm"
+        data-testid="account-workspace"
+      >
+        <div
+          className="flex h-[52px] min-h-0 items-center justify-between gap-3 border-b border-stone-300 bg-stone-100 px-3"
+          data-testid="account-workspace-toolbar"
+        >
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
                 {platformLabels[activePlatform]}
@@ -2439,60 +2478,37 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                 />
               ) : null}
             </div>
-            <h1 className="mt-0.5 text-lg font-semibold tracking-tight text-stone-950">算力中心</h1>
+            <h1 className="mt-0.5 text-lg font-semibold leading-tight tracking-tight text-stone-950">算力中心</h1>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[13px] font-semibold text-emerald-900 shadow-sm transition-colors hover:bg-emerald-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
-              onClick={() => onOpenSessions?.(activePlatform)}
-              type="button"
-            >
-              <MessageSquareText className="h-3.5 w-3.5" />
-              会话管理
-            </button>
-            <button
-              className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-stone-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
-              onClick={() => setCreateOpen(true)}
-              type="button"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              新增账号
-            </button>
-          </div>
-        </div>
-
-        <div className="mx-4 mt-3 rounded-2xl border border-emerald-200 bg-gradient-to-r from-emerald-50 to-white px-3 py-2.5">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex min-w-0 flex-1 items-start gap-2">
-              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-emerald-600 text-white shadow-sm">
-                <KeyRound className="h-4 w-4" />
-              </span>
-              <div className="min-w-0 flex-1 space-y-1">
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  <span className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-emerald-200 bg-white/90 px-2.5 py-1.5 text-[12px] font-semibold text-emerald-900">
-                    算力池
-                  </span>
-                  <span className="text-[12px] font-medium text-stone-600">
-                    已加入 {draftPoolIds.size} 个账号
-                  </span>
+          <div
+            className="mx-2 flex min-w-0 max-w-[560px] flex-[1.5] items-center justify-between gap-3 rounded-lg border border-stone-200 bg-white/85 px-2.5 py-1.5 shadow-sm"
+            data-testid="pool-status-strip"
+          >
+            <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+              <KeyRound aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-emerald-700" />
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="shrink-0 text-[11px] font-semibold text-stone-800">算力池</span>
+                  <span className="shrink-0 font-mono text-[10px] text-stone-500">{draftPoolIds.size} 个账号</span>
                 </div>
-                <div className="flex min-w-0 flex-wrap gap-x-4 gap-y-1 text-[12px] font-medium text-stone-500">
-                  <span className="min-w-0 break-all">
-                    本地代理：{routeProxyQuery.data?.running ? routeProxyQuery.data.base_url ?? "运行中" : "未启动"}
+                <div className="hidden min-w-0 items-center gap-2 truncate text-[10px] text-stone-500 sm:flex">
+                  <span className="truncate" title={routeProxyQuery.data?.base_url ?? undefined}>
+                    {routeProxyQuery.data?.running ? routeProxyQuery.data.base_url ?? "代理运行中" : "代理未启动"}
                   </span>
-                  {lastRouteAccount && (
-                    <span className="min-w-0 break-all">
-                      最近路由到：{lastRouteAccount}
-                    </span>
-                  )}
+                  {lastRouteAccount ? <span className="truncate">最近：{lastRouteAccount}</span> : null}
                 </div>
+                <span className="sr-only">已加入 {draftPoolIds.size} 个账号</span>
+                <span className="sr-only">
+                  本地代理：{routeProxyQuery.data?.running ? routeProxyQuery.data.base_url ?? "运行中" : "未启动"}
+                </span>
+                {lastRouteAccount ? <span className="sr-only">最近路由到：{lastRouteAccount}</span> : null}
               </div>
             </div>
 
-            <div className="flex shrink-0 flex-wrap items-center gap-2 lg:flex-nowrap">
+            <div className="flex shrink-0 items-center gap-2">
               <button
                 aria-label={routeProxyQuery.data?.running ? "停止本地路由代理" : "启动本地路由代理"}
-                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 transition-colors hover:bg-emerald-50 disabled:opacity-50"
+                className="grid h-6 w-6 place-items-center border border-stone-300 bg-white text-stone-700 transition-colors hover:bg-stone-200 disabled:opacity-50"
                 disabled={startProxyMutation.isPending || stopProxyMutation.isPending}
                 onClick={() => {
                   if (routeProxyQuery.data?.running) {
@@ -2503,64 +2519,37 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                 }}
                 type="button"
               >
-                {routeProxyQuery.data?.running ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
-                {routeProxyQuery.data?.running ? "停止代理" : "启动代理"}
+                {routeProxyQuery.data?.running ? <PowerOff aria-hidden="true" className="h-3.5 w-3.5" /> : <Power aria-hidden="true" className="h-3.5 w-3.5" />}
               </button>
               <button
                 aria-label="写入路由配置文件"
-                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 transition-colors hover:bg-emerald-50 disabled:opacity-50"
-                disabled={
-                  !routeProxyQuery.data?.running ||
-                  !configWriteEnabled ||
-                  writeConfigsMutation.isPending
-                }
+                className="grid h-6 w-6 place-items-center border border-stone-300 bg-white text-stone-700 transition-colors hover:bg-stone-200 disabled:opacity-50"
+                disabled={!routeProxyQuery.data?.running || !configWriteEnabled || writeConfigsMutation.isPending}
                 onClick={() => writeConfigsMutation.mutate()}
                 title={!configWriteEnabled ? configWriteReason : undefined}
                 type="button"
               >
-                <FileCode2 className="h-3.5 w-3.5" />
-                写入配置
+                <FileCode2 aria-hidden="true" className="h-3.5 w-3.5" />
               </button>
               <button
                 aria-label="真实生成测试算力池路由"
-                className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-emerald-700 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-emerald-800 disabled:opacity-50"
+                className="grid h-6 w-6 place-items-center border border-emerald-700 bg-emerald-700 text-white transition-colors hover:bg-emerald-800 disabled:opacity-50"
                 disabled={!hasEligiblePoolModelTestCredential || modelTestMutation.isPending}
                 onClick={openRouteTestDialog}
                 title={!modelTestEnabled ? modelTestReason : undefined}
                 type="button"
               >
-                <Play className="h-3.5 w-3.5" />
-                生成测试
+                <Play aria-hidden="true" className="h-3.5 w-3.5" />
               </button>
-              <div
-                aria-label="账号视图"
-                className="flex items-center rounded-xl border border-emerald-200 bg-white p-1"
-                role="group"
-              >
-                {accountViewOptions.map((option) => {
-                  const active = accountView === option.key;
-                  return (
-                    <button
-                      aria-pressed={active}
-                      className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] font-semibold transition-colors ${
-                        active
-                          ? "bg-emerald-700 text-white shadow-sm"
-                          : "text-stone-600 hover:bg-emerald-50 hover:text-stone-900"
-                      }`}
-                      key={option.key}
-                      onClick={() => selectAccountView(option.key)}
-                      type="button"
-                    >
-                      {option.key === "stats" ? <BarChart3 className="h-3.5 w-3.5" /> : null}
-                      {option.label}
-                    </button>
-                  );
-                })}
-              </div>
             </div>
           </div>
+          <div aria-hidden="true" className="min-w-0 flex-1" />
         </div>
 
+        <div
+          className="min-h-0 overflow-y-auto overscroll-contain"
+          data-testid="account-workspace-scroll-region"
+        >
         {configWriteOutcomes.length > 0 && (
           <div className="mx-4 mb-3 space-y-1 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] text-stone-600">
             <p className="font-semibold text-stone-950">配置写入结果</p>
@@ -2817,50 +2806,18 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                   })}
                 </div>
               )}
-              <div className="flex flex-col gap-2 border-t border-stone-100 bg-stone-50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-[11px] font-medium text-stone-500">
-                  共 {requestRowCount} 条 · 每页 {resolvedRequestPageSize} 条
-                </p>
-                <div className="flex items-center gap-2">
-                  <button
-                    aria-label="上一页请求"
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50 disabled:opacity-50"
-                    disabled={resolvedRequestPage <= 1}
-                    onClick={() => setRequestPage((page) => Math.max(1, page - 1))}
-                    type="button"
-                  >
-                    <ChevronLeft className="h-3.5 w-3.5" />
-                    上一页
-                  </button>
-                  <span className="min-w-20 text-center text-[12px] font-semibold text-stone-600">
-                    第 {resolvedRequestPage} / {requestPageCount} 页
-                  </span>
-                  <button
-                    aria-label="下一页请求"
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50 disabled:opacity-50"
-                    disabled={resolvedRequestPage >= requestPageCount}
-                    onClick={() => setRequestPage((page) => page + 1)}
-                    type="button"
-                  >
-                    下一页
-                    <ChevronRight className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
             </div>
           </div>
         )}
-      </div>
-
       {accountView !== "stats" && (
-      <section className="rounded-2xl border border-stone-200 bg-white/82 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 px-4 py-3">
+      <section className="border-t border-stone-300 bg-white">
+        <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b border-stone-300 bg-white/95 px-2 py-1.5 backdrop-blur-sm">
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <span className="shrink-0 text-[12px] font-semibold text-stone-600">筛选：</span>
               <div className="relative min-w-0 flex-1" ref={accountFilterMenuRef}>
                 <div
-                  className="flex min-h-9 min-w-[220px] max-w-full flex-wrap items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-2 py-1.5"
+                  className="flex min-h-8 min-w-[220px] max-w-full flex-wrap items-center gap-1.5 border border-stone-300 bg-white px-2 py-1"
                   onClick={() => setAccountFilterMenuOpen(true)}
                 >
                   {accountFilters.length === 0 ? (
@@ -2868,13 +2825,13 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                   ) : (
                     accountFilters.map((filterKey) => (
                       <span
-                        className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-800"
+                        className="inline-flex items-center gap-1 border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-800"
                         key={filterKey}
                       >
                         {accountFilterLabels.get(filterKey) ?? credentialBatchFilterLabel(filterKey)}
                         <button
                           aria-label={`移除筛选 ${accountFilterLabels.get(filterKey) ?? credentialBatchFilterLabel(filterKey)}`}
-                          className="rounded-full p-0.5 text-blue-700 transition-colors hover:bg-blue-100"
+                            className="p-0.5 text-blue-700 transition-colors hover:bg-blue-100"
                           onClick={(event) => {
                             event.stopPropagation();
                             removeAccountFilter(filterKey);
@@ -2888,7 +2845,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                   )}
                   <button
                     aria-label="打开账号筛选"
-                    className="ml-auto inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-[12px] font-semibold text-stone-600 transition-colors hover:bg-stone-50"
+                    className="ml-auto inline-flex items-center gap-1 px-1.5 py-1 text-[12px] font-semibold text-stone-600 transition-colors hover:bg-stone-50"
                     onClick={(event) => {
                       event.stopPropagation();
                       setAccountFilterMenuOpen((open) => !open);
@@ -2899,7 +2856,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                   </button>
                 </div>
                 {accountFilterMenuOpen && (
-                  <div className="absolute left-0 right-0 z-20 mt-1 max-h-56 overflow-auto rounded-xl border border-stone-200 bg-white p-1 shadow-lg">
+                  <div className="absolute left-0 right-0 z-20 mt-1 max-h-56 overflow-auto border border-stone-300 bg-white p-1 shadow-lg">
                     {accountFilterOptions.length === 0 ? (
                       <p className="px-2 py-2 text-[12px] text-stone-500">暂无可筛选项</p>
                     ) : (
@@ -2908,7 +2865,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                         return (
                           <button
                             aria-label={`筛选 ${accountFilterLabels.get(option) ?? credentialBatchFilterLabel(option)}`}
-                            className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-[12px] font-semibold transition-colors ${
+                            className={`flex w-full items-center justify-between px-2.5 py-1.5 text-left text-[12px] font-semibold transition-colors ${
                               checked ? "bg-blue-50 text-blue-800" : "text-stone-700 hover:bg-stone-50"
                             }`}
                             key={option}
@@ -2924,7 +2881,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                     {accountFilters.length > 0 && (
                       <button
                         aria-label="清空账号筛选"
-                        className="mt-1 w-full rounded-lg border border-stone-200 px-2.5 py-1.5 text-[12px] font-semibold text-stone-600 transition-colors hover:bg-stone-50"
+                        className="mt-1 w-full border border-stone-300 px-2.5 py-1.5 text-[12px] font-semibold text-stone-600 transition-colors hover:bg-stone-50"
                         onClick={() => { setAccountFilters([]); setAccountPage(1); }}
                         type="button"
                       >
@@ -2938,20 +2895,57 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
           </div>
           <div className="flex items-center gap-2">
             <button
+              aria-label="导入账号"
+              className="grid h-7 w-7 place-items-center border border-stone-300 bg-white text-stone-700 transition-colors hover:bg-stone-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-400"
+              onClick={() => setImportDialogOpen(true)}
+              title="导入账号"
+              type="button"
+            >
+              <Upload aria-hidden="true" className="h-3.5 w-3.5" />
+            </button>
+            <button
+              aria-label="导出选中账号"
+              className="grid h-7 w-7 place-items-center border border-stone-300 bg-white text-stone-700 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-400"
+              disabled={selectedAccountIds.size === 0}
+              onClick={openExport}
+              title="导出选中账号"
+              type="button"
+            >
+              <Download aria-hidden="true" className="h-3.5 w-3.5" />
+            </button>
+            <button
+              aria-label="会话管理"
+              className="grid h-7 w-7 place-items-center border border-stone-300 bg-white text-stone-700 transition-colors hover:bg-stone-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-400"
+              onClick={() => onOpenSessions?.(activePlatform)}
+              title="会话管理"
+              type="button"
+            >
+              <MessageSquareText aria-hidden="true" className="h-3.5 w-3.5" />
+            </button>
+            <button
+              aria-label="新增账号"
+              className="grid h-7 w-7 place-items-center border border-stone-700 bg-stone-800 text-white transition-colors hover:bg-stone-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-400"
+              onClick={() => setCreateOpen(true)}
+              title="新增账号"
+              type="button"
+            >
+              <Plus aria-hidden="true" className="h-3.5 w-3.5" />
+            </button>
+            <button
               aria-label="刷新账号列表"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50 disabled:opacity-50"
+              className="grid h-7 w-7 place-items-center border border-stone-300 bg-white text-stone-700 transition-colors hover:bg-stone-100 disabled:opacity-50"
               disabled={credentialsQuery.isFetching}
               onClick={() => {
                 void invalidateAccountData();
               }}
               type="button"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${credentialsQuery.isFetching ? "animate-spin" : ""}`} />
-              刷新
+              <RefreshCw aria-hidden="true" className={`h-3.5 w-3.5 ${credentialsQuery.isFetching ? "animate-spin" : ""}`} />
+              <span className="sr-only">刷新</span>
             </button>
             <button
               aria-label="刷新官方账号额度"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-violet-700 transition-colors hover:bg-violet-50 disabled:opacity-50"
+              className="grid h-7 w-7 place-items-center border border-violet-200 bg-white text-violet-700 transition-colors hover:bg-violet-50 disabled:opacity-50"
               disabled={
                 !officialQuotaEnabled ||
                 quotaRefreshPlatformMutation.isPending ||
@@ -2961,8 +2955,8 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
               title={!officialQuotaEnabled ? officialQuotaReason : undefined}
               type="button"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${quotaRefreshPlatformMutation.isPending ? "animate-spin" : ""}`} />
-              刷新额度
+              <RefreshCw aria-hidden="true" className={`h-3.5 w-3.5 ${quotaRefreshPlatformMutation.isPending ? "animate-spin" : ""}`} />
+              <span className="sr-only">刷新额度</span>
             </button>
           </div>
         </div>
@@ -3019,19 +3013,6 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
           {quotaRefreshMessage && (
             <p className="rounded-xl bg-violet-50 px-3 py-2 text-[12px] font-medium text-violet-800">
               {quotaRefreshMessage}
-            </p>
-          )}
-          {routePoolFeedback && (
-            <p
-              aria-live="polite"
-              className={`rounded-xl px-3 py-2 text-[12px] font-semibold ${
-                routePoolFeedback.type === "error"
-                  ? "bg-red-50 text-red-700"
-                  : "bg-emerald-50 text-emerald-800"
-              }`}
-              role={routePoolFeedback.type === "error" ? "alert" : "status"}
-            >
-              {routePoolFeedback.message}
             </p>
           )}
           {credentialsQuery.isLoading && <p className="rounded-xl bg-stone-50 p-4 text-sm text-stone-500">正在加载账号...</p>}
@@ -3179,43 +3160,44 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                       {credential.kind === "official" && (
                         <button
                           aria-label={`刷新 ${credential.display_name} 额度`}
-                          className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-violet-200 px-2.5 py-1.5 text-[12px] font-semibold text-violet-700 transition-colors hover:bg-violet-50 disabled:opacity-50"
+                          className="grid h-7 w-7 place-items-center border border-violet-200 text-violet-700 transition-colors hover:bg-violet-50 disabled:opacity-50"
                           disabled={
                             !officialQuotaEnabled ||
                             quotaRefreshMutation.isPending ||
                             quotaRefreshPlatformMutation.isPending
                           }
                           onClick={() => quotaRefreshMutation.mutate(credential.id)}
-                          title={!officialQuotaEnabled ? officialQuotaReason : undefined}
+                          title={!officialQuotaEnabled ? officialQuotaReason : `刷新 ${credential.display_name} 额度`}
                           type="button"
                         >
-                          <RefreshCw className={`h-3.5 w-3.5 ${refreshingQuotaId === credential.id ? "animate-spin" : ""}`} />
-                          {refreshingQuotaId === credential.id ? "刷新中" : "额度"}
+                           <RefreshCw aria-hidden="true" className={`h-3.5 w-3.5 ${refreshingQuotaId === credential.id ? "animate-spin" : ""}`} />
+                           <span className="sr-only">{refreshingQuotaId === credential.id ? "刷新中" : "额度"}</span>
                         </button>
                       )}
                       <button
                         aria-label={`复制 ${credential.display_name}`}
-                        className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-stone-200 px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50 disabled:opacity-50"
+                        className="grid h-7 w-7 place-items-center border border-stone-200 text-stone-700 transition-colors hover:bg-stone-50 disabled:opacity-50"
                         disabled={copyCredentialMutation.isPending}
                         onClick={() => {
                           copyCredential(credential);
                         }}
+                        title="复制账号"
                         type="button"
                       >
                         {copiedCredentialId === credential.id ? (
-                          <Check className="h-3.5 w-3.5 text-emerald-600" />
+                          <Check aria-hidden="true" className="h-3.5 w-3.5 text-emerald-600" />
                         ) : (
-                          <Copy className="h-3.5 w-3.5" />
+                          <Copy aria-hidden="true" className="h-3.5 w-3.5" />
                         )}
-                        {copyCredentialMutation.isPending && copyCredentialMutation.variables === credential.id
+                        <span className="sr-only">{copyCredentialMutation.isPending && copyCredentialMutation.variables === credential.id
                           ? "复制中"
                           : copiedCredentialId === credential.id
                             ? "已复制"
-                            : "复制"}
+                            : "复制"}</span>
                       </button>
                       <button
                         aria-label={`测试 ${credential.display_name}`}
-                        className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 px-2.5 py-1.5 text-[12px] font-semibold text-emerald-700 transition-colors hover:bg-emerald-50 disabled:opacity-50"
+                        className="grid h-7 w-7 place-items-center border border-emerald-200 text-emerald-700 transition-colors hover:bg-emerald-50 disabled:opacity-50"
                         disabled={
                           !credentialKindAllowed(modelTestRule, credential.kind) ||
                           modelTestMutation.isPending
@@ -3224,25 +3206,26 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
                         title={
                           !credentialKindAllowed(modelTestRule, credential.kind)
                             ? modelTestReason
-                            : undefined
+                            : "测试账号"
                         }
                         type="button"
                       >
-                        <Play className="h-3.5 w-3.5" />
-                        {testingAccountId === credential.id && modelTestMutation.isPending ? "测试中" : "测试"}
+                        <Play aria-hidden="true" className="h-3.5 w-3.5" />
+                        <span className="sr-only">{testingAccountId === credential.id && modelTestMutation.isPending ? "测试中" : "测试"}</span>
                       </button>
                       <button
                         aria-label={`编辑 ${credential.display_name}`}
-                        className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-stone-200 px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50"
+                        className="grid h-7 w-7 place-items-center border border-stone-200 text-stone-700 transition-colors hover:bg-stone-50"
                         onClick={() => {
                           updateMutation.reset();
                           deleteMutation.reset();
                           setEditingCredential(credential);
                         }}
+                        title="编辑账号"
                         type="button"
                       >
-                        <Edit3 className="h-3.5 w-3.5" />
-                        编辑
+                        <Edit3 aria-hidden="true" className="h-3.5 w-3.5" />
+                        <span className="sr-only">编辑</span>
                       </button>
                     </div>
                   </div>
@@ -3251,7 +3234,7 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
           </div>
           <div data-testid="account-list-edge-bottom" className="h-1" onDragOver={(event) => { event.preventDefault(); scheduleAccountEdgePage(1); }} />
           {accountPageData && accountPageData.total > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-stone-100 pt-3">
+            <div className="hidden flex-wrap items-center justify-between gap-2 border-t border-stone-100 pt-3">
               <label className="flex items-center gap-2 text-[12px] font-semibold text-stone-600">
                 <span>账号每页数量</span>
                 <select
@@ -3290,6 +3273,106 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
         </div>
       </section>
       )}
+
+        </div>
+        <footer
+          className="flex h-8 min-h-0 items-center justify-between gap-2 overflow-hidden border-t border-stone-300 bg-stone-100 px-2 text-[10px] text-stone-600"
+          data-testid="account-workspace-status-bar"
+        >
+          <div aria-label="账号视图" className="flex h-6 shrink-0 items-center rounded-lg border border-stone-200 bg-white p-0.5 shadow-sm" role="group">
+            {accountViewOptions.map((option) => {
+              const active = accountView === option.key;
+              return (
+                <button
+                  aria-label={option.label}
+                  aria-pressed={active}
+                  className={`grid h-5 min-w-7 place-items-center rounded-md px-1.5 text-[10px] font-semibold transition-colors ${active ? "bg-stone-900 text-white shadow-sm" : "text-stone-600 hover:bg-stone-100"}`}
+                  key={option.key}
+                  onClick={() => selectAccountView(option.key)}
+                  title={option.label}
+                  type="button"
+                >
+                  {option.key === "in_pool" ? "池" : option.key === "out_of_pool" ? "外" : <BarChart3 aria-hidden="true" className="h-3 w-3" />}
+                  <span className="sr-only">{option.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          {routePoolFeedback ? (
+            <span
+              aria-live="polite"
+              className={`min-w-0 flex-1 truncate px-2 text-[10px] ${routePoolFeedback.type === "error" ? "text-red-700" : "text-emerald-700"}`}
+              role={routePoolFeedback.type === "error" ? "alert" : "status"}
+            >
+              {routePoolFeedback.message}
+            </span>
+          ) : <span className="min-w-0 flex-1" />}
+          <div className="flex min-w-0 items-center gap-2">
+            {statsOpen ? (
+              <>
+                <span className="hidden truncate sm:inline">{requestRowCount} 条请求</span>
+                <button
+                  aria-label="上一页请求"
+                  className="grid h-6 w-6 place-items-center border border-stone-300 bg-white text-stone-700 hover:bg-stone-200 disabled:cursor-not-allowed disabled:opacity-40"
+                  disabled={resolvedRequestPage <= 1}
+                  onClick={() => setRequestPage((page) => Math.max(1, page - 1))}
+                  title="上一页请求"
+                  type="button"
+                ><ChevronLeft aria-hidden="true" className="h-3.5 w-3.5" /></button>
+                <span className="whitespace-nowrap font-mono text-[10px]">请求 {resolvedRequestPage}/{requestPageCount}</span>
+                <button
+                  aria-label="下一页请求"
+                  className="grid h-6 w-6 place-items-center border border-stone-300 bg-white text-stone-700 hover:bg-stone-200 disabled:cursor-not-allowed disabled:opacity-40"
+                  disabled={resolvedRequestPage >= requestPageCount}
+                  onClick={() => setRequestPage((page) => Math.min(requestPageCount, page + 1))}
+                  title="下一页请求"
+                  type="button"
+                ><ChevronRight aria-hidden="true" className="h-3.5 w-3.5" /></button>
+              </>
+            ) : (
+              <>
+                <span className="hidden truncate sm:inline">{accountPageData?.total ?? 0} 个账号</span>
+                {accountPageData && accountPageData.total > 0 ? (
+                  <>
+                    <label className="flex items-center gap-1">
+                      <span className="sr-only">账号每页数量</span>
+                      <select
+                        aria-label="账号每页数量"
+                        className="h-6 border border-stone-300 bg-white px-1 text-[10px] text-stone-700 outline-none focus:border-stone-500"
+                        onChange={(event) => {
+                          setAccountPageSize(Number(event.target.value));
+                          setAccountPage(1);
+                        }}
+                        value={accountPageSize}
+                      >
+                        {[20, 50, 100].map((size) => <option key={size} value={size}>{size}/页</option>)}
+                      </select>
+                    </label>
+                    <button
+                      aria-label="上一页账号"
+                      className="grid h-6 w-6 place-items-center border border-stone-300 bg-white text-stone-700 hover:bg-stone-200 disabled:cursor-not-allowed disabled:opacity-40"
+                      disabled={(accountPageData.page ?? accountPage) <= 1}
+                      onClick={() => setAccountPage((page) => Math.max(1, page - 1))}
+                      title="上一页"
+                      type="button"
+                    ><ChevronLeft aria-hidden="true" className="h-3.5 w-3.5" /></button>
+                    <span className="whitespace-nowrap font-mono text-[10px]">{accountPageData.page}/{accountPageData.page_count}</span>
+                    <button
+                      aria-label="下一页账号"
+                      className="grid h-6 w-6 place-items-center border border-stone-300 bg-white text-stone-700 hover:bg-stone-200 disabled:cursor-not-allowed disabled:opacity-40"
+                      disabled={accountPageData.page >= accountPageData.page_count}
+                      onClick={() => setAccountPage((page) => Math.min(accountPageData.page_count, page + 1))}
+                      title="下一页"
+                      type="button"
+                    ><ChevronRight aria-hidden="true" className="h-3.5 w-3.5" /></button>
+                  </>
+                ) : null}
+              </>
+            )}
+          </div>
+        </footer>
+
+        </div>
 
       {modelTestDialogOpen && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">
@@ -3395,6 +3478,20 @@ export function AccountsScreen({ onOpenSessions, platform = "codex" }: AccountsS
           </div>
         </div>
       )}
+
+      <RouteCredentialImportDialog
+        open={importDialogOpen}
+        onClose={() => setImportDialogOpen(false)}
+        onImported={handleImported}
+      />
+      {exportRequest ? (
+        <RouteCredentialExportDialog
+          open
+          credential_ids={exportRequest.credential_ids}
+          onClose={() => setExportRequest(null)}
+          selection_context={exportRequest.selection_context}
+        />
+      ) : null}
 
       {createOpen && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">

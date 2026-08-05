@@ -25,6 +25,56 @@ pub fn is_official_agent_identity_credential(secret: &Value, config: &Value) -> 
         .is_some()
 }
 
+pub fn is_current_official_agent_identity_credential(secret: &Value, config: &Value) -> bool {
+    auth_mode_is_current_agent_identity(secret, config)
+        || string_from_current(
+            secret,
+            config,
+            &[&["agent_private_key"], &["agentPrivateKey"]],
+        )
+        .is_some()
+}
+
+pub fn validate_agent_identity_credential_fields(
+    secret: &Value,
+    config: &Value,
+) -> Result<(), &'static str> {
+    for (field, paths) in [
+        (
+            "agent_runtime_id",
+            &[&["agent_runtime_id"][..], &["agentRuntimeId"][..]][..],
+        ),
+        (
+            "agent_private_key",
+            &[&["agent_private_key"][..], &["agentPrivateKey"][..]][..],
+        ),
+        ("task_id", &[&["task_id"][..], &["taskId"][..]][..]),
+    ] {
+        if string_from_current(secret, config, paths).is_none() {
+            return Err(field);
+        }
+    }
+
+    if string_from_current(
+        secret,
+        config,
+        &[
+            &["account_id"],
+            &["accountId"],
+            &["chatgpt_account_id"],
+            &["chatgptAccountId"],
+            &["workspace_id"],
+            &["workspaceId"],
+        ],
+    )
+    .is_none()
+    {
+        return Err("account_id");
+    }
+
+    Ok(())
+}
+
 pub fn resolve_agent_identity_headers(
     secret: &Value,
     config: &Value,
@@ -32,6 +82,9 @@ pub fn resolve_agent_identity_headers(
     if !is_official_agent_identity_credential(secret, config) {
         return Ok(None);
     }
+
+    validate_agent_identity_credential_fields(secret, config)
+        .map_err(|field| format!("Agent identity credential is missing {field}"))?;
 
     let agent_runtime_id = required_agent_identity_field(
         secret,
@@ -55,6 +108,8 @@ pub fn resolve_agent_identity_headers(
             &["accountId"],
             &["chatgpt_account_id"],
             &["chatgptAccountId"],
+            &["workspace_id"],
+            &["workspaceId"],
         ],
     )
     .ok_or_else(|| "Agent identity credential is missing account_id".to_string())?;
@@ -156,6 +211,34 @@ fn auth_mode_is_agent_identity(secret: &Value, config: &Value) -> bool {
             .to_ascii_lowercase();
         normalized == "agentidentity"
     })
+}
+
+fn auth_mode_is_current_agent_identity(secret: &Value, config: &Value) -> bool {
+    string_from_current(
+        secret,
+        config,
+        &[
+            &["auth_mode"],
+            &["authMode"],
+            &["auth_kind"],
+            &["authKind"],
+            &["raw_type"],
+        ],
+    )
+    .is_some_and(|value| {
+        value
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>()
+            .eq_ignore_ascii_case("agentidentity")
+    })
+}
+
+fn string_from_current(secret: &Value, config: &Value, paths: &[&[&str]]) -> Option<String> {
+    paths
+        .iter()
+        .find_map(|path| string_at_path(secret, path))
+        .or_else(|| paths.iter().find_map(|path| string_at_path(config, path)))
 }
 
 fn string_from_any(secret: &Value, config: &Value, paths: &[&[&str]]) -> Option<String> {

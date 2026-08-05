@@ -138,6 +138,7 @@ export function AppLayout({
 }: AppLayoutProps) {
   const { language, setLanguage, t } = useI18n();
   const settingsActive = isSettingsArea(activeScreen);
+  const accountWorkspaceActive = agentItems.some((item) => item.screen === activeScreen);
 
   const handleLanguageChange = (nextLanguage: Language) => {
     if (onLanguageChange) {
@@ -149,8 +150,8 @@ export function AppLayout({
   };
 
   return (
-    <main className="h-screen max-h-[100dvh] overflow-hidden text-stone-950">
-      <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[236px_minmax(0,1fr)]">
+    <main className="box-border h-screen max-h-[100dvh] overflow-hidden text-stone-950">
+      <div className="box-border grid h-full min-h-0 grid-cols-1 lg:grid-cols-[236px_minmax(0,1fr)]">
         <aside className="relative flex h-full min-h-0 flex-col overflow-hidden border-b border-white/70 bg-gradient-to-br from-slate-50/92 via-emerald-50/74 to-amber-50/70 p-3 shadow-xl shadow-stone-900/5 backdrop-blur-2xl lg:border-b-0 lg:border-r lg:border-white/80">
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_15%,rgba(16,185,129,0.18),transparent_34%),radial-gradient(circle_at_88%_8%,rgba(245,158,11,0.16),transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.72),rgba(255,255,255,0.38))]" />
           <div className="relative flex min-h-0 flex-1 flex-col">
@@ -231,7 +232,11 @@ export function AppLayout({
           </div>
         </aside>
 
-        <section className="h-full min-h-0 min-w-0 overflow-y-auto bg-gradient-to-br from-white via-stone-50 to-slate-100 p-3 sm:p-4">
+        <section
+          className={`box-border h-full min-h-0 min-w-0 bg-stone-100 p-2 sm:p-3 ${
+            accountWorkspaceActive ? "overflow-hidden" : "overflow-y-auto"
+          }`}
+        >
           {children}
         </section>
       </div>

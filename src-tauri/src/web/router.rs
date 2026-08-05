@@ -1,9 +1,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::body::Body;
-use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, StatusCode, Uri};
+use axum::extract::{DefaultBodyLimit, Path, RawPathParams, Request, State};
+use axum::http::{header, StatusCode, Uri};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -11,8 +13,8 @@ use serde_json::{json, Value};
 
 use crate::app_state::AppState;
 use crate::error::ApiError;
-use crate::web::auth::is_authorized;
-use crate::web::handlers::dispatch_command;
+use crate::web::auth::authorize_api_request;
+use crate::web::handlers::{dispatch_command, is_sensitive_command};
 use crate::web::static_assets::resolve_static_file;
 use crate::web::ws::events_socket;
 
@@ -21,19 +23,58 @@ pub struct WebServerContext {
     pub state: Arc<AppState>,
     pub token: Arc<String>,
     pub static_dir: PathBuf,
+    pub sensitive_command_gate: Arc<AtomicBool>,
 }
 
+pub const SENSITIVE_COMMAND_BODY_LIMIT: usize = 12 * 1024 * 1024;
+
 pub fn build_router(state: Arc<AppState>, token: String, static_dir: PathBuf) -> Router {
+    build_router_with_sensitive_commands(state, token, static_dir, true)
+}
+
+pub(crate) fn build_router_with_sensitive_commands(
+    state: Arc<AppState>,
+    token: String,
+    static_dir: PathBuf,
+    sensitive_commands_enabled: bool,
+) -> Router {
+    build_router_with_sensitive_command_gate(
+        state,
+        token,
+        static_dir,
+        Arc::new(AtomicBool::new(sensitive_commands_enabled)),
+    )
+}
+
+pub(crate) fn build_router_with_sensitive_command_gate(
+    state: Arc<AppState>,
+    token: String,
+    static_dir: PathBuf,
+    sensitive_command_gate: Arc<AtomicBool>,
+) -> Router {
     let context = WebServerContext {
         state,
         token: Arc::new(token),
         static_dir,
+        sensitive_command_gate,
     };
+    let api_router = Router::new()
+        .route("/:command", post(api_command))
+        .layer(DefaultBodyLimit::max(SENSITIVE_COMMAND_BODY_LIMIT))
+        .layer(middleware::from_fn_with_state(
+            context.clone(),
+            gate_sensitive_commands,
+        ))
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(&context.token),
+            authorize_api_request,
+        ))
+        .layer(middleware::from_fn(disable_api_caching));
 
     Router::new()
         .route("/health", get(health))
         .route("/ws/events", get(events_socket))
-        .route("/api/:command", post(api_command))
+        .nest("/api", api_router)
         .fallback(static_fallback)
         .with_state(context)
 }
@@ -45,17 +86,41 @@ async fn health() -> Json<Value> {
 async fn api_command(
     State(context): State<WebServerContext>,
     Path(command): Path<String>,
-    headers: HeaderMap,
     Json(args): Json<Value>,
 ) -> Response {
-    if !is_authorized(&headers, &context.token) {
-        return error_response(StatusCode::UNAUTHORIZED, "Unauthorized");
-    }
-
     match dispatch_command(context.state, &command, args).await {
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error_response(StatusCode::BAD_REQUEST, error),
     }
+}
+
+async fn gate_sensitive_commands(
+    State(context): State<WebServerContext>,
+    path_params: RawPathParams,
+    request: Request,
+    next: Next,
+) -> Response {
+    let sensitive = path_params
+        .iter()
+        .find_map(|(key, value)| (key == "command").then_some(value))
+        .is_some_and(is_sensitive_command);
+    if sensitive && !context.sensitive_command_gate.load(Ordering::Acquire) {
+        return error_response(StatusCode::NOT_FOUND, "Web command is not available");
+    }
+    next.run(request).await
+}
+
+async fn disable_api_caching(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response.headers_mut().insert(
+        header::PRAGMA,
+        axum::http::HeaderValue::from_static("no-cache"),
+    );
+    response
 }
 
 async fn static_fallback(State(context): State<WebServerContext>, uri: Uri) -> Response {
@@ -133,6 +198,84 @@ fn api_error_response(status: StatusCode, error: ApiError) -> Response {
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+    use crate::database::{create_memory_pool, run_migrations};
+    use crate::services::config_write_service::ConfigWriteRuntimeState;
+    use crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime;
+    use crate::services::route_proxy_service::RouteProxyRuntimeState;
+    use crate::services::tailscale_service::TailscaleRuntimeState;
+    use crate::services::web_service::WebServiceRuntimeState;
+    use crate::terminal_manager::TerminalManager;
+    use crate::web::event_bridge::WebEventBroadcaster;
+    use std::net::SocketAddr;
+    use tempfile::tempdir;
+
+    async fn spawn_test_router(
+        sensitive_commands_enabled: bool,
+    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        spawn_test_router_with_token(sensitive_commands_enabled, "secret").await
+    }
+
+    async fn spawn_test_router_with_token(
+        sensitive_commands_enabled: bool,
+        token: &str,
+    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        spawn_test_router_with_gate(
+            Arc::new(AtomicBool::new(sensitive_commands_enabled)),
+            token,
+        )
+        .await
+    }
+
+    async fn spawn_test_router_with_gate(
+        sensitive_command_gate: Arc<AtomicBool>,
+        token: &str,
+    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let temp = tempdir().unwrap();
+        let pool = create_memory_pool().await.unwrap();
+        run_migrations(&pool).await.unwrap();
+        let state = Arc::new(AppState {
+            paths: crate::paths::AppPaths::from_data_dir(temp.path().join("app-data")),
+            pool,
+            config_writes: ConfigWriteRuntimeState::default(),
+            deeplink_protocols: DeepLinkProtocolRuntime::default(),
+            route_proxy: RouteProxyRuntimeState::default(),
+            web_service: WebServiceRuntimeState::default(),
+            tailscale: TailscaleRuntimeState::default(),
+            terminals: TerminalManager::default(),
+            event_broadcaster: Arc::new(WebEventBroadcaster::default()),
+        });
+        let router = build_router_with_sensitive_command_gate(
+            state,
+            token.to_string(),
+            temp.path().to_path_buf(),
+            sensitive_command_gate,
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (address, handle)
+    }
+
+    fn assert_sensitive_cache_headers(response: &reqwest::Response) {
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::PRAGMA)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache")
+        );
+    }
 
     #[tokio::test]
     async fn api_error_response_serializes_structured_error_directly() {
@@ -162,5 +305,239 @@ mod tests {
 
         assert_eq!(value["code"], "web.unauthorized");
         assert_eq!(value["recoverable"], false);
+    }
+
+    #[tokio::test]
+    async fn authorization_rejects_before_the_json_extractor() {
+        let (address, server) = spawn_test_router(true).await;
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/api/export_route_credentials"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body("not-json")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_sensitive_cache_headers(&response);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn export_requires_a_configured_bearer_token() {
+        let (address, server) = spawn_test_router_with_token(true, "").await;
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/api/export_route_credentials"))
+            .json(&json!({
+                "input": {
+                    "selection_context": {"platform": "claude", "pool_scope": "in_pool"},
+                    "credential_ids": []
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_sensitive_cache_headers(&response);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn percent_encoded_export_command_cannot_bypass_sensitive_auth() {
+        let (address, server) = spawn_test_router_with_token(true, "").await;
+        let response = reqwest::Client::new()
+            .post(format!(
+                "http://{address}/api/%65xport_route_credentials"
+            ))
+            .json(&json!({
+                "input": {
+                    "selection_context": {"platform": "claude", "pool_scope": "in_pool"},
+                    "credential_ids": []
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_sensitive_cache_headers(&response);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn export_success_and_errors_are_not_cacheable() {
+        let (address, server) = spawn_test_router(true).await;
+        let client = reqwest::Client::new();
+        let success = client
+            .post(format!("http://{address}/api/export_route_credentials"))
+            .bearer_auth("secret")
+            .json(&json!({
+                "input": {
+                    "selection_context": {"platform": "claude", "pool_scope": "in_pool"},
+                    "credential_ids": []
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(success.status(), StatusCode::OK);
+        assert_sensitive_cache_headers(&success);
+
+        let error = client
+            .post(format!("http://{address}/api/export_route_credentials"))
+            .bearer_auth("secret")
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+        assert_sensitive_cache_headers(&error);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn export_route_enforces_the_sensitive_body_limit() {
+        let (address, server) = spawn_test_router(true).await;
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/api/export_route_credentials"))
+            .bearer_auth("secret")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(vec![b' '; SENSITIVE_COMMAND_BODY_LIMIT + 1])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_sensitive_cache_headers(&response);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn import_route_enforces_sensitive_auth_body_limit_and_cache_headers() {
+        let (address, server) = spawn_test_router(true).await;
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/api/preview_route_credential_import"))
+            .bearer_auth("secret")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(vec![b' '; SENSITIVE_COMMAND_BODY_LIMIT + 1])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_sensitive_cache_headers(&response);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unauthorized_oversized_import_is_rejected_before_body_limit() {
+        let (address, server) = spawn_test_router(true).await;
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/api/import_route_credentials"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(
+                header::CONTENT_LENGTH,
+                (SENSITIVE_COMMAND_BODY_LIMIT + 1).to_string(),
+            )
+            .body("")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_sensitive_cache_headers(&response);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn import_success_and_errors_are_not_cacheable() {
+        let (address, server) = spawn_test_router(true).await;
+        let client = reqwest::Client::new();
+        for (command, body, status) in [
+            (
+                "preview_route_credential_import",
+                json!({
+                    "input": {"text": "[]", "ambiguous_platform_choices": []}
+                }),
+                StatusCode::OK,
+            ),
+            (
+                "import_route_credentials",
+                json!({
+                    "input": {
+                        "text": "[]",
+                        "ambiguous_platform_choices": [],
+                        "restore_pool_membership": false
+                    }
+                }),
+                StatusCode::OK,
+            ),
+            (
+                "preview_route_credential_import",
+                json!({}),
+                StatusCode::BAD_REQUEST,
+            ),
+        ] {
+            let response = client
+                .post(format!("http://{address}/api/{command}"))
+                .bearer_auth("secret")
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status, "{command}");
+            assert_sensitive_cache_headers(&response);
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn insecure_local_transport_does_not_expose_transfer_commands() {
+        let (address, server) = spawn_test_router(false).await;
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/api/export_route_credentials"))
+            .bearer_auth("secret")
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_sensitive_cache_headers(&response);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn sensitive_command_gate_updates_without_rebuilding_the_router() {
+        let gate = Arc::new(AtomicBool::new(true));
+        let (address, server) =
+            spawn_test_router_with_gate(Arc::clone(&gate), "secret").await;
+        let client = reqwest::Client::new();
+        let enabled = client
+            .post(format!("http://{address}/api/export_route_credentials"))
+            .bearer_auth("secret")
+            .json(&json!({
+                "input": {
+                    "selection_context": {"platform": "claude", "pool_scope": "in_pool"},
+                    "credential_ids": []
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(enabled.status(), StatusCode::OK);
+
+        gate.store(false, Ordering::Release);
+        let disabled = client
+            .post(format!("http://{address}/api/export_route_credentials"))
+            .bearer_auth("secret")
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(disabled.status(), StatusCode::NOT_FOUND);
+        assert_sensitive_cache_headers(&disabled);
+        server.abort();
     }
 }

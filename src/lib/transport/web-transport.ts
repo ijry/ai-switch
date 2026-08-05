@@ -1,5 +1,6 @@
 import type { Transport, Unsubscribe } from "./types";
 import { ApiClientError, normalizeApiError } from "../api/errors";
+import { isDesktopOnlyCommand } from "../api/commandSupport";
 
 type WebEvent = {
   channel: string;
@@ -65,6 +66,15 @@ export class WebTransport implements Transport {
 
   async call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
     try {
+      if (isDesktopOnlyCommand(command)) {
+        throw new ApiClientError(
+          "This command is only available in the desktop application.",
+          "transport.desktop_only",
+          command,
+          false,
+          null,
+        );
+      }
       const token = getWebAccessToken();
       const response = await fetch(`${this.baseUrl}/api/${command}`, {
         method: "POST",

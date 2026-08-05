@@ -1,35 +1,58 @@
 use crate::error::AppError;
 use crate::models::batch::{Batch, BatchChild, BatchGroup, BatchItem, NewBatch};
 use chrono::Utc;
-use sqlx::{Row, SqlitePool};
+use sqlx::{Executor, Row, Sqlite, SqlitePool, Transaction};
 use uuid::Uuid;
 
 pub struct BatchRepository;
 
+async fn create_with_executor<'e, E>(executor: E, input: NewBatch) -> Result<Batch, AppError>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let now = Utc::now().to_rfc3339();
+    let batch = Batch {
+        id: Uuid::new_v4().to_string(),
+        name: input.name,
+        source: input.source,
+        notes: input.notes,
+        sort_order: 0,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    sqlx::query(
+        "INSERT INTO batches (id, name, source, notes, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&batch.id)
+    .bind(&batch.name)
+    .bind(&batch.source)
+    .bind(&batch.notes)
+    .bind(batch.sort_order)
+    .bind(&batch.created_at)
+    .bind(&batch.updated_at)
+    .execute(executor)
+    .await
+    .map_err(|err| AppError::Database {
+        code: "database.batch_create",
+        message: "Could not create batch".to_string(),
+        details: Some(err.to_string()),
+        recoverable: true,
+    })?;
+
+    Ok(batch)
+}
+
 impl BatchRepository {
     pub async fn create(pool: &SqlitePool, input: NewBatch) -> Result<Batch, AppError> {
-        let now = Utc::now().to_rfc3339();
-        let id = Uuid::new_v4().to_string();
+        create_with_executor(pool, input).await
+    }
 
-        sqlx::query(
-            "INSERT INTO batches (id, name, source, notes, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)",
-        )
-        .bind(&id)
-        .bind(&input.name)
-        .bind(&input.source)
-        .bind(&input.notes)
-        .bind(&now)
-        .bind(&now)
-        .execute(pool)
-        .await
-        .map_err(|err| AppError::Database {
-            code: "database.batch_create",
-            message: "Could not create batch".to_string(),
-            details: Some(err.to_string()),
-            recoverable: true,
-        })?;
-
-        Self::get(pool, &id).await
+    pub async fn create_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        input: NewBatch,
+    ) -> Result<Batch, AppError> {
+        create_with_executor(&mut **tx, input).await
     }
 
     pub async fn get(pool: &SqlitePool, id: &str) -> Result<Batch, AppError> {
@@ -345,6 +368,65 @@ mod tests {
     use crate::models::account::NewOfficialAccount;
     use crate::models::batch::NewBatch;
     use crate::models::provider::NewProvider;
+
+    #[tokio::test]
+    async fn create_tx_uses_caller_transaction_and_matches_create_defaults() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+
+        let direct = BatchRepository::create(
+            &pool,
+            NewBatch {
+                name: "Direct import".to_string(),
+                source: "route_credential_transfer".to_string(),
+                notes: Some("direct".to_string()),
+            },
+        )
+        .await
+        .expect("direct batch");
+        assert_eq!(direct.sort_order, 0);
+
+        let mut tx = pool.begin().await.expect("transaction");
+        let transactional = BatchRepository::create_tx(
+            &mut tx,
+            NewBatch {
+                name: "Transactional import".to_string(),
+                source: "route_credential_transfer".to_string(),
+                notes: Some("transactional".to_string()),
+            },
+        )
+        .await
+        .expect("transactional batch");
+        assert_eq!(transactional.name, "Transactional import");
+        assert_eq!(transactional.source, direct.source);
+        assert_eq!(transactional.notes.as_deref(), Some("transactional"));
+        assert_eq!(transactional.sort_order, direct.sort_order);
+
+        let visible_inside_tx =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM batches WHERE id = ?")
+                .bind(&transactional.id)
+                .fetch_one(&mut *tx)
+                .await
+                .expect("batch inside transaction");
+        assert_eq!(visible_inside_tx, 1);
+
+        tx.rollback().await.expect("rollback");
+
+        let persisted = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM batches WHERE id = ?")
+            .bind(&transactional.id)
+            .fetch_one(&pool)
+            .await
+            .expect("batch after rollback");
+        assert_eq!(persisted, 0);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM batches WHERE id = ?")
+                .bind(&direct.id)
+                .fetch_one(&pool)
+                .await
+                .expect("direct batch after rollback"),
+            1
+        );
+    }
 
     #[tokio::test]
     async fn list_groups_returns_batch_with_provider_and_account_children() {
