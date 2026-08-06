@@ -373,12 +373,21 @@ export type RoutePoolUsageLog = {
   unit: string;
   metadata_json: string;
   created_at: string;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_tokens?: number | null;
+  price_usd_micros?: number | null;
+  price_cny_micros?: number | null;
+  price_currency?: "usd" | "cny" | null;
 };
 
 export type RoutePoolStats = {
   member_count: number;
   request_count: number;
   token_count: number;
+  input_token_count: number;
+  output_token_count: number;
+  cache_token_count: number;
   cost_micros: number;
   recent_logs: RoutePoolUsageLog[];
   requests: RoutePoolUsageLog[];

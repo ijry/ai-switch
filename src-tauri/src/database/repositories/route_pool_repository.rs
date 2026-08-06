@@ -1,5 +1,7 @@
 use crate::error::AppError;
-use crate::models::route_pool::{RoutePoolMemberAccount, RoutePoolStats, RoutePoolUsageLog};
+use crate::models::route_pool::{
+    RoutePoolMemberAccount, RoutePoolStats, RoutePoolUsageLog, RouteUsageBreakdown,
+};
 use chrono::Utc;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use std::collections::HashSet;
@@ -294,6 +296,44 @@ impl RoutePoolRepository {
         Ok(())
     }
 
+    pub async fn insert_request_event(
+        pool: &SqlitePool,
+        account_id: &str,
+        source_label: &str,
+        metadata_json: &str,
+        usage: &RouteUsageBreakdown,
+    ) -> Result<(), AppError> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO usage_events
+             (id, route_credential_id, source_label, metric_type, amount, unit,
+              metadata_json, input_tokens, output_tokens, cache_tokens,
+              price_usd_micros, price_cny_micros, price_currency, created_at)
+             VALUES (?, ?, ?, 'request', 1, 'count', ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(account_id)
+        .bind(source_label)
+        .bind(metadata_json)
+        .bind(usage.input_tokens)
+        .bind(usage.output_tokens)
+        .bind(usage.cache_tokens)
+        .bind(usage.price_usd_micros)
+        .bind(usage.price_cny_micros)
+        .bind(&usage.price_currency)
+        .bind(&now)
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.request_usage_insert",
+            message: "Could not record route request usage".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+
+        Ok(())
+    }
+
     pub async fn stats(
         pool: &SqlitePool,
         platform: &str,
@@ -313,8 +353,17 @@ impl RoutePoolRepository {
                 INNER JOIN route_credentials a ON a.id = rpm.route_credential_id
                 WHERE rpm.platform = ? AND rpm.enabled = 1 AND a.archived_at IS NULL) AS member_count,
                COALESCE(SUM(CASE WHEN ue.metric_type = 'request' THEN CASE WHEN ue.amount > 0 THEN ue.amount ELSE 1 END ELSE 0 END), 0) AS request_count,
-               COALESCE(SUM(CASE WHEN ue.metric_type = 'token' OR ue.unit = 'token' THEN ue.amount ELSE 0 END), 0) AS token_count,
-               COALESCE(SUM(CASE WHEN ue.metric_type = 'cost' AND ue.unit = 'usd_micros' THEN ue.amount ELSE 0 END), 0) AS cost_micros
+               COALESCE(SUM(CASE WHEN ue.metric_type = 'request' THEN COALESCE(ue.input_tokens, 0) ELSE 0 END), 0) AS input_token_count,
+               COALESCE(SUM(CASE WHEN ue.metric_type = 'request' THEN COALESCE(ue.output_tokens, 0) ELSE 0 END), 0) AS output_token_count,
+               COALESCE(SUM(CASE WHEN ue.metric_type = 'request' THEN COALESCE(ue.cache_tokens, 0) ELSE 0 END), 0) AS cache_token_count,
+               COALESCE(SUM(CASE WHEN ue.metric_type = 'request' THEN COALESCE(ue.input_tokens, 0) + COALESCE(ue.output_tokens, 0) ELSE 0 END), 0)
+                 + COALESCE(SUM(CASE WHEN ue.metric_type = 'token' OR ue.unit = 'token' THEN ue.amount ELSE 0 END), 0) AS token_count,
+               COALESCE(SUM(CASE
+                   WHEN ue.metric_type = 'request' AND ue.price_currency = 'usd' THEN COALESCE(ue.price_usd_micros, 0)
+                   WHEN ue.metric_type = 'request' AND ue.price_currency = 'cny' THEN CAST(ROUND(COALESCE(ue.price_cny_micros, 0) / 7.1) AS INTEGER)
+                   WHEN ue.metric_type = 'cost' AND ue.unit = 'usd_micros' THEN ue.amount
+                   ELSE 0
+               END), 0) AS cost_micros
              FROM usage_events ue
              INNER JOIN route_credentials a ON a.id = ue.route_credential_id
              WHERE a.platform = ? AND a.archived_at IS NULL{usage_since_clause}"
@@ -335,7 +384,9 @@ impl RoutePoolRepository {
 
         let log_sql = format!(
             "SELECT ue.id, ue.route_credential_id, a.display_name AS account_name,
-                    ue.source_label, ue.metric_type, ue.amount, ue.unit, ue.metadata_json, ue.created_at
+                    ue.source_label, ue.metric_type, ue.amount, ue.unit, ue.metadata_json, ue.created_at,
+                    ue.input_tokens, ue.output_tokens, ue.cache_tokens,
+                    ue.price_usd_micros, ue.price_cny_micros, ue.price_currency
              FROM usage_events ue
              INNER JOIN route_credentials a ON a.id = ue.route_credential_id
              WHERE a.platform = ? AND a.archived_at IS NULL{usage_since_clause}
@@ -380,7 +431,9 @@ impl RoutePoolRepository {
 
         let request_sql = format!(
             "SELECT ue.id, ue.route_credential_id, a.display_name AS account_name,
-                    ue.source_label, ue.metric_type, ue.amount, ue.unit, ue.metadata_json, ue.created_at
+                    ue.source_label, ue.metric_type, ue.amount, ue.unit, ue.metadata_json, ue.created_at,
+                    ue.input_tokens, ue.output_tokens, ue.cache_tokens,
+                    ue.price_usd_micros, ue.price_cny_micros, ue.price_currency
              FROM usage_events ue
              INNER JOIN route_credentials a ON a.id = ue.route_credential_id
              WHERE a.platform = ? AND a.archived_at IS NULL AND ue.metric_type = 'request'{usage_since_clause}
@@ -414,12 +467,21 @@ impl RoutePoolRepository {
             unit: row.get("unit"),
             metadata_json: row.get("metadata_json"),
             created_at: row.get("created_at"),
+            input_tokens: row.get("input_tokens"),
+            output_tokens: row.get("output_tokens"),
+            cache_tokens: row.get("cache_tokens"),
+            price_usd_micros: row.get("price_usd_micros"),
+            price_cny_micros: row.get("price_cny_micros"),
+            price_currency: row.get("price_currency"),
         };
 
         Ok(RoutePoolStats {
             member_count: row.get("member_count"),
             request_count: row.get("request_count"),
             token_count: row.get("token_count"),
+            input_token_count: row.get("input_token_count"),
+            output_token_count: row.get("output_token_count"),
+            cache_token_count: row.get("cache_token_count"),
             cost_micros: row.get("cost_micros"),
             recent_logs: log_rows.into_iter().map(map_usage_log).collect(),
             requests: request_rows.into_iter().map(map_usage_log).collect(),
@@ -459,13 +521,9 @@ mod tests {
         crate::database::run_migrations(&pool).await.unwrap();
         let archived = create_credential(&pool, "codex", "Archived").await;
         let active = create_credential(&pool, "codex", "Active").await;
-        RoutePoolRepository::replace_members(
-            &pool,
-            "codex",
-            &[archived.clone(), active.clone()],
-        )
-        .await
-        .unwrap();
+        RoutePoolRepository::replace_members(&pool, "codex", &[archived.clone(), active.clone()])
+            .await
+            .unwrap();
         RouteCredentialRepository::set_archived(&pool, std::slice::from_ref(&archived), true)
             .await
             .unwrap();
@@ -531,6 +589,46 @@ mod tests {
             .unwrap();
 
         assert!(memberships.is_empty());
+    }
+
+    #[tokio::test]
+    async fn request_usage_event_persists_breakdown_and_converts_cny_cost() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let account_id = create_credential(&pool, "codex", "Usage account").await;
+        let usage = RouteUsageBreakdown {
+            input_tokens: Some(120),
+            output_tokens: Some(30),
+            cache_tokens: Some(80),
+            price_usd_micros: None,
+            price_cny_micros: Some(7_100_000),
+            price_currency: Some("cny".to_string()),
+        };
+
+        RoutePoolRepository::insert_request_event(
+            &pool,
+            &account_id,
+            "route_proxy",
+            r#"{"path":"/chat/completions","status":200}"#,
+            &usage,
+        )
+        .await
+        .unwrap();
+
+        let stats = RoutePoolRepository::stats(&pool, "codex", None, 1, 20)
+            .await
+            .unwrap();
+        assert_eq!(stats.input_token_count, 120);
+        assert_eq!(stats.output_token_count, 30);
+        assert_eq!(stats.cache_token_count, 80);
+        assert_eq!(stats.token_count, 150);
+        assert_eq!(stats.cost_micros, 1_000_000);
+        assert_eq!(stats.requests.len(), 1);
+        assert_eq!(stats.requests[0].input_tokens, Some(120));
+        assert_eq!(stats.requests[0].output_tokens, Some(30));
+        assert_eq!(stats.requests[0].cache_tokens, Some(80));
+        assert_eq!(stats.requests[0].price_cny_micros, Some(7_100_000));
+        assert_eq!(stats.requests[0].price_currency.as_deref(), Some("cny"));
     }
 
     #[tokio::test]

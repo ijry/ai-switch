@@ -277,6 +277,20 @@ function parseUsageMetadata(metadataJson: string): ParsedUsageMetadata {
   }
 }
 
+function formatUsageCount(value: number | null | undefined) {
+  return value == null ? "-" : value.toLocaleString();
+}
+
+function formatUsagePrice(request: RoutePoolUsageLog) {
+  if (request.price_currency === "cny" && request.price_cny_micros != null) {
+    return `¥${(request.price_cny_micros / 1_000_000).toFixed(6)}`;
+  }
+  if (request.price_currency === "usd" && request.price_usd_micros != null) {
+    return `$${(request.price_usd_micros / 1_000_000).toFixed(6)}`;
+  }
+  return "-";
+}
+
 function RouteRequestDetail({
   metadata,
   request,
@@ -312,6 +326,22 @@ function RouteRequestDetail({
           <p className="mt-0.5 text-stone-800">
             {request.amount} {request.unit}
           </p>
+        </div>
+        <div>
+          <p className="text-[11px] font-medium text-stone-500">输入 Token</p>
+          <p className="mt-0.5 text-stone-800">{formatUsageCount(request.input_tokens)}</p>
+        </div>
+        <div>
+          <p className="text-[11px] font-medium text-stone-500">输出 Token</p>
+          <p className="mt-0.5 text-stone-800">{formatUsageCount(request.output_tokens)}</p>
+        </div>
+        <div>
+          <p className="text-[11px] font-medium text-stone-500">缓存 Token</p>
+          <p className="mt-0.5 text-stone-800">{formatUsageCount(request.cache_tokens)}</p>
+        </div>
+        <div>
+          <p className="text-[11px] font-medium text-stone-500">价格</p>
+          <p className="mt-0.5 text-stone-800">{formatUsagePrice(request)}</p>
         </div>
         <div>
           <p className="text-[11px] font-medium text-stone-500">时间</p>
@@ -3293,19 +3323,37 @@ export function AccountsScreen({
               </div>
             </div>
 
-            <div className="grid gap-2 sm:grid-cols-3">
+            <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
               <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
                 <p className="text-[11px] font-medium text-stone-500">请求</p>
                 <p className="mt-1 text-lg font-semibold text-stone-950">{routeStats?.request_count ?? 0}</p>
               </div>
               <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
-                <p className="text-[11px] font-medium text-stone-500">Token</p>
+                <p className="text-[11px] font-medium text-stone-500">输入 Token</p>
+                <p className="mt-1 text-lg font-semibold text-stone-950">
+                  {(routeStats?.input_token_count ?? 0).toLocaleString()}
+                </p>
+              </div>
+              <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
+                <p className="text-[11px] font-medium text-stone-500">输出 Token</p>
+                <p className="mt-1 text-lg font-semibold text-stone-950">
+                  {(routeStats?.output_token_count ?? 0).toLocaleString()}
+                </p>
+              </div>
+              <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
+                <p className="text-[11px] font-medium text-stone-500">缓存 Token</p>
+                <p className="mt-1 text-lg font-semibold text-stone-950">
+                  {(routeStats?.cache_token_count ?? 0).toLocaleString()}
+                </p>
+              </div>
+              <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
+                <p className="text-[11px] font-medium text-stone-500">Token 总计</p>
                 <p className="mt-1 text-lg font-semibold text-stone-950">
                   {(routeStats?.token_count ?? 0).toLocaleString()}
                 </p>
               </div>
               <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
-                <p className="text-[11px] font-medium text-stone-500">费用</p>
+                <p className="text-[11px] font-medium text-stone-500">总费用（USD）</p>
                 <p className="mt-1 text-lg font-semibold text-stone-950">${costTotal.toFixed(2)}</p>
               </div>
             </div>
@@ -3326,13 +3374,29 @@ export function AccountsScreen({
                     const expanded = expandedRequestId === request.id;
                     return (
                       <div className="bg-white" data-route-request-row key={request.id}>
-                        <div className="grid gap-2 px-3 py-2.5 text-[12px] text-stone-600 lg:grid-cols-[1.2fr_1fr_0.5fr_1.4fr_0.8fr_auto] lg:items-center">
+                        <div className="grid gap-2 px-3 py-2.5 text-[12px] text-stone-600 lg:grid-cols-[1.2fr_1fr_0.5fr_1.4fr_0.6fr_0.6fr_0.6fr_0.8fr_0.8fr_auto] lg:items-center">
                           <span className="font-medium text-stone-800">{formatUsageTime(request.created_at)}</span>
                           <span className="truncate">{request.account_name ?? request.account_id ?? "-"}</span>
                           <span className="rounded-lg bg-stone-100 px-2 py-1 text-center font-semibold text-stone-700">
                             {metadata.status}
                           </span>
                           <span className="truncate font-mono text-[11px]">{metadata.path}</span>
+                          <span title="输入 Token">
+                            <span className="mr-1 text-[10px] text-stone-400 lg:hidden">输入</span>
+                            {formatUsageCount(request.input_tokens)}
+                          </span>
+                          <span title="输出 Token">
+                            <span className="mr-1 text-[10px] text-stone-400 lg:hidden">输出</span>
+                            {formatUsageCount(request.output_tokens)}
+                          </span>
+                          <span title="缓存 Token">
+                            <span className="mr-1 text-[10px] text-stone-400 lg:hidden">缓存</span>
+                            {formatUsageCount(request.cache_tokens)}
+                          </span>
+                          <span title="价格">
+                            <span className="mr-1 text-[10px] text-stone-400 lg:hidden">价格</span>
+                            {formatUsagePrice(request)}
+                          </span>
                           <span className="truncate">{request.source_label}</span>
                           <button
                             aria-controls={`route-request-detail-${request.id}`}

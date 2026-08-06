@@ -3,18 +3,20 @@ use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::error::{ApiError, AppError};
 use crate::models::platform::{ApiDialect, CapabilityRule, PlatformId, PlatformOperation};
 use crate::models::route_credential::ModelMapping;
-use crate::models::route_pool::{RoutePoolModelTestOutcome, RoutePoolModelTestRequest};
+use crate::models::route_pool::{
+    RoutePoolModelTestOutcome, RoutePoolModelTestRequest, RouteUsageBreakdown,
+};
 use crate::services::http_client::{
     build_outbound_http_client, build_outbound_http_client_with_root_certificate,
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
-use crate::services::route_proxy_service::{
-    build_target_url, build_upstream_request, classify_proxy_failure,
-    extract_cost_micros, extract_token_count, maybe_persist_official_quota_from_response,
-    maybe_refresh_official_credential, normalize_api_upstream_path, select_pool_credentials,
-    ProxyFailureKind, RouteProxyService, SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
-};
 use crate::services::response_failure_service::detect_response_failed;
+use crate::services::route_proxy_service::{
+    build_target_url, build_upstream_request, classify_proxy_failure, extract_usage_breakdown,
+    maybe_persist_official_quota_from_response, maybe_refresh_official_credential,
+    normalize_api_upstream_path, select_pool_credentials, ProxyFailureKind, RouteProxyService,
+    SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
+};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
@@ -120,8 +122,7 @@ impl RouteModelTestService {
                     Some(error),
                     false,
                     elapsed_ms(start),
-                    None,
-                    None,
+                    RouteUsageBreakdown::default(),
                 )
                 .await;
             }
@@ -159,8 +160,7 @@ impl RouteModelTestService {
                     Some(error),
                     false,
                     elapsed_ms(start),
-                    None,
-                    None,
+                    RouteUsageBreakdown::default(),
                 )
                 .await;
             }
@@ -187,8 +187,7 @@ impl RouteModelTestService {
                     Some(error),
                     false,
                     elapsed_ms(start),
-                    None,
-                    None,
+                    RouteUsageBreakdown::default(),
                 )
                 .await;
             }
@@ -202,8 +201,7 @@ impl RouteModelTestService {
             Ok((status, transport_success, body)) => {
                 let semantic_failure = detect_response_failed(&body);
                 let success = transport_success && semantic_failure.is_none();
-                let token_count = extract_token_count(&body);
-                let cost_micros = extract_cost_micros(&body);
+                let usage = extract_usage_breakdown(&body);
                 let response_body =
                     sanitize_for_storage(&credential, &truncate_response_body(&body));
                 let response_text =
@@ -221,12 +219,15 @@ impl RouteModelTestService {
                     semantic_failure.map(|failure| failure.message),
                     success,
                     duration_ms,
-                    token_count,
-                    cost_micros,
+                    usage,
                 )
                 .await?;
                 if explicit_account_test && outcome.success {
-                    RouteCredentialRepository::recover_after_explicit_test(pool, &outcome.selected_account_id).await?;
+                    RouteCredentialRepository::recover_after_explicit_test(
+                        pool,
+                        &outcome.selected_account_id,
+                    )
+                    .await?;
                 }
                 Ok(outcome)
             }
@@ -244,8 +245,7 @@ impl RouteModelTestService {
                     Some(error),
                     false,
                     duration_ms,
-                    None,
-                    None,
+                    RouteUsageBreakdown::default(),
                 )
                 .await
             }
@@ -944,8 +944,7 @@ async fn finish_outcome(
     error_message: Option<String>,
     success: bool,
     duration_ms: i64,
-    token_count: Option<i64>,
-    cost_micros: Option<i64>,
+    usage: RouteUsageBreakdown,
 ) -> Result<RoutePoolModelTestOutcome, AppError> {
     // Official accounts may report free/quota exhaustion in response bodies.
     if !response_body.trim().is_empty() {
@@ -965,31 +964,33 @@ async fn finish_outcome(
             )
             .await?;
         } else {
-        let status = response_status.and_then(|value| axum::http::StatusCode::from_u16(value).ok());
-        let failure_kind = classify_proxy_failure(
-            status,
-            error_message
-                .as_deref()
-                .or_else(|| (!response_body.trim().is_empty()).then_some(response_body.as_str())),
-        );
-        match failure_kind {
-            ProxyFailureKind::Permanent => {
-                RouteCredentialRepository::update_status(pool, &credential.id, "revoked").await?;
+            let status =
+                response_status.and_then(|value| axum::http::StatusCode::from_u16(value).ok());
+            let failure_kind = classify_proxy_failure(
+                status,
+                error_message.as_deref().or_else(|| {
+                    (!response_body.trim().is_empty()).then_some(response_body.as_str())
+                }),
+            );
+            match failure_kind {
+                ProxyFailureKind::Permanent => {
+                    RouteCredentialRepository::update_status(pool, &credential.id, "revoked")
+                        .await?;
+                }
+                ProxyFailureKind::Transient => {
+                    let message = error_message
+                        .as_deref()
+                        .unwrap_or("model test request failed");
+                    let _ = RouteCredentialRepository::record_transient_failure(
+                        pool,
+                        &credential.id,
+                        "model_test",
+                        message,
+                    )
+                    .await;
+                }
+                ProxyFailureKind::None => {}
             }
-            ProxyFailureKind::Transient => {
-                let message = error_message
-                    .as_deref()
-                    .unwrap_or("model test request failed");
-                let _ = RouteCredentialRepository::record_transient_failure(
-                    pool,
-                    &credential.id,
-                    "model_test",
-                    message,
-                )
-                .await;
-            }
-            ProxyFailureKind::None => {}
-        }
         }
     }
 
@@ -1006,46 +1007,14 @@ async fn finish_outcome(
         error_message.as_deref(),
     );
 
-    RoutePoolRepository::insert_usage_event(
+    RoutePoolRepository::insert_request_event(
         pool,
         &credential.id,
         ROUTE_MODEL_TEST_SOURCE,
-        "request",
-        1,
-        "count",
         &metadata,
+        &usage,
     )
     .await?;
-
-    if let Some(tokens) = token_count {
-        if tokens > 0 {
-            RoutePoolRepository::insert_usage_event(
-                pool,
-                &credential.id,
-                ROUTE_MODEL_TEST_SOURCE,
-                "token",
-                tokens,
-                "token",
-                &metadata,
-            )
-            .await?;
-        }
-    }
-
-    if let Some(cost) = cost_micros {
-        if cost > 0 {
-            RoutePoolRepository::insert_usage_event(
-                pool,
-                &credential.id,
-                ROUTE_MODEL_TEST_SOURCE,
-                "cost",
-                cost,
-                "usd_micros",
-                &metadata,
-            )
-            .await?;
-        }
-    }
 
     RoutePoolRepository::save_cursor_index(pool, platform, next_index).await?;
 
@@ -1709,7 +1678,12 @@ mod tests {
             axum::http::StatusCode::OK,
             json!({
                 "choices": [{"message": {"content": "ai-switch-ok"}}],
-                "usage": {"prompt_tokens": 5, "completion_tokens": 3, "cost_micros": 42}
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 3,
+                    "prompt_cache_hit_tokens": 2,
+                    "price_cny": 7.1
+                }
             }),
         )
         .await;
@@ -1753,11 +1727,22 @@ mod tests {
         assert!(outcome.request_body_json.contains("up-gpt"));
         assert_eq!(outcome.stats.request_count, 1);
         assert_eq!(outcome.stats.token_count, 8);
-        assert_eq!(outcome.stats.cost_micros, 42);
+        assert_eq!(outcome.stats.input_token_count, 5);
+        assert_eq!(outcome.stats.output_token_count, 3);
+        assert_eq!(outcome.stats.cache_token_count, 2);
+        assert_eq!(outcome.stats.cost_micros, 1_000_000);
         assert_eq!(outcome.stats.requests.len(), 1);
         assert_eq!(
             outcome.stats.requests[0].source_label,
             ROUTE_MODEL_TEST_SOURCE
+        );
+        assert_eq!(outcome.stats.requests[0].input_tokens, Some(5));
+        assert_eq!(outcome.stats.requests[0].output_tokens, Some(3));
+        assert_eq!(outcome.stats.requests[0].cache_tokens, Some(2));
+        assert_eq!(outcome.stats.requests[0].price_cny_micros, Some(7_100_000));
+        assert_eq!(
+            outcome.stats.requests[0].price_currency.as_deref(),
+            Some("cny")
         );
 
         let metadata: Value =
@@ -1843,7 +1828,12 @@ mod tests {
             axum::http::StatusCode::OK,
             json!({
                 "choices": [{"message": {"content": "ai-switch-ok"}}],
-                "usage": {"prompt_tokens": 4, "completion_tokens": 2, "cost_micros": 9}
+                "usage": {
+                    "prompt_tokens": 4,
+                    "completion_tokens": 2,
+                    "prompt_cache_hit_tokens": 1,
+                    "price_cny": 7.1
+                }
             }),
         )
         .await;
@@ -1905,6 +1895,11 @@ mod tests {
         assert_eq!(outcome.response_text.as_deref(), Some("ai-switch-ok"));
         assert_eq!(outcome.stats.requests.len(), 1);
         assert_eq!(outcome.stats.requests[0].source_label, "route_proxy");
+        assert_eq!(outcome.stats.input_token_count, 4);
+        assert_eq!(outcome.stats.output_token_count, 2);
+        assert_eq!(outcome.stats.cache_token_count, 1);
+        assert_eq!(outcome.stats.cost_micros, 1_000_000);
+        assert_eq!(outcome.stats.requests[0].price_cny_micros, Some(7_100_000));
     }
 
     #[tokio::test]

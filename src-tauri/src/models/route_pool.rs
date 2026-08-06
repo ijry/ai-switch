@@ -3,6 +3,16 @@ use serde::{Deserialize, Serialize};
 // Pool public fields keep stable names for UI compatibility.
 // Selected/member ids are route_credentials.id values, not official_accounts.id.
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RouteUsageBreakdown {
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cache_tokens: Option<i64>,
+    pub price_usd_micros: Option<i64>,
+    pub price_cny_micros: Option<i64>,
+    pub price_currency: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RoutePoolUsageLog {
     pub id: String,
@@ -14,6 +24,12 @@ pub struct RoutePoolUsageLog {
     pub unit: String,
     pub metadata_json: String,
     pub created_at: String,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cache_tokens: Option<i64>,
+    pub price_usd_micros: Option<i64>,
+    pub price_cny_micros: Option<i64>,
+    pub price_currency: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -21,6 +37,9 @@ pub struct RoutePoolStats {
     pub member_count: i64,
     pub request_count: i64,
     pub token_count: i64,
+    pub input_token_count: i64,
+    pub output_token_count: i64,
+    pub cache_token_count: i64,
     pub cost_micros: i64,
     pub recent_logs: Vec<RoutePoolUsageLog>,
     pub requests: Vec<RoutePoolUsageLog>,

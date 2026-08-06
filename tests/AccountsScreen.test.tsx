@@ -128,6 +128,9 @@ function statsFixture(overrides: Partial<RoutePoolStats> = {}): RoutePoolStats {
     member_count: 0,
     request_count: 0,
     token_count: 0,
+    input_token_count: 0,
+    output_token_count: 0,
+    cache_token_count: 0,
     cost_micros: 0,
     recent_logs: [],
     requests: [],
@@ -1419,8 +1422,11 @@ describe("AccountsScreen", () => {
         stats: statsFixture({
           member_count: 1,
           request_count: 99,
-          token_count: 2048,
-          cost_micros: 1500,
+          token_count: 150,
+          input_token_count: 120,
+          output_token_count: 30,
+          cache_token_count: 80,
+          cost_micros: 1_000_000,
           request_row_count: 42,
           request_page: requestPage ?? 1,
           request_page_size: requestPageSize ?? 20,
@@ -1433,6 +1439,12 @@ describe("AccountsScreen", () => {
               metric_type: "request",
               amount: 1,
               unit: "count",
+              input_tokens: 120,
+              output_tokens: 30,
+              cache_tokens: 80,
+              price_usd_micros: null,
+              price_cny_micros: 7_100_000,
+              price_currency: "cny",
               metadata_json: JSON.stringify({
                 source: "ui_model_connectivity_test",
                 request_kind: "model_connectivity",
@@ -1490,7 +1502,17 @@ describe("AccountsScreen", () => {
 
     const invalidMetadataRow = screen.getByText("Broken Metadata Account").closest("[data-route-request-row]");
     expect(invalidMetadataRow).not.toBeNull();
-    expect(within(invalidMetadataRow as HTMLElement).getAllByText("-")).toHaveLength(2);
+    expect(within(invalidMetadataRow as HTMLElement).getAllByText("-")).toHaveLength(6);
+
+    expect(screen.getByText("输入 Token")).toBeInTheDocument();
+    expect(screen.getByText("输出 Token")).toBeInTheDocument();
+    expect(screen.getByText("缓存 Token")).toBeInTheDocument();
+    expect(screen.getByText("总费用（USD）")).toBeInTheDocument();
+    expect(screen.getByText("¥7.100000")).toBeInTheDocument();
+    expect(screen.getByText("$1.00")).toBeInTheDocument();
+    expect(screen.getAllByText("120").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("30").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("80").length).toBeGreaterThan(0);
 
     await userEvent.click(screen.getByLabelText("查看请求 request-success 详情"));
 
@@ -1500,6 +1522,10 @@ describe("AccountsScreen", () => {
     expect(within(successDetail).getByText("cred-official-1")).toBeInTheDocument();
     expect(within(successDetail).getByText("Team Account")).toBeInTheDocument();
     expect(within(successDetail).getByText("1 count")).toBeInTheDocument();
+    expect(within(successDetail).getByText("120")).toBeInTheDocument();
+    expect(within(successDetail).getByText("30")).toBeInTheDocument();
+    expect(within(successDetail).getByText("80")).toBeInTheDocument();
+    expect(within(successDetail).getByText("¥7.100000")).toBeInTheDocument();
     expect(within(successDetail).getByText(/"path": "\/chat\/completions"/)).toBeInTheDocument();
     expect(within(successDetail).getByText(/"status": 200/)).toBeInTheDocument();
     expect(within(successDetail).getByText(/model_connectivity/)).toBeInTheDocument();

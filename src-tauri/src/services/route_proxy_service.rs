@@ -7,6 +7,7 @@ use crate::models::route_credential::{
     normalize_anthropic_api_key_field, ModelMapping, ANTHROPIC_API_KEY_FIELD,
     ANTHROPIC_AUTH_TOKEN_FIELD,
 };
+use crate::models::route_pool::RouteUsageBreakdown;
 use crate::services::http_client::build_outbound_http_client;
 use crate::services::official_agent_identity_service::{
     is_official_agent_identity_credential, resolve_agent_identity_headers,
@@ -32,7 +33,6 @@ use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
-use uuid::Uuid;
 
 const BIND_HOST: &str = "127.0.0.1";
 const DEFAULT_ROUTE_PROXY_PORT: u16 = 19527;
@@ -487,13 +487,11 @@ async fn forward_request(
                     request_start,
                     Some(&error),
                 );
-                let _ = insert_route_credential_usage_event(
+                let _ = insert_route_credential_request_event(
                     pool,
                     &selected.id,
-                    "request",
-                    1,
-                    "count",
                     &metadata,
+                    &RouteUsageBreakdown::default(),
                 )
                 .await;
                 retry_errors.push(format!("{}: {error}", selected.display_name));
@@ -524,13 +522,11 @@ async fn forward_request(
                     request_start,
                     Some(&error),
                 );
-                let _ = insert_route_credential_usage_event(
+                let _ = insert_route_credential_request_event(
                     pool,
                     &credential.id,
-                    "request",
-                    1,
-                    "count",
                     &metadata,
+                    &RouteUsageBreakdown::default(),
                 )
                 .await;
                 retry_errors.push(format!("{}: {error}", credential.display_name));
@@ -564,13 +560,11 @@ async fn forward_request(
                     request_start,
                     Some(&error_message),
                 );
-                let _ = insert_route_credential_usage_event(
+                let _ = insert_route_credential_request_event(
                     pool,
                     &credential.id,
-                    "request",
-                    1,
-                    "count",
                     &metadata,
+                    &RouteUsageBreakdown::default(),
                 )
                 .await;
                 retry_errors.push(error_message);
@@ -589,6 +583,24 @@ async fn forward_request(
                 );
                 record_route_credential_failure(pool, &credential.id, "transport", &error_message)
                     .await;
+                let metadata = route_proxy_request_metadata(
+                    &platform,
+                    &credential,
+                    &path,
+                    Some(&target_url),
+                    None,
+                    false,
+                    trace_id.as_deref(),
+                    request_start,
+                    Some(&error_message),
+                );
+                let _ = insert_route_credential_request_event(
+                    pool,
+                    &credential.id,
+                    &metadata,
+                    &RouteUsageBreakdown::default(),
+                )
+                .await;
                 retry_errors.push(error_message);
                 continue;
             }
@@ -614,10 +626,8 @@ async fn forward_request(
         let semantic_failure = detect_response_failed(&response_bytes);
         let failure_kind = classify_proxy_failure(Some(status), response_text);
         let should_retry = !matches!(failure_kind, ProxyFailureKind::None);
-        let proxy_success = status.is_success()
-            && !quota_exhausted
-            && !should_retry
-            && semantic_failure.is_none();
+        let proxy_success =
+            status.is_success() && !quota_exhausted && !should_retry && semantic_failure.is_none();
         let retry_error = if let Some(failure) = semantic_failure.as_ref() {
             Some(failure.message.clone())
         } else if quota_exhausted {
@@ -638,37 +648,9 @@ async fn forward_request(
             request_start,
             retry_error.as_deref(),
         );
-        let _ = insert_route_credential_usage_event(
-            pool,
-            &credential.id,
-            "request",
-            1,
-            "count",
-            &metadata,
-        )
-        .await;
-        if let Some(tokens) = extract_token_count(&response_bytes).filter(|tokens| *tokens > 0) {
-            let _ = insert_route_credential_usage_event(
-                pool,
-                &credential.id,
-                "token",
-                tokens,
-                "token",
-                &metadata,
-            )
-            .await;
-        }
-        if let Some(cost) = extract_cost_micros(&response_bytes).filter(|cost| *cost > 0) {
-            let _ = insert_route_credential_usage_event(
-                pool,
-                &credential.id,
-                "cost",
-                cost,
-                "usd_micros",
-                &metadata,
-            )
-            .await;
-        }
+        let usage = extract_usage_breakdown(&response_bytes);
+        let _ =
+            insert_route_credential_request_event(pool, &credential.id, &metadata, &usage).await;
 
         let next_index = (credential_index + 1) % credentials.len();
         let _ = RoutePoolRepository::save_cursor_index(pool, &platform, next_index as i64).await;
@@ -2682,89 +2664,275 @@ fn is_hop_by_hop_header(name: &HeaderName) -> bool {
     )
 }
 
+const PRICE_MICRO_SCALE: f64 = 1_000_000.0;
+
+pub fn extract_usage_breakdown(body: &[u8]) -> RouteUsageBreakdown {
+    let value: Value = match serde_json::from_slice(body) {
+        Ok(value) => value,
+        Err(_) => return RouteUsageBreakdown::default(),
+    };
+    let usage = value.get("usage");
+    let usage_metadata = value.get("usageMetadata");
+
+    let input_tokens = first_non_negative_i64(&[
+        usage.and_then(|item| item.get("input_tokens")),
+        usage.and_then(|item| item.get("prompt_tokens")),
+        usage_metadata.and_then(|item| item.get("promptTokenCount")),
+    ]);
+    let output_tokens = first_non_negative_i64(&[
+        usage.and_then(|item| item.get("output_tokens")),
+        usage.and_then(|item| item.get("completion_tokens")),
+        usage_metadata.and_then(|item| item.get("candidatesTokenCount")),
+    ]);
+    let cache_tokens = first_non_negative_i64(&[
+        usage.and_then(|item| item.pointer("/input_tokens_details/cached_tokens")),
+        usage.and_then(|item| item.pointer("/prompt_tokens_details/cached_tokens")),
+        usage.and_then(|item| item.get("prompt_cache_hit_tokens")),
+    ])
+    .or_else(|| {
+        sum_non_negative_i64(
+            usage.and_then(|item| item.get("cache_read_input_tokens")),
+            usage.and_then(|item| item.get("cache_creation_input_tokens")),
+        )
+    })
+    .or_else(|| {
+        first_non_negative_i64(&[
+            usage_metadata.and_then(|item| item.get("cachedContentTokenCount"))
+        ])
+    });
+
+    let (price_usd_micros, price_cny_micros, price_currency) = extract_prices(&value, usage);
+
+    RouteUsageBreakdown {
+        input_tokens,
+        output_tokens,
+        cache_tokens,
+        price_usd_micros,
+        price_cny_micros,
+        price_currency,
+    }
+}
+
 pub fn extract_token_count(body: &[u8]) -> Option<i64> {
-    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
-    if let Some(total) = value
-        .pointer("/usage/total_tokens")
-        .and_then(|item| item.as_i64())
-    {
-        return Some(total);
+    let usage = extract_usage_breakdown(body);
+    let total = match (usage.input_tokens, usage.output_tokens) {
+        (Some(input), Some(output)) => Some(input.saturating_add(output)),
+        (Some(input), None) => Some(input),
+        (None, Some(output)) => Some(output),
+        (None, None) => serde_json::from_slice::<Value>(body)
+            .ok()
+            .and_then(|value| value.pointer("/usage/total_tokens").and_then(json_i64)),
+    };
+
+    total.filter(|value| *value > 0)
+}
+
+pub fn extract_cost_micros(body: &[u8]) -> Option<i64> {
+    extract_usage_breakdown(body).price_usd_micros
+}
+
+fn first_non_negative_i64(values: &[Option<&Value>]) -> Option<i64> {
+    values.iter().find_map(|value| value.and_then(json_i64))
+}
+
+fn sum_non_negative_i64(first: Option<&Value>, second: Option<&Value>) -> Option<i64> {
+    match (first.and_then(json_i64), second.and_then(json_i64)) {
+        (Some(first), Some(second)) => Some(first.saturating_add(second)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+fn json_i64(value: &Value) -> Option<i64> {
+    let parsed = value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|number| i64::try_from(number).ok()))
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|text| text.trim().parse::<i64>().ok())
+        })?;
+    (parsed >= 0).then_some(parsed)
+}
+
+fn extract_prices(
+    value: &Value,
+    usage: Option<&Value>,
+) -> (Option<i64>, Option<i64>, Option<String>) {
+    let explicit_currency = first_present(&[
+        usage.and_then(|item| item.get("price_currency")),
+        usage.and_then(|item| item.get("currency")),
+        usage.and_then(|item| item.get("unit")),
+        value.get("price_currency"),
+        value.get("currency"),
+        value.get("unit"),
+    ])
+    .and_then(normalize_price_currency);
+
+    let usd_micros = first_present(&[
+        usage.and_then(|item| item.get("price_usd_micros")),
+        usage.and_then(|item| item.get("cost_usd_micros")),
+        usage.and_then(|item| item.get("cost_micros")),
+        value.get("price_usd_micros"),
+        value.get("cost_usd_micros"),
+        value.get("cost_micros"),
+    ])
+    .and_then(|item| price_micros(item, true))
+    .or_else(|| {
+        first_present(&[
+            usage.and_then(|item| item.get("price_usd")),
+            usage.and_then(|item| item.get("cost_usd")),
+            value.get("price_usd"),
+            value.get("cost_usd"),
+        ])
+        .and_then(|item| price_micros(item, false))
+    });
+    let cny_micros = first_present(&[
+        usage.and_then(|item| item.get("price_cny_micros")),
+        usage.and_then(|item| item.get("cost_cny_micros")),
+        value.get("price_cny_micros"),
+        value.get("cost_cny_micros"),
+    ])
+    .and_then(|item| price_micros(item, true))
+    .or_else(|| {
+        first_present(&[
+            usage.and_then(|item| item.get("price_cny")),
+            usage.and_then(|item| item.get("cost_cny")),
+            value.get("price_cny"),
+            value.get("cost_cny"),
+        ])
+        .and_then(|item| price_micros(item, false))
+    });
+
+    let generic_price = first_present(&[
+        usage.and_then(|item| item.get("price")),
+        usage.and_then(|item| item.get("cost")),
+        value.get("price"),
+        value.get("cost"),
+    ]);
+    let generic_currency = generic_price
+        .and_then(price_object_currency)
+        .or(explicit_currency);
+    let generic_unit = generic_price.and_then(price_object_unit).or_else(|| {
+        first_present(&[
+            usage.and_then(|item| item.get("price_unit")),
+            usage.and_then(|item| item.get("unit")),
+            value.get("price_unit"),
+            value.get("unit"),
+        ])
+        .and_then(|item| item.as_str())
+    });
+    let generic_micros = generic_price.and_then(|item| {
+        price_micros(
+            item,
+            generic_unit.is_some_and(|unit| unit.contains("micro")),
+        )
+    });
+
+    let mut price_usd_micros = usd_micros;
+    let mut price_cny_micros = cny_micros;
+    if price_usd_micros.is_none() && generic_currency == Some("usd") {
+        price_usd_micros = generic_micros;
+    }
+    if price_cny_micros.is_none() && generic_currency == Some("cny") {
+        price_cny_micros = generic_micros;
     }
 
-    let input = value
-        .pointer("/usage/input_tokens")
-        .and_then(|item| item.as_i64())
-        .or_else(|| {
-            value
-                .pointer("/usage/prompt_tokens")
-                .and_then(|item| item.as_i64())
-        })
-        .unwrap_or(0);
-    let output = value
-        .pointer("/usage/output_tokens")
-        .and_then(|item| item.as_i64())
-        .or_else(|| {
-            value
-                .pointer("/usage/completion_tokens")
-                .and_then(|item| item.as_i64())
-        })
-        .unwrap_or(0);
+    let price_currency = explicit_currency
+        .or(generic_currency)
+        .or_else(
+            || match (price_usd_micros.is_some(), price_cny_micros.is_some()) {
+                (true, false) => Some("usd"),
+                (false, true) => Some("cny"),
+                _ => None,
+            },
+        )
+        .map(str::to_string);
 
-    let total = input + output;
-    if total > 0 {
-        Some(total)
+    (price_usd_micros, price_cny_micros, price_currency)
+}
+
+fn first_present<'a>(values: &[Option<&'a Value>]) -> Option<&'a Value> {
+    values.iter().copied().flatten().next()
+}
+
+fn price_micros(value: &Value, already_micros: bool) -> Option<i64> {
+    let raw = value
+        .as_f64()
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|text| text.trim().parse::<f64>().ok())
+        })
+        .or_else(|| {
+            value.as_object().and_then(|object| {
+                ["amount", "value", "number"]
+                    .iter()
+                    .find_map(|key| object.get(*key))
+                    .and_then(|item| {
+                        item.as_f64().or_else(|| {
+                            item.as_str()
+                                .and_then(|text| text.trim().parse::<f64>().ok())
+                        })
+                    })
+            })
+        })?;
+    if !raw.is_finite() || raw < 0.0 {
+        return None;
+    }
+    let scaled = if already_micros {
+        raw
+    } else {
+        raw * PRICE_MICRO_SCALE
+    };
+    if !scaled.is_finite() || scaled > i64::MAX as f64 {
+        return None;
+    }
+    Some(scaled.round() as i64)
+}
+
+fn price_object_currency(value: &Value) -> Option<&'static str> {
+    value
+        .as_object()
+        .and_then(|object| object.get("currency").or_else(|| object.get("unit")))
+        .and_then(normalize_price_currency)
+}
+
+fn price_object_unit(value: &Value) -> Option<&str> {
+    value.as_object().and_then(|object| {
+        object
+            .get("unit")
+            .and_then(Value::as_str)
+            .or_else(|| object.get("currency").and_then(Value::as_str))
+    })
+}
+
+fn normalize_price_currency(value: &Value) -> Option<&'static str> {
+    let text = value.as_str()?.trim().to_ascii_lowercase();
+    if text.contains("usd") || text.contains("dollar") || text == "$" {
+        Some("usd")
+    } else if text.contains("cny") || text.contains("rmb") || text.contains("yuan") || text == "¥"
+    {
+        Some("cny")
     } else {
         None
     }
 }
 
-pub fn extract_cost_micros(body: &[u8]) -> Option<i64> {
-    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
-    if let Some(micros) = value
-        .pointer("/usage/cost_micros")
-        .and_then(|item| item.as_i64())
-    {
-        return Some(micros);
-    }
-    if let Some(usd) = value
-        .pointer("/usage/cost_usd")
-        .and_then(|item| item.as_f64())
-    {
-        return Some((usd * 1_000_000.0).round() as i64);
-    }
-    None
-}
-
-async fn insert_route_credential_usage_event(
+async fn insert_route_credential_request_event(
     pool: &SqlitePool,
     route_credential_id: &str,
-    metric_type: &str,
-    amount: i64,
-    unit: &str,
     metadata_json: &str,
+    usage: &RouteUsageBreakdown,
 ) -> Result<(), AppError> {
-    let now = Utc::now().to_rfc3339();
-    sqlx::query(
-        "INSERT INTO usage_events
-         (id, route_credential_id, source_label, metric_type, amount, unit, metadata_json, created_at)
-         VALUES (?, ?, 'route_proxy', ?, ?, ?, ?, ?)",
+    RoutePoolRepository::insert_request_event(
+        pool,
+        route_credential_id,
+        "route_proxy",
+        metadata_json,
+        usage,
     )
-    .bind(Uuid::new_v4().to_string())
-    .bind(route_credential_id)
-    .bind(metric_type)
-    .bind(amount)
-    .bind(unit)
-    .bind(metadata_json)
-    .bind(&now)
-    .execute(pool)
     .await
-    .map_err(|err| AppError::Database {
-        code: "database.route_proxy_usage",
-        message: "Could not record route proxy usage event".to_string(),
-        details: Some(err.to_string()),
-        recoverable: true,
-    })?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -2995,7 +3163,11 @@ mod tests {
         use crate::database::{create_memory_pool, run_migrations};
 
         let failed_upstream = start_fixed_upstream(StatusCode::UNAUTHORIZED, "expired").await;
-        let healthy_upstream = start_fixed_upstream(StatusCode::OK, "ai-switch-ok").await;
+        let healthy_upstream = start_fixed_upstream(
+            StatusCode::OK,
+            r#"{"usage":{"prompt_tokens":120,"completion_tokens":30,"prompt_cache_hit_tokens":80,"price_cny":7.1}}"#,
+        )
+        .await;
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
         let failed_id = create_proxy_api_credential(&pool, "failed", &failed_upstream).await;
@@ -3028,7 +3200,10 @@ mod tests {
             .expect("proxy response");
 
         assert_eq!(response.status(), reqwest::StatusCode::OK);
-        assert_eq!(response.text().await.expect("body"), "ai-switch-ok");
+        assert_eq!(
+            response.text().await.expect("body"),
+            r#"{"usage":{"prompt_tokens":120,"completion_tokens":30,"prompt_cache_hit_tokens":80,"price_cny":7.1}}"#
+        );
         let failed = RouteCredentialRepository::get(&pool, &failed_id)
             .await
             .expect("failed account");
@@ -3055,6 +3230,20 @@ mod tests {
         .await
         .expect("usage count");
         assert_eq!(usage_count, 2);
+        let stats = RoutePoolRepository::stats(&pool, "codex", None, 1, 20)
+            .await
+            .expect("usage stats");
+        assert_eq!(stats.requests.len(), 2);
+        let healthy_request = stats
+            .requests
+            .iter()
+            .find(|request| request.account_id.as_deref() == Some(healthy_id.as_str()))
+            .expect("healthy request row");
+        assert_eq!(healthy_request.input_tokens, Some(120));
+        assert_eq!(healthy_request.output_tokens, Some(30));
+        assert_eq!(healthy_request.cache_tokens, Some(80));
+        assert_eq!(healthy_request.price_cny_micros, Some(7_100_000));
+        assert_eq!(healthy_request.price_currency.as_deref(), Some("cny"));
 
         RouteProxyService::stop(&runtime).await.expect("stop proxy");
     }
@@ -3679,6 +3868,83 @@ mod tests {
         let anthropic = br#"{"usage":{"input_tokens":11,"output_tokens":7}}"#;
         assert_eq!(extract_token_count(openai), Some(15));
         assert_eq!(extract_token_count(anthropic), Some(18));
+    }
+
+    #[test]
+    fn extract_usage_breakdown_supports_deepseek_usage_and_cny_price() {
+        let body = br#"{
+            "usage": {
+                "prompt_tokens": 120,
+                "completion_tokens": 30,
+                "prompt_cache_hit_tokens": 80,
+                "price_cny": 7.1
+            }
+        }"#;
+
+        let usage = extract_usage_breakdown(body);
+
+        assert_eq!(usage.input_tokens, Some(120));
+        assert_eq!(usage.output_tokens, Some(30));
+        assert_eq!(usage.cache_tokens, Some(80));
+        assert_eq!(usage.price_cny_micros, Some(7_100_000));
+        assert_eq!(usage.price_currency.as_deref(), Some("cny"));
+    }
+
+    #[test]
+    fn extract_usage_breakdown_supports_openai_responses_and_usd_price() {
+        let body = br#"{
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 25,
+                "input_tokens_details": {"cached_tokens": 60},
+                "cost_usd": 0.0042
+            }
+        }"#;
+
+        let usage = extract_usage_breakdown(body);
+
+        assert_eq!(usage.input_tokens, Some(100));
+        assert_eq!(usage.output_tokens, Some(25));
+        assert_eq!(usage.cache_tokens, Some(60));
+        assert_eq!(usage.price_usd_micros, Some(4_200));
+        assert_eq!(usage.price_currency.as_deref(), Some("usd"));
+    }
+
+    #[test]
+    fn extract_usage_breakdown_supports_generic_object_price() {
+        let usage = extract_usage_breakdown(
+            br#"{"usage":{"input_tokens":1,"output_tokens":2,"price":{"amount":"0.12","currency":"CNY"}}}"#,
+        );
+
+        assert_eq!(usage.price_cny_micros, Some(120_000));
+        assert_eq!(usage.price_currency.as_deref(), Some("cny"));
+    }
+
+    #[test]
+    fn extract_usage_breakdown_supports_anthropic_and_gemini_cache_shapes() {
+        let anthropic = extract_usage_breakdown(
+            br#"{"usage":{"input_tokens":11,"output_tokens":7,"cache_read_input_tokens":5,"cache_creation_input_tokens":2}}"#,
+        );
+        let gemini = extract_usage_breakdown(
+            br#"{"usageMetadata":{"promptTokenCount":13,"candidatesTokenCount":9,"cachedContentTokenCount":4}}"#,
+        );
+
+        assert_eq!(anthropic.input_tokens, Some(11));
+        assert_eq!(anthropic.output_tokens, Some(7));
+        assert_eq!(anthropic.cache_tokens, Some(7));
+        assert_eq!(gemini.input_tokens, Some(13));
+        assert_eq!(gemini.output_tokens, Some(9));
+        assert_eq!(gemini.cache_tokens, Some(4));
+    }
+
+    #[test]
+    fn extract_usage_breakdown_leaves_price_empty_when_upstream_omits_price() {
+        let usage =
+            extract_usage_breakdown(br#"{"usage":{"prompt_tokens":10,"completion_tokens":2}}"#);
+
+        assert_eq!(usage.price_usd_micros, None);
+        assert_eq!(usage.price_cny_micros, None);
+        assert_eq!(usage.price_currency, None);
     }
 
     #[test]
