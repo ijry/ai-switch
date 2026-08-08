@@ -16,7 +16,7 @@ export type Batch = {
   updated_at: string;
 };
 
-export type AccountStatus = "ok" | "warning" | "error" | "revoked";
+export type AccountStatus = "ok" | "warning" | "error" | "revoked" | "paused";
 
 export type RouteCredentialKind = "official" | "api";
 
@@ -161,6 +161,8 @@ export type RouteCredential = {
   email?: string | null;
   status: AccountStatus;
   sort_order: number;
+  route_priority: number;
+  max_concurrency: number;
   batch_id?: string | null;
   batch_name?: string | null;
   secret_payload_json: string;
@@ -182,6 +184,7 @@ export type RouteCredential = {
   last_failure_kind?: string | null;
   last_failure_message?: string | null;
   last_failure_response_json?: string | null;
+  active_request_count?: number;
   request_count?: number;
   success_count?: number;
   failure_count?: number;
@@ -215,6 +218,8 @@ export type UpdateRouteCredentialInput = {
   display_name: string;
   email?: string | null;
   status: AccountStatus;
+  route_priority: number;
+  max_concurrency: number;
   secret_payload_json: string;
   config_json: string;
   preview_json: string;
@@ -557,6 +562,13 @@ export type TargetApp = {
   sort_order: number;
   created_at: string;
   updated_at: string;
+};
+
+export type RouteCredentialActivityEvent = {
+  platform: string;
+  credential_id: string;
+  active_request_count: number;
+  max_concurrency: number;
 };
 
 export type ConfigSnapshotSummary = {

@@ -150,7 +150,19 @@ set_route_credential_statuses(ids: string[], status: AccountStatus) -> void
 - 活动事件测试确认账号名称右侧显示 `1/2` 和脉冲标记，归零事件后隐藏。
 - 现有账号列表、算力池成员、模型映射和归档测试继续通过。
 
+### 实际验证结果
+
+截至 `2026-08-08`，已完成以下验证：
+
+- `pnpm test:run`：194 个测试通过。
+- `pnpm build`：通过。
+- `pnpm typecheck`：通过。
+- `pnpm rust:check`：通过。
+- `CARGO_TARGET_DIR=%TEMP%\ai-switch-cargo-target pnpm rust:test`：474 个测试通过，2 个忽略。
+- `git diff --check`：通过。
+
+Rust 测试使用独立的临时 `CARGO_TARGET_DIR`，避免在工作区留下测试生成目录。
+
 ## 不采用的方案
 
 不使用数据库实时计数作为并发锁，也不使用仅前端计数。前者在进程崩溃、强制退出和多次重试时容易产生脏状态，后者无法提供服务端并发保证。
-

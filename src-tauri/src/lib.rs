@@ -35,7 +35,7 @@ use commands::route_credential_commands::{
     import_official_route_credentials_from_text, list_route_credentials,
     list_route_credentials_page, reorder_route_credentials,
     refresh_route_credential_quota, refresh_route_credentials_quota, update_route_credential,
-    restore_route_credentials,
+    restore_route_credentials, set_route_credential_statuses,
 };
 use commands::route_credential_transfer_commands::{
     export_route_credentials, import_route_credentials, preview_route_credential_import,
@@ -88,7 +88,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_deep_link::DeepLinkExt;
 use terminal_manager::TerminalManager;
-use web::event_bridge::WebEventBroadcaster;
+use web::event_bridge::{EventEmitter, WebEventBroadcaster};
 
 fn is_deeplink_url(app: &tauri::AppHandle, value: &str) -> bool {
     value.starts_with("aiswitch://")
@@ -297,6 +297,10 @@ pub fn run() {
             });
 
             let state = app.state::<AppState>().inner().clone();
+            state
+                .route_proxy
+                .activity()
+                .set_emitter(EventEmitter::Tauri(app.handle().clone()));
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             {
                 state.deeplink_protocols.attach_registrar(Arc::new(TauriDeepLinkRegistrar {
@@ -381,6 +385,7 @@ pub fn run() {
             delete_route_credential,
             archive_route_credentials,
             restore_route_credentials,
+            set_route_credential_statuses,
             refresh_route_credential_quota,
             refresh_route_credentials_quota,
             export_route_credentials,

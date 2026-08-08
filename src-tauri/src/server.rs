@@ -12,7 +12,7 @@ use crate::services::route_proxy_service::RouteProxyRuntimeState;
 use crate::services::tailscale_service::TailscaleRuntimeState;
 use crate::services::web_service::WebServiceRuntimeState;
 use crate::terminal_manager::TerminalManager;
-use crate::web::event_bridge::WebEventBroadcaster;
+use crate::web::event_bridge::{EventEmitter, WebEventBroadcaster};
 use crate::web::router::build_router;
 use crate::web::static_assets::resolve_static_dir;
 
@@ -227,6 +227,10 @@ pub async fn run_from_env() -> Result<(), String> {
         terminals: TerminalManager::default(),
         event_broadcaster: Arc::new(WebEventBroadcaster::new()),
     });
+    state
+        .route_proxy
+        .activity()
+        .set_emitter(EventEmitter::Web(Arc::clone(&state.event_broadcaster)));
 
     let router = build_router(state, token, static_dir);
     let addr = tokio::net::lookup_host((host.as_str(), port))

@@ -16,6 +16,7 @@ use crate::services::cpa_import_service::{
     parse_cpa_file, parse_cpa_text, ParsedOfficialCredential,
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
+use crate::services::route_credential_activity::RouteCredentialActivityRegistry;
 use crate::services::route_preview_service::RoutePreviewService;
 use chrono::Utc;
 use serde_json::json;
@@ -36,8 +37,27 @@ impl RouteCredentialService {
         RouteCredentialRepository::list_by_platform(pool, platform.as_str()).await
     }
 
+    pub async fn list_with_activity(
+        pool: &SqlitePool,
+        activity: &RouteCredentialActivityRegistry,
+        platform: String,
+    ) -> Result<Vec<RouteCredential>, AppError> {
+        let credentials = Self::list(pool, platform).await?;
+        Ok(apply_activity_counts(credentials, activity))
+    }
+
     pub async fn get(pool: &SqlitePool, id: String) -> Result<RouteCredential, AppError> {
         RouteCredentialRepository::get(pool, &id).await
+    }
+
+    pub async fn get_with_activity(
+        pool: &SqlitePool,
+        activity: &RouteCredentialActivityRegistry,
+        id: String,
+    ) -> Result<RouteCredential, AppError> {
+        let mut credential = Self::get(pool, id).await?;
+        credential.active_request_count = activity.snapshot(&credential.id);
+        Ok(credential)
     }
 
     pub async fn page(
@@ -51,6 +71,16 @@ impl RouteCredentialService {
             ..request
         })
         .await
+    }
+
+    pub async fn page_with_activity(
+        pool: &SqlitePool,
+        activity: &RouteCredentialActivityRegistry,
+        request: RouteCredentialPageRequest,
+    ) -> Result<RouteCredentialPage, AppError> {
+        let mut page = Self::page(pool, request).await?;
+        page.items = apply_activity_counts(page.items, activity);
+        Ok(page)
     }
 
     pub async fn reorder(
@@ -220,6 +250,9 @@ impl RouteCredentialService {
         input: UpdateRouteCredentialInput,
     ) -> Result<RouteCredential, AppError> {
         validate_required("display_name", &input.display_name)?;
+        validate_route_credential_status(&input.status)?;
+        validate_route_priority(input.route_priority)?;
+        validate_max_concurrency(input.max_concurrency)?;
         RouteCredentialRepository::update(pool, &id, &input).await
     }
 
@@ -251,6 +284,14 @@ impl RouteCredentialService {
 
     pub async fn restore(pool: &SqlitePool, ids: Vec<String>) -> Result<(), AppError> {
         RouteCredentialRepository::set_archived(pool, &ids, false).await
+    }
+
+    pub async fn set_statuses(
+        pool: &SqlitePool,
+        ids: Vec<String>,
+        status: String,
+    ) -> Result<(), AppError> {
+        RouteCredentialRepository::set_statuses(pool, &ids, &status).await
     }
 }
 
@@ -303,6 +344,57 @@ fn validate_required(field: &'static str, value: &str) -> Result<(), AppError> {
         });
     }
     Ok(())
+}
+
+fn apply_activity_counts(
+    credentials: Vec<RouteCredential>,
+    activity: &RouteCredentialActivityRegistry,
+) -> Vec<RouteCredential> {
+    credentials
+        .into_iter()
+        .map(|mut credential| {
+            credential.active_request_count = activity.snapshot(&credential.id);
+            credential
+        })
+        .collect()
+}
+
+fn validate_route_credential_status(value: &str) -> Result<(), AppError> {
+    match value {
+        "ok" | "warning" | "error" | "revoked" | "paused" => Ok(()),
+        _ => Err(AppError::Validation {
+            code: "validation.route_credential_status",
+            message: "Route credential status is not supported".to_string(),
+            details: Some(value.to_string()),
+            recoverable: true,
+        }),
+    }
+}
+
+fn validate_route_priority(value: i64) -> Result<i64, AppError> {
+    if (1..=5).contains(&value) {
+        Ok(value)
+    } else {
+        Err(AppError::Validation {
+            code: "validation.route_credential_priority",
+            message: "Route priority must be between 1 and 5".to_string(),
+            details: Some(value.to_string()),
+            recoverable: true,
+        })
+    }
+}
+
+fn validate_max_concurrency(value: i64) -> Result<i64, AppError> {
+    if value >= 1 {
+        Ok(value)
+    } else {
+        Err(AppError::Validation {
+            code: "validation.route_credential_concurrency",
+            message: "Max concurrency must be at least 1".to_string(),
+            details: Some(value.to_string()),
+            recoverable: true,
+        })
+    }
 }
 
 fn validate_interface_format(value: &str) -> Result<(), AppError> {
@@ -402,6 +494,21 @@ mod tests {
     #[test]
     fn accepts_empty_model_mappings() {
         assert!(validate_model_mappings("[]").is_ok());
+    }
+
+    #[test]
+    fn validates_route_priority_range() {
+        assert_eq!(validate_route_priority(1).unwrap(), 1);
+        assert_eq!(validate_route_priority(5).unwrap(), 5);
+        assert!(validate_route_priority(0).is_err());
+        assert!(validate_route_priority(6).is_err());
+    }
+
+    #[test]
+    fn validates_max_concurrency_lower_bound() {
+        assert_eq!(validate_max_concurrency(1).unwrap(), 1);
+        assert!(validate_max_concurrency(0).is_err());
+        assert!(validate_max_concurrency(-1).is_err());
     }
 
     #[test]

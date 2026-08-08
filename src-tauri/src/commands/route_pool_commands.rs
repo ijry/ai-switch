@@ -46,7 +46,8 @@ pub async fn route_pool_route_once(
     state: State<'_, AppState>,
     request: RoutePoolRouteRequest,
 ) -> Result<RoutePoolRouteOutcome, ApiError> {
-    RoutePoolService::route_once(&state.pool, request)
+    let activity = state.route_proxy.activity();
+    RoutePoolService::route_once_with_activity(&state.pool, &activity, request)
         .await
         .map_err(ApiError::from)
 }
@@ -57,7 +58,8 @@ pub async fn route_pool_test_model(
     request: RoutePoolModelTestRequest,
 ) -> Result<RoutePoolModelTestOutcome, ApiError> {
     if route_model_test_targets_single_account(&request) {
-        return RouteModelTestService::test_model(&state.pool, request)
+        let activity = state.route_proxy.activity();
+        return RouteModelTestService::test_model_with_activity(&state.pool, &activity, request)
             .await
             .map_err(ApiError::from);
     }

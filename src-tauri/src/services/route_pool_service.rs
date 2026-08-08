@@ -6,9 +6,10 @@ use crate::models::route_pool::{
     RoutePoolRouteOutcome, RoutePoolRouteRequest, RoutePoolState, SetRoutePoolMembersInput,
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
+use crate::services::route_credential_activity::RouteCredentialActivityRegistry;
 use chrono::DateTime;
 use sqlx::SqlitePool;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 pub struct RoutePoolService;
 
@@ -81,6 +82,19 @@ impl RoutePoolService {
         pool: &SqlitePool,
         request: RoutePoolRouteRequest,
     ) -> Result<RoutePoolRouteOutcome, AppError> {
+        Self::route_once_with_activity(
+            pool,
+            &RouteCredentialActivityRegistry::default(),
+            request,
+        )
+        .await
+    }
+
+    pub async fn route_once_with_activity(
+        pool: &SqlitePool,
+        activity: &RouteCredentialActivityRegistry,
+        request: RoutePoolRouteRequest,
+    ) -> Result<RoutePoolRouteOutcome, AppError> {
         let platform = PlatformId::parse(&request.platform)?;
         PlatformCapabilityService::require(platform, PlatformOperation::GenericApiRouting)?;
         let platform_key = platform.as_str();
@@ -99,9 +113,45 @@ impl RoutePoolService {
         }
 
         let cursor = RoutePoolRepository::next_cursor_index(pool, platform_key).await?;
-        let selected_index = cursor.rem_euclid(members.len() as i64) as usize;
+        let candidate_indexes = Self::member_indexes_by_priority(&members, cursor);
+        let mut selected = None;
+        let mut selected_index = 0;
+        let mut selected_lease = None;
+        for index in candidate_indexes {
+            let member = &members[index];
+            if member.status != "ok" {
+                continue;
+            }
+            let Some(lease) = activity
+                .try_acquire(platform_key, &member.id, member.max_concurrency)
+                .await
+            else {
+                continue;
+            };
+            selected = Some(member.clone());
+            selected_index = index;
+            selected_lease = Some(lease);
+            break;
+        }
+        let Some(selected) = selected else {
+            let has_routeable_member = members.iter().any(|member| member.status == "ok");
+            return Err(AppError::Validation {
+                code: if has_routeable_member {
+                    "route_pool.concurrency_exhausted"
+                } else {
+                    "validation.route_pool_empty"
+                },
+                message: if has_routeable_member {
+                    "All route pool accounts are at their concurrency limit".to_string()
+                } else {
+                    "Route pool has no available accounts".to_string()
+                },
+                details: Some(platform_key.to_string()),
+                recoverable: true,
+            });
+        };
+        let _selected_lease = selected_lease;
         let next_index = (selected_index + 1) as i64 % members.len() as i64;
-        let selected = members[selected_index].clone();
 
         RoutePoolRepository::insert_usage_event(
             pool,
@@ -154,6 +204,23 @@ impl RoutePoolService {
             .await?,
         })
     }
+
+fn member_indexes_by_priority(
+    members: &[crate::models::route_pool::RoutePoolMemberAccount],
+    cursor: i64,
+) -> Vec<usize> {
+    let mut groups = BTreeMap::<i64, Vec<usize>>::new();
+    for (index, member) in members.iter().enumerate() {
+        groups.entry(member.route_priority).or_default().push(index);
+    }
+    groups
+        .into_values()
+        .flat_map(|indexes| {
+            let first = cursor.rem_euclid(indexes.len() as i64) as usize;
+            (0..indexes.len()).map(move |offset| indexes[(first + offset) % indexes.len()])
+        })
+        .collect()
+}
 
     async fn state(
         pool: &SqlitePool,
@@ -762,6 +829,134 @@ mod tests {
         .expect("healthy route member");
 
         assert_eq!(outcome.selected_account_id, healthy_id);
+    }
+
+    #[tokio::test]
+    async fn route_once_prefers_priority_and_falls_back_when_slots_are_full() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let first = account(&pool, "codex", "PriorityOne").await;
+        let second = account(&pool, "codex", "PriorityTwo").await;
+        sqlx::query(
+            "UPDATE route_credentials
+             SET route_priority = CASE id WHEN ? THEN 1 ELSE 2 END,
+                 max_concurrency = 1
+             WHERE id IN (?, ?)",
+        )
+        .bind(&first)
+        .bind(&first)
+        .bind(&second)
+        .execute(&pool)
+        .await
+        .expect("routing settings");
+        RoutePoolService::set_members(
+            &pool,
+            SetRoutePoolMembersInput {
+                platform: "codex".to_string(),
+                account_ids: vec![first.clone(), second.clone()],
+            },
+        )
+        .await
+        .expect("members");
+
+        let activity = RouteCredentialActivityRegistry::default();
+        let held_first = activity
+            .try_acquire("codex", &first, 1)
+            .await
+            .expect("hold priority one slot");
+        let fallback = RoutePoolService::route_once_with_activity(
+            &pool,
+            &activity,
+            RoutePoolRouteRequest {
+                platform: "codex".to_string(),
+                token_count: None,
+                cost_micros: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .expect("fallback route");
+        assert_eq!(fallback.selected_account_id, second);
+
+        drop(held_first);
+        let primary = RoutePoolService::route_once_with_activity(
+            &pool,
+            &activity,
+            RoutePoolRouteRequest {
+                platform: "codex".to_string(),
+                token_count: None,
+                cost_micros: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .expect("priority one route");
+        assert_eq!(primary.selected_account_id, first);
+
+        let held_first = activity
+            .try_acquire("codex", &first, 1)
+            .await
+            .expect("hold priority one slot again");
+        let held_second = activity
+            .try_acquire("codex", &second, 1)
+            .await
+            .expect("hold priority two slot");
+        let error = RoutePoolService::route_once_with_activity(
+            &pool,
+            &activity,
+            RoutePoolRouteRequest {
+                platform: "codex".to_string(),
+                token_count: None,
+                cost_micros: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .expect_err("all slots are full");
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "route_pool.concurrency_exhausted",
+                ..
+            }
+        ));
+        drop(held_first);
+        drop(held_second);
+    }
+
+    #[tokio::test]
+    async fn route_once_keeps_paused_members_but_never_selects_them() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let paused = credential(&pool, "codex", "Paused", "paused").await;
+        let healthy = account(&pool, "codex", "Healthy").await;
+        RoutePoolService::set_members(
+            &pool,
+            SetRoutePoolMembersInput {
+                platform: "codex".to_string(),
+                account_ids: vec![paused.clone(), healthy.clone()],
+            },
+        )
+        .await
+        .expect("members");
+
+        let state = RoutePoolService::get(&pool, "codex".to_string(), None, None, None)
+            .await
+            .expect("pool state");
+        assert_eq!(state.account_ids, vec![paused.clone(), healthy.clone()]);
+
+        let outcome = RoutePoolService::route_once(
+            &pool,
+            RoutePoolRouteRequest {
+                platform: "codex".to_string(),
+                token_count: None,
+                cost_micros: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .expect("healthy route");
+        assert_eq!(outcome.selected_account_id, healthy);
     }
 
     #[tokio::test]

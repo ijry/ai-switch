@@ -13,6 +13,8 @@ pub struct RouteCredential {
     pub email: Option<String>,
     pub status: String,
     pub sort_order: i64,
+    pub route_priority: i64,
+    pub max_concurrency: i64,
     pub batch_id: Option<String>,
     #[sqlx(default)]
     pub batch_name: Option<String>,
@@ -36,6 +38,8 @@ pub struct RouteCredential {
     pub last_failure_message: Option<String>,
     #[sqlx(default)]
     pub last_failure_response_json: Option<String>,
+    #[sqlx(default)]
+    pub active_request_count: i64,
     #[sqlx(default)]
     pub request_count: i64,
     #[sqlx(default)]
@@ -77,6 +81,8 @@ pub struct UpdateRouteCredentialInput {
     pub display_name: String,
     pub email: Option<String>,
     pub status: String,
+    pub route_priority: i64,
+    pub max_concurrency: i64,
     pub secret_payload_json: String,
     pub config_json: String,
     pub preview_json: String,

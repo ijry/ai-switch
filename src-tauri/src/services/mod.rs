@@ -10,6 +10,7 @@ pub mod official_agent_identity_service;
 pub mod platform_capability_service;
 pub mod response_failure_service;
 pub mod route_config_service;
+pub mod route_credential_activity;
 pub mod route_credential_service;
 pub mod route_credential_transfer_import_service;
 pub mod route_credential_transfer_service;

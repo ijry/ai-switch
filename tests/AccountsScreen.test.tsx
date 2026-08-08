@@ -22,6 +22,7 @@ import {
   refreshRouteCredentialsQuota,
   restoreRouteCredentials,
   routePoolTestModel,
+  setRouteCredentialStatuses,
   setRoutePoolMembers,
   startRouteProxy,
   stopRouteProxy,
@@ -39,6 +40,7 @@ import type {
   PlatformCapability,
   PlatformId,
   RouteCredential,
+  RouteCredentialActivityEvent,
   RoutePoolModelTestOutcome,
   RoutePoolStats,
 } from "../src/lib/api/types";
@@ -66,11 +68,22 @@ vi.mock("../src/lib/api/client", () => ({
   refreshRouteCredentialsQuota: vi.fn(),
   restoreRouteCredentials: vi.fn(),
   routePoolTestModel: vi.fn(),
+  setRouteCredentialStatuses: vi.fn(),
   setRoutePoolMembers: vi.fn(),
   startRouteProxy: vi.fn(),
   stopRouteProxy: vi.fn(),
   updateRouteCredential: vi.fn(),
   writeRouteProxyConfigs: vi.fn(),
+}));
+
+const transportTestState = vi.hoisted(() => ({
+  activityHandler: null as ((payload: unknown) => void) | null,
+  subscribe: vi.fn(),
+}));
+
+vi.mock("../src/lib/transport", () => ({
+  getTransport: () => transportTestState,
+  isTauriRuntime: () => false,
 }));
 
 vi.mock("../src/lib/routeProxyModels", () => ({
@@ -94,6 +107,8 @@ const credentialsFixture: RouteCredential[] = [
     email: "team@example.com",
     status: "ok",
     sort_order: 0,
+    route_priority: 3,
+    max_concurrency: 1,
     batch_id: "batch-1",
     batch_name: "Codex Batch",
     secret_payload_json: "{\"access_token\":\"at\",\"refresh_token\":\"rt\"}",
@@ -103,6 +118,7 @@ const credentialsFixture: RouteCredential[] = [
     success_count: 2,
     failure_count: 1,
     success_rate: 66.6667,
+    active_request_count: 0,
     created_at: "2026-07-13T00:00:00Z",
     updated_at: "2026-07-13T00:00:00Z",
   },
@@ -114,6 +130,8 @@ const credentialsFixture: RouteCredential[] = [
     email: null,
     status: "ok",
     sort_order: 1,
+    route_priority: 3,
+    max_concurrency: 1,
     batch_id: null,
     batch_name: null,
     secret_payload_json: "{\"api_key\":\"sk-test\"}",
@@ -123,6 +141,7 @@ const credentialsFixture: RouteCredential[] = [
     success_count: 0,
     failure_count: 0,
     success_rate: null,
+    active_request_count: 0,
     created_at: "2026-07-13T00:00:00Z",
     updated_at: "2026-07-13T00:00:00Z",
   },
@@ -241,6 +260,16 @@ describe("AccountsScreen", () => {
     vi.mocked(refreshRouteCredentialsQuota).mockReset();
     vi.mocked(restoreRouteCredentials).mockReset();
     vi.mocked(routePoolTestModel).mockReset();
+    transportTestState.activityHandler = null;
+    transportTestState.subscribe.mockReset();
+    transportTestState.subscribe.mockImplementation(
+      async (event: string, handler: (payload: unknown) => void) => {
+        if (event === "route-credential-activity") {
+          transportTestState.activityHandler = handler;
+        }
+        return () => undefined;
+      },
+    );
     vi.mocked(setRoutePoolMembers).mockReset();
     vi.mocked(startRouteProxy).mockReset();
     vi.mocked(stopRouteProxy).mockReset();
@@ -403,6 +432,7 @@ describe("AccountsScreen", () => {
       };
     });
     vi.mocked(routePoolTestModel).mockResolvedValue(modelTestOutcomeFixture());
+    vi.mocked(setRouteCredentialStatuses).mockResolvedValue(undefined);
     vi.mocked(startRouteProxy).mockResolvedValue({
       running: true,
       bind_host: "127.0.0.1",
@@ -512,6 +542,76 @@ describe("AccountsScreen", () => {
     expect(screen.getByText("已加入 1 个账号")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "算力池" })).toBeInTheDocument();
     expect(screen.queryByLabelText("批量加入算力池")).not.toBeInTheDocument();
+  });
+
+  it("batch updates selected account statuses and clears the selection", async () => {
+    renderScreen();
+
+    await screen.findByText("Team Account");
+    await userEvent.click(screen.getByLabelText("选择 Team Account"));
+    await userEvent.click(screen.getByLabelText("选择 API Account"));
+    await userEvent.selectOptions(screen.getByLabelText("批量设置状态"), "paused");
+    await userEvent.click(screen.getByLabelText("应用批量状态"));
+
+    await waitFor(() =>
+      expect(setRouteCredentialStatuses).toHaveBeenCalledWith(
+        ["cred-official-1", "cred-api-1"],
+        "paused",
+      ),
+    );
+    expect(screen.queryByText("已选 2 个账号")).not.toBeInTheDocument();
+  });
+
+  it("keeps the account selection and shows an error when batch status update fails", async () => {
+    vi.mocked(setRouteCredentialStatuses).mockRejectedValueOnce(
+      new Error("批量设置状态失败"),
+    );
+    renderScreen();
+
+    await screen.findByText("Team Account");
+    await userEvent.click(screen.getByLabelText("选择 Team Account"));
+    await userEvent.selectOptions(screen.getByLabelText("批量设置状态"), "paused");
+    await userEvent.click(screen.getByLabelText("应用批量状态"));
+
+    expect(await screen.findByText("批量设置状态失败")).toBeInTheDocument();
+    expect(screen.getByText("已选 1 个账号")).toBeInTheDocument();
+  });
+
+  it("updates the account activity indicator from transport events", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      {
+        ...credentialsFixture[0],
+        max_concurrency: 2,
+      },
+      credentialsFixture[1],
+    ]);
+    renderScreen();
+
+    expect(await screen.findByText("Team Account")).toBeInTheDocument();
+    expect(screen.getAllByText("P3")).toHaveLength(2);
+    expect(screen.getAllByText("并发 2")).toHaveLength(1);
+    expect(screen.queryByTestId("credential-activity-cred-official-1")).not.toBeInTheDocument();
+
+    const event: RouteCredentialActivityEvent = {
+      platform: "codex",
+      credential_id: "cred-official-1",
+      active_request_count: 1,
+      max_concurrency: 2,
+    };
+    act(() => {
+      transportTestState.activityHandler?.(event);
+    });
+    expect(await screen.findByLabelText("正在处理请求，当前 1/2")).toBeInTheDocument();
+
+    act(() => {
+      transportTestState.activityHandler?.({
+        ...event,
+        active_request_count: 0,
+      });
+    });
+    await waitFor(() =>
+      expect(screen.queryByTestId("credential-activity-cred-official-1")).not.toBeInTheDocument(),
+    );
   });
 
   it("shows account model mapping tags and the complete mapping popover", async () => {
@@ -1584,6 +1684,8 @@ describe("AccountsScreen", () => {
         display_name: "Updated Team Account",
         email: "team@example.com",
         status: "warning",
+        route_priority: 3,
+        max_concurrency: 1,
         secret_payload_json: "{\n  \"access_token\": \"at\",\n  \"refresh_token\": \"rt\"\n}",
         config_json: "{\n  \"type\": \"codex\"\n}",
         preview_json: "{\n  \"auth_json\": {}\n}",

@@ -195,11 +195,11 @@ impl RoutePoolRepository {
         platform: &str,
     ) -> Result<Vec<RoutePoolMemberAccount>, AppError> {
         let rows = sqlx::query(
-            "SELECT a.id, a.display_name
+            "SELECT a.id, a.display_name, a.status, a.route_priority, a.max_concurrency
              FROM route_pool_members rpm
              INNER JOIN route_credentials a ON a.id = rpm.route_credential_id
-             WHERE rpm.platform = ? AND rpm.enabled = 1 AND a.archived_at IS NULL AND a.status = 'ok'
-             ORDER BY rpm.sort_order ASC, rpm.created_at ASC",
+             WHERE rpm.platform = ? AND rpm.enabled = 1 AND a.archived_at IS NULL
+             ORDER BY a.route_priority ASC, rpm.sort_order ASC, rpm.created_at ASC",
         )
         .bind(platform)
         .fetch_all(pool)
@@ -216,6 +216,9 @@ impl RoutePoolRepository {
             .map(|row| RoutePoolMemberAccount {
                 id: row.get("id"),
                 display_name: row.get("display_name"),
+                status: row.get("status"),
+                route_priority: row.get("route_priority"),
+                max_concurrency: row.get("max_concurrency"),
             })
             .collect())
     }

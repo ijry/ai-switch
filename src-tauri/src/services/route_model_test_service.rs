@@ -11,12 +11,16 @@ use crate::services::http_client::{
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::response_failure_service::detect_response_failed;
+use crate::services::route_credential_activity::{
+    RouteCredentialActivityLease, RouteCredentialActivityRegistry,
+};
 use crate::services::route_protocol_bridge::transform_response as transform_protocol_bridge_response;
 use crate::services::route_proxy_service::{
     build_target_url, build_upstream_request_with_bridge, classify_proxy_failure,
     extract_usage_breakdown, maybe_persist_official_quota_from_response,
-    maybe_refresh_official_credential, normalize_api_upstream_path, select_pool_credentials,
-    ProxyFailureKind, RouteProxyService, SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
+    credential_indexes_by_priority, maybe_refresh_official_credential, normalize_api_upstream_path,
+    select_pool_credentials, ProxyFailureKind, RouteProxyService, SelectedCredential,
+    ROUTE_PROXY_TRACE_HEADER,
 };
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
@@ -46,6 +50,19 @@ impl RouteModelTestService {
         pool: &SqlitePool,
         request: RoutePoolModelTestRequest,
     ) -> Result<RoutePoolModelTestOutcome, AppError> {
+        Self::test_model_with_activity(
+            pool,
+            &RouteCredentialActivityRegistry::default(),
+            request,
+        )
+        .await
+    }
+
+    pub async fn test_model_with_activity(
+        pool: &SqlitePool,
+        activity: &RouteCredentialActivityRegistry,
+        request: RoutePoolModelTestRequest,
+    ) -> Result<RoutePoolModelTestOutcome, AppError> {
         let platform_id = PlatformId::parse(&request.platform)?;
         let model_test_rule =
             PlatformCapabilityService::require(platform_id, PlatformOperation::ModelTest)?;
@@ -67,10 +84,11 @@ impl RouteModelTestService {
         let explicit_account_test = requested_account_id.is_some();
         let cursor = RoutePoolRepository::next_cursor_index(pool, &platform).await?;
 
-        let (credential, next_index) = if let Some(account_id) = requested_account_id {
+        let (credential, next_index, activity_lease) = if let Some(account_id) = requested_account_id {
             (
                 load_account_credential(pool, &platform, &account_id).await?,
                 cursor,
+                None,
             )
         } else {
             let credentials = filter_model_test_credentials(
@@ -87,11 +105,42 @@ impl RouteModelTestService {
                 });
             }
 
-            let selected_index = cursor.rem_euclid(credentials.len() as i64) as usize;
-            let next_index = (selected_index + 1) as i64 % credentials.len() as i64;
-            (credentials[selected_index].clone(), next_index)
+            let mut selected = None;
+            for selected_index in credential_indexes_by_priority(&credentials, cursor) {
+                let credential = credentials[selected_index].clone();
+                let Some(lease) = activity
+                    .try_acquire(&platform, &credential.id, credential.max_concurrency)
+                    .await
+                else {
+                    continue;
+                };
+                let next_index = (selected_index + 1) as i64 % credentials.len() as i64;
+                selected = Some((credential, next_index, lease));
+                break;
+            }
+            let Some((credential, next_index, lease)) = selected else {
+                return Err(AppError::Validation {
+                    code: "route_pool.concurrency_exhausted",
+                    message: "All route pool accounts are at their concurrency limit".to_string(),
+                    details: Some(platform.clone()),
+                    recoverable: true,
+                });
+            };
+            (credential, next_index, Some(lease))
         };
         validate_model_test_credential(platform_id, &credential)?;
+        let _activity_lease: RouteCredentialActivityLease = match activity_lease {
+            Some(lease) => lease,
+            None => activity
+                .try_acquire(&platform, &credential.id, credential.max_concurrency)
+                .await
+                .ok_or_else(|| AppError::Validation {
+                    code: "route_pool.concurrency_exhausted",
+                    message: "All route pool accounts are at their concurrency limit".to_string(),
+                    details: Some(platform.clone()),
+                    recoverable: true,
+                })?,
+        };
         let credential = maybe_refresh_official_credential(pool, &credential)
             .await
             .map_err(|error| AppError::Validation {
@@ -821,7 +870,8 @@ async fn load_account_credential(
     account_id: &str,
 ) -> Result<SelectedCredential, AppError> {
     let row = sqlx::query(
-        "SELECT id, platform, kind, display_name, status, secret_payload_json, config_json,
+        "SELECT id, platform, kind, display_name, status, route_priority, max_concurrency,
+                secret_payload_json, config_json,
                 next_retry_at, cooldown_until
          FROM route_credentials
          WHERE id = ? AND platform = ? AND archived_at IS NULL",
@@ -851,6 +901,8 @@ async fn load_account_credential(
         kind: row.get("kind"),
         display_name: row.get("display_name"),
         status: row.get("status"),
+        route_priority: row.get("route_priority"),
+        max_concurrency: row.get("max_concurrency"),
         secret_payload_json: row.get("secret_payload_json"),
         config_json: row.get("config_json"),
     })
@@ -1314,6 +1366,14 @@ fn validate_model_test_credential(
     platform: PlatformId,
     credential: &SelectedCredential,
 ) -> Result<(), AppError> {
+    if credential.status == "paused" {
+        return Err(AppError::Validation {
+            code: "validation.route_credential_paused",
+            message: "Paused route credentials cannot be tested".to_string(),
+            details: Some(credential.id.clone()),
+            recoverable: true,
+        });
+    }
     let rule = PlatformCapabilityService::require(platform, PlatformOperation::ModelTest)?;
     if !rule.credential_kinds.is_empty()
         && !rule
@@ -1407,6 +1467,8 @@ mod tests {
             kind: "api".to_string(),
             display_name: "API Account".to_string(),
             status: "ok".to_string(),
+            route_priority: 3,
+            max_concurrency: 1,
             secret_payload_json: r#"{"api_key":"sk-test"}"#.to_string(),
             config_json: json!({
                 "base_url": "https://api.example.com/v1",
@@ -1424,6 +1486,8 @@ mod tests {
             kind: "official".to_string(),
             display_name: "Official Account".to_string(),
             status: "ok".to_string(),
+            route_priority: 3,
+            max_concurrency: 1,
             secret_payload_json: r#"{"access_token":"at"}"#.to_string(),
             config_json: "{}".to_string(),
         }

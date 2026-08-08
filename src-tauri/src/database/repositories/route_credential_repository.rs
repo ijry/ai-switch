@@ -36,6 +36,7 @@ struct QuotaColumns {
 
 const PAGE_SELECT: &str = "SELECT
     rc.id, rc.platform, rc.kind, rc.display_name, rc.email, rc.status, rc.sort_order,
+    rc.route_priority, rc.max_concurrency,
     rc.batch_id, b.name AS batch_name, rc.secret_payload_json, rc.config_json, rc.preview_json,
     rc.subscription_type, rc.primary_remain, rc.weekly_remain, rc.reset_primary, rc.reset_weekly,
     rc.transient_failure_count, rc.next_retry_at, rc.cooldown_until, rc.last_failure_kind,
@@ -322,6 +323,8 @@ async fn create_with_connection(
             rc.email,
             rc.status,
             rc.sort_order,
+            rc.route_priority,
+            rc.max_concurrency,
             rc.batch_id,
             b.name AS batch_name,
             rc.secret_payload_json,
@@ -440,6 +443,8 @@ impl RouteCredentialRepository {
                 rc.email,
                 rc.status,
                 rc.sort_order,
+                rc.route_priority,
+                rc.max_concurrency,
                 rc.batch_id,
                 b.name AS batch_name,
                 rc.secret_payload_json,
@@ -501,6 +506,8 @@ impl RouteCredentialRepository {
                 rc.email,
                 rc.status,
                 rc.sort_order,
+                rc.route_priority,
+                rc.max_concurrency,
                 rc.batch_id,
                 b.name AS batch_name,
                 rc.secret_payload_json,
@@ -572,6 +579,8 @@ impl RouteCredentialRepository {
                 rc.email,
                 rc.status,
                 rc.sort_order,
+                rc.route_priority,
+                rc.max_concurrency,
                 rc.batch_id,
                 b.name AS batch_name,
                 rc.secret_payload_json,
@@ -631,6 +640,8 @@ impl RouteCredentialRepository {
                 rc.email,
                 rc.status,
                 rc.sort_order,
+                rc.route_priority,
+                rc.max_concurrency,
                 rc.batch_id,
                 b.name AS batch_name,
                 rc.secret_payload_json,
@@ -887,7 +898,8 @@ impl RouteCredentialRepository {
         let quota = quota_columns_from_config_json(&input.config_json);
         let result = sqlx::query(
             "UPDATE route_credentials
-             SET display_name = ?, email = ?, status = ?, secret_payload_json = ?,
+             SET display_name = ?, email = ?, status = ?, route_priority = ?,
+                 max_concurrency = ?, secret_payload_json = ?,
                  config_json = ?, preview_json = ?,
                  subscription_type = ?, primary_remain = ?, weekly_remain = ?,
                  reset_primary = ?, reset_weekly = ?,
@@ -898,6 +910,8 @@ impl RouteCredentialRepository {
         .bind(&input.display_name)
         .bind(&input.email)
         .bind(&input.status)
+        .bind(input.route_priority)
+        .bind(input.max_concurrency)
         .bind(&input.secret_payload_json)
         .bind(&input.config_json)
         .bind(&input.preview_json)
@@ -982,6 +996,107 @@ impl RouteCredentialRepository {
         }
 
         Ok(())
+    }
+
+    pub async fn set_statuses(
+        pool: &SqlitePool,
+        ids: &[String],
+        status: &str,
+    ) -> Result<(), AppError> {
+        if !matches!(status, "ok" | "warning" | "error" | "revoked" | "paused") {
+            return Err(AppError::Validation {
+                code: "validation.route_credential_status",
+                message: "Route credential status is not supported".to_string(),
+                details: Some(status.to_string()),
+                recoverable: true,
+            });
+        }
+
+        let mut seen = HashSet::with_capacity(ids.len());
+        let unique_ids = ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .filter(|id| seen.insert(*id))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if unique_ids.is_empty() {
+            return Err(AppError::Validation {
+                code: "validation.route_credential_selection_empty",
+                message: "At least one route credential must be selected".to_string(),
+                details: None,
+                recoverable: true,
+            });
+        }
+
+        let mut tx = pool.begin().await.map_err(|err| {
+            database_error(
+                "database.route_credential_statuses_tx",
+                "Could not start route credential status update",
+                err,
+            )
+        })?;
+
+        let mut count_query = QueryBuilder::<Sqlite>::new(
+            "SELECT COUNT(*) FROM route_credentials WHERE id IN (",
+        );
+        let mut count_separated = count_query.separated(", ");
+        for id in &unique_ids {
+            count_separated.push_bind(id);
+        }
+        count_separated.push_unseparated(")");
+        let count: i64 = count_query
+            .build_query_scalar()
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|err| {
+                database_error(
+                    "database.route_credential_statuses_count",
+                    "Could not validate selected route credentials",
+                    err,
+                )
+            })?;
+        if count != unique_ids.len() as i64 {
+            return Err(AppError::Validation {
+                code: "validation.route_credential_not_found",
+                message: "One or more route credentials do not exist".to_string(),
+                details: None,
+                recoverable: true,
+            });
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let mut update_query =
+            QueryBuilder::<Sqlite>::new("UPDATE route_credentials SET status = ");
+        update_query
+            .push_bind(status)
+            .push(", updated_at = ")
+            .push_bind(&now)
+            .push(" WHERE id IN (");
+        let mut update_separated = update_query.separated(", ");
+        for id in &unique_ids {
+            update_separated.push_bind(id);
+        }
+        update_separated.push_unseparated(")");
+        update_query
+            .build()
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| {
+                database_error(
+                    "database.route_credential_statuses_update",
+                    "Could not update route credential statuses",
+                    err,
+                )
+            })?;
+
+        tx.commit().await.map_err(|err| {
+            database_error(
+                "database.route_credential_statuses_commit",
+                "Could not commit route credential status update",
+                err,
+            )
+        })
     }
 
     pub async fn update_status(pool: &SqlitePool, id: &str, status: &str) -> Result<(), AppError> {
@@ -1711,6 +1826,81 @@ mod tests {
         assert_eq!(listed[0].success_count, 0);
         assert_eq!(listed[0].failure_count, 0);
         assert_eq!(listed[0].success_rate, None);
+    }
+
+    #[tokio::test]
+    async fn set_statuses_updates_all_selected_accounts_atomically() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let first = create_api_credential(&pool, "codex", "First").await;
+        let second = create_api_credential(&pool, "codex", "Second").await;
+        let third = create_api_credential(&pool, "codex", "Third").await;
+
+        RouteCredentialRepository::set_statuses(
+            &pool,
+            &[first.id.clone(), second.id.clone(), first.id.clone()],
+            "paused",
+        )
+        .await
+        .unwrap();
+
+        let listed = RouteCredentialRepository::list_by_platform(&pool, "codex")
+            .await
+            .unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|credential| (credential.id.as_str(), credential.status.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (first.id.as_str(), "paused"),
+                (second.id.as_str(), "paused"),
+                (third.id.as_str(), "ok"),
+            ]
+        );
+
+        let empty_error = RouteCredentialRepository::set_statuses(&pool, &[], "ok")
+            .await
+            .expect_err("empty selection");
+        assert!(matches!(
+            empty_error,
+            AppError::Validation {
+                code: "validation.route_credential_selection_empty",
+                ..
+            }
+        ));
+
+        let invalid_status_error =
+            RouteCredentialRepository::set_statuses(&pool, &[first.id.clone()], "invalid")
+                .await
+                .expect_err("invalid status");
+        assert!(matches!(
+            invalid_status_error,
+            AppError::Validation {
+                code: "validation.route_credential_status",
+                ..
+            }
+        ));
+
+        let missing_error = RouteCredentialRepository::set_statuses(
+            &pool,
+            &[first.id.clone(), "missing".to_string()],
+            "error",
+        )
+        .await
+        .expect_err("missing account");
+        assert!(matches!(
+            missing_error,
+            AppError::Validation {
+                code: "validation.route_credential_not_found",
+                ..
+            }
+        ));
+
+        let unchanged = RouteCredentialRepository::get(&pool, &first.id)
+            .await
+            .unwrap();
+        assert_eq!(unchanged.status, "paused");
     }
 
     #[tokio::test]

@@ -15,6 +15,7 @@ use crate::services::official_agent_identity_service::{
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::response_failure_service::detect_response_failed;
+use crate::services::route_credential_activity::RouteCredentialActivityRegistry;
 use crate::services::route_config_service::generate_route_proxy_key;
 use crate::services::route_protocol_bridge::{
     prepare_request as prepare_protocol_bridge_request,
@@ -35,7 +36,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -84,6 +85,7 @@ pub enum RouteProxyTransport {
 #[derive(Clone, Default)]
 pub struct RouteProxyRuntimeState {
     inner: Arc<Mutex<RouteProxyInner>>,
+    activity: RouteCredentialActivityRegistry,
 }
 
 #[derive(Default)]
@@ -99,6 +101,7 @@ struct RouteProxyInner {
 struct ProxyAppState {
     pool: SqlitePool,
     key_cache: Arc<Mutex<RouteProxyKeyCache>>,
+    activity: RouteCredentialActivityRegistry,
 }
 
 #[derive(Default)]
@@ -106,6 +109,12 @@ struct RouteProxyKeyCache {
     loaded_at: Option<Instant>,
     // proxy_key -> platform
     by_key: HashMap<String, String>,
+}
+
+impl RouteProxyRuntimeState {
+    pub fn activity(&self) -> RouteCredentialActivityRegistry {
+        self.activity.clone()
+    }
 }
 
 #[derive(Debug)]
@@ -217,6 +226,7 @@ impl RouteProxyService {
         let app_state = ProxyAppState {
             pool,
             key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
+            activity: state.activity.clone(),
         };
         let app = Router::new()
             .fallback(any(proxy_handler))
@@ -485,12 +495,21 @@ async fn forward_request(
     let client = build_outbound_http_client(None)?;
     let request_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
         .map_err(|err| format!("Unsupported method: {err}"))?;
-    let retry_indexes = retry_credential_indexes(credentials.len(), cursor);
+    let retry_indexes = credential_indexes_by_priority(&credentials, cursor);
     let mut retry_errors = Vec::new();
     let request_start = Instant::now();
+    let mut acquired_any = false;
 
     for credential_index in retry_indexes {
         let selected = &credentials[credential_index];
+        let Some(_activity_lease) = state
+            .activity
+            .try_acquire(&platform, &selected.id, selected.max_concurrency)
+            .await
+        else {
+            continue;
+        };
+        acquired_any = true;
         let credential = match maybe_refresh_official_credential(pool, selected).await {
             Ok(credential) => credential,
             Err(error) => {
@@ -780,6 +799,12 @@ async fn forward_request(
 
         let _ = RouteCredentialRepository::clear_transient_failure(pool, &credential.id).await;
         return proxy_upstream_response(status, upstream_headers, response_bytes.to_vec());
+    }
+
+    if !acquired_any {
+        return Err(format!(
+            "route_pool.concurrency_exhausted: all route credentials are at their concurrency limit on platform '{platform}'"
+        ));
     }
 
     Err(format!(
@@ -1151,6 +1176,8 @@ pub struct SelectedCredential {
     pub kind: String,
     pub display_name: String,
     pub status: String,
+    pub route_priority: i64,
+    pub max_concurrency: i64,
     pub secret_payload_json: String,
     pub config_json: String,
 }
@@ -1160,7 +1187,9 @@ pub async fn select_pool_credentials(
     platform: &str,
 ) -> Result<Vec<SelectedCredential>, AppError> {
     let rows = sqlx::query(
-        "SELECT c.id, c.platform, c.kind, c.display_name, c.status, c.secret_payload_json, c.config_json,
+        "SELECT c.id, c.platform, c.kind, c.display_name, c.status,
+                c.route_priority, c.max_concurrency,
+                c.secret_payload_json, c.config_json,
                 c.next_retry_at, c.cooldown_until
          FROM route_pool_members rpm
          INNER JOIN route_credentials c ON c.id = rpm.route_credential_id
@@ -1170,7 +1199,7 @@ pub async fn select_pool_credentials(
            AND c.status = 'ok'
            AND (c.primary_remain IS NULL OR c.primary_remain > 0)
            AND (c.weekly_remain IS NULL OR c.weekly_remain > 0)
-         ORDER BY rpm.sort_order ASC, rpm.created_at ASC",
+         ORDER BY c.route_priority ASC, rpm.sort_order ASC, rpm.created_at ASC",
     )
     .bind(platform)
     .fetch_all(pool)
@@ -1194,6 +1223,8 @@ pub async fn select_pool_credentials(
             kind: row.get("kind"),
             display_name: row.get("display_name"),
             status: row.get("status"),
+            route_priority: row.get("route_priority"),
+            max_concurrency: row.get("max_concurrency"),
             secret_payload_json: row.get("secret_payload_json"),
             config_json: row.get("config_json"),
         };
@@ -1287,6 +1318,28 @@ pub fn pick_credential(items: &[SelectedCredential], cursor: i64) -> Option<&Sel
     }
     let index = cursor.rem_euclid(items.len() as i64) as usize;
     items.get(index)
+}
+
+pub fn credential_indexes_by_priority(
+    credentials: &[SelectedCredential],
+    cursor: i64,
+) -> Vec<usize> {
+    let mut groups = BTreeMap::<i64, Vec<usize>>::new();
+    for (index, credential) in credentials.iter().enumerate() {
+        groups
+            .entry(credential.route_priority)
+            .or_default()
+            .push(index);
+    }
+
+    groups
+        .into_values()
+        .flat_map(|indexes| {
+            retry_credential_indexes(indexes.len(), cursor)
+                .into_iter()
+                .map(move |index| indexes[index])
+        })
+        .collect()
 }
 
 /// Third-party Responses gateways often reject Codex `tools[].type = "custom"`.
@@ -3296,6 +3349,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn route_proxy_falls_back_to_next_priority_when_first_account_is_at_limit() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let first_upstream =
+            start_fixed_upstream(StatusCode::OK, r#"{"route":"priority-one"}"#).await;
+        let second_upstream =
+            start_fixed_upstream(StatusCode::OK, r#"{"route":"priority-two"}"#).await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let first_id = create_proxy_api_credential(&pool, "priority-one", &first_upstream).await;
+        let second_id = create_proxy_api_credential(&pool, "priority-two", &second_upstream).await;
+        sqlx::query(
+            "UPDATE route_credentials
+             SET route_priority = CASE id WHEN ? THEN 1 ELSE 2 END,
+                 max_concurrency = 1
+             WHERE id IN (?, ?)",
+        )
+        .bind(&first_id)
+        .bind(&first_id)
+        .bind(&second_id)
+        .execute(&pool)
+        .await
+        .expect("routing settings");
+        RoutePoolRepository::replace_members(&pool, "codex", &[first_id.clone(), second_id.clone()])
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test-priority")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let held_lease = runtime
+            .activity()
+            .try_acquire("codex", &first_id, 1)
+            .await
+            .expect("hold first account concurrency slot");
+        let proxy = RouteProxyService::start(&runtime, pool, RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+        let client = reqwest::Client::new();
+        let endpoint = format!(
+            "{}/v1/chat/completions",
+            proxy.base_url.as_deref().expect("base url")
+        );
+
+        let fallback_response = client
+            .post(&endpoint)
+            .bearer_auth(&route_key)
+            .header(ROUTE_PROXY_PLATFORM_HEADER, "codex")
+            .json(&json!({"model":"gpt-5","messages":[]}))
+            .send()
+            .await
+            .expect("fallback response");
+        assert_eq!(fallback_response.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            fallback_response
+                .text()
+                .await
+                .expect("fallback body"),
+            r#"{"route":"priority-two"}"#
+        );
+
+        drop(held_lease);
+        let primary_response = client
+            .post(&endpoint)
+            .bearer_auth(&route_key)
+            .header(ROUTE_PROXY_PLATFORM_HEADER, "codex")
+            .json(&json!({"model":"gpt-5","messages":[]}))
+            .send()
+            .await
+            .expect("primary response");
+        assert_eq!(primary_response.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            primary_response.text().await.expect("primary body"),
+            r#"{"route":"priority-one"}"#
+        );
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
     async fn route_proxy_answers_cors_preflight_without_platform_authentication() {
         use crate::database::{create_memory_pool, run_migrations};
 
@@ -3693,6 +3828,8 @@ mod tests {
             kind: "api".to_string(),
             display_name: name.to_string(),
             status: "ok".to_string(),
+            route_priority: 3,
+            max_concurrency: 1,
             secret_payload_json: r#"{"api_key":"sk-test"}"#.to_string(),
             config_json: serde_json::json!({
                 "base_url": "https://api.example.com/v1",
@@ -3710,6 +3847,21 @@ mod tests {
     }
 
     #[test]
+    fn credential_priority_order_prefers_lower_priority_and_round_robins_within_group() {
+        let mut first = api_credential("priority-one-first", "openai");
+        first.route_priority = 1;
+        let mut second = api_credential("priority-one-second", "openai");
+        second.route_priority = 1;
+        let mut fallback = api_credential("priority-two", "openai");
+        fallback.route_priority = 2;
+        let credentials = vec![first, second, fallback];
+
+        assert_eq!(credential_indexes_by_priority(&credentials, 0), vec![0, 1, 2]);
+        assert_eq!(credential_indexes_by_priority(&credentials, 1), vec![1, 0, 2]);
+        assert_eq!(credential_indexes_by_priority(&credentials, 2), vec![0, 1, 2]);
+    }
+
+    #[test]
     fn partial_platform_api_requires_explicit_dialect() {
         let credential = SelectedCredential {
             id: "hermes-api".to_string(),
@@ -3717,6 +3869,8 @@ mod tests {
             kind: "api".to_string(),
             display_name: "Hermes API".to_string(),
             status: "ok".to_string(),
+            route_priority: 3,
+            max_concurrency: 1,
             secret_payload_json: r#"{"api_key":"sk-test"}"#.to_string(),
             config_json: json!({
                 "base_url": "https://api.example.com/v1",
@@ -3765,6 +3919,8 @@ mod tests {
             kind: "official".to_string(),
             display_name: "Hermes Official".to_string(),
             status: "ok".to_string(),
+            route_priority: 3,
+            max_concurrency: 1,
             secret_payload_json: r#"{"access_token":"at"}"#.to_string(),
             config_json: "{}".to_string(),
         };
@@ -4479,6 +4635,7 @@ mod tests {
         let state = ProxyAppState {
             pool,
             key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
+            activity: RouteCredentialActivityRegistry::default(),
         };
 
         let mut headers = HeaderMap::new();
@@ -4507,6 +4664,7 @@ mod tests {
         let state = ProxyAppState {
             pool,
             key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
+            activity: RouteCredentialActivityRegistry::default(),
         };
 
         let error = resolve_platform(&state, &HeaderMap::new(), None)
@@ -4529,6 +4687,8 @@ mod tests {
             kind: "official".to_string(),
             display_name: "Grok OAuth".to_string(),
             status: "ok".to_string(),
+            route_priority: 3,
+            max_concurrency: 1,
             secret_payload_json: r#"{"access_token":"at-xai","refresh_token":"rt-xai"}"#
                 .to_string(),
             config_json: serde_json::json!({
@@ -4588,6 +4748,8 @@ mod tests {
             kind: "official".to_string(),
             display_name: "Grok Custom UA".to_string(),
             status: "ok".to_string(),
+            route_priority: 3,
+            max_concurrency: 1,
             secret_payload_json: r#"{"access_token":"at-xai"}"#.to_string(),
             config_json: serde_json::json!({
                 "base_url": "https://cli-chat-proxy.grok.com/v1",
@@ -4637,6 +4799,8 @@ mod tests {
             kind: "official".to_string(),
             display_name: "Grok Empty UA".to_string(),
             status: "ok".to_string(),
+            route_priority: 3,
+            max_concurrency: 1,
             secret_payload_json: r#"{"access_token":"at-xai"}"#.to_string(),
             config_json: serde_json::json!({
                 "base_url": "https://cli-chat-proxy.grok.com/v1",
@@ -4704,6 +4868,8 @@ mod tests {
             kind: "official".to_string(),
             display_name: "Grok API".to_string(),
             status: "ok".to_string(),
+            route_priority: 3,
+            max_concurrency: 1,
             secret_payload_json: r#"{"access_token":"at-xai"}"#.to_string(),
             config_json: serde_json::json!({
                 "base_url": "https://api.x.ai/v1"
@@ -4740,6 +4906,8 @@ mod tests {
             kind: "official".to_string(),
             display_name: "K12 Agent".to_string(),
             status: "ok".to_string(),
+            route_priority: 3,
+            max_concurrency: 1,
             secret_payload_json: serde_json::json!({
                 "agent_runtime_id": "agent-runtime-1",
                 "agent_private_key": BASE64_STANDARD.encode(private_key.as_bytes()),

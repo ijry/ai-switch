@@ -1,5 +1,6 @@
 import { getTransport } from "../transport";
 import type {
+  AccountStatus,
   AppSettings,
   AppSettingsView,
   Batch,
@@ -294,6 +295,13 @@ export function archiveRouteCredentials(ids: string[]): Promise<void> {
 
 export function restoreRouteCredentials(ids: string[]): Promise<void> {
   return invoke("restore_route_credentials", { ids });
+}
+
+export function setRouteCredentialStatuses(
+  ids: string[],
+  status: AccountStatus,
+): Promise<void> {
+  return invoke("set_route_credential_statuses", { ids, status });
 }
 
 export function refreshRouteCredentialQuota(id: string): Promise<QuotaRefreshOutcome> {

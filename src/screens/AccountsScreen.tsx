@@ -60,6 +60,7 @@ import {
   refreshRouteCredentialsQuota,
   restoreRouteCredentials,
   routePoolTestModel,
+  setRouteCredentialStatuses,
   setRoutePoolMembers,
   startRouteProxy,
   stopRouteProxy,
@@ -76,6 +77,7 @@ import type {
   PlatformId,
   QuotaRefreshOutcome,
   RouteCredential,
+  RouteCredentialActivityEvent,
   RouteCredentialPage,
   RouteCredentialPoolScope,
   RouteCredentialSelectionContext,
@@ -97,7 +99,7 @@ import {
   USER_AGENT_PRESETS,
   writeUserAgentToConfig,
 } from "../lib/accountUserAgent";
-import { isTauriRuntime } from "../lib/transport";
+import { getTransport, isTauriRuntime } from "../lib/transport";
 import { fetchRouteProxyModels } from "../lib/routeProxyModels";
 import { copySensitiveText } from "../lib/routeCredentialTransfer";
 import {
@@ -170,6 +172,8 @@ function accountStatusLabel(status: string): string {
       return "异常";
     case "revoked":
       return "revoked";
+    case "paused":
+      return "暂停";
     default:
       return status || "未知";
   }
@@ -185,6 +189,8 @@ function accountStatusClass(status: string): string {
       return "bg-red-50 text-red-800";
     case "revoked":
       return "bg-rose-100 text-rose-900 ring-1 ring-rose-200";
+    case "paused":
+      return "bg-slate-100 text-slate-700 ring-1 ring-slate-200";
     default:
       return "bg-stone-100 text-stone-600";
   }
@@ -1448,6 +1454,7 @@ export function AccountsScreen({
   const modelTestReason = capabilityReason(modelTestRule);
   const [draftPoolIds, setDraftPoolIds] = useState<Set<string>>(() => new Set());
   const [selectedAccountIds, setSelectedAccountIds] = useState<Set<string>>(() => new Set());
+  const [batchStatus, setBatchStatus] = useState<AccountStatus | "">("");
   const [accountFilters, setAccountFilters] = useState<string[]>([]);
   const [accountPage, setAccountPage] = useState(1);
   const [accountPageSize, setAccountPageSize] = useState(20);
@@ -1504,6 +1511,8 @@ export function AccountsScreen({
   const [editName, setEditName] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [editStatus, setEditStatus] = useState<AccountStatus>("ok");
+  const [editPriority, setEditPriority] = useState(3);
+  const [editMaxConcurrency, setEditMaxConcurrency] = useState("1");
   const [editApiKey, setEditApiKey] = useState("");
   const [editApiKeyDecodeError, setEditApiKeyDecodeError] = useState<string | null>(null);
   const [editApiKeyOcrError, setEditApiKeyOcrError] = useState<string | null>(null);
@@ -1644,6 +1653,7 @@ export function AccountsScreen({
     setModelTestMenuCopied(null);
     setCopiedCredentialId(null);
     setConfigWriteError(null);
+    setBatchStatus("");
   }, [activePlatform]);
 
   useEffect(() => () => {
@@ -1707,6 +1717,7 @@ export function AccountsScreen({
     setRefreshMenuOpen(false);
     setModelTestMenuOpen(false);
     setModelTestMenuCopied(null);
+    setBatchStatus("");
   }, [accountView]);
 
 
@@ -1792,6 +1803,67 @@ export function AccountsScreen({
   });
 
   useEffect(() => {
+    let disposed = false;
+    let unsubscribe: (() => void) | undefined;
+
+    void getTransport()
+      .subscribe<RouteCredentialActivityEvent>(
+        "route-credential-activity",
+        (event) => {
+          if (event.platform !== activePlatform) {
+            return;
+          }
+          queryClient.setQueriesData<RouteCredentialPage>(
+            { queryKey: ["route-credential-page", activePlatform] },
+            (current) => {
+              if (!current) {
+                return current;
+              }
+              return {
+                ...current,
+                items: current.items.map((credential) =>
+                  credential.id === event.credential_id
+                    ? {
+                        ...credential,
+                        active_request_count: event.active_request_count,
+                        max_concurrency: event.max_concurrency,
+                      }
+                    : credential,
+                ),
+              };
+            },
+          );
+          queryClient.setQueryData<RouteCredential[]>(
+            ["route-credentials-all", activePlatform],
+            (current) =>
+              current?.map((credential) =>
+                credential.id === event.credential_id
+                  ? {
+                      ...credential,
+                      active_request_count: event.active_request_count,
+                      max_concurrency: event.max_concurrency,
+                    }
+                  : credential,
+              ),
+          );
+        },
+      )
+      .then((nextUnsubscribe) => {
+        if (disposed) {
+          nextUnsubscribe();
+        } else {
+          unsubscribe = nextUnsubscribe;
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      disposed = true;
+      unsubscribe?.();
+    };
+  }, [activePlatform, queryClient]);
+
+  useEffect(() => {
     setRequestPage(1);
     setSelectedAccountIds(new Set());
     setRoutePoolFeedback(null);
@@ -1830,6 +1902,8 @@ export function AccountsScreen({
     setEditName(editingCredential.display_name);
     setEditEmail(editingCredential.email ?? "");
     setEditStatus(editingCredential.status);
+    setEditPriority(editingCredential.route_priority ?? 3);
+    setEditMaxConcurrency(String(editingCredential.max_concurrency ?? 1));
     const secret = parseJsonObject(editingCredential.secret_payload_json);
     const config = parseJsonObject(editingCredential.config_json);
     setEditSecretJson(parseJsonPreview(editingCredential.secret_payload_json, editingCredential.secret_payload_json));
@@ -2412,6 +2486,13 @@ export function AccountsScreen({
           throw new Error("Base URL 不能为空");
         }
       }
+      if (!Number.isInteger(editPriority) || editPriority < 1 || editPriority > 5) {
+        throw new Error("路由优先级必须是 1-5 的整数");
+      }
+      const maxConcurrency = Number(editMaxConcurrency);
+      if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
+        throw new Error("最大并发数必须是大于等于 1 的整数");
+      }
       setEditModelMappingsError(null);
       const nextSecretJson =
         editingCredential.kind === "api"
@@ -2441,6 +2522,8 @@ export function AccountsScreen({
         display_name: editName.trim(),
         email: editingCredential.kind === "api" ? null : editEmail.trim() || null,
         status: editStatus,
+        route_priority: editPriority,
+        max_concurrency: maxConcurrency,
         secret_payload_json: nextSecretJson,
         config_json: nextConfigJson,
         preview_json: nextPreviewJson,
@@ -2541,6 +2624,15 @@ export function AccountsScreen({
       await invalidateAccountData();
     },
   });
+  const batchStatusMutation = useMutation({
+    mutationFn: ({ ids, status }: { ids: string[]; status: AccountStatus }) =>
+      setRouteCredentialStatuses(ids, status),
+    onSuccess: async () => {
+      setSelectedAccountIds(new Set());
+      setBatchStatus("");
+      await invalidateAccountData();
+    },
+  });
 
   const toggleAccountSelection = (credentialId: string) => {
     setSelectedAccountIds((current) => {
@@ -2578,6 +2670,21 @@ export function AccountsScreen({
       return;
     }
     restoreMutation.mutate(Array.from(selectedAccountIds));
+  };
+
+  const setSelectedAccountsStatus = () => {
+    if (
+      selectedAccountIds.size === 0 ||
+      !batchStatus ||
+      batchStatusMutation.isPending ||
+      accountView === "stats"
+    ) {
+      return;
+    }
+    batchStatusMutation.mutate({
+      ids: Array.from(selectedAccountIds),
+      status: batchStatus,
+    });
   };
 
   const toggleAccountFilter = (key: string) => {
@@ -3755,6 +3862,34 @@ export function AccountsScreen({
                 </button>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                {accountView !== "archived" && (
+                  <>
+                    <select
+                      aria-label="批量设置状态"
+                      className="h-7 rounded-lg border border-amber-300 bg-white px-2 text-[12px] font-semibold text-stone-700"
+                      onChange={(event) => setBatchStatus(event.target.value as AccountStatus | "")}
+                      value={batchStatus}
+                    >
+                      <option value="">批量设置状态</option>
+                      <option value="ok">正常</option>
+                      <option value="paused">暂停</option>
+                      <option value="warning">警告</option>
+                      <option value="error">异常</option>
+                      <option value="revoked">revoked</option>
+                    </select>
+                    {batchStatus && (
+                      <button
+                        aria-label="应用批量状态"
+                        className="inline-flex items-center justify-center rounded-lg bg-amber-700 px-2.5 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-amber-800 disabled:opacity-50"
+                        disabled={batchStatusMutation.isPending}
+                        onClick={setSelectedAccountsStatus}
+                        type="button"
+                      >
+                        {batchStatusMutation.isPending ? "应用中..." : "应用状态"}
+                      </button>
+                    )}
+                  </>
+                )}
                 {accountView === "archived" ? (
                   <button
                     aria-label="批量恢复账号"
@@ -3830,6 +3965,11 @@ export function AccountsScreen({
             >
               空空如也
             </div>
+          )}
+          {batchStatusMutation.error && (
+            <p className="rounded-xl bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700">
+              {formatApiError(batchStatusMutation.error, "批量设置状态失败。")}
+            </p>
           )}
           <div
             onDragOver={(event) => {
@@ -3952,6 +4092,28 @@ export function AccountsScreen({
                             {accountStatusLabel(credential.status)}
                           </span>
                         </CredentialFailureTooltip>
+                        <span
+                          className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700"
+                          title="数字越小优先级越高"
+                        >
+                          P{credential.route_priority}
+                        </span>
+                        <span
+                          className="rounded-full bg-cyan-50 px-2 py-0.5 text-[11px] font-semibold text-cyan-800"
+                          title="账号最大并发数"
+                        >
+                          并发 {credential.max_concurrency}
+                        </span>
+                        {(credential.active_request_count ?? 0) > 0 && (
+                          <span
+                            aria-label={`正在处理请求，当前 ${credential.active_request_count}/${credential.max_concurrency}`}
+                            className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700"
+                            data-testid={`credential-activity-${credential.id}`}
+                          >
+                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+                            {credential.active_request_count}/{credential.max_concurrency}
+                          </span>
+                        )}
                         <ModelMappingSummary platform={activePlatform} mappings={modelMappings} />
                         {retryLabel && (
                           <CredentialFailureTooltip credential={credential}>
@@ -4849,8 +5011,38 @@ export function AccountsScreen({
                   <option value="warning">警告 (warning)</option>
                   <option value="error">异常 (error)</option>
                   <option value="revoked">revoked</option>
+                  <option value="paused">暂停 (paused)</option>
                 </select>
               </label>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className={labelClass}>
+                  路由优先级
+                  <select
+                    aria-label="编辑路由优先级"
+                    className={fieldClass}
+                    onChange={(event) => setEditPriority(Number(event.target.value))}
+                    value={editPriority}
+                  >
+                    {[1, 2, 3, 4, 5].map((priority) => (
+                      <option key={priority} value={priority}>
+                        {priority}（数字越小优先级越高）
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className={labelClass}>
+                  最大并发数
+                  <input
+                    aria-label="编辑最大并发数"
+                    className={fieldClass}
+                    min={1}
+                    onChange={(event) => setEditMaxConcurrency(event.target.value)}
+                    step={1}
+                    type="number"
+                    value={editMaxConcurrency}
+                  />
+                </label>
+              </div>
               {editingCredential.kind === "official" && (
                 <UserAgentFields
                   fieldClass={fieldClass}

@@ -216,8 +216,9 @@ pub async fn dispatch_command(
         "list_terminal_sessions" => to_value(list_terminal_sessions_core(&state.terminals)),
         "list_route_credentials" => {
             let platform = required_string_arg(&args, "platform")?;
+            let activity = state.route_proxy.activity();
             to_value(
-                RouteCredentialService::list(&state.pool, platform)
+                RouteCredentialService::list_with_activity(&state.pool, &activity, platform)
                     .await
                     .map_err(to_error)?,
             )
@@ -232,8 +233,9 @@ pub async fn dispatch_command(
         }
         "list_route_credentials_page" => {
             let input: RouteCredentialPageRequest = parse_arg(&args, "input")?;
+            let activity = state.route_proxy.activity();
             to_value(
-                RouteCredentialService::page(&state.pool, input)
+                RouteCredentialService::page_with_activity(&state.pool, &activity, input)
                     .await
                     .map_err(to_error)?,
             )
@@ -248,8 +250,9 @@ pub async fn dispatch_command(
         }
         "get_route_credential" => {
             let id = required_string_arg(&args, "id")?;
+            let activity = state.route_proxy.activity();
             to_value(
-                RouteCredentialService::get(&state.pool, id)
+                RouteCredentialService::get_with_activity(&state.pool, &activity, id)
                     .await
                     .map_err(to_error)?,
             )
@@ -312,6 +315,14 @@ pub async fn dispatch_command(
         "restore_route_credentials" => {
             let ids: Vec<String> = parse_arg(&args, "ids")?;
             RouteCredentialService::restore(&state.pool, ids)
+                .await
+                .map_err(to_error)?;
+            to_value(())
+        }
+        "set_route_credential_statuses" => {
+            let ids: Vec<String> = parse_arg(&args, "ids")?;
+            let status = required_string_arg(&args, "status")?;
+            RouteCredentialService::set_statuses(&state.pool, ids, status)
                 .await
                 .map_err(to_error)?;
             to_value(())
@@ -381,8 +392,9 @@ pub async fn dispatch_command(
         }
         "route_pool_route_once" => {
             let request: RoutePoolRouteRequest = parse_arg(&args, "request")?;
+            let activity = state.route_proxy.activity();
             to_value(
-                RoutePoolService::route_once(&state.pool, request)
+                RoutePoolService::route_once_with_activity(&state.pool, &activity, request)
                     .await
                     .map_err(to_error)?,
             )
@@ -390,8 +402,9 @@ pub async fn dispatch_command(
         "route_pool_test_model" => {
             let request: RoutePoolModelTestRequest = parse_arg(&args, "request")?;
             if route_model_test_targets_single_account(&request) {
+                let activity = state.route_proxy.activity();
                 to_value(
-                    RouteModelTestService::test_model(&state.pool, request)
+                    RouteModelTestService::test_model_with_activity(&state.pool, &activity, request)
                         .await
                         .map_err(to_error)?,
                 )

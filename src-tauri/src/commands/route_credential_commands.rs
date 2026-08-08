@@ -14,7 +14,8 @@ pub async fn list_route_credentials(
     state: State<'_, AppState>,
     platform: String,
 ) -> Result<Vec<RouteCredential>, ApiError> {
-    RouteCredentialService::list(&state.pool, platform)
+    let activity = state.route_proxy.activity();
+    RouteCredentialService::list_with_activity(&state.pool, &activity, platform)
         .await
         .map_err(ApiError::from)
 }
@@ -24,7 +25,8 @@ pub async fn list_route_credentials_page(
     state: State<'_, AppState>,
     input: RouteCredentialPageRequest,
 ) -> Result<RouteCredentialPage, ApiError> {
-    RouteCredentialService::page(&state.pool, input)
+    let activity = state.route_proxy.activity();
+    RouteCredentialService::page_with_activity(&state.pool, &activity, input)
         .await
         .map_err(ApiError::from)
 }
@@ -44,7 +46,8 @@ pub async fn get_route_credential(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<RouteCredential, ApiError> {
-    RouteCredentialService::get(&state.pool, id)
+    let activity = state.route_proxy.activity();
+    RouteCredentialService::get_with_activity(&state.pool, &activity, id)
         .await
         .map_err(ApiError::from)
 }
@@ -126,6 +129,17 @@ pub async fn restore_route_credentials(
     ids: Vec<String>,
 ) -> Result<(), ApiError> {
     RouteCredentialService::restore(&state.pool, ids)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn set_route_credential_statuses(
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+    status: String,
+) -> Result<(), ApiError> {
+    RouteCredentialService::set_statuses(&state.pool, ids, status)
         .await
         .map_err(ApiError::from)
 }

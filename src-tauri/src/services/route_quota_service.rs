@@ -107,6 +107,8 @@ async fn refresh_credential(
         kind: credential.kind.clone(),
         display_name: credential.display_name.clone(),
         status: credential.status.clone(),
+        route_priority: credential.route_priority,
+        max_concurrency: credential.max_concurrency,
         secret_payload_json: credential.secret_payload_json.clone(),
         config_json: credential.config_json.clone(),
     };

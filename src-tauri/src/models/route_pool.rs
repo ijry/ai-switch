@@ -143,4 +143,7 @@ pub struct RoutePoolMemberAccount {
     /// route_credentials.id
     pub id: String,
     pub display_name: String,
+    pub status: String,
+    pub route_priority: i64,
+    pub max_concurrency: i64,
 }
