@@ -21,7 +21,17 @@ pub(crate) fn requested_model_from_body(body: &[u8]) -> Option<String> {
 pub(crate) fn parse_model_capability(config_json: &str) -> ModelCapability {
     let mappings = serde_json::from_str::<Value>(config_json)
         .ok()
-        .and_then(|value| value.get("model_mappings").cloned())
+        .map(|value| parse_model_capability_value(&value))
+        .map(|capability| capability.mappings)
+        .unwrap_or_default();
+
+    ModelCapability { mappings }
+}
+
+pub(crate) fn parse_model_capability_value(config: &Value) -> ModelCapability {
+    let mappings = config
+        .get("model_mappings")
+        .cloned()
         .and_then(|value| serde_json::from_value::<Vec<ModelMapping>>(value).ok())
         .unwrap_or_default()
         .into_iter()

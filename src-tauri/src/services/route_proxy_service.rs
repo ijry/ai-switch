@@ -21,6 +21,10 @@ use crate::services::route_protocol_bridge::{
     transform_response as transform_protocol_bridge_response, PreparedBridgeRequest,
     ProtocolBridgeKind,
 };
+use crate::services::route_model_capability::{
+    advertised_model_ids, parse_model_capability, parse_model_capability_value,
+    requested_model_from_body, supports_requested_model,
+};
 use axum::body::Body;
 use axum::extract::State as AxumState;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
@@ -31,7 +35,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -444,6 +448,10 @@ async fn forward_request(
         return Ok(json_models_list_response(&platform, &credentials));
     }
 
+    let body_bytes = axum::body::to_bytes(body, 32 * 1024 * 1024)
+        .await
+        .map_err(|err| format!("Could not read proxy request body: {err}"))?;
+    let requested_model = requested_model_from_body(&body_bytes);
     let credentials = select_pool_credentials(pool, &platform)
         .await
         .map_err(|err| err.to_string())?;
@@ -451,13 +459,16 @@ async fn forward_request(
     if credentials.is_empty() {
         return Err("No enabled route credentials in pool".to_string());
     }
+    let credentials = filter_credentials_for_model(credentials, requested_model.as_deref());
+    if credentials.is_empty() {
+        let model = requested_model.as_deref().unwrap_or("unknown");
+        return Err(format!(
+            "route_pool.model_unmatched: no enabled route credential supports model '{model}' on platform '{platform}'"
+        ));
+    }
     let cursor = RoutePoolRepository::next_cursor_index(pool, &platform)
         .await
         .map_err(|err| err.to_string())?;
-
-    let body_bytes = axum::body::to_bytes(body, 32 * 1024 * 1024)
-        .await
-        .map_err(|err| format!("Could not read proxy request body: {err}"))?;
 
     let mut outbound_headers = HeaderMap::new();
     for (name, value) in headers.iter() {
@@ -955,6 +966,8 @@ fn json_error(status: StatusCode, message: &str) -> Response {
         "route_proxy.auth_required"
     } else if message.contains("No enabled route credentials in pool") {
         "route_pool.empty"
+    } else if message.contains("route_pool.model_unmatched") {
+        "route_pool.model_unmatched"
     } else {
         "route_proxy.error"
     };
@@ -1222,6 +1235,21 @@ fn filter_credentials_for_rule(
     credentials
 }
 
+fn filter_credentials_for_model(
+    mut credentials: Vec<SelectedCredential>,
+    requested_model: Option<&str>,
+) -> Vec<SelectedCredential> {
+    let Some(requested_model) = requested_model else {
+        return credentials;
+    };
+
+    credentials.retain(|credential| {
+        let capability = parse_model_capability(&credential.config_json);
+        supports_requested_model(&capability, Some(requested_model))
+    });
+    credentials
+}
+
 async fn bind_route_proxy_listener() -> Result<TcpListener, AppError> {
     bind_route_proxy_listener_from(DEFAULT_ROUTE_PROXY_PORT).await
 }
@@ -1443,7 +1471,7 @@ fn build_api_upstream_request(
         )
     })?;
     let interface_format = dialect.as_str();
-    let mappings = model_mappings(config);
+    let mappings = parse_model_capability_value(config).mappings;
     let upstream_path = normalize_api_upstream_path(interface_format, path);
     let mut rewritten_body = apply_model_mappings(body, &mappings);
     // API relays (e.g. Xiaomi) commonly lack Codex custom-tool support on Responses.
@@ -2529,75 +2557,17 @@ fn responses_tool_name(tool: &Value) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn model_mappings(config: &Value) -> Vec<ModelMapping> {
-    config
-        .get("model_mappings")
-        .cloned()
-        .and_then(|value| serde_json::from_value::<Vec<ModelMapping>>(value).ok())
-        .map(remove_placeholder_model_mappings)
-        .unwrap_or_default()
-}
-
-fn remove_placeholder_model_mappings(mappings: Vec<ModelMapping>) -> Vec<ModelMapping> {
-    mappings
-        .into_iter()
-        .filter(|mapping| {
-            !is_placeholder_model(&mapping.from) && !is_placeholder_model(&mapping.to)
-        })
-        .collect()
-}
-
-fn is_placeholder_model(value: &str) -> bool {
-    let value = value.trim();
-    value.is_empty() || value == "upstream-model"
-}
-
 fn is_models_list_path(path: &str) -> bool {
     matches!(path.trim().trim_end_matches('/'), "/models" | "/v1/models")
 }
 
-fn collect_pool_model_ids(platform: &str, credentials: &[SelectedCredential]) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut models = Vec::new();
-
-    for credential in credentials {
-        let Ok(config) = parse_json_object(&credential.config_json, "config") else {
-            continue;
-        };
-        for mapping in model_mappings(&config) {
-            let from = mapping.from.trim();
-            if from.is_empty() || is_placeholder_model(from) {
-                continue;
-            }
-            push_unique_model(&mut models, &mut seen, from);
-
-            // Expose Claude 1M as a separate client-facing model id when declared.
-            if platform == "claude" && mapping.supports_1m == Some(true) {
-                let base = strip_one_m_suffix_for_route_lookup(from);
-                if is_claude_route_model(base) {
-                    push_unique_model(&mut models, &mut seen, &format!("{base}[1m]"));
-                }
-            }
-        }
-    }
-
-    models
-}
-
-fn push_unique_model(models: &mut Vec<String>, seen: &mut HashSet<String>, model: &str) {
-    let trimmed = model.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-    let key = trimmed.to_ascii_lowercase();
-    if seen.insert(key) {
-        models.push(trimmed.to_string());
-    }
-}
-
 fn build_models_list_payload(platform: &str, credentials: &[SelectedCredential]) -> Value {
     let created = Utc::now().timestamp();
-    let data: Vec<Value> = collect_pool_model_ids(platform, credentials)
+    let capabilities = credentials
+        .iter()
+        .map(|credential| parse_model_capability(&credential.config_json))
+        .collect::<Vec<_>>();
+    let data: Vec<Value> = advertised_model_ids(platform, &capabilities)
         .into_iter()
         .map(|id| {
             json!({
@@ -3720,6 +3690,12 @@ mod tests {
             })
             .to_string(),
         }
+    }
+
+    fn api_credential_with_config(name: &str, config_json: &str) -> SelectedCredential {
+        let mut credential = api_credential(name, "openai");
+        credential.config_json = config_json.to_string();
+        credential
     }
 
     #[test]
@@ -5157,7 +5133,79 @@ mod tests {
     }
 
     #[test]
-    fn collect_pool_model_ids_aggregates_and_dedupes_mappings() {
+    fn filter_credentials_for_model_keeps_wildcard_and_matching_mappings_only() {
+        let wildcard = api_credential_with_config("wildcard", r#"{"model_mappings":[]}"#);
+        let sol = api_credential_with_config(
+            "sol",
+            r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"sol-upstream"}]}"#,
+        );
+        let luna = api_credential_with_config(
+            "luna",
+            r#"{"model_mappings":[{"from":"gpt-5.6-luna","to":"luna-upstream"}]}"#,
+        );
+
+        let selected = filter_credentials_for_model(
+            vec![wildcard.clone(), sol.clone(), luna],
+            Some("gpt-5.6-sol"),
+        );
+
+        assert_eq!(
+            selected
+                .iter()
+                .map(|item| item.display_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["wildcard", "sol"]
+        );
+    }
+
+    #[tokio::test]
+    async fn model_unmatched_error_uses_stable_error_code() {
+        let response = json_error(
+            StatusCode::BAD_GATEWAY,
+            "route_pool.model_unmatched: no enabled route credential supports model 'gpt-5.6-luna' on platform 'codex'",
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("error body");
+        let value: Value = serde_json::from_slice(&body).expect("error json");
+
+        assert_eq!(
+            value.pointer("/error/code").and_then(Value::as_str),
+            Some("route_pool.model_unmatched")
+        );
+    }
+
+    #[test]
+    fn models_list_includes_codex_baseline_when_pool_has_wildcard_account() {
+        let wildcard = api_credential_with_config("wildcard", r#"{"model_mappings":[]}"#);
+        let mut mapped = api_credential("mapped", "openai");
+        mapped.config_json = serde_json::json!({
+            "model_mappings": [{"from":"gpt-5.6-sol","to":"sol-upstream"}]
+        })
+        .to_string();
+
+        let payload = build_models_list_payload("codex", &[wildcard, mapped]);
+        let models = payload
+            .get("data")
+            .and_then(Value::as_array)
+            .expect("models data")
+            .iter()
+            .filter_map(|item| item.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            models,
+            vec![
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
+                "gpt-5.5"
+            ]
+        );
+    }
+
+    #[test]
+    fn advertised_models_aggregate_and_dedupe_mappings() {
         let mut first = api_credential("first", "openai");
         first.config_json = serde_json::json!({
             "base_url": "https://api.example.com/v1",
@@ -5181,12 +5229,19 @@ mod tests {
         })
         .to_string();
 
-        let models = collect_pool_model_ids("codex", &[first, second]);
+        let payload = build_models_list_payload("codex", &[first, second]);
+        let models = payload
+            .get("data")
+            .and_then(Value::as_array)
+            .expect("models data")
+            .iter()
+            .filter_map(|item| item.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
         assert_eq!(models, vec!["gpt-5.5", "gpt-5", "gpt-4.1"]);
     }
 
     #[test]
-    fn collect_pool_model_ids_exposes_claude_1m_variants() {
+    fn advertised_models_expose_claude_1m_variants() {
         let mut credential = api_credential("claude-a", "anthropic");
         credential.platform = "claude".to_string();
         credential.config_json = serde_json::json!({
@@ -5207,7 +5262,14 @@ mod tests {
         })
         .to_string();
 
-        let models = collect_pool_model_ids("claude", &[credential]);
+        let payload = build_models_list_payload("claude", &[credential]);
+        let models = payload
+            .get("data")
+            .and_then(Value::as_array)
+            .expect("models data")
+            .iter()
+            .filter_map(|item| item.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
         assert_eq!(
             models,
             vec!["claude-sonnet-5", "claude-sonnet-5[1m]", "claude-opus-4-8"]
