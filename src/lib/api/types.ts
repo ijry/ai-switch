@@ -181,6 +181,7 @@ export type RouteCredential = {
   cooldown_until?: string | null;
   last_failure_kind?: string | null;
   last_failure_message?: string | null;
+  last_failure_response_json?: string | null;
   request_count?: number;
   success_count?: number;
   failure_count?: number;

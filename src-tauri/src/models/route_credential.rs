@@ -35,6 +35,8 @@ pub struct RouteCredential {
     #[sqlx(default)]
     pub last_failure_message: Option<String>,
     #[sqlx(default)]
+    pub last_failure_response_json: Option<String>,
+    #[sqlx(default)]
     pub request_count: i64,
     #[sqlx(default)]
     pub success_count: i64,

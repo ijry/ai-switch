@@ -40,6 +40,7 @@ const PAGE_SELECT: &str = "SELECT
     rc.subscription_type, rc.primary_remain, rc.weekly_remain, rc.reset_primary, rc.reset_weekly,
     rc.transient_failure_count, rc.next_retry_at, rc.cooldown_until, rc.last_failure_kind,
     rc.last_failure_message,
+    rc.last_failure_response_json,
     COUNT(ue.id) AS request_count,
     COALESCE(SUM(CASE WHEN json_extract(ue.metadata_json, '$.success') = 1 THEN 1 ELSE 0 END), 0) AS success_count,
     COUNT(ue.id) - COALESCE(SUM(CASE WHEN json_extract(ue.metadata_json, '$.success') = 1 THEN 1 ELSE 0 END), 0) AS failure_count,
@@ -336,6 +337,7 @@ async fn create_with_connection(
             rc.cooldown_until,
             rc.last_failure_kind,
             rc.last_failure_message,
+            rc.last_failure_response_json,
             rc.quota_remaining,
             rc.quota_limit,
             rc.quota_used,
@@ -453,6 +455,7 @@ impl RouteCredentialRepository {
                 rc.cooldown_until,
                 rc.last_failure_kind,
                 rc.last_failure_message,
+                rc.last_failure_response_json,
                 rc.quota_remaining,
                 rc.quota_limit,
                 rc.quota_used,
@@ -513,6 +516,7 @@ impl RouteCredentialRepository {
                 rc.cooldown_until,
                 rc.last_failure_kind,
                 rc.last_failure_message,
+                rc.last_failure_response_json,
                 rc.quota_remaining,
                 rc.quota_limit,
                 rc.quota_used,
@@ -583,6 +587,7 @@ impl RouteCredentialRepository {
                 rc.cooldown_until,
                 rc.last_failure_kind,
                 rc.last_failure_message,
+                rc.last_failure_response_json,
                 rc.quota_remaining,
                 rc.quota_limit,
                 rc.quota_used,
@@ -641,6 +646,7 @@ impl RouteCredentialRepository {
                 rc.cooldown_until,
                 rc.last_failure_kind,
                 rc.last_failure_message,
+                rc.last_failure_response_json,
                 COUNT(ue.id) AS request_count,
                 COALESCE(SUM(CASE WHEN json_extract(ue.metadata_json, '$.success') = 1 THEN 1 ELSE 0 END), 0) AS success_count,
                 COUNT(ue.id) - COALESCE(SUM(CASE WHEN json_extract(ue.metadata_json, '$.success') = 1 THEN 1 ELSE 0 END), 0) AS failure_count,
@@ -1014,6 +1020,7 @@ impl RouteCredentialRepository {
         id: &str,
         kind: &str,
         message: &str,
+        response_body: Option<&[u8]>,
     ) -> Result<RetryState, AppError> {
         let mut tx = pool.begin().await.map_err(|err| AppError::Database {
             code: "database.route_credential_retry_tx",
@@ -1057,11 +1064,12 @@ impl RouteCredentialRepository {
             None
         };
         let message = truncate_failure_message(message);
+        let response = truncate_failure_response(response_body);
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             "UPDATE route_credentials
              SET transient_failure_count = ?, next_retry_at = ?, cooldown_until = ?,
-                 last_failure_kind = ?, last_failure_message = ?, updated_at = ?
+                 last_failure_kind = ?, last_failure_message = ?, last_failure_response_json = ?, updated_at = ?
              WHERE id = ?",
         )
         .bind(failure_count)
@@ -1069,6 +1077,7 @@ impl RouteCredentialRepository {
         .bind(&cooldown_until)
         .bind(kind)
         .bind(&message)
+        .bind(&response)
         .bind(&now)
         .bind(id)
         .execute(&mut *tx)
@@ -1098,7 +1107,8 @@ impl RouteCredentialRepository {
         let result = sqlx::query(
             "UPDATE route_credentials
              SET transient_failure_count = 0, next_retry_at = NULL, cooldown_until = NULL,
-                 last_failure_kind = NULL, last_failure_message = NULL, updated_at = ?
+                 last_failure_kind = NULL, last_failure_message = NULL,
+                 last_failure_response_json = NULL, updated_at = ?
              WHERE id = ?",
         )
         .bind(&now)
@@ -1126,17 +1136,20 @@ impl RouteCredentialRepository {
         pool: &SqlitePool,
         id: &str,
         message: &str,
+        response_body: Option<&[u8]>,
     ) -> Result<(), AppError> {
         let now = Utc::now().to_rfc3339();
+        let response = truncate_failure_response(response_body);
         let result = sqlx::query(
             "UPDATE route_credentials
              SET status = 'error', transient_failure_count = 0,
                  next_retry_at = NULL, cooldown_until = NULL,
                  last_failure_kind = 'semantic_response_failed',
-                 last_failure_message = ?, updated_at = ?
+                 last_failure_message = ?, last_failure_response_json = ?, updated_at = ?
              WHERE id = ?",
         )
         .bind(truncate_failure_message(message))
+        .bind(&response)
         .bind(&now)
         .bind(id)
         .execute(pool)
@@ -1163,6 +1176,7 @@ impl RouteCredentialRepository {
              SET status = 'ok', transient_failure_count = 0,
                  next_retry_at = NULL, cooldown_until = NULL,
                  last_failure_kind = NULL, last_failure_message = NULL,
+                 last_failure_response_json = NULL,
                  updated_at = ?
              WHERE id = ? AND status != 'revoked'",
         )
@@ -1341,6 +1355,24 @@ fn truncate_failure_message(message: &str) -> String {
         .last()
         .unwrap_or(0);
     message[..end].to_string()
+}
+
+const MAX_FAILURE_RESPONSE_CHARS: usize = 8192;
+
+fn truncate_failure_response(response_body: Option<&[u8]>) -> Option<String> {
+    let body = std::str::from_utf8(response_body?).ok()?.trim();
+    if body.is_empty() {
+        return None;
+    }
+    let mut chars = body.chars();
+    let mut response = chars
+        .by_ref()
+        .take(MAX_FAILURE_RESPONSE_CHARS.saturating_sub(1))
+        .collect::<String>();
+    if chars.next().is_some() {
+        response.push('…');
+    }
+    Some(response)
 }
 
 fn jitter_seconds(id: &str, failure_count: i64, base_seconds: i64) -> i64 {
@@ -2038,6 +2070,7 @@ mod tests {
             &created.id,
             "transport",
             &"x".repeat(600),
+            None,
         )
         .await
         .unwrap();
@@ -2048,6 +2081,7 @@ mod tests {
             &created.id,
             "transport",
             "temporary",
+            None,
         )
         .await
         .unwrap();
@@ -2057,6 +2091,7 @@ mod tests {
             &created.id,
             "upstream",
             "temporary",
+            Some(br#"{"error":{"message":"bad key"}}"#),
         )
         .await
         .unwrap();
@@ -2069,6 +2104,10 @@ mod tests {
         assert_eq!(stored.transient_failure_count, 3);
         assert_eq!(stored.last_failure_kind.as_deref(), Some("upstream"));
         assert_eq!(stored.last_failure_message.as_deref(), Some("temporary"));
+        assert_eq!(
+            stored.last_failure_response_json.as_deref(),
+            Some(r#"{"error":{"message":"bad key"}}"#)
+        );
 
         RouteCredentialRepository::clear_transient_failure(&pool, &created.id)
             .await
@@ -2081,6 +2120,7 @@ mod tests {
         assert!(cleared.cooldown_until.is_none());
         assert!(cleared.last_failure_kind.is_none());
         assert!(cleared.last_failure_message.is_none());
+        assert!(cleared.last_failure_response_json.is_none());
     }
 
     #[test]

@@ -82,7 +82,10 @@ use services::route_proxy_https_service::RouteProxyHttpsService;
 use services::tailscale_service::TailscaleRuntimeState;
 use services::web_service::{WebService, WebServiceRuntimeState};
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_deep_link::DeepLinkExt;
 use terminal_manager::TerminalManager;
 use web::event_bridge::WebEventBroadcaster;
@@ -220,6 +223,8 @@ pub fn run() {
     });
 
     let mut builder = tauri::Builder::default();
+    let tray_quit_requested = Arc::new(AtomicBool::new(false));
+    let close_tray_quit_requested = Arc::clone(&tray_quit_requested);
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
@@ -234,6 +239,17 @@ pub fn run() {
     }
 
     builder
+        .on_window_event(move |window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if !close_tray_quit_requested.load(Ordering::SeqCst) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
@@ -250,7 +266,36 @@ pub fn run() {
             terminals: TerminalManager::default(),
             event_broadcaster: Arc::new(WebEventBroadcaster::new()),
         })
-        .setup(|app| {
+        .setup(move |app| {
+            let show_item = MenuItemBuilder::with_id("tray-show", "显示主窗口").build(app)?;
+            let quit_item = MenuItemBuilder::with_id("tray-quit", "退出 AI Switch").build(app)?;
+            let tray_menu = MenuBuilder::new(app)
+                .items(&[&show_item, &quit_item])
+                .build()?;
+            let tray = app.tray_by_id("main").ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "AI Switch tray icon is unavailable")
+            })?;
+            tray.set_menu(Some(tray_menu))?;
+            tray.on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    focus_main_window(tray.app_handle());
+                }
+            });
+            let tray_quit_requested = Arc::clone(&tray_quit_requested);
+            app.on_menu_event(move |app, event| match event.id().as_ref() {
+                "tray-show" => focus_main_window(app),
+                "tray-quit" => {
+                    tray_quit_requested.store(true, Ordering::SeqCst);
+                    app.exit(0);
+                }
+                _ => {}
+            });
+
             let state = app.state::<AppState>().inner().clone();
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             {

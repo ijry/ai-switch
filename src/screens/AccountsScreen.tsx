@@ -27,7 +27,16 @@ import {
   Wand2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type ReactNode,
+} from "react";
 import { PlatformSupportBadge } from "../components/platform/PlatformSupportBadge";
 import { expandDisplayModelMappings, ModelMappingSummary } from "../components/accounts/ModelMappingSummary";
 import { RouteCredentialExportDialog } from "../components/accounts/RouteCredentialExportDialog";
@@ -1317,6 +1326,47 @@ function prettyJsonOrText(value: string) {
   } catch {
     return value;
   }
+}
+
+function CredentialFailureTooltip({
+  credential,
+  children,
+}: {
+  credential: RouteCredential;
+  children: ReactNode;
+}) {
+  const tooltipId = useId();
+  const response = credential.last_failure_response_json?.trim();
+  if (!response) {
+    return <>{children}</>;
+  }
+
+  return (
+    <span
+      aria-describedby={tooltipId}
+      className="group relative inline-flex max-w-full outline-none focus:ring-2 focus:ring-red-300"
+      tabIndex={0}
+    >
+      {children}
+      <span
+        className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden max-h-80 w-[min(36rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] overflow-auto whitespace-normal break-words rounded-lg border border-stone-700 bg-stone-900 px-3 py-2 text-left text-[11px] font-medium leading-5 text-white shadow-xl group-hover:block group-focus-within:block"
+        id={tooltipId}
+        role="tooltip"
+      >
+        <span className="block text-stone-300">
+          失败类型：{credential.last_failure_kind?.trim() || "未知"}
+        </span>
+        {credential.last_failure_message?.trim() ? (
+          <span className="mt-1 block break-words">
+            失败消息：{credential.last_failure_message.trim()}
+          </span>
+        ) : null}
+        <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-[10px] leading-4 text-stone-100">
+          {prettyJsonOrText(response)}
+        </pre>
+      </span>
+    </span>
+  );
 }
 
 function UserAgentFields({
@@ -3894,20 +3944,24 @@ export function AccountsScreen({
                             </span>
                           </span>
                         )}
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${accountStatusClass(credential.status)}`}
-                          title={credential.status}
-                        >
-                          {accountStatusLabel(credential.status)}
-                        </span>
+                        <CredentialFailureTooltip credential={credential}>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${accountStatusClass(credential.status)}`}
+                            title={credential.status}
+                          >
+                            {accountStatusLabel(credential.status)}
+                          </span>
+                        </CredentialFailureTooltip>
                         <ModelMappingSummary platform={activePlatform} mappings={modelMappings} />
                         {retryLabel && (
-                          <span
-                            className="rounded-full bg-orange-50 px-2 py-0.5 text-[11px] font-semibold text-orange-800"
-                            title="临时失败退避时间"
-                          >
-                            冷却至 {retryLabel}
-                          </span>
+                          <CredentialFailureTooltip credential={credential}>
+                            <span
+                              className="rounded-full bg-orange-50 px-2 py-0.5 text-[11px] font-semibold text-orange-800"
+                              title="临时失败退避时间"
+                            >
+                              冷却至 {retryLabel}
+                            </span>
+                          </CredentialFailureTooltip>
                         )}
                         {subscriptionType && (
                           <span

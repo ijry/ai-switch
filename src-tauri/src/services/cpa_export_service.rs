@@ -709,6 +709,7 @@ mod tests {
             cooldown_until: None,
             last_failure_kind: None,
             last_failure_message: None,
+            last_failure_response_json: None,
             request_count: 0,
             success_count: 0,
             failure_count: 0,

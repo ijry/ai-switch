@@ -876,6 +876,41 @@ describe("AccountsScreen", () => {
     expect(await screen.findByText("Team Account")).toBeInTheDocument();
   });
 
+  it("shows the stored failure response for error and cooldown accounts", async () => {
+    const retryAt = new Date(Date.now() + 60_000).toISOString();
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      {
+        ...credentialsFixture[0],
+        status: "error",
+        last_failure_kind: "semantic_response_failed",
+        last_failure_message: "upstream rejected the request",
+        last_failure_response_json: '{"error":{"message":"bad key"}}',
+      },
+      {
+        ...credentialsFixture[1],
+        cooldown_until: retryAt,
+        next_retry_at: retryAt,
+        last_failure_kind: "upstream_status",
+        last_failure_message: "upstream returned 429",
+        last_failure_response_json: '{"error":{"message":"rate limited"}}',
+      },
+      {
+        ...credentialsFixture[0],
+        id: "cred-no-response",
+        display_name: "No Response Account",
+      },
+    ]);
+
+    renderScreen();
+
+    const firstRow = await screen.findByLabelText("放置在 Team Account 前");
+    const secondRow = screen.getByLabelText("放置在 API Account 前");
+    const thirdRow = screen.getByLabelText("放置在 No Response Account 前");
+    expect(within(firstRow).getByText(/bad key/)).toBeInTheDocument();
+    expect(within(secondRow).getAllByText(/rate limited/)).toHaveLength(2);
+    expect(within(thirdRow).queryByText(/失败类型：/)).not.toBeInTheDocument();
+  });
+
   it("reports route pool membership errors, rolls back, and refreshes account state", async () => {
     vi.mocked(listRouteCredentials)
       .mockResolvedValueOnce(credentialsFixture)

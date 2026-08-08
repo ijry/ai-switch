@@ -1090,6 +1090,7 @@ async fn finish_outcome(
                 pool,
                 &credential.id,
                 &failure.message,
+                Some(response_body.as_bytes()),
             )
             .await?;
         } else {
@@ -1115,6 +1116,7 @@ async fn finish_outcome(
                         &credential.id,
                         "model_test",
                         message,
+                        Some(response_body.as_bytes()),
                     )
                     .await;
                 }

@@ -498,7 +498,7 @@ async fn forward_request(
                     classify_proxy_failure(None, Some(&error)),
                     ProxyFailureKind::Transient
                 ) {
-                    record_route_credential_failure(pool, &selected.id, "refresh", &error).await;
+                    record_route_credential_failure(pool, &selected.id, "refresh", &error, None).await;
                 }
                 let metadata = route_proxy_request_metadata(
                     &platform,
@@ -538,7 +538,7 @@ async fn forward_request(
         } = match upstream_request {
             Ok(request) => request,
             Err(error) => {
-                record_route_credential_failure(pool, &credential.id, "request_build", &error)
+                record_route_credential_failure(pool, &credential.id, "request_build", &error, None)
                     .await;
                 let metadata = route_proxy_request_metadata(
                     &platform,
@@ -576,7 +576,7 @@ async fn forward_request(
                     "{}: upstream request failed: {error}",
                     credential.display_name
                 );
-                record_route_credential_failure(pool, &credential.id, "transport", &error_message)
+                record_route_credential_failure(pool, &credential.id, "transport", &error_message, None)
                     .await;
                 let metadata = route_proxy_request_metadata(
                     &platform,
@@ -610,7 +610,7 @@ async fn forward_request(
                     "{}: could not read upstream response: {error}",
                     credential.display_name
                 );
-                record_route_credential_failure(pool, &credential.id, "transport", &error_message)
+                record_route_credential_failure(pool, &credential.id, "transport", &error_message, None)
                     .await;
                 let metadata = route_proxy_request_metadata(
                     &platform,
@@ -655,6 +655,7 @@ async fn forward_request(
                         &credential.id,
                         "response_transform",
                         &error_message,
+                        Some(&response_bytes),
                     )
                     .await;
                     let metadata = route_proxy_request_metadata(
@@ -749,6 +750,7 @@ async fn forward_request(
                 pool,
                 &credential.id,
                 &failure.message,
+                Some(&response_bytes),
             )
             .await;
             retry_errors.push(format!("{}: {}", credential.display_name, failure.message));
@@ -764,6 +766,7 @@ async fn forward_request(
                     &credential.id,
                     "upstream_status",
                     &error_message,
+                    Some(&response_bytes),
                 )
                 .await;
             }
@@ -951,9 +954,16 @@ async fn record_route_credential_failure(
     credential_id: &str,
     kind: &str,
     message: &str,
+    response_body: Option<&[u8]>,
 ) {
-    let _ = RouteCredentialRepository::record_transient_failure(pool, credential_id, kind, message)
-        .await;
+    let _ = RouteCredentialRepository::record_transient_failure(
+        pool,
+        credential_id,
+        kind,
+        message,
+        response_body,
+    )
+    .await;
 }
 
 async fn mark_route_credential_revoked(pool: &SqlitePool, credential_id: &str) {
@@ -3534,6 +3544,7 @@ mod tests {
                 &credential_id,
                 "transport",
                 "temporary",
+                None,
             )
             .await
             .expect("record failure");
