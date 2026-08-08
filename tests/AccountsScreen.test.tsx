@@ -508,6 +508,31 @@ describe("AccountsScreen", () => {
     expect(screen.queryByLabelText("批量加入算力池")).not.toBeInTheDocument();
   });
 
+  it("shows account model mapping tags and the complete mapping popover", async () => {
+    const account = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://api.example.com/v1",
+        interface_format: "openai",
+        model_mappings: [
+          { from: "gpt-5.6-sol", to: "sol-upstream" },
+          { from: "gpt-5.6-terra", to: "terra-upstream" },
+          { from: "gpt-5.6-luna", to: "luna-upstream" },
+          { from: "gpt-5.5", to: "gpt-5.5-upstream" },
+        ],
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([account]);
+
+    renderScreen();
+
+    expect(await screen.findByText("gpt-5.6-sol")).toBeInTheDocument();
+    expect(screen.getByText("gpt-5.6-terra")).toBeInTheDocument();
+    expect(screen.getByText("gpt-5.6-luna")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "+1" }));
+    expect(screen.getByText("gpt-5.5 → gpt-5.5-upstream")).toBeInTheDocument();
+  });
+
   it("hides the workspace toolbar label when the sidebar is collapsed", async () => {
     renderScreen("codex", "out_of_pool", true);
 
@@ -1011,6 +1036,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    expect(screen.getByText(/上游只支持有限模型.*建议.*配置模型映射/)).toBeInTheDocument();
     await userEvent.type(screen.getByLabelText("API 账号名称"), "Plain API");
     await userEvent.type(screen.getByLabelText("API Key"), "sk-plain");
     await userEvent.clear(screen.getByLabelText("Base URL"));
@@ -1354,6 +1380,9 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    expect(
+      screen.getByText(/当前账号仅按已配置的本地模型别名参与匹配/),
+    ).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("上游模型 1"), {
       target: { value: "new-upstream" },
     });

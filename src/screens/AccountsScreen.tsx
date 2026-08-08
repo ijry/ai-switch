@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { PlatformSupportBadge } from "../components/platform/PlatformSupportBadge";
+import { ModelMappingSummary } from "../components/accounts/ModelMappingSummary";
 import { RouteCredentialExportDialog } from "../components/accounts/RouteCredentialExportDialog";
 import { neighborsForDrop } from "../lib/accountReorder";
 import {
@@ -1054,6 +1055,15 @@ function ModelMappingsEditor({
         {isClaude ? " 勾选 1M 会声明该 Claude 角色支持 1M 上下文。" : ""}
         {fetchedModels.length > 0 ? ` 已获取 ${fetchedModels.length} 个模型。` : ""}
       </p>
+      {value.length === 0 ? (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold leading-5 text-amber-900">
+          如果上游只支持有限模型，建议先获取模型列表并配置模型映射；配置后算力池只会把该账号匹配到映射别名。
+        </p>
+      ) : (
+        <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] font-medium leading-5 text-blue-900">
+          当前账号仅按已配置的本地模型别名参与匹配，共 {value.length} 条。
+        </p>
+      )}
       {fetchError ? <p className="text-[12px] font-semibold text-red-700">{fetchError}</p> : null}
       {fetchedModels.length > 0 ? (
         <datalist id={modelListId}>
@@ -3726,6 +3736,7 @@ export function AccountsScreen({
                   const weeklyRemain = officialWeeklyRemain(credential);
                   const latestReset = officialLatestResetLabel(credential);
                   const retryLabel = credentialRetryLabel(credential);
+                  const modelMappings = parseModelMappingsFromConfig(credential.config_json);
                   return (
                   <div
                     aria-label={`放置在 ${credential.display_name} 前`}
@@ -3829,6 +3840,7 @@ export function AccountsScreen({
                         >
                           {accountStatusLabel(credential.status)}
                         </span>
+                        <ModelMappingSummary platform={activePlatform} mappings={modelMappings} />
                         {retryLabel && (
                           <span
                             className="rounded-full bg-orange-50 px-2 py-0.5 text-[11px] font-semibold text-orange-800"
