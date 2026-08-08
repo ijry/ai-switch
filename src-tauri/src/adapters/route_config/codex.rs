@@ -100,7 +100,8 @@ fn apply_managed_config(
     provider["name"] = value("AI Switch Route Proxy");
     provider["base_url"] = value(codex_route_proxy_base_url(&input.base_url));
     provider["wire_api"] = value("responses");
-    provider["api_key"] = value(&input.route_proxy_key);
+    provider["experimental_bearer_token"] = value(&input.route_proxy_key);
+    provider.remove("api_key");
     Ok(())
 }
 

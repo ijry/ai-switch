@@ -376,19 +376,12 @@ const platformLabels: Record<PlatformKey, string> = {
   hermes: "Hermes",
 };
 
-const interfaceFormats: InterfaceFormat[] = [
-  "openai",
-  "openai-responses",
-  "anthropic",
-  "anthropic-messages",
-  "gemini",
-];
+const routeInterfaceFormats: InterfaceFormat[] = ["openai", "openai-responses", "anthropic", "gemini"];
 
 const interfaceFormatLabels: Record<InterfaceFormat, string> = {
   openai: "OpenAI Chat Completions",
   "openai-responses": "OpenAI Responses",
   anthropic: "Claude Messages",
-  "anthropic-messages": "Claude Messages（兼容）",
   gemini: "Gemini",
 };
 
@@ -504,8 +497,26 @@ function defaultInterfaceFormat(platform: PlatformKey): InterfaceFormat {
   return "openai";
 }
 
+function interfaceFormatsForPlatform(platform: PlatformKey): InterfaceFormat[] {
+  if (platform === "gemini") {
+    return ["gemini"];
+  }
+  if (platform === "codex" || platform === "claude") {
+    return routeInterfaceFormats;
+  }
+  return [defaultInterfaceFormat(platform)];
+}
+
+function shouldShowInterfaceFormatSelect(platform: PlatformKey) {
+  return interfaceFormatsForPlatform(platform).length > 1;
+}
+
 function isAnthropicInterfaceFormat(value: InterfaceFormat | string) {
-  return value === "anthropic" || value === "anthropic-messages";
+  return value === "anthropic";
+}
+
+function shouldShowResponsesCustomToolCompat(platform: PlatformKey) {
+  return platform === "codex";
 }
 
 function defaultAnthropicApiKeyFieldForCreate(platform: PlatformKey): AnthropicApiKeyField {
@@ -536,7 +547,7 @@ function defaultModelMappings(_platform: PlatformKey): ModelMapping[] {
 }
 
 function defaultRequestedModel(platform: PlatformKey, interfaceFormat?: InterfaceFormat | string) {
-  if (platform === "claude" || interfaceFormat === "anthropic" || interfaceFormat === "anthropic-messages") {
+  if (platform === "claude" || interfaceFormat === "anthropic") {
     return "claude-sonnet-4-20250514";
   }
   if (platform === "gemini" || interfaceFormat === "gemini") {
@@ -792,7 +803,7 @@ function stringFromRecord(record: Record<string, unknown>, key: string) {
 
 function interfaceFormatFromConfig(config: Record<string, unknown>): InterfaceFormat {
   const value = stringFromRecord(config, "interface_format");
-  return interfaceFormats.includes(value as InterfaceFormat) ? (value as InterfaceFormat) : "openai";
+  return routeInterfaceFormats.includes(value as InterfaceFormat) ? (value as InterfaceFormat) : "openai";
 }
 
 function apiSecretJsonWithKey(secretJson: string, apiKey: string) {
@@ -1169,7 +1180,7 @@ function modelTestProxyPath(platform: PlatformKey, interfaceFormat: string, mode
   if (interfaceFormat === "openai") {
     return "/chat/completions";
   }
-  if (interfaceFormat === "anthropic" || interfaceFormat === "anthropic-messages") {
+  if (interfaceFormat === "anthropic") {
     return "/v1/messages";
   }
   if (interfaceFormat === "gemini") {
@@ -1187,7 +1198,7 @@ function modelTestRequestBody(interfaceFormat: string, model: string) {
       max_output_tokens: 16,
     };
   }
-  if (interfaceFormat === "anthropic" || interfaceFormat === "anthropic-messages") {
+  if (interfaceFormat === "anthropic") {
     return {
       model,
       messages: [{ role: "user", content: modelTestPrompt }],
@@ -3374,7 +3385,7 @@ export function AccountsScreen({
                     const expanded = expandedRequestId === request.id;
                     return (
                       <div className="bg-white" data-route-request-row key={request.id}>
-                        <div className="grid gap-2 px-3 py-2.5 text-[12px] text-stone-600 lg:grid-cols-[1.2fr_1fr_0.5fr_1.4fr_0.6fr_0.6fr_0.6fr_0.8fr_0.8fr_auto] lg:items-center">
+                        <div className="grid grid-cols-2 gap-2 px-3 py-2.5 text-[12px] text-stone-600 sm:grid-cols-4 lg:grid-cols-[1.2fr_1fr_0.5fr_1.4fr_0.6fr_0.6fr_0.6fr_0.8fr_0.8fr_auto] lg:items-center">
                           <span className="font-medium text-stone-800">{formatUsageTime(request.created_at)}</span>
                           <span className="truncate">{request.account_name ?? request.account_id ?? "-"}</span>
                           <span className="rounded-lg bg-stone-100 px-2 py-1 text-center font-semibold text-stone-700">
@@ -3716,20 +3727,44 @@ export function AccountsScreen({
                   const latestReset = officialLatestResetLabel(credential);
                   const retryLabel = credentialRetryLabel(credential);
                   return (
-                  <div aria-label={`放置在 ${credential.display_name} 前`} className="mx-1 mb-0.5 grid grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2.5 last:mb-0" key={credential.id}>
+                  <div
+                    aria-label={`放置在 ${credential.display_name} 前`}
+                    className={`mx-1 mb-0.5 grid grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-3 py-2.5 transition-colors last:mb-0 ${
+                      draggedAccountId &&
+                      draggedAccountId !== credential.id &&
+                      dragTargetIndex === credentialIndex
+                        ? "border-blue-400 bg-blue-50/70"
+                        : "border-stone-200 bg-white"
+                    }`}
+                    key={credential.id}
+                    onDragOver={(event) => {
+                      if (!draggedAccountId || draggedAccountId === credential.id) return;
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = "move";
+                      setDragTargetIndex(credentialIndex);
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      if (draggedAccountId && draggedAccountId !== credential.id) {
+                        commitAccountReorder(draggedAccountId, credentialIndex);
+                      }
+                      setDraggedAccountId(null);
+                      setDragTargetIndex(null);
+                    }}
+                  >
                     <button
                       aria-grabbed={draggedAccountId === credential.id}
                       aria-label={`拖动 ${credential.display_name}`}
-                      className="grid h-7 w-7 shrink-0 cursor-grab place-items-center rounded border border-stone-200 px-0 text-stone-400 hover:bg-stone-50"
+                      className={`grid h-7 w-7 shrink-0 place-items-center rounded border border-stone-200 px-0 text-stone-400 hover:bg-stone-50 ${
+                        draggedAccountId === credential.id ? "cursor-grabbing bg-stone-100" : "cursor-grab"
+                      }`}
                       draggable
                       onDragEnd={() => { setDraggedAccountId(null); setDragTargetIndex(null); }}
-                      onDragOver={(event) => { event.preventDefault(); setDragTargetIndex(credentialIndex); }}
-                      onDragStart={() => { setDraggedAccountId(credential.id); setDragTargetIndex(credentialIndex); }}
-                      onDrop={(event) => {
-                        event.preventDefault();
-                        if (draggedAccountId && dragTargetIndex != null) commitAccountReorder(draggedAccountId, credentialIndex);
-                        setDraggedAccountId(null);
-                        setDragTargetIndex(null);
+                      onDragStart={(event) => {
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", credential.id);
+                        setDraggedAccountId(credential.id);
+                        setDragTargetIndex(credentialIndex);
                       }}
                       onKeyDown={(event) => {
                         if (event.key === " " || event.key === "Enter") {
@@ -4332,25 +4367,27 @@ export function AccountsScreen({
                   onChange={setApiUserAgent}
                   value={apiUserAgent}
                 />
-                <label className={labelClass}>
-                  接口格式
-                  <select
-                    aria-label="接口格式"
-                    className={fieldClass}
-                    onChange={(event) => {
-                      setApiInterfaceFormat(event.target.value as InterfaceFormat);
-                      setApiFetchedModels([]);
-                      setApiFetchModelsError(null);
-                    }}
-                    value={apiInterfaceFormat}
-                  >
-                    {interfaceFormats.map((format) => (
-                      <option key={format} value={format}>
-                        {interfaceFormatLabel(format)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                {shouldShowInterfaceFormatSelect(activePlatform) ? (
+                  <label className={labelClass}>
+                    接口格式
+                    <select
+                      aria-label="接口格式"
+                      className={fieldClass}
+                      onChange={(event) => {
+                        setApiInterfaceFormat(event.target.value as InterfaceFormat);
+                        setApiFetchedModels([]);
+                        setApiFetchModelsError(null);
+                      }}
+                      value={apiInterfaceFormat}
+                    >
+                      {interfaceFormatsForPlatform(activePlatform).map((format) => (
+                        <option key={format} value={format}>
+                          {interfaceFormatLabel(format)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
                 {isAnthropicInterfaceFormat(apiInterfaceFormat) ? (
                   <label className={labelClass}>
                     Claude 鉴权字段
@@ -4375,21 +4412,23 @@ export function AccountsScreen({
                     </span>
                   </label>
                 ) : null}
-                <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
-                  <input
-                    aria-label="兼容 custom 工具（Responses 中转）"
-                    checked={apiResponsesCustomToolCompat}
-                    className="mt-0.5"
-                    onChange={(event) => setApiResponsesCustomToolCompat(event.target.checked)}
-                    type="checkbox"
-                  />
-                  <span className="grid gap-1">
-                    <span>兼容 custom 工具（Responses 中转）</span>
-                    <span className="text-[11px] font-medium text-stone-500">
-                      把 custom 工具改写成 function，给不支持 custom 的中转站用。默认关闭。
+                {shouldShowResponsesCustomToolCompat(activePlatform) ? (
+                  <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
+                    <input
+                      aria-label="兼容 custom 工具（Responses 中转）"
+                      checked={apiResponsesCustomToolCompat}
+                      className="mt-0.5"
+                      onChange={(event) => setApiResponsesCustomToolCompat(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span className="grid gap-1">
+                      <span>兼容 custom 工具（Responses 中转）</span>
+                      <span className="text-[11px] font-medium text-stone-500">
+                        把 custom 工具改写成 function，给不支持 custom 的中转站用。默认关闭。
+                      </span>
                     </span>
-                  </span>
-                </label>
+                  </label>
+                ) : null}
                 <ModelMappingsEditor
                   error={apiMappingsError}
                   fetchError={apiFetchModelsError}
@@ -4681,25 +4720,27 @@ export function AccountsScreen({
                     onChange={handleEditUserAgentChange}
                     value={editUserAgent}
                   />
-                  <label className={labelClass}>
-                    接口格式
-                    <select
-                      aria-label="编辑接口格式"
-                      className={fieldClass}
-                      onChange={(event) => {
-                        setEditApiInterfaceFormat(event.target.value as InterfaceFormat);
-                        setEditFetchedModels([]);
-                        setEditFetchModelsError(null);
-                      }}
-                      value={editApiInterfaceFormat}
-                    >
-                      {interfaceFormats.map((format) => (
-                        <option key={format} value={format}>
-                          {interfaceFormatLabel(format)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  {shouldShowInterfaceFormatSelect(activePlatform) ? (
+                    <label className={labelClass}>
+                      接口格式
+                      <select
+                        aria-label="编辑接口格式"
+                        className={fieldClass}
+                        onChange={(event) => {
+                          setEditApiInterfaceFormat(event.target.value as InterfaceFormat);
+                          setEditFetchedModels([]);
+                          setEditFetchModelsError(null);
+                        }}
+                        value={editApiInterfaceFormat}
+                      >
+                        {interfaceFormatsForPlatform(activePlatform).map((format) => (
+                          <option key={format} value={format}>
+                            {interfaceFormatLabel(format)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
                   {isAnthropicInterfaceFormat(editApiInterfaceFormat) ? (
                     <label className={labelClass}>
                       Claude 鉴权字段
@@ -4724,21 +4765,23 @@ export function AccountsScreen({
                       </span>
                     </label>
                   ) : null}
-                  <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
-                    <input
-                      aria-label="兼容 custom 工具（Responses 中转）"
-                      checked={editResponsesCustomToolCompat}
-                      className="mt-0.5"
-                      onChange={(event) => setEditResponsesCustomToolCompat(event.target.checked)}
-                      type="checkbox"
-                    />
-                    <span className="grid gap-1">
-                      <span>兼容 custom 工具（Responses 中转）</span>
-                      <span className="text-[11px] font-medium text-stone-500">
-                        把 custom 工具改写成 function，给不支持 custom 的中转站用。默认关闭。
+                  {shouldShowResponsesCustomToolCompat(activePlatform) ? (
+                    <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
+                      <input
+                        aria-label="兼容 custom 工具（Responses 中转）"
+                        checked={editResponsesCustomToolCompat}
+                        className="mt-0.5"
+                        onChange={(event) => setEditResponsesCustomToolCompat(event.target.checked)}
+                        type="checkbox"
+                      />
+                      <span className="grid gap-1">
+                        <span>兼容 custom 工具（Responses 中转）</span>
+                        <span className="text-[11px] font-medium text-stone-500">
+                          把 custom 工具改写成 function，给不支持 custom 的中转站用。默认关闭。
+                        </span>
                       </span>
-                    </span>
-                  </label>
+                    </label>
+                  ) : null}
                   <ModelMappingsEditor
                     error={editModelMappingsError}
                     fetchError={editFetchModelsError}

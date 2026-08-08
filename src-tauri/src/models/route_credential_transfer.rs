@@ -284,7 +284,7 @@ mod tests {
         let choice = TransferPlatformChoice {
             item_index: 3,
             platform: "claude".to_string(),
-            interface_format: Some("anthropic-messages".to_string()),
+            interface_format: Some("anthropic".to_string()),
         };
         let preview_input = PreviewRouteCredentialImportInput {
             text: "explicit export content".to_string(),
@@ -336,7 +336,7 @@ mod tests {
                 "ambiguous_platform_choices": [{
                     "item_index": 3,
                     "platform": "claude",
-                    "interface_format": "anthropic-messages"
+                    "interface_format": "anthropic"
                 }]
             }),
         );
@@ -370,7 +370,7 @@ mod tests {
                 "ambiguous_platform_choices": [{
                     "item_index": 3,
                     "platform": "claude",
-                    "interface_format": "anthropic-messages"
+                    "interface_format": "anthropic"
                 }],
                 "restore_pool_membership": true
             }),

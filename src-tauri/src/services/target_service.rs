@@ -147,7 +147,7 @@ mod tests {
 name = "AI Switch Route Proxy"
 base_url = "http://127.0.0.1:43111/v1"
 wire_api = "responses"
-api_key = "sentinel"
+experimental_bearer_token = "sentinel"
 "#,
         )
         .await

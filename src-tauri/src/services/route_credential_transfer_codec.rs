@@ -461,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn api_dialect_aliases_share_one_canonical_fingerprint() {
+    fn api_dialect_canonical_value_has_stable_fingerprint() {
         let canonical = json!({
             "credential": {
                 "api-key": "sk-test",
@@ -470,18 +470,18 @@ mod tests {
             "cpa_section": "claude-api-key",
             "interface_format": "anthropic"
         });
-        let alias = json!({
+        let same = json!({
             "credential": {
                 "api-key": "sk-test",
                 "base-url": "https://api.example.com"
             },
             "cpa_section": "claude-api-key",
-            "interface_format": "anthropic-messages"
+            "interface_format": "anthropic"
         });
 
         assert_eq!(
             canonical_fingerprint("api", &canonical).unwrap(),
-            canonical_fingerprint("api", &alias).unwrap()
+            canonical_fingerprint("api", &same).unwrap()
         );
     }
 

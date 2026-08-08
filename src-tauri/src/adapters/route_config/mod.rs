@@ -211,7 +211,30 @@ command = "npx"
         assert!(rendered.contains("model_provider = \"ai-switch\""));
         assert!(rendered.contains("[model_providers.ai-switch]"));
         assert!(rendered.contains("base_url = \"http://127.0.0.1:43111/v1\""));
-        assert!(rendered.contains("api_key = \"sk-ai-switch-test\""));
+        assert!(rendered.contains("experimental_bearer_token = \"sk-ai-switch-test\""));
+        assert!(!rendered.contains("api_key = \"sk-ai-switch-test\""));
+    }
+
+    #[test]
+    fn codex_render_replaces_legacy_api_key() {
+        let registry = TargetAdapterRegistry::new();
+        let adapter = registry.for_platform(PlatformId::Codex).unwrap();
+        let existing = br#"model_provider = "ai-switch"
+
+[model_providers.ai-switch]
+name = "AI Switch Route Proxy"
+base_url = "http://127.0.0.1:43111/v1"
+wire_api = "responses"
+api_key = "legacy-key"
+"#;
+
+        let rendered = adapter
+            .render(Path::new("config.toml"), Some(existing), &input())
+            .unwrap();
+        let rendered = String::from_utf8(rendered).unwrap();
+
+        assert!(rendered.contains("experimental_bearer_token = \"sk-ai-switch-test\""));
+        assert!(!rendered.contains("api_key = \"legacy-key\""));
     }
 
     #[test]

@@ -11,11 +11,12 @@ use crate::services::http_client::{
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::response_failure_service::detect_response_failed;
+use crate::services::route_protocol_bridge::transform_response as transform_protocol_bridge_response;
 use crate::services::route_proxy_service::{
-    build_target_url, build_upstream_request, classify_proxy_failure, extract_usage_breakdown,
-    maybe_persist_official_quota_from_response, maybe_refresh_official_credential,
-    normalize_api_upstream_path, select_pool_credentials, ProxyFailureKind, RouteProxyService,
-    SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
+    build_target_url, build_upstream_request_with_bridge, classify_proxy_failure,
+    extract_usage_breakdown, maybe_persist_official_quota_from_response,
+    maybe_refresh_official_credential, normalize_api_upstream_path, select_pool_credentials,
+    ProxyFailureKind, RouteProxyService, SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
 };
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
@@ -138,7 +139,7 @@ impl RouteModelTestService {
             HeaderValue::from_static("application/json"),
         );
 
-        let (target_url, upstream_headers, upstream_body) = match build_upstream_request(
+        let upstream_request = match build_upstream_request_with_bridge(
             &credential,
             &platform,
             &parts.request_path,
@@ -165,9 +166,11 @@ impl RouteModelTestService {
                 .await;
             }
         };
+        let target_url = upstream_request.target_url.clone();
+        let bridge_kind = upstream_request.bridge_kind;
 
         let parts = ModelTestRequestParts {
-            request_body_json: pretty_json_bytes(&upstream_body),
+            request_body_json: pretty_json_bytes(&upstream_request.body),
             target_url: Some(target_url.clone()),
             ..parts
         };
@@ -193,19 +196,55 @@ impl RouteModelTestService {
             }
         };
 
-        let send_result =
-            send_model_test_request(client, &target_url, upstream_headers, upstream_body).await;
+        let send_result = send_model_test_request(
+            client,
+            &target_url,
+            upstream_request.headers,
+            upstream_request.body,
+        )
+        .await;
         let duration_ms = elapsed_ms(start);
 
         match send_result {
-            Ok((status, transport_success, body)) => {
+            Ok((status, transport_success, mut body)) => {
+                if let Some(bridge_kind) = bridge_kind {
+                    match transform_protocol_bridge_response(
+                        bridge_kind,
+                        status,
+                        Some("application/json"),
+                        &body,
+                    ) {
+                        Ok(response) => body = response.body,
+                        Err(error) => {
+                            let response_body =
+                                sanitize_for_storage(&credential, &truncate_response_body(&body));
+                            return finish_outcome(
+                                pool,
+                                &platform,
+                                credential,
+                                parts,
+                                next_index,
+                                Some(status),
+                                response_body,
+                                None,
+                                Some(error),
+                                false,
+                                duration_ms,
+                                RouteUsageBreakdown::default(),
+                            )
+                            .await;
+                        }
+                    }
+                }
                 let semantic_failure = detect_response_failed(&body);
                 let success = transport_success && semantic_failure.is_none();
                 let usage = extract_usage_breakdown(&body);
                 let response_body =
                     sanitize_for_storage(&credential, &truncate_response_body(&body));
-                let response_text =
-                    extract_model_test_response_text(&parts.interface_format, &response_body);
+                let response_text = extract_model_test_response_text(
+                    model_test_response_format(&platform, &parts.interface_format),
+                    &response_body,
+                );
 
                 let outcome = finish_outcome(
                     pool,
@@ -340,7 +379,11 @@ impl RouteModelTestService {
             }
         };
 
-        let entry_path = normalize_api_upstream_path(&parts.interface_format, &parts.request_path);
+        let entry_path = normalize_local_model_test_entry_path(
+            &platform,
+            &parts.interface_format,
+            &parts.request_path,
+        );
         let entry_url = join_proxy_entry_url(route_proxy_base_url, &entry_path);
         let trace_id = Uuid::new_v4().to_string();
         let proxy_key = RouteProxyService::get_or_create_platform_key(pool, &platform).await?;
@@ -402,8 +445,10 @@ impl RouteModelTestService {
             Ok((status, success, body)) => {
                 let response_body =
                     sanitize_for_storage(&credential, &truncate_response_body(&body));
-                let response_text =
-                    extract_model_test_response_text(&parts.interface_format, &response_body);
+                let response_text = extract_model_test_response_text(
+                    model_test_response_format(&platform, &parts.interface_format),
+                    &response_body,
+                );
                 finish_proxy_outcome(
                     pool,
                     &platform,
@@ -480,17 +525,8 @@ pub fn build_model_test_request(
     let mappings = model_mappings(&config);
     let model = request_model(platform, &interface_format, &mappings, requested_model);
 
-    let (request_path, request_body) = match interface_format.as_str() {
-        "openai" => (
-            "/chat/completions".to_string(),
-            json!({
-                "model": model,
-                "messages": [{"role": "user", "content": MODEL_TEST_PROMPT}],
-                "temperature": 0,
-                "max_tokens": 16
-            }),
-        ),
-        "openai-responses" => (
+    let (request_path, request_body) = match platform {
+        "codex" => (
             "/responses".to_string(),
             json!({
                 "model": model,
@@ -499,7 +535,7 @@ pub fn build_model_test_request(
                 "max_output_tokens": 16
             }),
         ),
-        "anthropic" | "anthropic-messages" => (
+        "claude" => (
             "/v1/messages".to_string(),
             json!({
                 "model": model,
@@ -523,7 +559,51 @@ pub fn build_model_test_request(
                 }
             }),
         ),
-        other => return Err(format!("Unsupported interface format: {other}")),
+        _ => match interface_format.as_str() {
+            "openai" => (
+                "/chat/completions".to_string(),
+                json!({
+                    "model": model,
+                    "messages": [{"role": "user", "content": MODEL_TEST_PROMPT}],
+                    "temperature": 0,
+                    "max_tokens": 16
+                }),
+            ),
+            "openai-responses" => (
+                "/responses".to_string(),
+                json!({
+                    "model": model,
+                    "input": MODEL_TEST_PROMPT,
+                    "temperature": 0,
+                    "max_output_tokens": 16
+                }),
+            ),
+            "anthropic" => (
+                "/v1/messages".to_string(),
+                json!({
+                    "model": model,
+                    "messages": [{"role": "user", "content": MODEL_TEST_PROMPT}],
+                    "max_tokens": 16
+                }),
+            ),
+            "gemini" => (
+                format!(
+                    "/v1beta/models/{}:generateContent",
+                    gemini_path_model(&mappings, requested_model)
+                ),
+                json!({
+                    "contents": [{
+                        "role": "user",
+                        "parts": [{"text": MODEL_TEST_PROMPT}]
+                    }],
+                    "generationConfig": {
+                        "temperature": 0,
+                        "maxOutputTokens": 16
+                    }
+                }),
+            ),
+            other => return Err(format!("Unsupported interface format: {other}")),
+        },
     };
 
     Ok(ModelTestRequestParts {
@@ -562,7 +642,7 @@ pub fn extract_model_test_response_text(interface_format: &str, body: &str) -> O
         }
     }
 
-    if matches!(interface_format, "anthropic" | "anthropic-messages") {
+    if interface_format == "anthropic" {
         if let Some(text) = text_at(&value, "/content/0/text") {
             return Some(text.to_string());
         }
@@ -671,7 +751,7 @@ fn api_dialect_required() -> AppError {
 
 fn default_model_for(interface_format: &str) -> &'static str {
     match interface_format {
-        "anthropic" | "anthropic-messages" => "claude-sonnet-4-20250514",
+        "anthropic" => "claude-sonnet-4-20250514",
         "gemini" => "gemini-2.5-flash",
         _ => "gpt-5.5",
     }
@@ -862,6 +942,44 @@ fn join_proxy_entry_url(base_url: &str, entry_path: &str) -> String {
     build_target_url(base_url, entry_path, None)
 }
 
+fn normalize_local_model_test_entry_path(
+    platform: &str,
+    interface_format: &str,
+    request_path: &str,
+) -> String {
+    match platform {
+        "codex" => strip_local_v1_prefix(request_path),
+        "claude" => ensure_leading_slash(request_path),
+        "gemini" => ensure_leading_slash(request_path),
+        _ => normalize_api_upstream_path(interface_format, request_path),
+    }
+}
+
+fn model_test_response_format<'a>(platform: &str, interface_format: &'a str) -> &'a str {
+    match platform {
+        "codex" => "openai-responses",
+        "claude" => "anthropic",
+        "gemini" => "gemini",
+        _ => interface_format,
+    }
+}
+
+fn strip_local_v1_prefix(path: &str) -> String {
+    let path = ensure_leading_slash(path);
+    path.strip_prefix("/v1/")
+        .map(|rest| format!("/{rest}"))
+        .unwrap_or(path)
+}
+
+fn ensure_leading_slash(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    }
+}
+
 fn validate_model_test_interface_override(
     platform: &str,
     requested: Option<&str>,
@@ -870,7 +988,18 @@ fn validate_model_test_interface_override(
         return Ok(None);
     };
 
-    if platform != "codex" || !matches!(requested, "openai" | "openai-responses") {
+    let allowed = match platform {
+        "codex" | "claude" => {
+            matches!(
+                requested,
+                "openai" | "openai-responses" | "anthropic" | "gemini"
+            )
+        }
+        "gemini" => requested == "gemini",
+        "grok" | "opencode" | "openclaw" | "hermes" => requested == "openai",
+        _ => false,
+    };
+    if !allowed {
         return Err(AppError::Validation {
             code: "validation.route_model_test_interface_format",
             message: "Unsupported model test interface format".to_string(),
@@ -1334,6 +1463,33 @@ mod tests {
         assert!(error.contains("validation.api_dialect_required"));
     }
 
+    #[test]
+    fn codex_model_test_builds_local_responses_body_for_anthropic_upstream() {
+        let credential = api_credential("anthropic");
+        let request =
+            build_model_test_request(&credential, "codex", Some("claude-sonnet-4-20250514"), None)
+                .unwrap();
+
+        assert_eq!(request.interface_format, "anthropic");
+        assert_eq!(request.request_path, "/responses");
+        let body: Value = serde_json::from_str(&request.request_body_json).unwrap();
+        assert_eq!(body["input"], MODEL_TEST_PROMPT);
+        assert_eq!(body["max_output_tokens"], 16);
+    }
+
+    #[test]
+    fn claude_model_test_builds_local_messages_body_for_openai_upstream() {
+        let credential = api_credential("openai");
+        let request =
+            build_model_test_request(&credential, "claude", Some("gpt-5.5"), None).unwrap();
+
+        assert_eq!(request.interface_format, "openai");
+        assert_eq!(request.request_path, "/v1/messages");
+        let body: Value = serde_json::from_str(&request.request_body_json).unwrap();
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["max_tokens"], 16);
+    }
+
     async fn start_json_test_server(status: axum::http::StatusCode, body: Value) -> String {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
         let addr = listener.local_addr().expect("addr");
@@ -1396,17 +1552,17 @@ mod tests {
         let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
 
         assert_eq!(request.interface_format, "openai");
-        assert_eq!(request.request_path, "/chat/completions");
+        assert_eq!(request.request_path, "/responses");
         assert_eq!(
             body.pointer("/model").and_then(Value::as_str),
             Some("gpt-5")
         );
         assert_eq!(
-            body.pointer("/messages/0/content").and_then(Value::as_str),
+            body.pointer("/input").and_then(Value::as_str),
             Some(MODEL_TEST_PROMPT),
         );
         assert_eq!(
-            body.pointer("/max_tokens").and_then(Value::as_i64),
+            body.pointer("/max_output_tokens").and_then(Value::as_i64),
             Some(16)
         );
     }
@@ -1492,9 +1648,9 @@ mod tests {
         let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
 
         assert_eq!(request.interface_format, "openai");
-        assert_eq!(request.request_path, "/chat/completions");
+        assert_eq!(request.request_path, "/responses");
         assert_eq!(
-            body.pointer("/messages/0/content").and_then(Value::as_str),
+            body.pointer("/input").and_then(Value::as_str),
             Some(MODEL_TEST_PROMPT)
         );
     }
@@ -1507,8 +1663,25 @@ mod tests {
                 .as_deref(),
             Some("openai")
         );
-        assert!(validate_model_test_interface_override("codex", Some("gemini")).is_err());
-        assert!(validate_model_test_interface_override("claude", Some("openai")).is_err());
+        assert_eq!(
+            validate_model_test_interface_override("codex", Some("gemini"))
+                .expect("valid Codex Gemini override")
+                .as_deref(),
+            Some("gemini")
+        );
+        assert_eq!(
+            validate_model_test_interface_override("claude", Some("openai"))
+                .expect("valid Claude OpenAI override")
+                .as_deref(),
+            Some("openai")
+        );
+        assert!(validate_model_test_interface_override("gemini", Some("openai")).is_err());
+        assert_eq!(
+            validate_model_test_interface_override("hermes", Some("openai"))
+                .expect("valid Hermes OpenAI override")
+                .as_deref(),
+            Some("openai")
+        );
         assert_eq!(
             validate_model_test_interface_override("claude", None).expect("missing override"),
             None
@@ -1716,7 +1889,7 @@ mod tests {
         assert_eq!(outcome.selected_account_id, credential_id);
         assert_eq!(outcome.selected_account_name, "API Account");
         assert_eq!(outcome.interface_format, "openai");
-        assert_eq!(outcome.request_path, "/chat/completions");
+        assert_eq!(outcome.request_path, "/responses");
         assert_eq!(outcome.base_url.as_deref(), Some(base_url.as_str()));
         assert_eq!(
             outcome.target_url.as_deref(),
@@ -1872,7 +2045,7 @@ mod tests {
 
         let _ = RouteProxyService::stop(&route_proxy_state).await;
 
-        let expected_entry_url = format!("{proxy_base_url}/chat/completions");
+        let expected_entry_url = format!("{proxy_base_url}/responses");
         let expected_target_url = format!("{base_url}/chat/completions");
         assert!(outcome.via_route_proxy);
         assert_eq!(
@@ -1881,12 +2054,12 @@ mod tests {
         );
         assert_eq!(
             outcome.route_proxy_entry_path.as_deref(),
-            Some("/chat/completions")
+            Some("/responses")
         );
         assert!(outcome.route_proxy_trace_id.is_some());
         assert_eq!(outcome.selected_account_id, credential_id);
         assert_eq!(outcome.selected_account_name, "API Account");
-        assert_eq!(outcome.request_path, "/chat/completions");
+        assert_eq!(outcome.request_path, "/responses");
         assert_eq!(
             outcome.target_url.as_deref(),
             Some(expected_target_url.as_str())

@@ -67,7 +67,6 @@ export type InterfaceFormat =
   | "openai"
   | "openai-responses"
   | "anthropic"
-  | "anthropic-messages"
   | "gemini";
 
 export type AnthropicApiKeyField = "ANTHROPIC_API_KEY" | "ANTHROPIC_AUTH_TOKEN";
@@ -420,7 +419,7 @@ export type RoutePoolModelTestRequest = {
   platform: string;
   account_id?: string | null;
   model?: string | null;
-  interface_format?: "openai" | "openai-responses" | null;
+  interface_format?: InterfaceFormat | null;
 };
 
 export type RoutePoolModelTestOutcome = {

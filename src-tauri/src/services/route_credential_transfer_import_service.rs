@@ -358,7 +358,7 @@ mod tests {
         let missing = classify_issue(0, &item, &[]);
         assert_eq!(missing.code, "transfer.choice_required");
 
-        let normalized = classify_ok(0, &item, &[choice(0, "claude", "anthropic-messages")]);
+        let normalized = classify_ok(0, &item, &[choice(0, "claude", "anthropic")]);
         assert_eq!(normalized.platform, "claude");
         assert_eq!(normalized.cpa_section.as_deref(), Some("claude-api-key"));
 

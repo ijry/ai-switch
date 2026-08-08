@@ -307,7 +307,7 @@ fn validate_required(field: &'static str, value: &str) -> Result<(), AppError> {
 
 fn validate_interface_format(value: &str) -> Result<(), AppError> {
     match value {
-        "openai" | "openai-responses" | "anthropic" | "anthropic-messages" | "gemini" => Ok(()),
+        "openai" | "openai-responses" | "anthropic" | "gemini" => Ok(()),
         _ => Err(AppError::Validation {
             code: "validation.interface_format",
             message: "Interface format is not supported".to_string(),
@@ -343,7 +343,7 @@ fn validate_api_key_field(
 }
 
 fn is_anthropic_interface_format(value: &str) -> bool {
-    matches!(value, "anthropic" | "anthropic-messages")
+    value == "anthropic"
 }
 
 fn parse_official_credentials_text(
@@ -426,6 +426,13 @@ mod tests {
         );
         assert!(validate_api_key_field(Some("ANTHROPIC_AUTH_TOKEN"), "openai").is_err());
         assert!(validate_api_key_field(Some("bad"), "anthropic").is_err());
+    }
+
+    #[test]
+    fn validate_interface_format_rejects_legacy_anthropic_alias() {
+        let legacy = ["anthropic", "messages"].join("-");
+        assert!(validate_interface_format("anthropic").is_ok());
+        assert!(validate_interface_format(&legacy).is_err());
     }
 
     #[test]

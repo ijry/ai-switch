@@ -41,7 +41,6 @@ const interfaceOptions = [
   { value: "openai", label: "OpenAI" },
   { value: "openai-responses", label: "OpenAI Responses" },
   { value: "anthropic", label: "Anthropic" },
-  { value: "anthropic-messages", label: "Anthropic Messages" },
   { value: "gemini", label: "Gemini" },
 ] as const;
 

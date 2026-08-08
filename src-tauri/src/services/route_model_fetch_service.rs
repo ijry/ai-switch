@@ -184,7 +184,7 @@ fn model_fetch_headers(
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_VALUE));
     match interface_format {
-        "anthropic" | "anthropic-messages" => {
+        "anthropic" => {
             match normalize_anthropic_api_key_field(api_key_field)? {
                 ANTHROPIC_AUTH_TOKEN_FIELD => {
                     headers.insert(

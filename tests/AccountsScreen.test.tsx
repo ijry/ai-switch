@@ -18,6 +18,7 @@ import {
   listPlatformCapabilities,
   listRouteCredentials,
   listRouteCredentialPage,
+  reorderRouteCredentials,
   refreshRouteCredentialsQuota,
   restoreRouteCredentials,
   routePoolTestModel,
@@ -60,6 +61,7 @@ vi.mock("../src/lib/api/client", () => ({
   listPlatformCapabilities: vi.fn(),
   listRouteCredentials: vi.fn(),
   listRouteCredentialPage: vi.fn(),
+  reorderRouteCredentials: vi.fn(),
   refreshRouteCredentialsQuota: vi.fn(),
   restoreRouteCredentials: vi.fn(),
   routePoolTestModel: vi.fn(),
@@ -230,6 +232,7 @@ describe("AccountsScreen", () => {
     vi.mocked(listPlatformCapabilities).mockReset();
     vi.mocked(listRouteCredentials).mockReset();
     vi.mocked(listRouteCredentialPage).mockReset();
+    vi.mocked(reorderRouteCredentials).mockReset();
     vi.mocked(refreshRouteCredentialsQuota).mockReset();
     vi.mocked(restoreRouteCredentials).mockReset();
     vi.mocked(routePoolTestModel).mockReset();
@@ -361,6 +364,17 @@ describe("AccountsScreen", () => {
         ],
         official_account_count: filtered.filter((credential) => credential.kind === "official").length,
       };
+    });
+    vi.mocked(reorderRouteCredentials).mockResolvedValue({
+      items: credentialsFixture,
+      total: credentialsFixture.length,
+      page: 1,
+      page_count: 1,
+      page_size: 20,
+      previous_page_account_id: null,
+      next_page_account_id: null,
+      filter_options: [],
+      official_account_count: 1,
     });
     vi.mocked(getRouteProxyStatus).mockResolvedValue({
       running: false,
@@ -499,6 +513,38 @@ describe("AccountsScreen", () => {
 
     await screen.findByTestId("pool-status-strip");
     expect(screen.getByTestId("workspace-toolbar-leading")).toHaveClass("hidden", "max-[599px]:hidden");
+  });
+
+  it("reorders accounts when dragging a handle onto another account row", async () => {
+    renderScreen();
+
+    const dragHandle = await screen.findByLabelText("拖动 Team Account");
+    const dropTarget = screen.getByLabelText("放置在 API Account 前");
+    const dataTransfer = {
+      dropEffect: "none",
+      effectAllowed: "all",
+      setData: vi.fn(),
+    };
+
+    fireEvent.dragStart(dragHandle, { dataTransfer });
+    await waitFor(() => expect(dragHandle).toHaveAttribute("aria-grabbed", "true"));
+    expect(dataTransfer.setData).toHaveBeenCalledWith("text/plain", "cred-official-1");
+
+    fireEvent.dragOver(dropTarget, { dataTransfer });
+    expect(dropTarget).toHaveClass("border-blue-400", "bg-blue-50/70");
+    fireEvent.drop(dropTarget, { dataTransfer });
+
+    await waitFor(() =>
+      expect(reorderRouteCredentials).toHaveBeenCalledWith({
+        platform: "codex",
+        moved_account_id: "cred-official-1",
+        previous_account_id: "cred-api-1",
+        next_account_id: null,
+        filters: [],
+        pool_scope: "out_of_pool",
+        page_size: 20,
+      }),
+    );
   });
 
   it("keeps side toolbar content visible when the window is not pinned to the top", () => {
@@ -826,6 +872,13 @@ describe("AccountsScreen", () => {
     await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
 
     const formatSelect = screen.getByLabelText("接口格式");
+    expect(screen.queryByText("Claude Messages（兼容）")).not.toBeInTheDocument();
+    expect(within(formatSelect).getAllByRole("option").map((option) => option.getAttribute("value"))).toEqual([
+      "openai",
+      "openai-responses",
+      "anthropic",
+      "gemini",
+    ]);
     expect(within(formatSelect).getByRole("option", { name: "OpenAI Chat Completions" })).toHaveValue(
       "openai",
     );
@@ -833,10 +886,33 @@ describe("AccountsScreen", () => {
       "openai-responses",
     );
     expect(within(formatSelect).getByRole("option", { name: "Claude Messages" })).toHaveValue("anthropic");
-    expect(within(formatSelect).getByRole("option", { name: "Claude Messages（兼容）" })).toHaveValue(
-      "anthropic-messages",
-    );
     expect(within(formatSelect).getByRole("option", { name: "Gemini" })).toHaveValue("gemini");
+  });
+
+  it("shows four upstream interface formats for Claude API accounts", async () => {
+    renderScreen("claude");
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+
+    const formatSelect = screen.getByLabelText("接口格式");
+    expect(within(formatSelect).getAllByRole("option").map((option) => option.getAttribute("value"))).toEqual([
+      "openai",
+      "openai-responses",
+      "anthropic",
+      "gemini",
+    ]);
+    expect(screen.queryByLabelText("兼容 custom 工具（Responses 中转）")).not.toBeInTheDocument();
+  });
+
+  it("keeps Gemini API accounts Gemini-only without protocol controls", async () => {
+    renderScreen("gemini");
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+
+    expect(screen.queryByLabelText("接口格式")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("兼容 custom 工具（Responses 中转）")).not.toBeInTheDocument();
   });
 
   it("creates an API route credential with interface format and model mappings", async () => {
@@ -1513,6 +1589,12 @@ describe("AccountsScreen", () => {
     expect(screen.getAllByText("120").length).toBeGreaterThan(0);
     expect(screen.getAllByText("30").length).toBeGreaterThan(0);
     expect(screen.getAllByText("80").length).toBeGreaterThan(0);
+    const successRow = screen.getByText("Team Account").closest("[data-route-request-row]");
+    expect(successRow).not.toBeNull();
+    expect((successRow as HTMLElement).firstElementChild).toHaveClass(
+      "grid-cols-2",
+      "sm:grid-cols-4",
+    );
 
     await userEvent.click(screen.getByLabelText("查看请求 request-success 详情"));
 

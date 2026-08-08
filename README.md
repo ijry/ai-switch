@@ -32,6 +32,10 @@ OpenCode, OpenClaw, and Hermes remain visible for generic API routing, terminal 
 
 Native Codex, Claude Code, Gemini CLI, and Grok configuration changes use safe direct writes: AI Switch prepares a snapshot before mutation, writes atomically, detects concurrent changes, and supports guarded rollback. Phase A never resolves or modifies Hermes `config.yaml`.
 
+### Protocol Routing
+
+Codex 和 Claude 的 API 路由账号可以选择 `openai`、`openai-responses`、`anthropic`、`gemini` 四种上游协议。Codex 本地入口仍使用 OpenAI Responses；Claude 本地入口仍使用 Anthropic Messages。AI Switch 会在本地入口协议和上游账号协议不一致时进行桥接转换。Gemini CLI 本地入口目前保持 Gemini native，只路由到 Gemini 协议账号。
+
 ## Development
 
 Install dependencies:

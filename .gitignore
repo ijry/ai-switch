@@ -3,6 +3,7 @@ node_modules/
 dist/
 target/
 src-tauri/target/
+src-tauri/target-codex/
 *.log
 .env
 .env.*

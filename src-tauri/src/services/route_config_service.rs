@@ -536,7 +536,8 @@ command = "npx"
         assert!(written.contains("model_provider = \"ai-switch\""));
         assert!(written.contains("[model_providers.ai-switch]"));
         assert!(written.contains("base_url = \"http://127.0.0.1:43111/v1\""));
-        assert!(written.contains("api_key = \"sk-ai-switch-test\""));
+        assert!(written.contains("experimental_bearer_token = \"sk-ai-switch-test\""));
+        assert!(!written.contains("api_key = \"sk-ai-switch-test\""));
     }
 
     #[tokio::test]

@@ -16,6 +16,11 @@ use crate::services::official_agent_identity_service::{
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::response_failure_service::detect_response_failed;
 use crate::services::route_config_service::generate_route_proxy_key;
+use crate::services::route_protocol_bridge::{
+    prepare_request as prepare_protocol_bridge_request,
+    transform_response as transform_protocol_bridge_response, PreparedBridgeRequest,
+    ProtocolBridgeKind,
+};
 use axum::body::Body;
 use axum::extract::State as AxumState;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
@@ -97,6 +102,14 @@ struct RouteProxyKeyCache {
     loaded_at: Option<Instant>,
     // proxy_key -> platform
     by_key: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct BuiltUpstreamRequest {
+    pub(crate) target_url: String,
+    pub(crate) headers: HeaderMap,
+    pub(crate) body: Vec<u8>,
+    pub(crate) bridge_kind: Option<ProtocolBridgeKind>,
 }
 
 impl RouteProxyKeyCache {
@@ -498,7 +511,7 @@ async fn forward_request(
                 continue;
             }
         };
-        let upstream_request = build_upstream_request(
+        let upstream_request = build_upstream_request_internal(
             &credential,
             &platform,
             &path,
@@ -506,7 +519,12 @@ async fn forward_request(
             outbound_headers.clone(),
             &body_bytes,
         );
-        let (target_url, request_headers, outbound_body) = match upstream_request {
+        let BuiltUpstreamRequest {
+            target_url,
+            headers: request_headers,
+            body: outbound_body,
+            bridge_kind,
+        } = match upstream_request {
             Ok(request) => request,
             Err(error) => {
                 record_route_credential_failure(pool, &credential.id, "request_build", &error)
@@ -573,7 +591,7 @@ async fn forward_request(
         };
         let status =
             StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-        let upstream_headers = upstream.headers().clone();
+        let mut upstream_headers = upstream.headers().clone();
         let mut response_bytes = match upstream.bytes().await {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -605,6 +623,59 @@ async fn forward_request(
                 continue;
             }
         };
+        if let Some(bridge_kind) = bridge_kind {
+            let content_type = upstream_headers
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok());
+            let transformed = match transform_protocol_bridge_response(
+                bridge_kind,
+                status.as_u16(),
+                content_type,
+                &response_bytes,
+            ) {
+                Ok(response) => response,
+                Err(error) => {
+                    let error_message = format!(
+                        "{}: could not transform upstream response: {error}",
+                        credential.display_name
+                    );
+                    record_route_credential_failure(
+                        pool,
+                        &credential.id,
+                        "response_transform",
+                        &error_message,
+                    )
+                    .await;
+                    let metadata = route_proxy_request_metadata(
+                        &platform,
+                        &credential,
+                        &path,
+                        Some(&target_url),
+                        Some(status.as_u16()),
+                        false,
+                        trace_id.as_deref(),
+                        request_start,
+                        Some(&error_message),
+                    );
+                    let _ = insert_route_credential_request_event(
+                        pool,
+                        &credential.id,
+                        &metadata,
+                        &RouteUsageBreakdown::default(),
+                    )
+                    .await;
+                    retry_errors.push(error_message);
+                    continue;
+                }
+            };
+            response_bytes = transformed.body.into();
+            upstream_headers.remove(axum::http::header::CONTENT_LENGTH);
+            if let Some(content_type) = transformed.content_type {
+                if let Ok(value) = HeaderValue::from_str(&content_type) {
+                    upstream_headers.insert(axum::http::header::CONTENT_TYPE, value);
+                }
+            }
+        }
         if !custom_tool_names.is_empty() {
             response_bytes =
                 restore_custom_tools_in_responses_payload(&response_bytes, &custom_tool_names)
@@ -1278,9 +1349,33 @@ pub fn build_upstream_request(
     platform: &str,
     path: &str,
     query: Option<&str>,
-    mut headers: HeaderMap,
+    headers: HeaderMap,
     body: &[u8],
 ) -> Result<(String, HeaderMap, Vec<u8>), String> {
+    let request =
+        build_upstream_request_internal(credential, platform, path, query, headers, body)?;
+    Ok((request.target_url, request.headers, request.body))
+}
+
+pub(crate) fn build_upstream_request_with_bridge(
+    credential: &SelectedCredential,
+    platform: &str,
+    path: &str,
+    query: Option<&str>,
+    headers: HeaderMap,
+    body: &[u8],
+) -> Result<BuiltUpstreamRequest, String> {
+    build_upstream_request_internal(credential, platform, path, query, headers, body)
+}
+
+fn build_upstream_request_internal(
+    credential: &SelectedCredential,
+    platform: &str,
+    path: &str,
+    query: Option<&str>,
+    mut headers: HeaderMap,
+    body: &[u8],
+) -> Result<BuiltUpstreamRequest, String> {
     let secret = parse_json_object(&credential.secret_payload_json, "secret")?;
     let config = parse_json_object(&credential.config_json, "config")?;
 
@@ -1318,7 +1413,7 @@ fn build_api_upstream_request(
     body: &[u8],
     secret: &Value,
     config: &Value,
-) -> Result<(String, HeaderMap, Vec<u8>), String> {
+) -> Result<BuiltUpstreamRequest, String> {
     let platform = PlatformId::parse(platform).map_err(format_app_error)?;
     PlatformCapabilityService::require(platform, PlatformOperation::GenericApiRouting)
         .map_err(format_app_error)?;
@@ -1352,12 +1447,23 @@ fn build_api_upstream_request(
     let upstream_path = normalize_api_upstream_path(interface_format, path);
     let mut rewritten_body = apply_model_mappings(body, &mappings);
     // API relays (e.g. Xiaomi) commonly lack Codex custom-tool support on Responses.
-    if responses_custom_tool_compat_enabled(config)
+    let bridge_requires_custom_tool_compat = platform == PlatformId::Codex
+        && dialect == ApiDialect::OpenAi
+        && is_responses_path(&upstream_path);
+    if (responses_custom_tool_compat_enabled(config) || bridge_requires_custom_tool_compat)
         && should_rewrite_custom_tools_for_api(interface_format, &upstream_path)
     {
         rewritten_body = apply_responses_custom_tool_compat(&rewritten_body);
     }
-    let mut target_url = build_target_url(base_url, &upstream_path, query);
+    let PreparedBridgeRequest {
+        kind: bridge_kind,
+        upstream_path,
+        upstream_query,
+        body: rewritten_body,
+        ..
+    } = prepare_protocol_bridge_request(platform, dialect, &upstream_path, &rewritten_body)?;
+    let merged_query = merge_query_parts(query, upstream_query.as_deref());
+    let mut target_url = build_target_url(base_url, &upstream_path, merged_query.as_deref());
 
     match dialect {
         ApiDialect::Anthropic => {
@@ -1387,7 +1493,12 @@ fn build_api_upstream_request(
     }
 
     apply_credential_user_agent(headers, config)?;
-    Ok((target_url, headers.clone(), rewritten_body))
+    Ok(BuiltUpstreamRequest {
+        target_url,
+        headers: headers.clone(),
+        body: rewritten_body,
+        bridge_kind,
+    })
 }
 
 fn build_official_upstream_request(
@@ -1399,7 +1510,7 @@ fn build_official_upstream_request(
     body: &[u8],
     secret: &Value,
     config: &Value,
-) -> Result<(String, HeaderMap, Vec<u8>), String> {
+) -> Result<BuiltUpstreamRequest, String> {
     let platform = PlatformId::parse(platform).map_err(format_app_error)?;
     PlatformCapabilityService::require(platform, PlatformOperation::OfficialAccountRouting)
         .map_err(format_app_error)?;
@@ -1439,7 +1550,12 @@ fn build_official_upstream_request(
     }
     apply_credential_user_agent(headers, config)?;
     let target_url = build_target_url(base_url, path, query);
-    Ok((target_url, headers.clone(), body.to_vec()))
+    Ok(BuiltUpstreamRequest {
+        target_url,
+        headers: headers.clone(),
+        body: body.to_vec(),
+        bridge_kind: None,
+    })
 }
 
 fn is_grok_cli_chat_proxy_base_url(base_url: &str) -> bool {
@@ -2538,6 +2654,18 @@ fn append_query_param(url: &str, key: &str, value: &str) -> String {
     format!("{url}{separator}{key}={value}")
 }
 
+fn merge_query_parts(original: Option<&str>, bridge: Option<&str>) -> Option<String> {
+    match (
+        original.map(str::trim).filter(|value| !value.is_empty()),
+        bridge.map(str::trim).filter(|value| !value.is_empty()),
+    ) {
+        (Some(left), Some(right)) => Some(format!("{left}&{right}")),
+        (Some(left), None) => Some(left.to_string()),
+        (None, Some(right)) => Some(right.to_string()),
+        (None, None) => None,
+    }
+}
+
 pub fn build_target_url(base_url: &str, path: &str, query: Option<&str>) -> String {
     let base = collapse_duplicate_terminal_version_segments(base_url.trim().trim_end_matches('/'));
     let normalized_path = if path.is_empty() {
@@ -2940,6 +3068,85 @@ mod tests {
     use super::*;
     use crate::database::{create_memory_pool, run_migrations};
 
+    #[derive(Debug)]
+    struct CapturedChatRequest {
+        method: String,
+        path: String,
+        authorization: Option<String>,
+        body: Value,
+    }
+
+    #[derive(Clone)]
+    struct ChatUpstreamState {
+        requests: tokio::sync::mpsc::UnboundedSender<CapturedChatRequest>,
+    }
+
+    async fn recording_chat_upstream_handler(
+        AxumState(state): AxumState<ChatUpstreamState>,
+        method: Method,
+        headers: HeaderMap,
+        uri: axum::http::Uri,
+        body: Body,
+    ) -> Response {
+        let body = axum::body::to_bytes(body, 32 * 1024 * 1024)
+            .await
+            .expect("upstream request body");
+        let value = serde_json::from_slice::<Value>(&body).expect("upstream request json");
+        let streaming = value.get("stream").and_then(Value::as_bool) == Some(true);
+        let _ = state.requests.send(CapturedChatRequest {
+            method: method.to_string(),
+            path: uri.path().to_string(),
+            authorization: headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string),
+            body: value,
+        });
+
+        let (content_type, response_body) = if streaming {
+            (
+                "text/event-stream",
+                concat!(
+                    "data: {\"id\":\"chatcmpl-route\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+                    "data: {\"id\":\"chatcmpl-route\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n",
+                    "data: {\"id\":\"chatcmpl-route\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\n",
+                    "data: [DONE]\n\n"
+                ),
+            )
+        } else {
+            (
+                "application/json",
+                r#"{"id":"chatcmpl-route","object":"chat.completion","model":"deepseek-chat","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}"#,
+            )
+        };
+
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(axum::http::header::CONTENT_TYPE, content_type)
+            .body(Body::from(response_body))
+            .expect("upstream response")
+    }
+
+    async fn start_recording_chat_upstream() -> (
+        String,
+        tokio::sync::mpsc::UnboundedReceiver<CapturedChatRequest>,
+    ) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let app = Router::new()
+            .fallback(recording_chat_upstream_handler)
+            .with_state(ChatUpstreamState { requests: sender });
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind recording upstream");
+        let address = listener.local_addr().expect("recording upstream address");
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve recording upstream");
+        });
+        (format!("http://{address}/v1"), receiver)
+    }
+
     async fn start_fixed_upstream(status: StatusCode, body: &'static str) -> String {
         let app = Router::new().fallback(move || async move { (status, body) });
         let listener = TcpListener::bind(("127.0.0.1", 0))
@@ -3153,6 +3360,99 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("true")
         );
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn route_proxy_bridges_codex_responses_to_chat_json_and_sse() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+
+        let (upstream_url, mut requests) = start_recording_chat_upstream().await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_proxy_api_credential(&pool, "chat-bridge", &upstream_url).await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
+            .await
+            .expect("pool members");
+        let route_key = RouteProxyKeyRepository::ensure_platform_key(
+            &pool,
+            "codex",
+            "sk-ai-switch-test-bridge",
+        )
+        .await
+        .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool, RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+        let client = reqwest::Client::new();
+        let endpoint = format!(
+            "{}/v1/responses",
+            proxy.base_url.as_deref().expect("base url")
+        );
+
+        let json_response = client
+            .post(&endpoint)
+            .bearer_auth(&route_key)
+            .json(&json!({"model":"gpt-5","input":"hello"}))
+            .send()
+            .await
+            .expect("json proxy response");
+        assert_eq!(json_response.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            json_response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.split(';').next().unwrap_or(value)),
+            Some("application/json")
+        );
+        let json_body: Value = json_response.json().await.expect("responses json");
+        assert_eq!(json_body["object"], "response");
+        assert_eq!(json_body["output_text"], "hello");
+        assert_eq!(json_body["usage"]["input_tokens"], 3);
+        assert_eq!(json_body["usage"]["output_tokens"], 1);
+
+        let captured_json = requests.recv().await.expect("captured json request");
+        assert_eq!(captured_json.method, "POST");
+        assert_eq!(captured_json.path, "/v1/chat/completions");
+        assert_eq!(
+            captured_json.authorization.as_deref(),
+            Some("Bearer sk-upstream")
+        );
+        assert_eq!(
+            captured_json.body["messages"][0],
+            json!({"role":"user","content":"hello"})
+        );
+        assert!(captured_json.body.get("input").is_none());
+
+        let sse_response = client
+            .post(&endpoint)
+            .bearer_auth(&route_key)
+            .json(&json!({"model":"gpt-5","input":"hello","stream":true}))
+            .send()
+            .await
+            .expect("sse proxy response");
+        assert_eq!(sse_response.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            sse_response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.split(';').next().unwrap_or(value)),
+            Some("text/event-stream")
+        );
+        let sse_body = sse_response.text().await.expect("responses sse");
+        assert!(sse_body.contains("event: response.created"));
+        assert!(sse_body.contains("response.output_text.delta"));
+        assert!(sse_body.contains("\"delta\":\"hello\""));
+        assert!(sse_body.contains("event: response.completed"));
+
+        let captured_sse = requests.recv().await.expect("captured sse request");
+        assert_eq!(captured_sse.path, "/v1/chat/completions");
+        assert_eq!(captured_sse.body["stream"], true);
+        assert!(captured_sse.body["stream_options"]["include_usage"] == true);
 
         RouteProxyService::stop(&runtime).await.expect("stop proxy");
     }
@@ -3449,6 +3749,25 @@ mod tests {
         .expect_err("partial platforms require an explicit API dialect");
 
         assert!(error.contains("validation.api_dialect_required"));
+    }
+
+    #[test]
+    fn gemini_bridge_query_merges_with_original_query_and_key() {
+        let credential = api_credential("gemini-upstream", "gemini");
+        let (url, _, _) = build_upstream_request(
+            &credential,
+            "codex",
+            "/v1/responses",
+            Some("trace=1"),
+            HeaderMap::new(),
+            br#"{"model":"gemini-2.5-flash","stream":true,"input":"hello"}"#,
+        )
+        .unwrap();
+
+        assert!(url.contains("/v1beta/models/gemini-2.5-flash:streamGenerateContent?"));
+        assert!(url.contains("trace=1"));
+        assert!(url.contains("alt=sse"));
+        assert!(url.contains("key="));
     }
 
     #[test]
@@ -3837,6 +4156,91 @@ mod tests {
         .expect("request");
 
         assert_eq!(url, "https://api.example.com/responses");
+    }
+
+    #[test]
+    fn build_upstream_request_bridges_codex_responses_to_chat_upstream() {
+        let credential = api_credential("chat-upstream", "openai");
+        let (url, _, body) = build_upstream_request(
+            &credential,
+            "codex",
+            "/v1/responses",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5","input":"hello","max_output_tokens":32}"#,
+        )
+        .expect("bridged request");
+        let body: Value = serde_json::from_slice(&body).expect("chat json");
+
+        assert_eq!(url, "https://api.example.com/v1/chat/completions");
+        assert_eq!(body["model"], "up-gpt");
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][0]["content"], "hello");
+        assert_eq!(body["max_tokens"], 32);
+        assert!(body.get("input").is_none());
+    }
+
+    #[test]
+    fn build_upstream_request_keeps_codex_responses_for_responses_upstream() {
+        let credential = api_credential("responses-upstream", "openai-responses");
+        let (url, _, body) = build_upstream_request(
+            &credential,
+            "codex",
+            "/v1/responses",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5","input":"hello"}"#,
+        )
+        .expect("responses request");
+        let body: Value = serde_json::from_slice(&body).expect("responses json");
+
+        assert_eq!(url, "https://api.example.com/v1/responses");
+        assert_eq!(body["model"], "up-gpt");
+        assert_eq!(body["input"], "hello");
+        assert!(body.get("messages").is_none());
+    }
+
+    #[test]
+    fn build_upstream_request_bridges_custom_responses_tools_to_chat_functions() {
+        let credential = api_credential("chat-custom-tool", "openai");
+        let body = br#"{
+            "model":"gpt-5",
+            "input":[{
+                "type":"custom_tool_call",
+                "call_id":"call_1",
+                "name":"apply_patch",
+                "input":"*** Begin Patch"
+            }],
+            "tools":[{
+                "type":"custom",
+                "name":"apply_patch",
+                "description":"Apply a patch"
+            }]
+        }"#;
+        let (_, _, rewritten) = build_upstream_request(
+            &credential,
+            "codex",
+            "/v1/responses",
+            None,
+            HeaderMap::new(),
+            body,
+        )
+        .expect("bridged custom request");
+        let value: Value = serde_json::from_slice(&rewritten).expect("chat json");
+
+        assert_eq!(value.pointer("/tools/0/type"), Some(&json!("function")));
+        assert_eq!(
+            value.pointer("/tools/0/function/name"),
+            Some(&json!("apply_patch"))
+        );
+        assert_eq!(
+            value.pointer("/messages/0/tool_calls/0/function/name"),
+            Some(&json!("apply_patch"))
+        );
+        assert_eq!(
+            value.pointer("/messages/0/tool_calls/0/function/arguments"),
+            Some(&json!(r#"{"input":"*** Begin Patch"}"#))
+        );
     }
 
     #[test]

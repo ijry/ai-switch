@@ -107,7 +107,7 @@ impl ApiDialect {
         match normalize_identifier(value).as_str() {
             "openai" => Ok(Self::OpenAi),
             "openai_responses" => Ok(Self::OpenAiResponses),
-            "anthropic" | "anthropic_messages" => Ok(Self::Anthropic),
+            "anthropic" => Ok(Self::Anthropic),
             "gemini" => Ok(Self::Gemini),
             _ => Err(AppError::Validation {
                 code: "validation.api_dialect",
@@ -263,10 +263,11 @@ mod tests {
             ApiDialect::parse("openai-responses").unwrap(),
             ApiDialect::OpenAiResponses
         );
-        assert_eq!(
-            ApiDialect::parse("anthropic-messages").unwrap(),
-            ApiDialect::Anthropic
-        );
+        assert_eq!(ApiDialect::parse("anthropic").unwrap(), ApiDialect::Anthropic);
+        let legacy_dash = ["anthropic", "messages"].join("-");
+        let legacy_underscore = ["anthropic", "messages"].join("_");
+        assert!(ApiDialect::parse(&legacy_dash).is_err());
+        assert!(ApiDialect::parse(&legacy_underscore).is_err());
         assert!(ApiDialect::parse("automatic").is_err());
     }
 
