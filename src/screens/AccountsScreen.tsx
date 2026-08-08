@@ -15,6 +15,7 @@ import {
   FileCode2,
   GripVertical,
   KeyRound,
+  List,
   MessageSquareText,
   Play,
   Plus,
@@ -28,7 +29,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { PlatformSupportBadge } from "../components/platform/PlatformSupportBadge";
-import { ModelMappingSummary } from "../components/accounts/ModelMappingSummary";
+import { expandDisplayModelMappings, ModelMappingSummary } from "../components/accounts/ModelMappingSummary";
 import { RouteCredentialExportDialog } from "../components/accounts/RouteCredentialExportDialog";
 import { neighborsForDrop } from "../lib/accountReorder";
 import {
@@ -88,6 +89,7 @@ import {
   writeUserAgentToConfig,
 } from "../lib/accountUserAgent";
 import { isTauriRuntime } from "../lib/transport";
+import { fetchRouteProxyModels } from "../lib/routeProxyModels";
 import { copySensitiveText } from "../lib/routeCredentialTransfer";
 import {
   codexModelTestInterfaceFormat,
@@ -1078,7 +1080,7 @@ function ModelMappingsEditor({
       <div className="space-y-2 rounded-xl border border-stone-200 bg-stone-50/70 p-2">
         {rows.length === 0 ? (
           <div className="rounded-lg border border-dashed border-stone-200 bg-white px-3 py-3 text-[12px] font-medium text-stone-500">
-            暂无模型映射。需要改写上游模型时再新增。
+            暂无模型映射。需要改写上游模型时或者该上游模型有限时再新增。
           </div>
         ) : (
           rows.map((mapping, index) => {
@@ -1474,6 +1476,7 @@ export function AccountsScreen({
   const [codexModelTestEndpoint, setCodexModelTestEndpoint] =
     useState<CodexModelTestEndpoint>(() => loadCodexModelTestEndpoint());
   const [modelTestDialogOpen, setModelTestDialogOpen] = useState(false);
+  const [routePoolModelsDialogOpen, setRoutePoolModelsDialogOpen] = useState(false);
   const [modelTestAccount, setModelTestAccount] = useState<RouteCredential | null>(null);
   const [exportRequest, setExportRequest] = useState<{
     selection_context: RouteCredentialSelectionContext;
@@ -1836,6 +1839,31 @@ export function AccountsScreen({
   const accountPageData = credentialsQuery.data;
   const credentials = accountPageData?.items ?? [];
   const modelTestCredentials = allCredentialsQuery.data ?? credentials;
+  const poolModelMappingTargets = useMemo(() => {
+    const targetsByAlias = new Map<string, Set<string>>();
+    for (const credential of modelTestCredentials) {
+      if (credential.archived_at || !draftPoolIds.has(credential.id)) {
+        continue;
+      }
+      const mappings = expandDisplayModelMappings(
+        activePlatform,
+        parseModelMappingsFromConfig(credential.config_json),
+      );
+      for (const mapping of mappings) {
+        const alias = mapping.alias.trim().toLowerCase();
+        const target = mapping.target.trim();
+        if (!alias || !target) {
+          continue;
+        }
+        const targets = targetsByAlias.get(alias) ?? new Set<string>();
+        targets.add(target);
+        targetsByAlias.set(alias, targets);
+      }
+    }
+    return new Map(
+      Array.from(targetsByAlias.entries()).map(([alias, targets]) => [alias, Array.from(targets)]),
+    );
+  }, [activePlatform, draftPoolIds, modelTestCredentials]);
   const hasEligiblePoolModelTestCredential = modelTestCredentials.some(
     (credential) =>
       !credential.archived_at &&
@@ -2423,6 +2451,16 @@ export function AccountsScreen({
       setDragTargetIndex(null);
     },
   });
+  const routePoolModelsMutation = useMutation({
+    mutationFn: async () => {
+      const proxyStatus = routeProxyQuery.data;
+      if (!proxyStatus?.running || !proxyStatus.base_url?.trim()) {
+        throw new Error("请先启动本地路由代理，再查看算力池模型列表。");
+      }
+      const proxyKey = await getRouteProxyKey(activePlatform);
+      return fetchRouteProxyModels(proxyStatus.base_url, proxyKey, activePlatform);
+    },
+  });
 
   const batchDeleteMutation = useMutation({
     mutationFn: async (ids: string[]) => {
@@ -2673,6 +2711,18 @@ export function AccountsScreen({
         message: "复制 sk 失败：" + formatApiError(error, "无法读取本地路由密钥。"),
       });
     }
+  };
+
+  const openRoutePoolModelsDialog = () => {
+    setModelTestMenuOpen(false);
+    routePoolModelsMutation.reset();
+    setRoutePoolModelsDialogOpen(true);
+    routePoolModelsMutation.mutate();
+  };
+
+  const closeRoutePoolModelsDialog = () => {
+    setRoutePoolModelsDialogOpen(false);
+    routePoolModelsMutation.reset();
   };
 
   const openAccountTestDialog = (credential: RouteCredential) => {
@@ -3123,6 +3173,16 @@ export function AccountsScreen({
                     >
                       <KeyRound aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
                       复制 sk
+                    </button>
+                    <button
+                      aria-label="查看模型列表"
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
+                      onClick={openRoutePoolModelsDialog}
+                      role="menuitem"
+                      type="button"
+                    >
+                      <List aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                      查看模型列表
                     </button>
                   </div>
                 ) : null}
@@ -4228,6 +4288,89 @@ export function AccountsScreen({
                 type="button"
               >
                 {modelTestMutation.isPending ? "测试中..." : "开始测试"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {routePoolModelsDialogOpen && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">
+          <div
+            aria-label="算力池模型列表"
+            className="w-full max-w-lg rounded-2xl border border-stone-200 bg-white p-4 shadow-2xl"
+            role="dialog"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
+                  {platformLabels[activePlatform]}
+                </p>
+                <h3 className="mt-0.5 text-lg font-semibold text-stone-950">算力池模型列表</h3>
+                <p className="mt-1 text-[12px] text-stone-500">
+                  当前列表来自本地路由代理 `/v1/models`，表示算力池对外公开的模型集合。
+                </p>
+              </div>
+              <button
+                aria-label="关闭算力池模型列表"
+                className="rounded-xl border border-stone-200 p-1.5 text-stone-500 transition-colors hover:bg-stone-50"
+                onClick={closeRoutePoolModelsDialog}
+                type="button"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {routePoolModelsMutation.isPending ? (
+              <div className="mt-4 flex items-center gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3 py-3 text-[12px] text-sky-900">
+                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                正在读取模型列表...
+              </div>
+            ) : routePoolModelsMutation.isError ? (
+              <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-[12px] font-medium text-amber-900" role="alert">
+                {formatApiError(routePoolModelsMutation.error, "获取算力池模型列表失败。")}
+              </p>
+            ) : (
+              <div className="mt-4">
+                {routePoolModelsMutation.data && routePoolModelsMutation.data.length > 0 ? (
+                  <div className="grid max-h-72 gap-1.5 overflow-y-auto rounded-xl border border-stone-200 bg-stone-50 p-2">
+                    {routePoolModelsMutation.data.map((model) => {
+                      const mappingTargets = poolModelMappingTargets.get(model.id.trim().toLowerCase());
+                      return (
+                        <div className="flex gap-3 rounded-lg bg-white px-3 py-2" key={model.id}>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-3">
+                              <span
+                                className="min-w-0 truncate font-mono text-[12px] font-semibold text-stone-800"
+                                title={model.id}
+                              >
+                                {model.id}
+                              </span>
+                              {model.owned_by ? (
+                                <span className="shrink-0 text-[11px] text-stone-500">{model.owned_by}</span>
+                              ) : null}
+                            </div>
+                            {mappingTargets?.length ? (
+                              <p className="mt-0.5 break-words text-[11px] leading-4 text-sky-700">
+                                映射的上游模型：{mappingTargets.join("、")}
+                              </p>
+                            ) : null}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="rounded-xl border border-dashed border-stone-300 bg-stone-50 px-3 py-4 text-center text-[12px] text-stone-500">
+                    当前算力池没有可公开的模型。
+                  </p>
+                )}
+              </div>
+            )}
+
+            <div className="mt-4 flex justify-end border-t border-stone-100 pt-3">
+              <button className={secondaryButtonClass} onClick={closeRoutePoolModelsDialog} type="button">
+                关闭
               </button>
             </div>
           </div>

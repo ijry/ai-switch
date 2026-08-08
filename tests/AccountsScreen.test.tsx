@@ -32,6 +32,7 @@ import { recognizeApiKeysFromImageBlob } from "../src/lib/ocr/apiKeyOcr";
 import { CODEX_MODEL_TEST_ENDPOINT_STORAGE_KEY } from "../src/lib/codexModelTestEndpoint";
 import { createQueryClient } from "../src/lib/query/queryClient";
 import { AccountsScreen } from "../src/screens/AccountsScreen";
+import { fetchRouteProxyModels } from "../src/lib/routeProxyModels";
 import type {
   CapabilityAvailability,
   CapabilityRule,
@@ -70,6 +71,10 @@ vi.mock("../src/lib/api/client", () => ({
   stopRouteProxy: vi.fn(),
   updateRouteCredential: vi.fn(),
   writeRouteProxyConfigs: vi.fn(),
+}));
+
+vi.mock("../src/lib/routeProxyModels", () => ({
+  fetchRouteProxyModels: vi.fn(),
 }));
 
 vi.mock("../src/lib/ocr/apiKeyOcr", async () => {
@@ -241,6 +246,7 @@ describe("AccountsScreen", () => {
     vi.mocked(stopRouteProxy).mockReset();
     vi.mocked(updateRouteCredential).mockReset();
     vi.mocked(writeRouteProxyConfigs).mockReset();
+    vi.mocked(fetchRouteProxyModels).mockReset();
     vi.mocked(recognizeApiKeysFromImageBlob).mockReset();
 
     Object.defineProperty(navigator, "clipboard", {
@@ -531,6 +537,56 @@ describe("AccountsScreen", () => {
     expect(screen.getByText("gpt-5.6-luna")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "+1" }));
     expect(screen.getByText("gpt-5.5 → gpt-5.5-upstream")).toBeInTheDocument();
+  });
+
+  it("views effective pool models from the test menu", async () => {
+    poolStateByPlatform.set("codex", ["cred-official-1"]);
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      {
+        ...credentialsFixture[0],
+        config_json: JSON.stringify({
+          model_mappings: [{ from: "gpt-5.6-sol", to: "sol-upstream" }],
+        }),
+      },
+    ]);
+    vi.mocked(getRouteProxyStatus).mockResolvedValue({
+      running: true,
+      bind_host: "127.0.0.1",
+      port: 43111,
+      base_url: "http://127.0.0.1:43111",
+    });
+    vi.mocked(fetchRouteProxyModels).mockResolvedValue([
+      { id: "gpt-5.6-sol", owned_by: "ai-switch" },
+      { id: "gpt-5.6-terra", owned_by: "ai-switch" },
+    ]);
+
+    renderScreen("codex", "in_pool");
+
+    await userEvent.click(screen.getByLabelText("打开算力池测试菜单"));
+    await userEvent.click(screen.getByRole("menuitem", { name: "查看模型列表" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "算力池模型列表" });
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByText("gpt-5.6-sol")).toBeInTheDocument();
+    expect(within(dialog).getByText("gpt-5.6-terra")).toBeInTheDocument();
+    expect(within(dialog).getByText("映射的上游模型：sol-upstream")).toBeInTheDocument();
+    expect(fetchRouteProxyModels).toHaveBeenCalledWith(
+      "http://127.0.0.1:43111",
+      "sk-ai-switch-codex-key",
+      "codex",
+    );
+  });
+
+  it("explains that the route proxy must run before viewing pool models", async () => {
+    renderScreen("codex", "in_pool");
+
+    await userEvent.click(screen.getByLabelText("打开算力池测试菜单"));
+    await userEvent.click(screen.getByRole("menuitem", { name: "查看模型列表" }));
+
+    expect(
+      await screen.findByText("请先启动本地路由代理，再查看算力池模型列表。"),
+    ).toBeInTheDocument();
+    expect(fetchRouteProxyModels).not.toHaveBeenCalled();
   });
 
   it("hides the workspace toolbar label when the sidebar is collapsed", async () => {

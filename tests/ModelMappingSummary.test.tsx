@@ -7,10 +7,18 @@ import {
 } from "../src/components/accounts/ModelMappingSummary";
 
 describe("ModelMappingSummary", () => {
-  it("shows wildcard state for empty mappings", () => {
+  it("shows the full wrapped wildcard tooltip for empty mappings", async () => {
+    const user = userEvent.setup();
     render(<ModelMappingSummary platform="codex" mappings={[]} />);
 
-    expect(screen.getByText("模型通配")).toBeInTheDocument();
+    const label = screen.getByText("模型通配");
+    const tooltip = screen.getByRole("tooltip", { hidden: true });
+    expect(label.parentElement).toHaveAttribute("aria-describedby", tooltip.id);
+    expect(tooltip).toHaveTextContent(
+      "模型通配表示默认该账号支持当前智能体的常用基线模型，如支持有限请编辑后指定模型映射列表",
+    );
+    expect(tooltip).toHaveClass("group-hover:block", "whitespace-normal");
+    await user.hover(label);
   });
 
   it("shows three aliases and opens the remaining mappings", async () => {
