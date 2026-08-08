@@ -2035,7 +2035,7 @@ mod tests {
             RoutePoolModelTestRequest {
                 platform: "codex".to_string(),
                 account_id: None,
-                model: Some("gpt-4o".to_string()),
+                model: Some("gpt-5".to_string()),
                 interface_format: None,
             },
             &proxy_base_url,
@@ -2126,7 +2126,7 @@ mod tests {
             RoutePoolModelTestRequest {
                 platform: "codex".to_string(),
                 account_id: None,
-                model: Some("gpt-4o".to_string()),
+                model: Some("gpt-5".to_string()),
                 interface_format: None,
             },
             &proxy_base_url,
