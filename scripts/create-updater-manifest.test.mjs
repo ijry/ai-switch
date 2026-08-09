@@ -45,6 +45,34 @@ test("creates updater manifest from signed platform assets", async () => {
   }
 });
 
+test("includes release notes from a file", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ai-switch-release-"));
+
+  try {
+    const winDir = path.join(root, "windows-x86_64");
+    await mkdir(winDir, { recursive: true });
+    await writeFile(path.join(winDir, "ai-switch_v0.1.0_windows-x86_64_setup.exe"), "binary");
+    await writeFile(path.join(winDir, "ai-switch_v0.1.0_windows-x86_64_setup.exe.sig"), "signature\n");
+
+    const notesFile = path.join(root, "release-notes.md");
+    await writeFile(notesFile, "## 修复\n\n- 显示更新日志\n\n");
+    const output = path.join(root, "latest.json");
+
+    await createManifest({
+      assetsDir: root,
+      tag: "v0.1.0",
+      repo: "ijry/ai-switch",
+      output,
+      notesFile,
+    });
+
+    const manifest = JSON.parse(await readFile(output, "utf8"));
+    assert.equal(manifest.notes, "## 修复\n\n- 显示更新日志");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("fails when a platform directory has no signed updater asset", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "ai-switch-release-"));
 

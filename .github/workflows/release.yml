@@ -217,13 +217,30 @@ jobs:
         with:
           path: release-assets
 
+      - name: Create draft release and generate notes
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ inputs.tag }}
+          commit: ${{ github.sha }}
+          name: ${{ inputs.release_name != '' && inputs.release_name || inputs.tag }}
+          draft: true
+          prerelease: ${{ inputs.prerelease }}
+          allowUpdates: true
+          generateReleaseNotes: true
+
+      - name: Read generated release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/${{ github.repository }}/releases/tags/${{ inputs.tag }}" --jq '.body // ""' > release-notes.md
+
       - name: Generate updater manifest
         run: |
           node scripts/create-updater-manifest.mjs \
             --assets-dir release-assets \
             --tag "${{ inputs.tag }}" \
             --repo "${{ github.repository }}" \
-            --output release-assets/latest.json
+            --output release-assets/latest.json \
+            --notes-file release-notes.md
 
       - name: Verify updater signature keys
         run: node scripts/verify-updater-signatures.mjs --manifest release-assets/latest.json --tauri-config src-tauri/tauri.conf.json
@@ -237,7 +254,7 @@ jobs:
           draft: ${{ inputs.draft }}
           prerelease: ${{ inputs.prerelease }}
           allowUpdates: true
-          generateReleaseNotes: true
+          generateReleaseNotes: false
           replacesArtifacts: true
           artifactErrorsFailBuild: true
           artifacts: "release-assets/**/*.*"

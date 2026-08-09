@@ -1,20 +1,28 @@
-# Release Notes Automation Design
+# 发布说明自动化设计
 
-Date: 2026-07-26
-Status: Approved
+日期：2026-07-26
+状态：已批准
 
-## Goal
+## 目标
 
-Generate GitHub Release notes automatically during the manual release workflow so the desktop update screen can display a release summary.
+在手动发布工作流中自动生成 GitHub Release 发布说明，并将同一份内容写入 Tauri 更新清单，使桌面端更新窗口可以显示更新日志。
 
-## Approach
+## 方案
 
-- Keep the existing `ncipollo/release-action` publishing flow and release assets unchanged.
-- Set `generateReleaseNotes: true` when creating or updating the release.
-- GitHub generates the release body from changes since the previous release tag.
-- Do not add a committed `CHANGELOG.md` or a custom commit-parsing script.
+- 保留现有 `ncipollo/release-action`、多平台构建和发布资源流程。
+- 发布资源生成前，先使用 `ncipollo/release-action` 创建或更新一个草稿 Release，并启用 `generateReleaseNotes: true`。
+- 通过 GitHub API 读取草稿 Release 的正文，保存为临时的 `release-notes.md` 文件。
+- 扩展 `scripts/create-updater-manifest.mjs`，支持可选的 `--notes-file` 参数，并将文件内容写入 `latest.json` 的 `notes` 字段。
+- 校验清单和签名后，再次执行 `ncipollo/release-action` 上传资源，并按照工作流输入决定是否取消草稿状态。
+- 不新增提交到仓库的 `CHANGELOG.md`，也不维护自定义 commit 解析脚本。
 
-## Verification
+## 兼容性
 
-- Parse `.github/workflows/release.yml` with PowerShell `ConvertFrom-Yaml`.
-- Confirm the release action receives `generateReleaseNotes: true`.
+- 未传入 `--notes-file` 时，manifest 的 `notes` 保持为空，兼容原有脚本调用方式。
+- 更新界面已经读取 `update.body`，无需修改前端展示逻辑。
+
+## 验证
+
+- 运行 `pnpm release:manifest:test`，确认发布说明能写入 `latest.json`。
+- 运行 `pnpm typecheck`、`pnpm test:run` 和 Rust 检查，确认发布流程依赖的项目检查仍然通过。
+- 在 GitHub Actions 中确认草稿 Release 正文与 `latest.json.notes` 内容一致。

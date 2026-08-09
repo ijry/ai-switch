@@ -28,6 +28,7 @@ function parseArgs(argv) {
     tag: required(args, "tag"),
     repo: required(args, "repo"),
     output: required(args, "output"),
+    notesFile: args.get("notes-file"),
     pubDate: args.get("pub-date") ?? new Date().toISOString(),
   };
 }
@@ -83,7 +84,14 @@ function pickSignedAsset(platform, signedAssets) {
   return signedAssets[0];
 }
 
-export async function createManifest({ assetsDir, tag, repo, output, pubDate = new Date().toISOString() }) {
+export async function createManifest({
+  assetsDir,
+  tag,
+  repo,
+  output,
+  notesFile,
+  pubDate = new Date().toISOString(),
+}) {
   const rootStat = await stat(assetsDir);
   if (!rootStat.isDirectory()) {
     throw new Error(`Assets path is not a directory: ${assetsDir}`);
@@ -130,9 +138,10 @@ export async function createManifest({ assetsDir, tag, repo, output, pubDate = n
     };
   }
 
+  const notes = notesFile ? (await readFile(notesFile, "utf8")).trim() : "";
   const manifest = {
     version: versionFromTag(tag),
-    notes: "",
+    notes,
     pub_date: pubDate,
     platforms,
   };
