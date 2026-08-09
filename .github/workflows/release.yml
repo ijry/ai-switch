@@ -196,14 +196,14 @@ jobs:
           pnpm rust:check
           pnpm rust:test
 
-      - name: Build standalone server
-        run: pnpm server:build:release
-
       - name: Build Tauri bundle
         shell: pwsh
         run: |
           $bundles = "${{ matrix.bundles }}".Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)
           & pnpm tauri build --ci --bundles @bundles
+
+      - name: Build standalone server
+        run: pnpm server:build:release
 
       - name: Stage release assets
         shell: pwsh

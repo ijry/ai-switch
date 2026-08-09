@@ -7,6 +7,12 @@ pub(crate) struct ModelCapability {
     pub(crate) mappings: Vec<ModelMapping>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AdvertisedModel {
+    id: String,
+    description: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CodexReasoningProfile {
     pub(crate) levels: &'static [&'static str],
@@ -60,13 +66,12 @@ pub(crate) fn codex_reasoning_metadata(model: &str) -> (Vec<Value>, &'static str
 }
 
 pub(crate) fn codex_model_catalog_payload(capabilities: &[ModelCapability]) -> Value {
-    let model_ids = advertised_model_ids("codex", capabilities);
-    let models = model_ids
+    let models = advertised_model_catalog_entries("codex", capabilities)
         .into_iter()
         .enumerate()
-        .map(|(index, id)| {
+        .map(|(index, model)| {
             let (supported_reasoning_levels, default_reasoning_level) =
-                codex_reasoning_metadata(&id);
+                codex_reasoning_metadata(&model.id);
             json!({
                 "additional_speed_tiers": [],
                 "availability_nux": null,
@@ -74,8 +79,8 @@ pub(crate) fn codex_model_catalog_payload(capabilities: &[ModelCapability]) -> V
                 "context_window": 128000,
                 "default_reasoning_level": default_reasoning_level,
                 "default_reasoning_summary": "none",
-                "description": id,
-                "display_name": id,
+                "description": model.description,
+                "display_name": model.id,
                 "effective_context_window_percent": 95,
                 "experimental_supported_tools": [],
                 "input_modalities": ["text", "image"],
@@ -83,7 +88,7 @@ pub(crate) fn codex_model_catalog_payload(capabilities: &[ModelCapability]) -> V
                 "priority": index as i32 + 1,
                 "service_tiers": [],
                 "shell_type": "shell_command",
-                "slug": id,
+                "slug": model.id,
                 "support_verbosity": false,
                 "supported_in_api": true,
                 "supported_reasoning_levels": supported_reasoning_levels,
@@ -179,6 +184,16 @@ pub(crate) fn advertised_model_ids(
     platform: &str,
     capabilities: &[ModelCapability],
 ) -> Vec<String> {
+    advertised_model_catalog_entries(platform, capabilities)
+        .into_iter()
+        .map(|model| model.id)
+        .collect()
+}
+
+fn advertised_model_catalog_entries(
+    platform: &str,
+    capabilities: &[ModelCapability],
+) -> Vec<AdvertisedModel> {
     let mut models = Vec::new();
     let mut seen = HashSet::new();
 
@@ -187,18 +202,25 @@ pub(crate) fn advertised_model_ids(
         .any(|capability| capability.mappings.is_empty())
     {
         for model in default_client_models(platform) {
-            push_unique_model(&mut models, &mut seen, model);
+            push_unique_model(&mut models, &mut seen, model, model);
         }
     }
 
     for capability in capabilities {
         for mapping in &capability.mappings {
-            push_unique_model(&mut models, &mut seen, &mapping.from);
+            let from = mapping.from.trim();
+            let to = mapping.to.trim();
+            let description = if from.eq_ignore_ascii_case(to) {
+                from.to_string()
+            } else {
+                format!("映射的上游模型：{to}")
+            };
+            push_unique_model(&mut models, &mut seen, from, &description);
 
             if platform == "claude" && mapping.supports_1m == Some(true) {
                 let base = strip_one_m_suffix_for_route_lookup(&mapping.from);
                 if is_claude_route_model(base) {
-                    push_unique_model(&mut models, &mut seen, &format!("{base}[1m]"));
+                    push_unique_model(&mut models, &mut seen, &format!("{base}[1m]"), &description);
                 }
             }
         }
@@ -222,14 +244,29 @@ fn default_client_models(platform: &str) -> &'static [&'static str] {
     }
 }
 
-fn push_unique_model(models: &mut Vec<String>, seen: &mut HashSet<String>, model: &str) {
+fn push_unique_model(
+    models: &mut Vec<AdvertisedModel>,
+    seen: &mut HashSet<String>,
+    model: &str,
+    description: &str,
+) {
     let trimmed = model.trim();
     if trimmed.is_empty() {
         return;
     }
     let key = trimmed.to_ascii_lowercase();
     if seen.insert(key) {
-        models.push(trimmed.to_string());
+        models.push(AdvertisedModel {
+            id: trimmed.to_string(),
+            description: description.to_string(),
+        });
+    } else if let Some(existing) = models
+        .iter_mut()
+        .find(|entry| entry.id.eq_ignore_ascii_case(trimmed))
+    {
+        if existing.description == existing.id && description != trimmed {
+            existing.description = description.to_string();
+        }
     }
 }
 
@@ -284,8 +321,8 @@ fn is_claude_route_model(model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        advertised_model_ids, codex_reasoning_profile, parse_model_capability,
-        requested_model_from_body, supports_requested_model,
+        advertised_model_ids, codex_model_catalog_payload, codex_reasoning_profile,
+        parse_model_capability, requested_model_from_body, supports_requested_model,
     };
 
     #[test]
@@ -376,6 +413,23 @@ mod tests {
             advertised_model_ids("codex", &[limited]),
             vec!["gpt-5.6-sol"]
         );
+    }
+
+    #[test]
+    fn codex_catalog_describes_upstream_model_for_mappings() {
+        let capability = parse_model_capability(
+            r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"deepseek-v4-flash-0731"},{"from":"gpt-5.5","to":"gpt-5.5"}]}"#,
+        );
+        let catalog = codex_model_catalog_payload(&[capability]);
+        let models = catalog["models"].as_array().expect("catalog models");
+
+        assert_eq!(models[0]["slug"], "gpt-5.6-sol");
+        assert_eq!(
+            models[0]["description"],
+            "映射的上游模型：deepseek-v4-flash-0731"
+        );
+        assert_eq!(models[1]["slug"], "gpt-5.5");
+        assert_eq!(models[1]["description"], "gpt-5.5");
     }
 
     #[test]
