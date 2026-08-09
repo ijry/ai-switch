@@ -4003,14 +4003,14 @@ export function AccountsScreen({
                     )}
                     <button
                       aria-label="批量归档账号"
-                      className="grid h-7 w-7 place-items-center border border-amber-200 bg-white text-amber-800 transition-colors hover:bg-amber-50 disabled:opacity-50"
+                      className="inline-flex h-7 items-center justify-center gap-1.5 border border-amber-200 bg-white px-2.5 text-[12px] font-semibold text-amber-800 transition-colors hover:bg-amber-50 disabled:opacity-50"
                       disabled={archiveMutation.isPending || restoreMutation.isPending}
                       onClick={archiveSelectedAccounts}
                       title="批量归档账号"
                       type="button"
                     >
                       <Archive aria-hidden="true" className="h-3.5 w-3.5" />
-                      <span className="sr-only">批量归档账号</span>
+                      归档
                     </button>
                   </>
                 )}
