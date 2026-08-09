@@ -11,7 +11,7 @@
 
 - 保留现有 `ncipollo/release-action`、多平台构建和发布资源流程。
 - 发布资源生成前，先使用 `ncipollo/release-action` 创建或更新一个草稿 Release，并启用 `generateReleaseNotes: true`。
-- 通过 GitHub API 读取草稿 Release 的正文，保存为临时的 `release-notes.md` 文件。
+- 通过 GitHub API 分页读取 Release 列表，并按 tag 筛选草稿 Release 的正文，保存为临时的 `release-notes.md` 文件。不能使用 `releases/tags/{tag}` 接口，因为该接口对草稿 Release 返回 404。
 - 扩展 `scripts/create-updater-manifest.mjs`，支持可选的 `--notes-file` 参数，并将文件内容写入 `latest.json` 的 `notes` 字段。
 - 校验清单和签名后，再次执行 `ncipollo/release-action` 上传资源，并将草稿 Release 自动发布。
 - 不新增提交到仓库的 `CHANGELOG.md`，也不维护自定义 commit 解析脚本。

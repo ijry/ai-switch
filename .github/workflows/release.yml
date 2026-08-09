@@ -267,7 +267,16 @@ jobs:
       - name: Read generated release notes
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api "repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}" --jq '.body // ""' > release-notes.md
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          gh api --paginate \
+            "repos/${{ github.repository }}/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\") | .body // empty" > release-notes.md
+          if [[ ! -s release-notes.md ]]; then
+            echo "Could not find generated release notes for draft release ${RELEASE_TAG}." >&2
+            exit 1
+          fi
 
       - name: Generate updater manifest
         run: |
