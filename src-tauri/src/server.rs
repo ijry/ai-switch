@@ -246,6 +246,10 @@ pub async fn run_from_env() -> Result<(), String> {
         .route_proxy
         .activity()
         .set_emitter(EventEmitter::Web(Arc::clone(&state.event_broadcaster)));
+    state
+        .route_proxy
+        .live_log()
+        .set_emitter(EventEmitter::Web(Arc::clone(&state.event_broadcaster)));
 
     let router = build_router(state, token, static_dir);
     let addr = tokio::net::lookup_host((host.as_str(), port))

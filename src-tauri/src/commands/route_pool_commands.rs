@@ -9,8 +9,27 @@ use crate::services::route_model_fetch_service::RouteModelFetchService;
 use crate::services::route_model_test_service::RouteModelTestService;
 use crate::services::route_pool_service::RoutePoolService;
 use crate::services::route_proxy_https_service::RouteProxyHttpsService;
+use crate::services::route_proxy_live_log::RouteProxyLiveLogEntry;
 use crate::services::route_proxy_service::RouteProxyService;
 use tauri::State;
+
+/// Register a live-log viewer and return the current in-memory history for the
+/// given platform (oldest first). The caller must pair this with
+/// `unsubscribe_route_proxy_live_log` so live emission stops when no one is
+/// watching.
+#[tauri::command]
+pub async fn subscribe_route_proxy_live_log(
+    state: State<'_, AppState>,
+    platform: String,
+) -> Result<Vec<RouteProxyLiveLogEntry>, ApiError> {
+    Ok(state.route_proxy.live_log().subscribe(&platform))
+}
+
+#[tauri::command]
+pub async fn unsubscribe_route_proxy_live_log(state: State<'_, AppState>) -> Result<(), ApiError> {
+    state.route_proxy.live_log().unsubscribe();
+    Ok(())
+}
 
 #[tauri::command]
 pub async fn get_route_pool(

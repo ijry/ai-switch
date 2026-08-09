@@ -21,6 +21,7 @@ import {
   Plus,
   RefreshCw,
   ScanText,
+  ScrollText,
   Send,
   Square,
   Trash2,
@@ -64,6 +65,8 @@ import {
   setRoutePoolMembers,
   startRouteProxy,
   stopRouteProxy,
+  subscribeRouteProxyLiveLog,
+  unsubscribeRouteProxyLiveLog,
   updateRouteCredential,
   writeRouteProxyConfigs,
 } from "../lib/api/client";
@@ -85,6 +88,7 @@ import type {
   RoutePoolModelTestOutcome,
   RoutePoolModelTestRequest,
   RoutePoolUsageLog,
+  RouteProxyLiveLogEntry,
 } from "../lib/api/types";
 import {
   capabilityReason,
@@ -242,6 +246,21 @@ function formatUsageTime(value: string) {
     return value;
   }
   return date.toLocaleString();
+}
+
+function liveLogStagesIdentical(entry: RouteProxyLiveLogEntry): boolean {
+  return (entry.upstream_response ?? null) === (entry.final_response ?? null);
+}
+
+function LiveLogStage({ title, body }: { title: string; body: string | null | undefined }) {
+  return (
+    <div>
+      <p className="text-[11px] font-medium text-stone-500">{title}</p>
+      <pre className="mt-1 max-h-48 overflow-auto rounded-lg border border-stone-200 bg-white p-2 font-mono text-[11px] leading-relaxed text-stone-700">
+        {body && body.trim() ? prettyJsonOrText(body) : "（空）"}
+      </pre>
+    </div>
+  );
 }
 
 type ParsedUsageMetadata = {
@@ -1587,6 +1606,9 @@ export function AccountsScreen({
     useState<CodexModelTestEndpoint>(() => loadCodexModelTestEndpoint());
   const [modelTestDialogOpen, setModelTestDialogOpen] = useState(false);
   const [routePoolModelsDialogOpen, setRoutePoolModelsDialogOpen] = useState(false);
+  const [liveLogOpen, setLiveLogOpen] = useState(false);
+  const [liveLogEntries, setLiveLogEntries] = useState<RouteProxyLiveLogEntry[]>([]);
+  const [expandedLiveLogId, setExpandedLiveLogId] = useState<string | null>(null);
   const [modelTestAccount, setModelTestAccount] = useState<RouteCredential | null>(null);
   const [exportRequest, setExportRequest] = useState<{
     selection_context: RouteCredentialSelectionContext;
@@ -1939,6 +1961,56 @@ export function AccountsScreen({
       statusUnsubscribe?.();
     };
   }, [activePlatform, queryClient]);
+
+  // Live request log: seed recent history + tail live events while the modal is
+  // open for the active platform. Subscribing bumps a backend viewer count so
+  // the proxy only pushes events while someone is watching.
+  useEffect(() => {
+    if (!liveLogOpen) {
+      return;
+    }
+    let disposed = false;
+    let liveUnsubscribe: (() => void) | undefined;
+    setLiveLogEntries([]);
+    setExpandedLiveLogId(null);
+    const transport = getTransport();
+
+    void subscribeRouteProxyLiveLog(activePlatform)
+      .then((history) => {
+        if (!disposed) {
+          setLiveLogEntries(history.slice(-200));
+        }
+      })
+      .catch(() => undefined);
+
+    void transport
+      .subscribe<RouteProxyLiveLogEntry>("route-proxy-live-log", (event) => {
+        if (event.platform !== activePlatform) {
+          return;
+        }
+        setLiveLogEntries((current) => {
+          if (current.some((entry) => entry.id === event.id)) {
+            return current;
+          }
+          const next = [...current, event];
+          return next.length > 200 ? next.slice(next.length - 200) : next;
+        });
+      })
+      .then((unsubscribe) => {
+        if (disposed) {
+          unsubscribe();
+        } else {
+          liveUnsubscribe = unsubscribe;
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      disposed = true;
+      liveUnsubscribe?.();
+      void unsubscribeRouteProxyLiveLog().catch(() => undefined);
+    };
+  }, [liveLogOpen, activePlatform]);
 
   useEffect(() => {
     setRequestPage(1);
@@ -3418,6 +3490,19 @@ export function AccountsScreen({
                       <List aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
                       查看模型列表
                     </button>
+                    <button
+                      aria-label="实时日志"
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
+                      onClick={() => {
+                        setModelTestMenuOpen(false);
+                        setLiveLogOpen(true);
+                      }}
+                      role="menuitem"
+                      type="button"
+                    >
+                      <ScrollText aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                      实时日志
+                    </button>
                   </div>
                 ) : null}
               </div>
@@ -4567,6 +4652,90 @@ export function AccountsScreen({
         </div>
       )}
 
+      {liveLogOpen && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">
+          <div
+            aria-label="实时日志弹窗"
+            className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-2xl border border-stone-200 bg-white p-4 shadow-2xl"
+            role="dialog"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-sm font-semibold text-stone-900">实时日志</h2>
+                <p className="mt-0.5 text-[11px] text-stone-500">
+                  实时显示经本机路由代理转发的请求，含协议转换的四个阶段（原始请求 / 发往上游 / 上游原始返回 / 最终返回），便于排查出错。仅当前平台，最多保留最近 200 条。
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button className={secondaryButtonClass} onClick={() => setLiveLogEntries([])} type="button">
+                  清空
+                </button>
+                <button aria-label="关闭" onClick={() => setLiveLogOpen(false)} type="button">
+                  <X className="h-4 w-4 text-stone-500" />
+                </button>
+              </div>
+            </div>
+            <div className="mt-3 flex-1 overflow-auto rounded-lg border border-stone-200">
+              {liveLogEntries.length === 0 ? (
+                <p className="p-6 text-center text-[12px] text-stone-400">
+                  暂无请求。通过算力池发起一次请求后会实时出现在这里。
+                </p>
+              ) : (
+                <ul className="divide-y divide-stone-100">
+                  {[...liveLogEntries].reverse().map((entry) => (
+                    <li key={entry.id}>
+                      <button
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-stone-50"
+                        onClick={() =>
+                          setExpandedLiveLogId((current) => (current === entry.id ? null : entry.id))
+                        }
+                        type="button"
+                      >
+                        <span
+                          className={`inline-flex min-w-9 justify-center rounded px-1.5 py-0.5 text-[10px] font-semibold ${entry.success ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-600"}`}
+                        >
+                          {entry.status ?? "ERR"}
+                        </span>
+                        <span className="font-mono text-[11px] text-stone-600">
+                          {entry.requested_model ?? "?"}
+                        </span>
+                        {entry.bridge ? (
+                          <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-600">
+                            协议转换
+                          </span>
+                        ) : null}
+                        <span className="truncate text-[11px] text-stone-500">{entry.credential_name}</span>
+                        <span className="ml-auto shrink-0 text-[10px] text-stone-400">
+                          {formatUsageTime(entry.created_at)} · {entry.duration_ms}ms
+                        </span>
+                      </button>
+                      {expandedLiveLogId === entry.id ? (
+                        <div className="space-y-2 bg-stone-50 px-3 pb-3 pt-1">
+                          {entry.error_message ? (
+                            <p className="text-[11px] text-red-600">{entry.error_message}</p>
+                          ) : null}
+                          <LiveLogStage title="原始请求" body={entry.client_request} />
+                          <LiveLogStage title="发往上游" body={entry.upstream_request} />
+                          <LiveLogStage title="上游原始返回" body={entry.upstream_response} />
+                          <LiveLogStage
+                            title="最终返回"
+                            body={
+                              liveLogStagesIdentical(entry) ? "（与上游原始返回一致）" : entry.final_response
+                            }
+                          />
+                          {entry.truncated ? (
+                            <p className="text-[10px] text-stone-400">（部分内容已截断，每段最多 64KB）</p>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       {routePoolModelsDialogOpen && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">
           <div

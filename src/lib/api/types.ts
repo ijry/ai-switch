@@ -414,6 +414,30 @@ export type RoutePoolState = {
   stats: RoutePoolStats;
 };
 
+export type RouteProxyLiveLogEntry = {
+  id: string;
+  trace_id?: string | null;
+  platform: string;
+  credential_id: string;
+  credential_name: string;
+  attempt: number;
+  path: string;
+  target_url?: string | null;
+  requested_model?: string | null;
+  upstream_model?: string | null;
+  status?: number | null;
+  success: boolean;
+  error_message?: string | null;
+  duration_ms: number;
+  bridge?: string | null;
+  client_request?: string | null;
+  upstream_request?: string | null;
+  upstream_response?: string | null;
+  final_response?: string | null;
+  truncated: boolean;
+  created_at: string;
+};
+
 export type RoutePoolRouteRequest = {
   platform: string;
   token_count?: number | null;

@@ -26,6 +26,8 @@ import {
   setRoutePoolMembers,
   startRouteProxy,
   stopRouteProxy,
+  subscribeRouteProxyLiveLog,
+  unsubscribeRouteProxyLiveLog,
   updateRouteCredential,
   writeRouteProxyConfigs,
 } from "../src/lib/api/client";
@@ -73,6 +75,8 @@ vi.mock("../src/lib/api/client", () => ({
   setRoutePoolMembers: vi.fn(),
   startRouteProxy: vi.fn(),
   stopRouteProxy: vi.fn(),
+  subscribeRouteProxyLiveLog: vi.fn(),
+  unsubscribeRouteProxyLiveLog: vi.fn(),
   updateRouteCredential: vi.fn(),
   writeRouteProxyConfigs: vi.fn(),
 }));
@@ -80,6 +84,7 @@ vi.mock("../src/lib/api/client", () => ({
 const transportTestState = vi.hoisted(() => ({
   activityHandler: null as ((payload: unknown) => void) | null,
   statusHandler: null as ((payload: unknown) => void) | null,
+  liveLogHandler: null as ((payload: unknown) => void) | null,
   subscribe: vi.fn(),
 }));
 
@@ -264,6 +269,7 @@ describe("AccountsScreen", () => {
     vi.mocked(routePoolTestModel).mockReset();
     transportTestState.activityHandler = null;
     transportTestState.statusHandler = null;
+    transportTestState.liveLogHandler = null;
     transportTestState.subscribe.mockReset();
     transportTestState.subscribe.mockImplementation(
       async (event: string, handler: (payload: unknown) => void) => {
@@ -273,12 +279,19 @@ describe("AccountsScreen", () => {
         if (event === "route-credential-status") {
           transportTestState.statusHandler = handler;
         }
+        if (event === "route-proxy-live-log") {
+          transportTestState.liveLogHandler = handler;
+        }
         return () => undefined;
       },
     );
     vi.mocked(setRoutePoolMembers).mockReset();
     vi.mocked(startRouteProxy).mockReset();
     vi.mocked(stopRouteProxy).mockReset();
+    vi.mocked(subscribeRouteProxyLiveLog).mockReset();
+    vi.mocked(subscribeRouteProxyLiveLog).mockResolvedValue([]);
+    vi.mocked(unsubscribeRouteProxyLiveLog).mockReset();
+    vi.mocked(unsubscribeRouteProxyLiveLog).mockResolvedValue(undefined);
     vi.mocked(updateRouteCredential).mockReset();
     vi.mocked(writeRouteProxyConfigs).mockReset();
     vi.mocked(fetchRouteProxyModels).mockReset();
@@ -724,6 +737,68 @@ describe("AccountsScreen", () => {
       "sk-ai-switch-codex-key",
       "codex",
     );
+  });
+
+  it("streams the four request stages in the live log dialog", async () => {
+    const historyEntry = {
+      id: "entry-1",
+      trace_id: null,
+      platform: "codex",
+      credential_id: "cred-a",
+      credential_name: "Codex A",
+      attempt: 0,
+      path: "/v1/responses",
+      target_url: "https://upstream.example/v1/chat/completions",
+      requested_model: "gpt-5",
+      upstream_model: "deepseek-chat",
+      status: 200,
+      success: true,
+      error_message: null,
+      duration_ms: 42,
+      bridge: "CodexResponsesToChat",
+      client_request: '{"input":"hello"}',
+      upstream_request: '{"messages":[{"role":"user","content":"hello"}],"model":"deepseek-chat"}',
+      upstream_response: '{"choices":[{"message":{"content":"hi"}}]}',
+      final_response: '{"object":"response","output_text":"hi"}',
+      truncated: false,
+      created_at: new Date().toISOString(),
+    };
+    vi.mocked(subscribeRouteProxyLiveLog).mockResolvedValue([historyEntry]);
+
+    renderScreen("codex", "in_pool");
+
+    await userEvent.click(screen.getByLabelText("打开算力池测试菜单"));
+    await userEvent.click(screen.getByRole("menuitem", { name: "实时日志" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "实时日志弹窗" });
+    await waitFor(() => expect(subscribeRouteProxyLiveLog).toHaveBeenCalledWith("codex"));
+
+    await userEvent.click(await within(dialog).findByText("gpt-5"));
+    expect(within(dialog).getByText("原始请求")).toBeInTheDocument();
+    expect(within(dialog).getByText("发往上游")).toBeInTheDocument();
+    expect(within(dialog).getByText("上游原始返回")).toBeInTheDocument();
+    expect(within(dialog).getByText("最终返回")).toBeInTheDocument();
+    expect(within(dialog).getByText("协议转换")).toBeInTheDocument();
+
+    await waitFor(() => expect(transportTestState.liveLogHandler).not.toBeNull());
+    act(() => {
+      transportTestState.liveLogHandler?.({
+        ...historyEntry,
+        id: "entry-2",
+        requested_model: "claude-x",
+      });
+    });
+    expect(await within(dialog).findByText("claude-x")).toBeInTheDocument();
+
+    act(() => {
+      transportTestState.liveLogHandler?.({
+        ...historyEntry,
+        id: "entry-3",
+        platform: "claude",
+        requested_model: "should-not-show",
+      });
+    });
+    expect(within(dialog).queryByText("should-not-show")).not.toBeInTheDocument();
   });
 
   it("explains that the route proxy must run before viewing pool models", async () => {

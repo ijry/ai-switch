@@ -8,6 +8,7 @@ use crate::models::route_credential::{
     ANTHROPIC_AUTH_TOKEN_FIELD,
 };
 use crate::models::route_pool::RouteUsageBreakdown;
+use crate::services::client_identity;
 use crate::services::http_client::build_outbound_http_client;
 use crate::services::official_agent_identity_service::{
     is_official_agent_identity_credential, resolve_agent_identity_headers,
@@ -25,6 +26,9 @@ use crate::services::route_protocol_bridge::{
     prepare_request as prepare_protocol_bridge_request,
     transform_response_with_tool_namespaces as transform_protocol_bridge_response,
     PreparedBridgeRequest, ProtocolBridgeKind,
+};
+use crate::services::route_proxy_live_log::{
+    stage_preview, RouteProxyLiveLog, RouteProxyLiveLogEntry,
 };
 use axum::body::Body;
 use axum::extract::State as AxumState;
@@ -65,6 +69,10 @@ const ROUTE_PROXY_CORS_ALLOW_METHODS: &str = "GET, POST, PUT, PATCH, DELETE, OPT
 const ROUTE_PROXY_CORS_DEFAULT_ALLOW_HEADERS: &str =
     "Authorization, Content-Type, X-API-Key, API-Key, X-Google-API-Key, X-AI-Switch-Platform, X-AI-Switch-Test-Trace-Id, Accept";
 const ROUTE_PROXY_RESPONSE_BODY_LIMIT: usize = 16 * 1024;
+/// Successful responses keep only a short preview so callers can confirm the
+/// upstream returned real AI content (vs. a fake/empty 200) without bloating
+/// `usage_events`, which is never pruned.
+const ROUTE_PROXY_SUCCESS_BODY_LIMIT: usize = 2 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteProxyStatus {
@@ -87,6 +95,7 @@ pub enum RouteProxyTransport {
 pub struct RouteProxyRuntimeState {
     inner: Arc<Mutex<RouteProxyInner>>,
     activity: RouteCredentialActivityRegistry,
+    live_log: RouteProxyLiveLog,
 }
 
 #[derive(Default)]
@@ -103,6 +112,7 @@ struct ProxyAppState {
     pool: SqlitePool,
     key_cache: Arc<Mutex<RouteProxyKeyCache>>,
     activity: RouteCredentialActivityRegistry,
+    live_log: RouteProxyLiveLog,
 }
 
 #[derive(Default)]
@@ -115,6 +125,10 @@ struct RouteProxyKeyCache {
 impl RouteProxyRuntimeState {
     pub fn activity(&self) -> RouteCredentialActivityRegistry {
         self.activity.clone()
+    }
+
+    pub fn live_log(&self) -> RouteProxyLiveLog {
+        self.live_log.clone()
     }
 }
 
@@ -229,6 +243,7 @@ impl RouteProxyService {
             pool,
             key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
             activity: state.activity.clone(),
+            live_log: state.live_log.clone(),
         };
         let app = Router::new()
             .fallback(any(proxy_handler))
@@ -496,6 +511,11 @@ async fn forward_request(
     }
     // The inbound key is local proxy authentication only. Never forward it upstream.
     strip_route_proxy_auth_headers(&mut outbound_headers);
+    // Our reqwest client is built without any decompression features, so we must
+    // never let the upstream compress the response — otherwise we relay/inspect
+    // raw gzip/br/zstd bytes and everything downstream sees garbage. Force
+    // identity encoding, matching what the real Claude Code / Codex CLIs send.
+    force_identity_accept_encoding(&mut outbound_headers);
 
     let custom_tool_names = collect_custom_tool_names(&body_bytes);
     let upstream_query = strip_route_proxy_auth_query(query.as_deref());
@@ -507,7 +527,7 @@ async fn forward_request(
     let request_start = Instant::now();
     let mut acquired_any = false;
 
-    for credential_index in retry_indexes {
+    for (attempt, credential_index) in retry_indexes.into_iter().enumerate() {
         let selected = &credentials[credential_index];
         let Some(_activity_lease) = state
             .activity
@@ -557,6 +577,26 @@ async fn forward_request(
                         &RouteUsageBreakdown::default(),
                     )
                     .await;
+                    emit_live_log(
+                        &state.live_log,
+                        &platform,
+                        selected,
+                        attempt,
+                        &path,
+                        None,
+                        None,
+                        false,
+                        trace_id.as_deref(),
+                        request_start,
+                        Some(&error),
+                        requested_model.as_deref(),
+                        None,
+                        None,
+                        Some(&body_bytes),
+                        None,
+                        None,
+                        None,
+                    );
                     retry_errors.push(format!("{}: {error}", selected.display_name));
                     continue;
                 }
@@ -609,10 +649,32 @@ async fn forward_request(
                     &RouteUsageBreakdown::default(),
                 )
                 .await;
+                emit_live_log(
+                    &state.live_log,
+                    &platform,
+                    &credential,
+                    attempt,
+                    &path,
+                    None,
+                    None,
+                    false,
+                    trace_id.as_deref(),
+                    request_start,
+                    Some(&error),
+                    requested_model.as_deref(),
+                    None,
+                    None,
+                    Some(&body_bytes),
+                    None,
+                    None,
+                    None,
+                );
                 retry_errors.push(format!("{}: {error}", credential.display_name));
                 continue;
             }
         };
+        let bridge_name = bridge_kind.map(|kind| format!("{kind:?}"));
+        let upstream_request_bytes = outbound_body.clone();
         let upstream_model = requested_model_from_body(&outbound_body);
         let upstream = client
             .request(request_method.clone(), &target_url)
@@ -659,6 +721,26 @@ async fn forward_request(
                     &RouteUsageBreakdown::default(),
                 )
                 .await;
+                emit_live_log(
+                    &state.live_log,
+                    &platform,
+                    &credential,
+                    attempt,
+                    &path,
+                    Some(&target_url),
+                    None,
+                    false,
+                    trace_id.as_deref(),
+                    request_start,
+                    Some(&error_message),
+                    requested_model.as_deref(),
+                    upstream_model.as_deref(),
+                    bridge_name.as_deref(),
+                    Some(&body_bytes),
+                    Some(&upstream_request_bytes),
+                    None,
+                    None,
+                );
                 retry_errors.push(error_message);
                 continue;
             }
@@ -704,10 +786,34 @@ async fn forward_request(
                     &RouteUsageBreakdown::default(),
                 )
                 .await;
+                emit_live_log(
+                    &state.live_log,
+                    &platform,
+                    &credential,
+                    attempt,
+                    &path,
+                    Some(&target_url),
+                    None,
+                    false,
+                    trace_id.as_deref(),
+                    request_start,
+                    Some(&error_message),
+                    requested_model.as_deref(),
+                    upstream_model.as_deref(),
+                    bridge_name.as_deref(),
+                    Some(&body_bytes),
+                    Some(&upstream_request_bytes),
+                    None,
+                    None,
+                );
                 retry_errors.push(error_message);
                 continue;
             }
         };
+        // Snapshot the raw upstream body before any bridge transform mutates it
+        // in place, so the live log can show stage 3 (raw) and stage 4 (final)
+        // separately. `Bytes` clone is a cheap ref-count bump.
+        let raw_upstream_bytes = response_bytes.clone();
         if let Some(bridge_kind) = bridge_kind {
             let content_type = upstream_headers
                 .get(axum::http::header::CONTENT_TYPE)
@@ -756,6 +862,26 @@ async fn forward_request(
                         &RouteUsageBreakdown::default(),
                     )
                     .await;
+                    emit_live_log(
+                        &state.live_log,
+                        &platform,
+                        &credential,
+                        attempt,
+                        &path,
+                        Some(&target_url),
+                        Some(status.as_u16()),
+                        false,
+                        trace_id.as_deref(),
+                        request_start,
+                        Some(&error_message),
+                        requested_model.as_deref(),
+                        upstream_model.as_deref(),
+                        bridge_name.as_deref(),
+                        Some(&body_bytes),
+                        Some(&upstream_request_bytes),
+                        Some(&raw_upstream_bytes),
+                        None,
+                    );
                     retry_errors.push(error_message);
                     continue;
                 }
@@ -812,11 +938,33 @@ async fn forward_request(
             retry_error.as_deref(),
             requested_model.as_deref(),
             upstream_model.as_deref(),
-            (!proxy_success).then_some(response_bytes.as_ref()),
+            // Keep a body preview for every request (short on success, full on
+            // failure) so the stats view can confirm real AI output.
+            Some(response_bytes.as_ref()),
         );
         let usage = extract_usage_breakdown(&response_bytes);
         let _ =
             insert_route_credential_request_event(pool, &credential.id, &metadata, &usage).await;
+        emit_live_log(
+            &state.live_log,
+            &platform,
+            &credential,
+            attempt,
+            &path,
+            Some(&target_url),
+            Some(status.as_u16()),
+            proxy_success,
+            trace_id.as_deref(),
+            request_start,
+            retry_error.as_deref(),
+            requested_model.as_deref(),
+            upstream_model.as_deref(),
+            bridge_name.as_deref(),
+            Some(&body_bytes),
+            Some(&upstream_request_bytes),
+            Some(&raw_upstream_bytes),
+            Some(response_bytes.as_ref()),
+        );
 
         let next_index = (credential_index + 1) % credentials.len();
         let _ = RoutePoolRepository::save_cursor_index(pool, &platform, next_index as i64).await;
@@ -935,6 +1083,16 @@ fn strip_route_proxy_auth_headers(headers: &mut HeaderMap) {
     headers.remove(ROUTE_PROXY_TRACE_HEADER);
 }
 
+/// Force `accept-encoding: identity` so upstreams never compress the response.
+/// The outbound reqwest client has no gzip/br/zstd decompression support, so a
+/// compressed body would be relayed and inspected as raw bytes.
+fn force_identity_accept_encoding(headers: &mut HeaderMap) {
+    headers.insert(
+        HeaderName::from_static("accept-encoding"),
+        HeaderValue::from_static("identity"),
+    );
+}
+
 fn route_proxy_trace_id(headers: &HeaderMap) -> Option<String> {
     headers
         .get(ROUTE_PROXY_TRACE_HEADER)
@@ -984,21 +1142,87 @@ fn route_proxy_request_metadata(
         {
             object.insert("upstream_model".to_string(), json!(model));
         }
-        if let Some(response_body) = route_proxy_response_body_metadata(response_body) {
+        if let Some(response_body) = route_proxy_response_body_metadata(response_body, success) {
             object.insert("response_body".to_string(), json!(response_body));
         }
     }
     metadata.to_string()
 }
 
-fn route_proxy_response_body_metadata(response_body: Option<&[u8]>) -> Option<String> {
+fn route_proxy_response_body_metadata(
+    response_body: Option<&[u8]>,
+    success: bool,
+) -> Option<String> {
     let body = response_body?;
     if body.is_empty() {
         return None;
     }
-    let truncated_body = &body[..body.len().min(ROUTE_PROXY_RESPONSE_BODY_LIMIT)];
+    let limit = if success {
+        ROUTE_PROXY_SUCCESS_BODY_LIMIT
+    } else {
+        ROUTE_PROXY_RESPONSE_BODY_LIMIT
+    };
+    let truncated_body = &body[..body.len().min(limit)];
     let text = String::from_utf8_lossy(truncated_body).to_string();
     (!text.trim().is_empty()).then_some(text)
+}
+
+/// Record one live-log entry for a proxy attempt, carrying whichever of the four
+/// stages are available at the call site (missing stages pass `None`).
+#[allow(clippy::too_many_arguments)]
+fn emit_live_log(
+    live_log: &RouteProxyLiveLog,
+    platform: &str,
+    credential: &SelectedCredential,
+    attempt: usize,
+    path: &str,
+    target_url: Option<&str>,
+    status: Option<u16>,
+    success: bool,
+    trace_id: Option<&str>,
+    started_at: Instant,
+    error_message: Option<&str>,
+    requested_model: Option<&str>,
+    upstream_model: Option<&str>,
+    bridge: Option<&str>,
+    client_request: Option<&[u8]>,
+    upstream_request: Option<&[u8]>,
+    upstream_response: Option<&[u8]>,
+    final_response: Option<&[u8]>,
+) {
+    let (client_request, t1) = stage_preview(client_request);
+    let (upstream_request, t2) = stage_preview(upstream_request);
+    let (upstream_response, t3) = stage_preview(upstream_response);
+    let (final_response, t4) = stage_preview(final_response);
+    live_log.record(RouteProxyLiveLogEntry {
+        id: uuid::Uuid::new_v4().to_string(),
+        trace_id: trace_id.map(str::to_string),
+        platform: platform.to_string(),
+        credential_id: credential.id.clone(),
+        credential_name: credential.display_name.clone(),
+        attempt,
+        path: path.to_string(),
+        target_url: target_url.map(str::to_string),
+        requested_model: requested_model
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(str::to_string),
+        upstream_model: upstream_model
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(str::to_string),
+        status,
+        success,
+        error_message: error_message.map(str::to_string),
+        duration_ms: elapsed_millis(started_at),
+        bridge: bridge.map(str::to_string),
+        client_request,
+        upstream_request,
+        upstream_response,
+        final_response,
+        truncated: t1 || t2 || t3 || t4,
+        created_at: Utc::now().to_rfc3339(),
+    });
 }
 
 fn elapsed_millis(started_at: Instant) -> i64 {
@@ -1122,8 +1346,11 @@ async fn mark_route_credential_revoked(
 }
 
 fn json_error(status: StatusCode, message: &str) -> Response {
+    let key_invalid = message.contains("route_proxy.key_invalid");
     let platform_unresolved = message.contains("route_proxy.platform_unresolved");
-    let code = if platform_unresolved {
+    let code = if key_invalid {
+        "route_proxy.key_invalid"
+    } else if platform_unresolved {
         "route_proxy.auth_required"
     } else if message.contains("No enabled route credentials in pool") {
         "route_pool.empty"
@@ -1141,7 +1368,7 @@ fn json_error(status: StatusCode, message: &str) -> Response {
     })
     .to_string();
     let mut response = (status, [("content-type", "application/json")], body).into_response();
-    if platform_unresolved {
+    if key_invalid || platform_unresolved {
         response.headers_mut().insert(
             axum::http::header::WWW_AUTHENTICATE,
             HeaderValue::from_static("Bearer"),
@@ -1151,7 +1378,9 @@ fn json_error(status: StatusCode, message: &str) -> Response {
 }
 
 fn route_proxy_error_status(message: &str) -> StatusCode {
-    if message.contains("route_proxy.platform_unresolved") {
+    if message.contains("route_proxy.platform_unresolved")
+        || message.contains("route_proxy.key_invalid")
+    {
         StatusCode::UNAUTHORIZED
     } else {
         StatusCode::BAD_GATEWAY
@@ -1176,6 +1405,15 @@ async fn resolve_platform(
         .and_then(|value| value.to_str().ok())
     {
         return PlatformId::parse(value);
+    }
+
+    if inbound_key.is_some() {
+        return Err(AppError::Validation {
+            code: "route_proxy.key_invalid",
+            message: "route_proxy.key_invalid: Local route proxy key is invalid, expired, or belongs to another ai-switch instance; provide a valid local route proxy key with Authorization: Bearer, x-api-key, or x-ai-switch-platform".to_string(),
+            details: None,
+            recoverable: true,
+        });
     }
 
     Err(AppError::Validation {
@@ -1702,12 +1940,20 @@ fn build_api_upstream_request(
             headers
                 .entry(HeaderName::from_static("anthropic-version"))
                 .or_insert(HeaderValue::from_static("2023-06-01"));
+            // Impersonate Claude Code so client-fingerprinting gateways
+            // (e.g. agentrouter.org) don't reject us as an unknown client.
+            apply_claude_code_identity(headers);
+            if is_messages_path(&upstream_path) {
+                target_url = ensure_query_flag(&target_url, "beta", "true");
+            }
         }
         ApiDialect::Gemini => {
             target_url = append_query_param(&target_url, "key", api_key);
         }
         ApiDialect::OpenAi | ApiDialect::OpenAiResponses => {
             insert_header(headers, "authorization", &format!("Bearer {api_key}"))?;
+            // Impersonate the Codex CLI for gateways that fingerprint clients.
+            apply_codex_cli_identity(headers);
         }
     }
 
@@ -2834,6 +3080,59 @@ fn insert_header(headers: &mut HeaderMap, name: &'static str, value: &str) -> Re
     Ok(())
 }
 
+/// Insert a header only when the client did not already provide it, so a real
+/// CLI's own values still win when routing through the proxy.
+fn fill_header_if_absent(headers: &mut HeaderMap, name: &'static str, value: &str) {
+    let Ok(value) = HeaderValue::from_str(value) else {
+        return;
+    };
+    headers
+        .entry(HeaderName::from_static(name))
+        .or_insert(value);
+}
+
+/// Make an Anthropic-dialect upstream request look like Claude Code: guarantee
+/// the `claude-code-*` beta marker and fill missing CLI identity headers.
+fn apply_claude_code_identity(headers: &mut HeaderMap) {
+    let existing_beta = headers
+        .get("anthropic-beta")
+        .and_then(|value| value.to_str().ok());
+    if let Some(merged) = client_identity::merge_claude_code_beta(existing_beta) {
+        if let Ok(value) = HeaderValue::from_str(&merged) {
+            headers.insert(HeaderName::from_static("anthropic-beta"), value);
+        }
+    }
+    for (name, value) in client_identity::claude_code_identity_headers() {
+        fill_header_if_absent(headers, name, value);
+    }
+}
+
+/// Make an OpenAI/Responses-dialect upstream request look like the Codex CLI.
+fn apply_codex_cli_identity(headers: &mut HeaderMap) {
+    for (name, value) in client_identity::codex_cli_identity_headers() {
+        fill_header_if_absent(headers, name, &value);
+    }
+}
+
+/// Append `key=value` to the URL query only when the key is not already present.
+fn ensure_query_flag(url: &str, key: &str, value: &str) -> String {
+    let already_present = url.split(['?', '&']).skip(1).any(|part| {
+        let part_key = part.split_once('=').map(|(k, _)| k).unwrap_or(part);
+        part_key == key
+    });
+    if already_present {
+        url.to_string()
+    } else {
+        append_query_param(url, key, value)
+    }
+}
+
+/// Anthropic messages endpoint detection (`/v1/messages`, `/messages`).
+fn is_messages_path(path: &str) -> bool {
+    let normalized = path.trim().trim_end_matches('/');
+    normalized.ends_with("/messages") || normalized == "messages"
+}
+
 fn default_official_base_url(platform: PlatformId) -> Result<&'static str, String> {
     match platform {
         PlatformId::Codex => Ok("https://api.openai.com"),
@@ -3746,6 +4045,30 @@ mod tests {
             Some("deepseek-chat")
         );
 
+        // Live log must capture all four stages, and the protocol conversion
+        // must make the inbound request (stage 1) differ from the upstream
+        // request (stage 2).
+        let live_entries = runtime.live_log().subscribe("codex");
+        assert_eq!(live_entries.len(), 1);
+        let live_entry = &live_entries[0];
+        assert!(live_entry.success);
+        assert!(
+            live_entry.bridge.is_some(),
+            "protocol conversion should record a bridge kind"
+        );
+        let client_request = live_entry.client_request.as_deref().unwrap_or_default();
+        let upstream_request = live_entry.upstream_request.as_deref().unwrap_or_default();
+        assert!(client_request.contains("\"input\""));
+        assert!(upstream_request.contains("\"messages\""));
+        assert!(upstream_request.contains("deepseek-chat"));
+        assert_ne!(
+            client_request, upstream_request,
+            "stage 1 and stage 2 must differ after protocol conversion"
+        );
+        assert!(live_entry.upstream_response.is_some());
+        assert!(live_entry.final_response.is_some());
+        runtime.live_log().unsubscribe();
+
         let sse_response = client
             .post(&endpoint)
             .bearer_auth(&route_key)
@@ -3875,7 +4198,14 @@ mod tests {
                 .and_then(Value::as_str),
             Some(failed_response_body)
         );
-        assert!(healthy_metadata.pointer("/response_body").is_none());
+        assert_eq!(
+            healthy_metadata
+                .pointer("/response_body")
+                .and_then(Value::as_str),
+            Some(
+                r#"{"usage":{"prompt_tokens":120,"completion_tokens":30,"prompt_cache_hit_tokens":80,"price_cny":7.1}}"#
+            )
+        );
         assert_eq!(healthy_request.input_tokens, Some(120));
         assert_eq!(healthy_request.output_tokens, Some(30));
         assert_eq!(healthy_request.cache_tokens, Some(80));
@@ -4227,6 +4557,125 @@ mod tests {
             ),
             "https://api.example.com/v1/responses?stream=true"
         );
+    }
+
+    #[test]
+    fn is_messages_path_matches_anthropic_messages_endpoint() {
+        assert!(is_messages_path("/v1/messages"));
+        assert!(is_messages_path("/messages/"));
+        assert!(is_messages_path("messages"));
+        assert!(!is_messages_path("/v1/chat/completions"));
+        assert!(!is_messages_path("/v1/models"));
+    }
+
+    #[test]
+    fn ensure_query_flag_appends_only_when_absent() {
+        assert_eq!(
+            ensure_query_flag("https://api.example.com/v1/messages", "beta", "true"),
+            "https://api.example.com/v1/messages?beta=true"
+        );
+        assert_eq!(
+            ensure_query_flag(
+                "https://api.example.com/v1/messages?stream=true",
+                "beta",
+                "true"
+            ),
+            "https://api.example.com/v1/messages?stream=true&beta=true"
+        );
+        assert_eq!(
+            ensure_query_flag(
+                "https://api.example.com/v1/messages?beta=true",
+                "beta",
+                "true"
+            ),
+            "https://api.example.com/v1/messages?beta=true"
+        );
+    }
+
+    #[test]
+    fn apply_claude_code_identity_merges_beta_and_fills_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("anthropic-beta"),
+            HeaderValue::from_static("interleaved-thinking-2025-05-14"),
+        );
+        headers.insert(
+            HeaderName::from_static("user-agent"),
+            HeaderValue::from_static("claude-cli/9.9.9 (external, cli)"),
+        );
+        apply_claude_code_identity(&mut headers);
+
+        assert_eq!(
+            headers.get("anthropic-beta").and_then(|v| v.to_str().ok()),
+            Some("claude-code-20250219,interleaved-thinking-2025-05-14")
+        );
+        // Client's own user-agent must win over the impersonated default.
+        assert_eq!(
+            headers.get("user-agent").and_then(|v| v.to_str().ok()),
+            Some("claude-cli/9.9.9 (external, cli)")
+        );
+        assert_eq!(
+            headers.get("x-app").and_then(|v| v.to_str().ok()),
+            Some("cli")
+        );
+        assert!(headers.contains_key("x-stainless-package-version"));
+    }
+
+    #[test]
+    fn apply_claude_code_identity_defaults_when_headers_absent() {
+        let mut headers = HeaderMap::new();
+        apply_claude_code_identity(&mut headers);
+        assert_eq!(
+            headers.get("anthropic-beta").and_then(|v| v.to_str().ok()),
+            Some(client_identity::CLAUDE_CODE_DEFAULT_BETA)
+        );
+        assert_eq!(
+            headers.get("user-agent").and_then(|v| v.to_str().ok()),
+            Some(client_identity::CLAUDE_CODE_USER_AGENT)
+        );
+    }
+
+    #[test]
+    fn apply_codex_cli_identity_fills_originator_and_user_agent() {
+        let mut headers = HeaderMap::new();
+        apply_codex_cli_identity(&mut headers);
+        assert_eq!(
+            headers.get("originator").and_then(|v| v.to_str().ok()),
+            Some(client_identity::CODEX_CLI_ORIGINATOR)
+        );
+        assert!(headers
+            .get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ua| ua.starts_with("codex_cli_rs/")));
+    }
+
+    #[test]
+    fn response_body_metadata_uses_short_preview_on_success() {
+        let body = vec![b'a'; ROUTE_PROXY_RESPONSE_BODY_LIMIT + 1024];
+        let success_preview =
+            route_proxy_response_body_metadata(Some(&body), true).expect("success body");
+        assert_eq!(success_preview.len(), ROUTE_PROXY_SUCCESS_BODY_LIMIT);
+        let failure_preview =
+            route_proxy_response_body_metadata(Some(&body), false).expect("failure body");
+        assert_eq!(failure_preview.len(), ROUTE_PROXY_RESPONSE_BODY_LIMIT);
+        assert!(route_proxy_response_body_metadata(Some(b""), true).is_none());
+        assert!(route_proxy_response_body_metadata(None, true).is_none());
+    }
+
+    #[test]
+    fn force_identity_accept_encoding_overrides_client_value() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("accept-encoding"),
+            HeaderValue::from_static("gzip, br, zstd"),
+        );
+        force_identity_accept_encoding(&mut headers);
+        let values: Vec<_> = headers
+            .get_all("accept-encoding")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        assert_eq!(values, vec!["identity"]);
     }
 
     #[test]
@@ -4867,6 +5316,7 @@ mod tests {
             pool,
             key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
             activity: RouteCredentialActivityRegistry::default(),
+            live_log: RouteProxyLiveLog::default(),
         };
 
         let mut headers = HeaderMap::new();
@@ -4896,6 +5346,7 @@ mod tests {
             pool,
             key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
             activity: RouteCredentialActivityRegistry::default(),
+            live_log: RouteProxyLiveLog::default(),
         };
 
         let error = resolve_platform(&state, &HeaderMap::new(), None)
@@ -4908,6 +5359,39 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn resolve_platform_rejects_unknown_proxy_key() {
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let state = ProxyAppState {
+            pool,
+            key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
+            activity: RouteCredentialActivityRegistry::default(),
+            live_log: RouteProxyLiveLog::default(),
+        };
+
+        let key = "sk-invalid";
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer sk-invalid"),
+        );
+        let error = resolve_platform(&state, &headers, Some(key))
+            .await
+            .expect_err("unknown proxy key must be rejected");
+
+        let message = match error {
+            AppError::Validation { code, message, .. } => {
+                assert_eq!(code, "route_proxy.key_invalid");
+                message
+            }
+            other => panic!("unexpected error: {other:?}"),
+        };
+        assert!(!message.contains(key));
     }
 
     #[test]
@@ -5591,6 +6075,40 @@ mod tests {
             value.pointer("/error/code").and_then(Value::as_str),
             Some("route_pool.model_unmatched")
         );
+    }
+
+    #[tokio::test]
+    async fn route_proxy_auth_errors_use_stable_codes_and_challenge() {
+        let cases = [
+            (
+                "route_proxy.platform_unresolved: provide a local route proxy key",
+                "route_proxy.auth_required",
+            ),
+            (
+                "route_proxy.key_invalid: local route proxy key is invalid",
+                "route_proxy.key_invalid",
+            ),
+        ];
+
+        for (message, expected_code) in cases {
+            assert_eq!(route_proxy_error_status(message), StatusCode::UNAUTHORIZED);
+            let response = json_error(StatusCode::UNAUTHORIZED, message);
+            assert_eq!(
+                response
+                    .headers()
+                    .get(axum::http::header::WWW_AUTHENTICATE)
+                    .and_then(|value| value.to_str().ok()),
+                Some("Bearer")
+            );
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("error body");
+            let value: Value = serde_json::from_slice(&body).expect("error json");
+            assert_eq!(
+                value.pointer("/error/code").and_then(Value::as_str),
+                Some(expected_code)
+            );
+        }
     }
 
     #[test]

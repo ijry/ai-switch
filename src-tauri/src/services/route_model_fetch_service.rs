@@ -3,10 +3,12 @@ use crate::models::route_credential::{
     normalize_anthropic_api_key_field, ANTHROPIC_API_KEY_FIELD, ANTHROPIC_AUTH_TOKEN_FIELD,
 };
 use crate::models::route_pool::{FetchedRouteModel, RouteModelsFetchRequest};
+use crate::services::client_identity;
 use crate::services::http_client::build_outbound_http_client;
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
+use crate::services::route_proxy_service::build_target_url;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 use reqwest::StatusCode;
-use serde::Deserialize;
+use serde_json::Value;
 use std::time::Duration;
 
 pub struct RouteModelFetchService;
@@ -14,29 +16,6 @@ pub struct RouteModelFetchService;
 const FETCH_TIMEOUT_SECS: u64 = 15;
 const ERROR_BODY_MAX_CHARS: usize = 512;
 const USER_AGENT_VALUE: &str = "ai-switch/0.1";
-
-#[derive(Debug, Deserialize)]
-struct ModelsResponse {
-    data: Option<Vec<ModelEntry>>,
-    models: Option<Vec<GeminiModelEntry>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ModelEntry {
-    id: String,
-    owned_by: Option<String>,
-    #[serde(default)]
-    supports_1m: Option<bool>,
-    #[serde(default, rename = "supports1m")]
-    supports_1m_camel: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GeminiModelEntry {
-    name: String,
-    #[serde(default, rename = "displayName")]
-    display_name: Option<String>,
-}
 
 impl RouteModelFetchService {
     pub async fn fetch(
@@ -65,18 +44,14 @@ impl RouteModelFetchService {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or("openai");
-        let candidates = if interface_format == "gemini" {
-            build_gemini_models_url_candidates(base_url)
-        } else {
-            build_models_url_candidates(base_url)
-        }
-        .map_err(|err| {
-            validation_error(
-                "validation.route_models_endpoint",
-                "Could not build model list endpoint",
-                Some(err),
-            )
-        })?;
+        let candidates =
+            build_model_list_url_candidates(base_url, interface_format).map_err(|err| {
+                validation_error(
+                    "validation.route_models_endpoint",
+                    "Could not build model list endpoint",
+                    Some(err),
+                )
+            })?;
 
         let client = build_outbound_http_client(Some(Duration::from_secs(FETCH_TIMEOUT_SECS)))
             .map_err(|err| {
@@ -117,14 +92,21 @@ impl RouteModelFetchService {
             };
             let status = response.status();
             if status.is_success() {
-                let parsed = response.json::<ModelsResponse>().await.map_err(|err| {
+                let body = response.text().await.map_err(|err| {
                     validation_error(
                         "validation.route_models_parse",
-                        "Could not parse model list response",
+                        "Could not read model list response",
                         Some(err.to_string()),
                     )
                 })?;
-                let models = normalize_models_response(parsed);
+                let parsed = serde_json::from_str::<Value>(&body).map_err(|err| {
+                    validation_error(
+                        "validation.route_models_parse",
+                        "Could not parse model list response",
+                        Some(format!("{err}; response: {}", truncate_body(body.clone()))),
+                    )
+                })?;
+                let models = normalize_models_response(&parsed);
                 return Ok(models);
             }
 
@@ -158,6 +140,29 @@ pub fn build_models_url_candidates(base_url: &str) -> Result<Vec<String>, String
     Ok(vec![format!("{trimmed}/models")])
 }
 
+fn build_model_list_url_candidates(
+    base_url: &str,
+    interface_format: &str,
+) -> Result<Vec<String>, String> {
+    match interface_format {
+        "anthropic" => build_anthropic_models_url_candidates(base_url),
+        "gemini" => build_gemini_models_url_candidates(base_url),
+        _ => build_models_url_candidates(base_url),
+    }
+}
+
+pub fn build_anthropic_models_url_candidates(base_url: &str) -> Result<Vec<String>, String> {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("Base URL is empty".to_string());
+    }
+
+    Ok(deduplicate(vec![
+        build_target_url(trimmed, "/v1/models", None),
+        build_target_url(trimmed, "/models", None),
+    ]))
+}
+
 pub fn build_gemini_models_url_candidates(base_url: &str) -> Result<Vec<String>, String> {
     let trimmed = base_url.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -182,7 +187,8 @@ fn model_fetch_headers(
 ) -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_VALUE));
+    // The fetch client has no decompression support; require an uncompressed body.
+    headers.insert("accept-encoding", HeaderValue::from_static("identity"));
     match interface_format {
         "anthropic" => {
             match normalize_anthropic_api_key_field(api_key_field)? {
@@ -203,57 +209,120 @@ fn model_fetch_headers(
                 _ => unreachable!("normalize_anthropic_api_key_field returns known constants"),
             }
             headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+            // Impersonate Claude Code so client-fingerprinting gateways
+            // (e.g. agentrouter.org) don't reject the model list request.
+            headers.insert(
+                "anthropic-beta",
+                HeaderValue::from_static(client_identity::CLAUDE_CODE_DEFAULT_BETA),
+            );
+            for (name, value) in client_identity::claude_code_identity_headers() {
+                insert_static_header(&mut headers, name, value)?;
+            }
         }
-        "gemini" => {}
+        "gemini" => {
+            headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_VALUE));
+        }
         _ => {
             headers.insert(
                 AUTHORIZATION,
                 HeaderValue::from_str(&format!("Bearer {api_key}"))
                     .map_err(|err| format!("Invalid authorization header: {err}"))?,
             );
+            // Impersonate the Codex CLI for OpenAI/Responses-style gateways.
+            for (name, value) in client_identity::codex_cli_identity_headers() {
+                insert_static_header(&mut headers, name, &value)?;
+            }
         }
     }
     Ok(headers)
 }
 
-fn normalize_models_response(response: ModelsResponse) -> Vec<FetchedRouteModel> {
-    let mut models: Vec<FetchedRouteModel> = response
-        .data
-        .unwrap_or_default()
-        .into_iter()
-        .map(|entry| FetchedRouteModel {
-            id: entry.id.trim().to_string(),
-            owned_by: entry.owned_by,
-            supports_1m: truthy_option(entry.supports_1m.or(entry.supports_1m_camel)),
-        })
-        .chain(
-            response
-                .models
-                .unwrap_or_default()
-                .into_iter()
-                .map(|entry| {
-                    let id = entry
-                        .name
-                        .trim()
-                        .strip_prefix("models/")
-                        .unwrap_or_else(|| entry.name.trim())
-                        .to_string();
-                    FetchedRouteModel {
-                        id,
-                        owned_by: entry.display_name,
-                        supports_1m: None,
-                    }
-                }),
-        )
-        .filter(|model| !model.id.is_empty())
-        .collect();
+fn insert_static_header(
+    headers: &mut HeaderMap,
+    name: &'static str,
+    value: &str,
+) -> Result<(), String> {
+    let value = HeaderValue::from_str(value)
+        .map_err(|err| format!("Invalid header value for {name}: {err}"))?;
+    headers.insert(HeaderName::from_static(name), value);
+    Ok(())
+}
+
+fn normalize_models_response(response: &Value) -> Vec<FetchedRouteModel> {
+    let mut models = Vec::new();
+    append_model_entries(response, &mut models);
     models.sort_by(|left, right| left.id.cmp(&right.id));
     models.dedup_by(|left, right| left.id.as_str() == right.id.as_str());
     models
 }
 
-fn truthy_option(value: Option<bool>) -> Option<bool> {
-    value.filter(|enabled| *enabled)
+fn append_model_entries(value: &Value, models: &mut Vec<FetchedRouteModel>) {
+    match value {
+        Value::Array(entries) => {
+            for entry in entries {
+                append_model_entries(entry, models);
+            }
+        }
+        Value::Object(object) => {
+            let mut found_nested_entries = false;
+            for key in ["data", "models", "items"] {
+                if let Some(entries) = object.get(key) {
+                    found_nested_entries = true;
+                    append_model_entries(entries, models);
+                }
+            }
+            if found_nested_entries {
+                return;
+            }
+
+            let Some(id) = ["id", "name", "model", "slug"]
+                .iter()
+                .find_map(|key| object.get(*key).and_then(Value::as_str))
+                .map(normalize_model_id)
+                .filter(|id| !id.is_empty())
+            else {
+                return;
+            };
+            let owned_by = [
+                "owned_by",
+                "ownedBy",
+                "provider",
+                "display_name",
+                "displayName",
+            ]
+            .iter()
+            .find_map(|key| object.get(*key).and_then(Value::as_str))
+            .map(str::to_string);
+            let supports_1m = ["supports_1m", "supports1m"]
+                .iter()
+                .find_map(|key| object.get(*key).and_then(Value::as_bool))
+                .filter(|enabled| *enabled);
+            models.push(FetchedRouteModel {
+                id,
+                owned_by,
+                supports_1m,
+            });
+        }
+        Value::String(id) => {
+            let id = normalize_model_id(id);
+            if !id.is_empty() {
+                models.push(FetchedRouteModel {
+                    id,
+                    owned_by: None,
+                    supports_1m: None,
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_model_id(value: &str) -> String {
+    value
+        .trim()
+        .strip_prefix("models/")
+        .unwrap_or_else(|| value.trim())
+        .to_string()
 }
 
 fn append_query_param(url: &str, key: &str, value: &str) -> String {
@@ -327,6 +396,28 @@ mod tests {
     }
 
     #[test]
+    fn builds_model_list_candidates_from_interface_format() {
+        assert_eq!(
+            build_model_list_url_candidates("https://api.anthropic.com", "anthropic")
+                .expect("candidates"),
+            vec![
+                "https://api.anthropic.com/v1/models",
+                "https://api.anthropic.com/models",
+            ]
+        );
+        assert_eq!(
+            build_model_list_url_candidates("https://api.anthropic.com/v1", "anthropic")
+                .expect("candidates"),
+            vec!["https://api.anthropic.com/v1/models"]
+        );
+        assert_eq!(
+            build_model_list_url_candidates("https://api.example.com/v1", "openai-responses")
+                .expect("candidates"),
+            vec!["https://api.example.com/v1/models"]
+        );
+    }
+
+    #[test]
     fn builds_versioned_openai_candidates() {
         assert_eq!(
             build_models_url_candidates("https://open.bigmodel.cn/api/coding/paas/v4")
@@ -357,15 +448,14 @@ mod tests {
 
     #[test]
     fn normalizes_openai_and_gemini_responses() {
-        let response: ModelsResponse = serde_json::from_value(serde_json::json!({
+        let response = serde_json::json!({
             "data": [
                 {"id": "claude-sonnet-5", "owned_by": "gateway", "supports1m": true},
                 {"id": "gpt-4o", "owned_by": "openai"}
             ],
             "models": [{"name": "models/gemini-2.5-flash", "displayName": "Gemini Flash"}]
-        }))
-        .expect("response");
-        let models = normalize_models_response(response);
+        });
+        let models = normalize_models_response(&response);
 
         assert_eq!(
             models,
@@ -386,6 +476,33 @@ mod tests {
                     supports_1m: None,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn normalizes_anthropic_models_response() {
+        let response = serde_json::json!({
+            "data": [
+                {
+                    "type": "model",
+                    "id": "claude-sonnet-4-20250514",
+                    "display_name": "Claude Sonnet 4",
+                    "created_at": "2025-05-14T00:00:00Z"
+                }
+            ],
+            "has_more": false,
+            "first_id": "claude-sonnet-4-20250514",
+            "last_id": "claude-sonnet-4-20250514"
+        });
+        let models = normalize_models_response(&response);
+
+        assert_eq!(
+            models,
+            vec![FetchedRouteModel {
+                id: "claude-sonnet-4-20250514".to_string(),
+                owned_by: Some("Claude Sonnet 4".to_string()),
+                supports_1m: None,
+            }]
         );
     }
 

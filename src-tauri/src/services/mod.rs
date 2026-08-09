@@ -1,4 +1,5 @@
 pub mod batch_service;
+pub mod client_identity;
 pub mod config_write_service;
 pub mod cpa_export_service;
 pub mod cpa_import_service;
@@ -23,6 +24,7 @@ pub mod route_preview_service;
 pub mod route_protocol_bridge;
 pub mod route_proxy_https_service;
 pub mod route_proxy_https_trust;
+pub mod route_proxy_live_log;
 pub mod route_proxy_service;
 pub mod route_quota_service;
 pub mod settings_service;

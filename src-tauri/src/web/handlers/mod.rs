@@ -399,6 +399,14 @@ pub async fn dispatch_command(
                     .map_err(to_error)?,
             )
         }
+        "subscribe_route_proxy_live_log" => {
+            let platform = required_string_arg(&args, "platform")?;
+            to_value(state.route_proxy.live_log().subscribe(&platform))
+        }
+        "unsubscribe_route_proxy_live_log" => {
+            state.route_proxy.live_log().unsubscribe();
+            to_value(Value::Null)
+        }
         "route_pool_test_model" => {
             let request: RoutePoolModelTestRequest = parse_arg(&args, "request")?;
             if route_model_test_targets_single_account(&request) {

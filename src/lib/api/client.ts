@@ -32,6 +32,7 @@ import type {
   RoutePoolRouteOutcome,
   RoutePoolRouteRequest,
   RoutePoolState,
+  RouteProxyLiveLogEntry,
   RouteProxyHttpsOperationOutcome,
   RouteProxyHttpsStatus,
   RouteProxyStatus,
@@ -149,6 +150,14 @@ export function routePoolTestModel(request: RoutePoolModelTestRequest): Promise<
 
 export function fetchRouteModels(request: RouteModelsFetchRequest): Promise<FetchedRouteModel[]> {
   return invoke("fetch_route_models", { request });
+}
+
+export function subscribeRouteProxyLiveLog(platform: string): Promise<RouteProxyLiveLogEntry[]> {
+  return invoke("subscribe_route_proxy_live_log", { platform });
+}
+
+export function unsubscribeRouteProxyLiveLog(): Promise<void> {
+  return invoke("unsubscribe_route_proxy_live_log");
 }
 
 export function getSettings(): Promise<AppSettingsView> {

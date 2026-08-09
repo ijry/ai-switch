@@ -42,7 +42,7 @@ use commands::route_credential_transfer_commands::{
 };
 use commands::route_pool_commands::{
     fetch_route_models, get_route_pool, route_pool_route_once, route_pool_test_model,
-    set_route_pool_members,
+    set_route_pool_members, subscribe_route_proxy_live_log, unsubscribe_route_proxy_live_log,
 };
 use commands::route_proxy_commands::{
     get_route_proxy_key, get_route_proxy_status, start_route_proxy, stop_route_proxy,
@@ -306,6 +306,10 @@ pub fn run() {
                 .route_proxy
                 .activity()
                 .set_emitter(EventEmitter::Tauri(app.handle().clone()));
+            state
+                .route_proxy
+                .live_log()
+                .set_emitter(EventEmitter::Tauri(app.handle().clone()));
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             {
                 state
@@ -407,6 +411,8 @@ pub fn run() {
             route_pool_route_once,
             route_pool_test_model,
             fetch_route_models,
+            subscribe_route_proxy_live_log,
+            unsubscribe_route_proxy_live_log,
             start_route_proxy,
             stop_route_proxy,
             get_route_proxy_status,
