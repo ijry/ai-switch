@@ -49,7 +49,10 @@ pub fn build_aiswitch_import_url(input: &DeepLinkBuildInput<'_>) -> Result<Strin
     validate_endpoint(input.base_url)?;
 
     if !matches!(input.headers, serde_json::Value::Null)
-        && input.headers.as_object().is_none_or(|headers| !headers.is_empty())
+        && input
+            .headers
+            .as_object()
+            .is_none_or(|headers| !headers.is_empty())
     {
         return Err("deeplink_export.headers_unsupported".into());
     }
@@ -258,10 +261,9 @@ fn build_model_query_pairs<'a>(
         PlatformId::Codex => "gpt-5",
         PlatformId::Gemini => "gemini-2.5-flash",
         PlatformId::Grok => "grok-3",
-        PlatformId::Claude
-        | PlatformId::OpenCode
-        | PlatformId::OpenClaw
-        | PlatformId::Hermes => unreachable!("handled or rejected before model serialization"),
+        PlatformId::Claude | PlatformId::OpenCode | PlatformId::OpenClaw | PlatformId::Hermes => {
+            unreachable!("handled or rejected before model serialization")
+        }
     };
     if mapping.from != expected_from
         || mapping.to.is_empty()
@@ -543,7 +545,12 @@ mod tests {
         let custom_headers = json!({"X-Secret": "header-secret"});
         let empty_mappings = Vec::new();
 
-        let input = build_input("codex", "openai-responses", &empty_mappings, &custom_headers);
+        let input = build_input(
+            "codex",
+            "openai-responses",
+            &empty_mappings,
+            &custom_headers,
+        );
         assert_safe_build_error(&input, "deeplink_export.headers_unsupported");
 
         let mut input = build_input("claude", "anthropic", &empty_mappings, &empty_headers);

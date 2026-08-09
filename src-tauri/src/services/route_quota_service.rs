@@ -113,7 +113,7 @@ async fn refresh_credential(
         config_json: credential.config_json.clone(),
     };
 
-    let refreshed = maybe_refresh_official_credential(pool, &selected)
+    let refreshed = maybe_refresh_official_credential(pool, &selected, None)
         .await
         .map_err(|message| AppError::Validation {
             code: "validation.route_quota_oauth_refresh",

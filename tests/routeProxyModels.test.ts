@@ -47,4 +47,40 @@ describe("route proxy model list", () => {
       },
     );
   });
+
+  it("fetches Codex models with reasoning levels from the models catalog shape", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          models: [
+            {
+              slug: "gpt-5.6-sol",
+              owned_by: "ai-switch",
+              supported_reasoning_levels: [
+                { effort: "low", description: "Fast" },
+                { effort: "high", description: "Deep" },
+              ],
+              default_reasoning_level: "low",
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchRouteProxyModels("http://127.0.0.1:43111", "sk-route", "codex"),
+    ).resolves.toEqual([
+      {
+        id: "gpt-5.6-sol",
+        owned_by: "ai-switch",
+        supported_reasoning_levels: [
+          { effort: "low", description: "Fast" },
+          { effort: "high", description: "Deep" },
+        ],
+        default_reasoning_level: "low",
+      },
+    ]);
+  });
 });

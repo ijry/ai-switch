@@ -1,6 +1,8 @@
 mod codex;
 mod json_agent;
 
+pub(crate) use codex::codex_model_catalog_path;
+
 use crate::{error::AppError, models::platform::PlatformId};
 use codex::CodexAdapter;
 use json_agent::JsonAgentAdapter;
@@ -209,6 +211,7 @@ command = "npx"
         assert!(rendered.contains("api_key_env_var = \"KEEP_KEY\""));
         assert!(rendered.contains("[mcp_servers.filesystem]"));
         assert!(rendered.contains("model_provider = \"ai-switch\""));
+        assert!(rendered.contains("model_catalog_json = \"ai-switch-model-catalog.json\""));
         assert!(rendered.contains("[model_providers.ai-switch]"));
         assert!(rendered.contains("base_url = \"http://127.0.0.1:43111/v1\""));
         assert!(rendered.contains("experimental_bearer_token = \"sk-ai-switch-test\""));
@@ -233,6 +236,7 @@ api_key = "legacy-key"
             .unwrap();
         let rendered = String::from_utf8(rendered).unwrap();
 
+        assert!(rendered.contains("model_catalog_json = \"ai-switch-model-catalog.json\""));
         assert!(rendered.contains("experimental_bearer_token = \"sk-ai-switch-test\""));
         assert!(!rendered.contains("api_key = \"legacy-key\""));
     }

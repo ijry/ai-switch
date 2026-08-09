@@ -25,7 +25,8 @@ pub fn is_loopback_host(host: &str) -> bool {
         .strip_prefix('[')
         .and_then(|value| value.strip_suffix(']'))
         .unwrap_or(host);
-    host.parse::<IpAddr>().is_ok_and(|address| address.is_loopback())
+    host.parse::<IpAddr>()
+        .is_ok_and(|address| address.is_loopback())
 }
 
 pub(crate) fn format_web_base_url(scheme: &str, host: &str, port: u16) -> String {
@@ -103,7 +104,14 @@ mod tests {
 
     #[test]
     fn loopback_http_is_accepted_for_sensitive_commands() {
-        for host in ["localhost", "LOCALHOST", "127.0.0.1", "127.42.0.9", "::1", "[::1]"] {
+        for host in [
+            "localhost",
+            "LOCALHOST",
+            "127.0.0.1",
+            "127.42.0.9",
+            "::1",
+            "[::1]",
+        ] {
             assert!(is_loopback_host(host), "expected loopback host: {host}");
             validate_sensitive_web_transport(host, false).unwrap();
         }
@@ -111,7 +119,12 @@ mod tests {
 
     #[test]
     fn non_loopback_http_is_rejected_before_binding() {
-        for host in ["0.0.0.0", "192.168.1.10", "100.64.0.12", "localhost.example"] {
+        for host in [
+            "0.0.0.0",
+            "192.168.1.10",
+            "100.64.0.12",
+            "localhost.example",
+        ] {
             assert!(!is_loopback_host(host), "unexpected loopback host: {host}");
             let error = validate_sensitive_web_transport(host, false).unwrap_err();
             assert!(matches!(
@@ -135,7 +148,11 @@ mod tests {
         assert!(normalize_tls_paths(Some(" cert.pem "), Some(" key.pem "))
             .unwrap()
             .is_some());
-        for paths in [(Some("cert.pem"), None), (None, Some("key.pem")), (Some(" "), Some("key.pem"))] {
+        for paths in [
+            (Some("cert.pem"), None),
+            (None, Some("key.pem")),
+            (Some(" "), Some("key.pem")),
+        ] {
             let error = normalize_tls_paths(paths.0, paths.1).unwrap_err();
             assert!(matches!(
                 error,
@@ -183,9 +200,7 @@ mod tests {
 
     #[tokio::test]
     async fn standalone_listener_rejects_an_occupied_port_before_startup() {
-        let reservation = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = reservation.local_addr().unwrap();
 
         let error = bind_server_listener(address).await.unwrap_err();
@@ -240,12 +255,14 @@ pub async fn run_from_env() -> Result<(), String> {
         .ok_or_else(|| "Invalid server address: no addresses resolved".to_string())?;
 
     let rustls_config = if let Some((certificate_path, private_key_path)) = tls_paths {
-        Some(axum_server::tls_rustls::RustlsConfig::from_pem_file(
-            certificate_path,
-            private_key_path,
+        Some(
+            axum_server::tls_rustls::RustlsConfig::from_pem_file(
+                certificate_path,
+                private_key_path,
+            )
+            .await
+            .map_err(|error| format!("Could not load HTTPS certificate: {error}"))?,
         )
-        .await
-        .map_err(|error| format!("Could not load HTTPS certificate: {error}"))?)
     } else {
         None
     };

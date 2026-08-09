@@ -1,3 +1,8 @@
+use super::common::{
+    chat_reasoning_effort, flatten_responses_function_tools, is_responses_builtin_tool_type,
+    response_tool_name, response_tool_namespace, response_tool_parameters,
+    responses_reasoning_effort, responses_tool_namespaces, ResponsesToolNamespaces,
+};
 use super::TransformedBridgeResponse;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -21,10 +26,17 @@ pub(super) fn responses_request_to_chat(body: &[u8]) -> Result<Vec<u8>, String> 
             messages.push(json!({"role": "system", "content": content}));
         }
     }
+    let tool_namespaces = responses_tool_namespaces(object.get("tools"))?;
     if let Some(input) = object.get("input") {
-        messages.extend(convert_input(input)?);
+        messages.extend(convert_input(input, &tool_namespaces)?);
     }
     result.insert("messages".to_string(), Value::Array(messages));
+
+    if let Some(effort) =
+        responses_reasoning_effort(object).and_then(|effort| chat_reasoning_effort(&effort))
+    {
+        result.insert("reasoning_effort".to_string(), json!(effort));
+    }
 
     if let Some(limit) = object.get("max_output_tokens") {
         let model = object
@@ -60,11 +72,20 @@ pub(super) fn responses_request_to_chat(body: &[u8]) -> Result<Vec<u8>, String> 
         result.insert("stream_options".to_string(), json!({"include_usage": true}));
     }
 
+    let mut has_tools = false;
     if let Some(tools) = object.get("tools") {
-        result.insert("tools".to_string(), convert_tools(tools)?);
+        let converted_tools = convert_tools(tools)?;
+        has_tools = converted_tools
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty());
+        if has_tools {
+            result.insert("tools".to_string(), converted_tools);
+        }
     }
     if let Some(tool_choice) = object.get("tool_choice") {
-        result.insert("tool_choice".to_string(), convert_tool_choice(tool_choice)?);
+        if let Some(converted_tool_choice) = convert_tool_choice(tool_choice, has_tools)? {
+            result.insert("tool_choice".to_string(), converted_tool_choice);
+        }
     }
 
     serde_json::to_vec(&Value::Object(result))
@@ -75,6 +96,7 @@ pub(super) fn chat_response_to_responses(
     status: u16,
     content_type: Option<&str>,
     body: &[u8],
+    tool_namespaces: &ResponsesToolNamespaces,
 ) -> Result<TransformedBridgeResponse, String> {
     if !(200..300).contains(&status) {
         return Ok(TransformedBridgeResponse {
@@ -87,18 +109,21 @@ pub(super) fn chat_response_to_responses(
         || looks_like_sse(body)
     {
         return Ok(TransformedBridgeResponse {
-            body: chat_sse_to_responses(body)?,
+            body: chat_sse_to_responses(body, tool_namespaces)?,
             content_type: Some("text/event-stream".to_string()),
         });
     }
 
     Ok(TransformedBridgeResponse {
-        body: chat_json_to_responses(body)?,
+        body: chat_json_to_responses(body, tool_namespaces)?,
         content_type: Some("application/json".to_string()),
     })
 }
 
-fn chat_json_to_responses(body: &[u8]) -> Result<Vec<u8>, String> {
+fn chat_json_to_responses(
+    body: &[u8],
+    tool_namespaces: &ResponsesToolNamespaces,
+) -> Result<Vec<u8>, String> {
     let value = serde_json::from_slice::<Value>(body)
         .map_err(|error| format!("Chat response JSON is invalid: {error}"))?;
     if value.get("error").is_some() {
@@ -127,7 +152,7 @@ fn chat_json_to_responses(body: &[u8]) -> Result<Vec<u8>, String> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let output = build_output_items(response_id, &text, &tool_calls, true)?;
+    let output = build_output_items(response_id, &text, &tool_calls, true, tool_namespaces)?;
     let finish_reason = choice.get("finish_reason").and_then(Value::as_str);
     let status = responses_status(finish_reason);
     let response = response_object(
@@ -145,7 +170,10 @@ fn chat_json_to_responses(body: &[u8]) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("Could not serialize Responses response: {error}"))
 }
 
-fn chat_sse_to_responses(body: &[u8]) -> Result<Vec<u8>, String> {
+fn chat_sse_to_responses(
+    body: &[u8],
+    tool_namespaces: &ResponsesToolNamespaces,
+) -> Result<Vec<u8>, String> {
     let text = String::from_utf8_lossy(body).replace("\r\n", "\n");
     let mut state = ChatStreamState::default();
     let mut output = String::new();
@@ -198,7 +226,13 @@ fn chat_sse_to_responses(body: &[u8]) -> Result<Vec<u8>, String> {
         }
         if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for tool_call in tool_calls {
-                emit_tool_call_delta(&mut state, &mut output, &mut sequence_number, tool_call)?;
+                emit_tool_call_delta(
+                    &mut state,
+                    &mut output,
+                    &mut sequence_number,
+                    tool_call,
+                    tool_namespaces,
+                )?;
             }
         }
     }
@@ -207,7 +241,12 @@ fn chat_sse_to_responses(body: &[u8]) -> Result<Vec<u8>, String> {
         return Err("Chat SSE response did not contain data events".to_string());
     }
     ensure_stream_started(&mut state, &mut output, &mut sequence_number);
-    finish_stream(&mut state, &mut output, &mut sequence_number)?;
+    finish_stream(
+        &mut state,
+        &mut output,
+        &mut sequence_number,
+        tool_namespaces,
+    )?;
     Ok(output.into_bytes())
 }
 
@@ -385,6 +424,7 @@ fn emit_tool_call_delta(
     output: &mut String,
     sequence_number: &mut u64,
     value: &Value,
+    tool_namespaces: &ResponsesToolNamespaces,
 ) -> Result<(), String> {
     let index = value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
     if !state.tools.contains_key(&index) {
@@ -429,7 +469,8 @@ fn emit_tool_call_delta(
                     &tool.call_id,
                     &tool.name,
                     "",
-                    "in_progress"
+                    "in_progress",
+                    tool_namespaces,
                 )
             }),
         )?;
@@ -462,6 +503,7 @@ fn finish_stream(
     state: &mut ChatStreamState,
     output: &mut String,
     sequence_number: &mut u64,
+    tool_namespaces: &ResponsesToolNamespaces,
 ) -> Result<(), String> {
     let mut final_output = Vec::new();
     if state.text_started {
@@ -526,6 +568,7 @@ fn finish_stream(
             &tool.name,
             &tool.arguments,
             "completed",
+            tool_namespaces,
         );
         push_sse_event(
             output,
@@ -544,6 +587,7 @@ fn finish_stream(
             &tool.name,
             &tool.arguments,
             "completed",
+            tool_namespaces,
         ));
     }
     final_output.sort_by_key(|item| {
@@ -587,6 +631,7 @@ fn build_output_items(
     text: &str,
     tool_calls: &[Value],
     completed: bool,
+    tool_namespaces: &ResponsesToolNamespaces,
 ) -> Result<Vec<Value>, String> {
     let mut output = Vec::new();
     if !text.is_empty() {
@@ -626,6 +671,7 @@ fn build_output_items(
             } else {
                 "in_progress"
             },
+            tool_namespaces,
         ));
     }
     Ok(output)
@@ -708,17 +754,23 @@ fn function_call_output_item(
     name: &str,
     arguments: &str,
     status: &str,
+    tool_namespaces: &ResponsesToolNamespaces,
 ) -> Value {
-    json!({
+    let mut item = json!({
         "id": item_id,
         "type": "function_call",
         "status": status,
         "call_id": call_id,
         "name": name,
         "arguments": arguments
-    })
+    });
+    let response_name = response_tool_name(name, tool_namespaces);
+    item["name"] = Value::String(response_name.to_string());
+    if let Some(namespace) = response_tool_namespace(name, tool_namespaces) {
+        item["namespace"] = Value::String(namespace.to_string());
+    }
+    item
 }
-
 fn chat_usage_to_responses(usage: Option<&Value>) -> Value {
     let Some(usage) = usage else {
         return Value::Null;
@@ -855,61 +907,350 @@ fn sanitize_id(value: &str) -> String {
         .collect()
 }
 
-fn convert_input(input: &Value) -> Result<Vec<Value>, String> {
+fn convert_input(
+    input: &Value,
+    tool_namespaces: &ResponsesToolNamespaces,
+) -> Result<Vec<Value>, String> {
     match input {
         Value::String(text) => Ok(vec![json!({"role": "user", "content": text})]),
-        Value::Array(items) => items.iter().map(convert_input_item).collect(),
+        Value::Array(items) => convert_input_items(items, tool_namespaces),
+        Value::Object(object) => {
+            convert_input_items(&[Value::Object(object.clone())], tool_namespaces)
+        }
         Value::Null => Ok(Vec::new()),
-        _ => Err("Responses input must be a string or array".to_string()),
+        _ => Err("Responses input must be a string, object, or array".to_string()),
     }
 }
 
-fn convert_input_item(item: &Value) -> Result<Value, String> {
+fn convert_input_items(
+    items: &[Value],
+    tool_namespaces: &ResponsesToolNamespaces,
+) -> Result<Vec<Value>, String> {
+    let mut messages = Vec::new();
+    let mut pending_tool_calls = Vec::new();
+    let mut pending_reasoning = None;
+    let mut last_assistant_index = None;
+
+    for item in items {
+        convert_input_item(
+            item,
+            tool_namespaces,
+            &mut messages,
+            &mut pending_tool_calls,
+            &mut pending_reasoning,
+            &mut last_assistant_index,
+        )?;
+    }
+
+    flush_pending_tool_calls(
+        &mut messages,
+        &mut pending_tool_calls,
+        &mut pending_reasoning,
+        &mut last_assistant_index,
+    );
+    attach_pending_reasoning_to_previous_assistant(
+        &mut messages,
+        last_assistant_index,
+        &mut pending_reasoning,
+    );
+    Ok(messages)
+}
+
+fn convert_input_item(
+    item: &Value,
+    tool_namespaces: &ResponsesToolNamespaces,
+    messages: &mut Vec<Value>,
+    pending_tool_calls: &mut Vec<Value>,
+    pending_reasoning: &mut Option<String>,
+    last_assistant_index: &mut Option<usize>,
+) -> Result<(), String> {
     let object = item
         .as_object()
         .ok_or_else(|| "Responses input items must be JSON objects".to_string())?;
     match object.get("type").and_then(Value::as_str) {
         Some("function_call") => {
-            let call_id = required_string(object, "call_id", "function_call")?;
-            let name = required_string(object, "name", "function_call")?;
-            let arguments = object
-                .get("arguments")
-                .and_then(Value::as_str)
-                .unwrap_or("{}");
-            Ok(json!({
-                "role": "assistant",
-                "content": Value::Null,
-                "tool_calls": [{
-                    "id": call_id,
-                    "type": "function",
-                    "function": {"name": name, "arguments": arguments}
-                }]
-            }))
+            append_pending_reasoning(pending_reasoning, reasoning_text(item));
+            pending_tool_calls.push(function_call_to_chat(object, tool_namespaces)?);
         }
         Some("function_call_output") => {
-            let call_id = required_string(object, "call_id", "function_call_output")?;
-            let output = object
-                .get("output")
-                .map(stringify_content)
-                .transpose()?
-                .unwrap_or_default();
-            Ok(json!({
-                "role": "tool",
-                "tool_call_id": call_id,
-                "content": output
-            }))
+            flush_pending_tool_calls(
+                messages,
+                pending_tool_calls,
+                pending_reasoning,
+                last_assistant_index,
+            );
+            messages.push(tool_result_message(object, "function_call_output")?);
+            *last_assistant_index = None;
         }
-        Some("message") | None if object.contains_key("role") => {
+        Some("custom_tool_call") | Some("tool_search_call") => {
+            append_pending_reasoning(pending_reasoning, reasoning_text(item));
+            pending_tool_calls.push(synthetic_tool_call(object)?);
+        }
+        Some("custom_tool_call_output") | Some("tool_search_output") => {
+            flush_pending_tool_calls(
+                messages,
+                pending_tool_calls,
+                pending_reasoning,
+                last_assistant_index,
+            );
+            messages.push(tool_result_message(object, "tool_output")?);
+            *last_assistant_index = None;
+        }
+        Some("reasoning") => {
+            append_pending_reasoning(pending_reasoning, reasoning_text(item));
+        }
+        Some("input_text") | Some("input_image") | Some("input_file") | Some("input_audio") => {
+            flush_pending_tool_calls(
+                messages,
+                pending_tool_calls,
+                pending_reasoning,
+                last_assistant_index,
+            );
             let role = object.get("role").and_then(Value::as_str).unwrap_or("user");
+            let message = json!({
+                "role": chat_role(role),
+                "content": convert_message_content(&Value::Array(vec![item.clone()]))?
+            });
+            append_message_with_reasoning(
+                messages,
+                message,
+                pending_reasoning,
+                last_assistant_index,
+            );
+        }
+        Some("message") | None if object.contains_key("role") || object.contains_key("content") => {
+            flush_pending_tool_calls(
+                messages,
+                pending_tool_calls,
+                pending_reasoning,
+                last_assistant_index,
+            );
             let content = object
                 .get("content")
                 .map(convert_message_content)
                 .transpose()?
                 .unwrap_or(Value::String(String::new()));
-            Ok(json!({"role": role, "content": content}))
+            let message = json!({
+                "role": chat_role(object.get("role").and_then(Value::as_str).unwrap_or("user")),
+                "content": content
+            });
+            append_message_with_reasoning(
+                messages,
+                message,
+                pending_reasoning,
+                last_assistant_index,
+            );
         }
-        Some(other) => Err(format!("Unsupported Responses input item type: {other}")),
-        None => Err("Responses input item is missing role or type".to_string()),
+        Some("web_search_call")
+        | Some("web_search_call_output")
+        | Some("file_search_call")
+        | Some("file_search_call_output")
+        | Some("computer_call")
+        | Some("computer_call_output")
+        | Some("local_shell_call")
+        | Some("local_shell_call_output") => {
+            flush_pending_tool_calls(
+                messages,
+                pending_tool_calls,
+                pending_reasoning,
+                last_assistant_index,
+            );
+        }
+        Some(other) => return Err(format!("Unsupported Responses input item type: {other}")),
+        None => return Err("Responses input item is missing role or type".to_string()),
+    }
+    Ok(())
+}
+
+fn flush_pending_tool_calls(
+    messages: &mut Vec<Value>,
+    pending_tool_calls: &mut Vec<Value>,
+    pending_reasoning: &mut Option<String>,
+    last_assistant_index: &mut Option<usize>,
+) {
+    if pending_tool_calls.is_empty() {
+        return;
+    }
+    let mut message = json!({
+        "role": "assistant",
+        "content": Value::Null,
+        "tool_calls": std::mem::take(pending_tool_calls)
+    });
+    attach_reasoning_content(&mut message, pending_reasoning.take());
+    *last_assistant_index = Some(messages.len());
+    messages.push(message);
+}
+
+fn append_message_with_reasoning(
+    messages: &mut Vec<Value>,
+    mut message: Value,
+    pending_reasoning: &mut Option<String>,
+    last_assistant_index: &mut Option<usize>,
+) {
+    let is_assistant = message.get("role").and_then(Value::as_str) == Some("assistant");
+    if is_assistant {
+        attach_reasoning_content(&mut message, pending_reasoning.take());
+        *last_assistant_index = Some(messages.len());
+    } else {
+        attach_pending_reasoning_to_previous_assistant(
+            messages,
+            *last_assistant_index,
+            pending_reasoning,
+        );
+        *last_assistant_index = None;
+    }
+    messages.push(message);
+}
+
+fn attach_pending_reasoning_to_previous_assistant(
+    messages: &mut [Value],
+    last_assistant_index: Option<usize>,
+    pending_reasoning: &mut Option<String>,
+) {
+    let Some(reasoning) = pending_reasoning.take() else {
+        return;
+    };
+    let Some(message) = last_assistant_index.and_then(|index| messages.get_mut(index)) else {
+        return;
+    };
+    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+        return;
+    }
+    attach_reasoning_content(message, Some(reasoning));
+}
+
+fn attach_reasoning_content(message: &mut Value, reasoning: Option<String>) {
+    let Some(reasoning) = reasoning.filter(|value| !value.trim().is_empty()) else {
+        return;
+    };
+    let Some(object) = message.as_object_mut() else {
+        return;
+    };
+    match object.get_mut("reasoning_content") {
+        Some(Value::String(existing)) if !existing.is_empty() => {
+            existing.push_str("\n\n");
+            existing.push_str(&reasoning);
+        }
+        _ => {
+            object.insert("reasoning_content".to_string(), Value::String(reasoning));
+        }
+    }
+}
+
+fn append_pending_reasoning(pending_reasoning: &mut Option<String>, reasoning: Option<String>) {
+    let Some(reasoning) = reasoning.filter(|value| !value.trim().is_empty()) else {
+        return;
+    };
+    match pending_reasoning {
+        Some(existing) if !existing.is_empty() => {
+            existing.push_str("\n\n");
+            existing.push_str(&reasoning);
+        }
+        _ => *pending_reasoning = Some(reasoning),
+    }
+}
+
+fn reasoning_text(item: &Value) -> Option<String> {
+    let summary = item
+        .get("summary")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|part| {
+            matches!(
+                part.get("type").and_then(Value::as_str),
+                Some("summary_text" | "reasoning_text")
+            )
+            .then(|| part.get("text").and_then(Value::as_str))
+            .flatten()
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    if !summary.is_empty() {
+        return Some(summary);
+    }
+    item.get("content")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+}
+
+fn function_call_to_chat(
+    object: &Map<String, Value>,
+    tool_namespaces: &ResponsesToolNamespaces,
+) -> Result<Value, String> {
+    let call_id = object
+        .get("call_id")
+        .or_else(|| object.get("id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Responses function_call is missing call_id".to_string())?;
+    let name = required_string(object, "name", "function_call")?;
+    let namespace = object.get("namespace").and_then(Value::as_str);
+    let name = namespace
+        .filter(|value| !value.trim().is_empty())
+        .map(|namespace| super::common::qualified_response_tool_name(namespace, name))
+        .unwrap_or_else(|| {
+            if tool_namespaces.contains_key(name) {
+                name.to_string()
+            } else {
+                name.to_string()
+            }
+        });
+    let arguments = object
+        .get("arguments")
+        .map(stringify_content)
+        .transpose()?
+        .unwrap_or_else(|| "{}".to_string());
+    Ok(json!({
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": arguments}
+    }))
+}
+
+fn synthetic_tool_call(object: &Map<String, Value>) -> Result<Value, String> {
+    let call_id = object
+        .get("call_id")
+        .or_else(|| object.get("id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Responses tool call is missing call_id".to_string())?;
+    let item_type = object.get("type").and_then(Value::as_str).unwrap_or("");
+    let name = if item_type == "tool_search_call" {
+        "tool_search"
+    } else {
+        required_string(object, "name", "custom_tool_call")?
+    };
+    let arguments = if item_type == "custom_tool_call" {
+        json!({"input": object.get("input").cloned().unwrap_or(Value::String(String::new()))})
+    } else {
+        object
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}))
+    };
+    Ok(json!({
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": serde_json::to_string(&arguments).unwrap_or_else(|_| "{}".to_string())}
+    }))
+}
+
+fn tool_result_message(object: &Map<String, Value>, label: &str) -> Result<Value, String> {
+    let call_id = required_string(object, "call_id", label)?;
+    let output = object
+        .get("output")
+        .or_else(|| object.get("result"))
+        .map(stringify_content)
+        .transpose()?
+        .unwrap_or_default();
+    Ok(json!({"role": "tool", "tool_call_id": call_id, "content": output}))
+}
+
+fn chat_role(role: &str) -> &'static str {
+    match role {
+        "system" | "developer" => "system",
+        "assistant" => "assistant",
+        "tool" => "tool",
+        _ => "user",
     }
 }
 
@@ -924,20 +1265,33 @@ fn convert_message_content(content: &Value) -> Result<Value, String> {
                     .ok_or_else(|| "Responses content parts must be objects".to_string())?;
                 match object.get("type").and_then(Value::as_str) {
                     Some("input_text" | "output_text" | "text") => {
-                        let text = required_string(object, "text", "text content")?;
-                        converted.push(json!({"type": "text", "text": text}));
+                        if let Some(text) = object.get("text").and_then(Value::as_str) {
+                            if !text.is_empty() {
+                                converted.push(json!({"type": "text", "text": text}));
+                            }
+                        }
+                    }
+                    Some("refusal") => {
+                        if let Some(text) = object.get("refusal").and_then(Value::as_str) {
+                            if !text.is_empty() {
+                                converted.push(json!({"type": "text", "text": text}));
+                            }
+                        }
                     }
                     Some("input_image") => {
-                        let image_url = required_string(object, "image_url", "input_image")?;
-                        converted.push(json!({
-                            "type": "image_url",
-                            "image_url": {"url": image_url}
-                        }));
+                        if let Some(image_url) = object.get("image_url") {
+                            let image_url = if image_url.is_object() {
+                                image_url.clone()
+                            } else {
+                                json!({ "url": image_url.as_str().unwrap_or_default() })
+                            };
+                            converted.push(json!({
+                                "type": "image_url",
+                                "image_url": image_url
+                            }));
+                        }
                     }
-                    Some(other) => {
-                        return Err(format!("Unsupported Responses content type: {other}"));
-                    }
-                    None => return Err("Responses content part is missing type".to_string()),
+                    Some(_) | None => {}
                 }
             }
             if converted.len() == 1
@@ -948,6 +1302,9 @@ fn convert_message_content(content: &Value) -> Result<Value, String> {
                     .cloned()
                     .unwrap_or_else(|| Value::String(String::new())));
             }
+            if converted.is_empty() {
+                return Ok(Value::String(String::new()));
+            }
             Ok(Value::Array(converted))
         }
         Value::Null => Ok(Value::String(String::new())),
@@ -956,34 +1313,30 @@ fn convert_message_content(content: &Value) -> Result<Value, String> {
 }
 
 fn convert_tools(tools: &Value) -> Result<Value, String> {
-    let tools = tools
-        .as_array()
-        .ok_or_else(|| "Responses tools must be an array".to_string())?;
+    let tools = flatten_responses_function_tools(tools)?;
     let mut converted = Vec::with_capacity(tools.len());
-    for tool in tools {
-        let object = tool
-            .as_object()
-            .ok_or_else(|| "Responses tool entries must be objects".to_string())?;
-        let tool_type = object
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("function");
-        if tool_type != "function" {
-            return Err(format!("Unsupported Responses tool type: {tool_type}"));
-        }
-        let name = required_string(object, "name", "function tool")?;
+    for object in tools {
+        let name = required_string(&object, "name", "function tool")?;
         let mut function = Map::new();
         function.insert("name".to_string(), Value::String(name.to_string()));
         if let Some(description) = object.get("description") {
             function.insert("description".to_string(), description.clone());
         }
-        function.insert(
-            "parameters".to_string(),
-            object
-                .get("parameters")
-                .cloned()
-                .unwrap_or_else(|| json!({"type": "object", "properties": {}})),
-        );
+        let parameters = if object.get("type").and_then(Value::as_str) == Some("custom") {
+            json!({
+                "type": "object",
+                "properties": {
+                    "input": {
+                        "type": "string",
+                        "description": "Raw string input for the original Responses custom tool."
+                    }
+                },
+                "required": ["input"]
+            })
+        } else {
+            response_tool_parameters(&object)
+        };
+        function.insert("parameters".to_string(), parameters);
         if let Some(strict) = object.get("strict") {
             function.insert("strict".to_string(), strict.clone());
         }
@@ -992,17 +1345,32 @@ fn convert_tools(tools: &Value) -> Result<Value, String> {
     Ok(Value::Array(converted))
 }
 
-fn convert_tool_choice(tool_choice: &Value) -> Result<Value, String> {
+fn convert_tool_choice(tool_choice: &Value, has_tools: bool) -> Result<Option<Value>, String> {
     let Some(object) = tool_choice.as_object() else {
-        return Ok(tool_choice.clone());
+        if !has_tools {
+            return Ok(match tool_choice.as_str() {
+                Some("required") => Some(json!("auto")),
+                _ => None,
+            });
+        }
+        return Ok(Some(tool_choice.clone()));
     };
     match object.get("type").and_then(Value::as_str) {
-        Some("function") => {
+        Some("function" | "custom") => {
             let name = required_string(object, "name", "function tool choice")?;
-            Ok(json!({"type": "function", "function": {"name": name}}))
+            if has_tools {
+                Ok(Some(
+                    json!({"type": "function", "function": {"name": name}}),
+                ))
+            } else {
+                Ok(Some(json!("auto")))
+            }
+        }
+        Some(other) if is_responses_builtin_tool_type(other) => {
+            Ok(has_tools.then(|| json!("auto")))
         }
         Some(other) => Err(format!("Unsupported Responses tool choice type: {other}")),
-        None => Ok(tool_choice.clone()),
+        None => Ok(has_tools.then(|| tool_choice.clone())),
     }
 }
 

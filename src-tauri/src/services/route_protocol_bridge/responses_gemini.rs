@@ -2,6 +2,7 @@
 mod tests {
     use super::{gemini_response_to_responses, responses_request_to_gemini};
     use serde_json::Value;
+    use std::collections::BTreeMap;
 
     #[test]
     fn converts_responses_request_to_gemini_generate_content() {
@@ -92,6 +93,7 @@ mod tests {
             200,
             Some("text/event-stream"),
             body.as_bytes(),
+            &BTreeMap::new(),
         )
         .unwrap();
         let output = String::from_utf8(converted.body).unwrap();
@@ -103,6 +105,11 @@ mod tests {
     }
 }
 
+use super::common::{
+    flatten_responses_function_tools, gemini_thinking_config, is_reasoning_input_item,
+    response_tool_name, response_tool_namespace, response_tool_parameters,
+    responses_reasoning_effort, ResponsesToolNamespaces,
+};
 use super::{common::parse_base64_data_url, sse, TransformedBridgeResponse};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -141,8 +148,28 @@ pub(super) fn responses_request_to_gemini(body: &[u8]) -> Result<Vec<u8>, String
             .ok_or_else(|| "generationConfig must be an object".to_string())?
             .insert("temperature".to_string(), temperature.clone());
     }
+    if let Some(thinking_config) = responses_reasoning_effort(object).and_then(|effort| {
+        let model = object
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        gemini_thinking_config(&effort, model)
+    }) {
+        result
+            .entry("generationConfig".to_string())
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| "generationConfig must be an object".to_string())?
+            .insert("thinkingConfig".to_string(), thinking_config);
+    }
     if let Some(tools) = object.get("tools") {
-        result.insert("tools".to_string(), convert_tools(tools)?);
+        let converted_tools = convert_tools(tools)?;
+        if converted_tools
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty())
+        {
+            result.insert("tools".to_string(), converted_tools);
+        }
     }
 
     serde_json::to_vec(&Value::Object(result))
@@ -153,6 +180,7 @@ pub(super) fn gemini_response_to_responses(
     _status: u16,
     content_type: Option<&str>,
     body: &[u8],
+    tool_namespaces: &ResponsesToolNamespaces,
 ) -> Result<TransformedBridgeResponse, String> {
     if !(200..300).contains(&_status) {
         return Ok(TransformedBridgeResponse {
@@ -164,17 +192,20 @@ pub(super) fn gemini_response_to_responses(
         || looks_like_sse(body)
     {
         return Ok(TransformedBridgeResponse {
-            body: gemini_sse_to_responses(body)?,
+            body: gemini_sse_to_responses(body, tool_namespaces)?,
             content_type: Some("text/event-stream".to_string()),
         });
     }
     Ok(TransformedBridgeResponse {
-        body: gemini_json_to_responses(body)?,
+        body: gemini_json_to_responses(body, tool_namespaces)?,
         content_type: Some("application/json".to_string()),
     })
 }
 
-fn gemini_json_to_responses(body: &[u8]) -> Result<Vec<u8>, String> {
+fn gemini_json_to_responses(
+    body: &[u8],
+    tool_namespaces: &ResponsesToolNamespaces,
+) -> Result<Vec<u8>, String> {
     let value = serde_json::from_slice::<Value>(body)
         .map_err(|error| format!("Gemini response JSON is invalid: {error}"))?;
     let response_id = value
@@ -197,7 +228,7 @@ fn gemini_json_to_responses(body: &[u8]) -> Result<Vec<u8>, String> {
         .and_then(|content| content.get("parts"))
         .and_then(Value::as_array)
         .ok_or_else(|| "Gemini response is missing content.parts".to_string())?;
-    let (output, text) = gemini_parts_to_responses_output(response_id, parts)?;
+    let (output, text) = gemini_parts_to_responses_output(response_id, parts, tool_namespaces)?;
     let finish_reason = candidate.get("finishReason").and_then(Value::as_str);
     let response = json!({
         "id": response_id,
@@ -215,7 +246,10 @@ fn gemini_json_to_responses(body: &[u8]) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("Could not serialize Responses response: {error}"))
 }
 
-fn gemini_sse_to_responses(body: &[u8]) -> Result<Vec<u8>, String> {
+fn gemini_sse_to_responses(
+    body: &[u8],
+    tool_namespaces: &ResponsesToolNamespaces,
+) -> Result<Vec<u8>, String> {
     let mut aggregate = GeminiStreamAggregate::default();
     for value in sse::parse_sse_data_records(body)? {
         aggregate.capture_envelope(&value);
@@ -244,6 +278,7 @@ fn gemini_sse_to_responses(body: &[u8]) -> Result<Vec<u8>, String> {
         serde_json::to_vec(&gemini_response)
             .map_err(|error| format!("Could not serialize buffered Gemini response: {error}"))?
             .as_slice(),
+        tool_namespaces,
     )?;
     let response = serde_json::from_slice::<Value>(&responses_json)
         .map_err(|error| format!("Could not parse buffered Responses JSON: {error}"))?;
@@ -260,6 +295,9 @@ fn convert_input(input: &Value) -> Result<Value, String> {
             let mut state = GeminiInputState::default();
             let mut contents = Vec::new();
             for item in items {
+                if is_reasoning_input_item(item) {
+                    continue;
+                }
                 let object = item
                     .as_object()
                     .ok_or_else(|| "Responses input items must be JSON objects".to_string())?;
@@ -299,32 +337,41 @@ fn convert_message(object: &Map<String, Value>) -> Result<Value, String> {
 fn convert_message_content(content: &Value) -> Result<Vec<Value>, String> {
     match content {
         Value::String(text) => Ok(vec![json!({"text": text})]),
-        Value::Array(parts) => parts.iter().map(convert_content_part).collect(),
+        Value::Array(parts) => parts
+            .iter()
+            .map(convert_content_part)
+            .filter_map(|result| match result {
+                Ok(Some(value)) => Some(Ok(value)),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect(),
         Value::Null => Ok(Vec::new()),
         _ => Err("Responses message content must be a string or array".to_string()),
     }
 }
 
-fn convert_content_part(part: &Value) -> Result<Value, String> {
+fn convert_content_part(part: &Value) -> Result<Option<Value>, String> {
     let object = part
         .as_object()
         .ok_or_else(|| "Responses content parts must be objects".to_string())?;
     match object.get("type").and_then(Value::as_str) {
-        Some("input_text" | "output_text" | "text") => {
-            let text = required_string(object, "text", "text content")?;
-            Ok(json!({"text": text}))
-        }
+        Some("input_text" | "output_text" | "text") => Ok(object
+            .get("text")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(|text| json!({"text": text}))),
         Some("input_image") => {
             let image_url = required_string(object, "image_url", "input_image")?;
             let Some((mime_type, data)) = parse_base64_data_url(image_url) else {
                 return Err("Gemini bridge only supports base64 data URL images".to_string());
             };
-            Ok(json!({
+            Ok(Some(json!({
                 "inlineData": {
                     "mimeType": mime_type,
                     "data": data
                 }
-            }))
+            })))
         }
         Some(other) => Err(format!("Unsupported Responses content type: {other}")),
         None => Err("Responses content part is missing type".to_string()),
@@ -363,8 +410,15 @@ fn convert_function_result(
     let name = object
         .get("name")
         .and_then(Value::as_str)
-        .or_else(|| state.function_names.get(call_id).map(|value: &String| value.as_str()))
-        .ok_or_else(|| format!("Gemini bridge cannot resolve function name for call_id `{call_id}`"))?;
+        .or_else(|| {
+            state
+                .function_names
+                .get(call_id)
+                .map(|value: &String| value.as_str())
+        })
+        .ok_or_else(|| {
+            format!("Gemini bridge cannot resolve function name for call_id `{call_id}`")
+        })?;
     let output = object
         .get("output")
         .map(stringify_content)
@@ -382,34 +436,16 @@ fn convert_function_result(
 }
 
 fn convert_tools(tools: &Value) -> Result<Value, String> {
-    let tools = tools
-        .as_array()
-        .ok_or_else(|| "Responses tools must be an array".to_string())?;
+    let tools = flatten_responses_function_tools(tools)?;
     let mut declarations = Vec::with_capacity(tools.len());
-    for tool in tools {
-        let object = tool
-            .as_object()
-            .ok_or_else(|| "Responses tool entries must be objects".to_string())?;
-        let tool_type = object
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("function");
-        if tool_type != "function" {
-            return Err(format!("Unsupported Responses tool type: {tool_type}"));
-        }
-        let name = required_string(object, "name", "function tool")?;
+    for object in tools {
+        let name = required_string(&object, "name", "function tool")?;
         let mut declaration = Map::new();
         declaration.insert("name".to_string(), Value::String(name.to_string()));
         if let Some(description) = object.get("description") {
             declaration.insert("description".to_string(), description.clone());
         }
-        declaration.insert(
-            "parameters".to_string(),
-            object
-                .get("parameters")
-                .cloned()
-                .unwrap_or_else(|| json!({"type": "object", "properties": {}})),
-        );
+        declaration.insert("parameters".to_string(), response_tool_parameters(&object));
         declarations.push(Value::Object(declaration));
     }
     Ok(json!([{"functionDeclarations": declarations}]))
@@ -418,6 +454,7 @@ fn convert_tools(tools: &Value) -> Result<Value, String> {
 fn gemini_parts_to_responses_output(
     response_id: &str,
     parts: &[Value],
+    tool_namespaces: &ResponsesToolNamespaces,
 ) -> Result<(Vec<Value>, String), String> {
     let mut output = Vec::new();
     let mut text = String::new();
@@ -441,19 +478,24 @@ fn gemini_parts_to_responses_output(
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or("tool");
+            let response_name = response_tool_name(name, tool_namespaces);
             let arguments = function_call
                 .get("args")
                 .cloned()
                 .unwrap_or_else(|| Value::Object(Map::new()));
-            output.push(json!({
+            let mut function_call = json!({
                 "id": gemini_call_id(response_id, output.len()),
                 "type": "function_call",
                 "status": "completed",
                 "call_id": gemini_call_id(response_id, output.len()),
-                "name": name,
+                "name": response_name,
                 "arguments": serde_json::to_string(&arguments)
                     .map_err(|error| format!("Could not serialize Gemini function args: {error}"))?
-            }));
+            });
+            if let Some(namespace) = response_tool_namespace(name, tool_namespaces) {
+                function_call["namespace"] = Value::String(namespace.to_string());
+            }
+            output.push(function_call);
             continue;
         }
     }
@@ -584,9 +626,9 @@ impl GeminiStreamAggregate {
                 if !function_entry.is_object() {
                     *function_entry = json!({});
                 }
-                let function_object = function_entry.as_object_mut().ok_or_else(|| {
-                    "Gemini functionCall entry must be an object".to_string()
-                })?;
+                let function_object = function_entry
+                    .as_object_mut()
+                    .ok_or_else(|| "Gemini functionCall entry must be an object".to_string())?;
                 if let Some(name) = function_call.get("name").and_then(Value::as_str) {
                     function_object.insert("name".to_string(), Value::String(name.to_string()));
                 }

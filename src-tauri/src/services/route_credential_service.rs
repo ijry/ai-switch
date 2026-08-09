@@ -1,6 +1,4 @@
-use self::sub2api_import_service::{
-    is_sub2api_shape_error, parse_sub2api_file, parse_sub2api_text,
-};
+use self::sub2api_import_service::{is_sub2api_shape_error, parse_sub2api_text};
 use crate::database::repositories::batch_repository::BatchRepository;
 use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::error::AppError;
@@ -8,24 +6,31 @@ use crate::models::batch::NewBatch;
 use crate::models::platform::{PlatformId, PlatformOperation};
 use crate::models::route_credential::{
     normalize_anthropic_api_key_field, CreateApiRouteCredentialInput, ImportOfficialFilesInput,
-    ImportOfficialTextInput, ModelMapping, RouteCredential, RouteCredentialImportFailure,
-    RouteCredentialImportResult, RouteCredentialPage, RouteCredentialPageRequest,
-    ReorderRouteCredentialInput, UpdateRouteCredentialInput,
+    ImportOfficialTextInput, ModelMapping, ReorderRouteCredentialInput, RouteCredential,
+    RouteCredentialImportFailure, RouteCredentialImportResult, RouteCredentialPage,
+    RouteCredentialPageRequest, UpdateRouteCredentialInput,
 };
-use crate::services::cpa_import_service::{
-    parse_cpa_file, parse_cpa_text, ParsedOfficialCredential,
-};
+use crate::models::route_credential_transfer::TransferPlatformChoice;
+use crate::services::cpa_import_service::{parse_cpa_text, ParsedOfficialCredential};
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_credential_activity::RouteCredentialActivityRegistry;
+use crate::services::route_credential_transfer_import_service::{
+    normalize_transfer_items, NormalizedImportItem,
+};
 use crate::services::route_preview_service::RoutePreviewService;
 use chrono::Utc;
-use serde_json::json;
+use serde_json::{json, Map, Value};
 use sqlx::SqlitePool;
 
 #[path = "sub2api_import_service.rs"]
 mod sub2api_import_service;
 
 pub struct RouteCredentialService;
+
+enum ParsedBatchCredential {
+    Official(ParsedOfficialCredential),
+    Api(NormalizedImportItem),
+}
 
 impl RouteCredentialService {
     pub async fn list(
@@ -66,10 +71,13 @@ impl RouteCredentialService {
     ) -> Result<RouteCredentialPage, AppError> {
         let platform = PlatformId::parse(&request.platform)?;
         PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
-        RouteCredentialRepository::page(pool, RouteCredentialPageRequest {
-            platform: platform.as_str().to_string(),
-            ..request
-        })
+        RouteCredentialRepository::page(
+            pool,
+            RouteCredentialPageRequest {
+                platform: platform.as_str().to_string(),
+                ..request
+            },
+        )
         .await
     }
 
@@ -89,10 +97,13 @@ impl RouteCredentialService {
     ) -> Result<RouteCredentialPage, AppError> {
         let platform = PlatformId::parse(&input.platform)?;
         PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
-        RouteCredentialRepository::reorder(pool, ReorderRouteCredentialInput {
-            platform: platform.as_str().to_string(),
-            ..input
-        })
+        RouteCredentialRepository::reorder(
+            pool,
+            ReorderRouteCredentialInput {
+                platform: platform.as_str().to_string(),
+                ..input
+            },
+        )
         .await
     }
 
@@ -157,31 +168,12 @@ impl RouteCredentialService {
         PlatformCapabilityService::require(platform, PlatformOperation::OfficialImport)?;
         let platform = platform.as_str();
         let batch_id = ensure_required_batch(pool, input.batch_name).await?;
-        let parsed = parse_official_credentials_text(platform, &input.text)?;
+        let parsed = parse_batch_credentials_text(platform, &input.text)?;
         let mut imported = Vec::with_capacity(parsed.len());
 
         for credential in parsed {
-            let preview_json = RoutePreviewService::generate(
-                platform,
-                "official",
-                &credential.secret_payload_json,
-                &credential.config_json,
-            );
-            imported.push(
-                RouteCredentialRepository::create(
-                    pool,
-                    platform,
-                    "official",
-                    &credential.display_name,
-                    credential.email,
-                    "ok",
-                    batch_id.clone(),
-                    &credential.secret_payload_json,
-                    &credential.config_json,
-                    &preview_json,
-                )
-                .await?,
-            );
+            imported
+                .push(create_batch_credential(pool, platform, batch_id.clone(), credential).await?);
         }
 
         Ok(RouteCredentialImportResult {
@@ -203,27 +195,15 @@ impl RouteCredentialService {
 
         for path in input.file_paths {
             match tokio::fs::read_to_string(&path).await {
-                Ok(content) => match parse_official_credentials_file(platform, &path, &content) {
+                Ok(content) => match parse_batch_credentials_file(platform, &path, &content) {
                     Ok(credentials) => {
                         for credential in credentials {
-                            let preview_json = RoutePreviewService::generate(
-                                platform,
-                                "official",
-                                &credential.secret_payload_json,
-                                &credential.config_json,
-                            );
                             imported.push(
-                                RouteCredentialRepository::create(
+                                create_batch_credential(
                                     pool,
                                     platform,
-                                    "official",
-                                    &credential.display_name,
-                                    credential.email,
-                                    "ok",
                                     batch_id.clone(),
-                                    &credential.secret_payload_json,
-                                    &credential.config_json,
-                                    &preview_json,
+                                    credential,
                                 )
                                 .await?,
                             );
@@ -449,15 +429,219 @@ fn parse_official_credentials_text(
     }
 }
 
-fn parse_official_credentials_file(
+fn parse_batch_credentials_text(
+    platform: &str,
+    text: &str,
+) -> Result<Vec<ParsedBatchCredential>, AppError> {
+    let value: Value = serde_json::from_str(text)?;
+    let items = match value {
+        Value::Object(object) if object.contains_key("accounts") => {
+            return parse_official_credentials_text(platform, text).map(|credentials| {
+                credentials
+                    .into_iter()
+                    .map(ParsedBatchCredential::Official)
+                    .collect()
+            });
+        }
+        Value::Object(object) => vec![object],
+        Value::Array(items) => items
+            .into_iter()
+            .map(|item| {
+                item.as_object()
+                    .cloned()
+                    .ok_or_else(|| AppError::Validation {
+                        code: "validation.cpa_entry_object",
+                        message: "CPA array entries must be objects".to_string(),
+                        details: None,
+                        recoverable: true,
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => {
+            return parse_official_credentials_text(platform, text).map(|credentials| {
+                credentials
+                    .into_iter()
+                    .map(ParsedBatchCredential::Official)
+                    .collect()
+            });
+        }
+    };
+
+    let mut parsed = Vec::with_capacity(items.len());
+    for item in items {
+        if is_api_batch_item(&item) {
+            parsed.push(ParsedBatchCredential::Api(normalize_api_batch_item(
+                platform, &item,
+            )?));
+            continue;
+        }
+
+        let item_text = Value::Object(item).to_string();
+        let credentials = parse_official_credentials_text(platform, &item_text)?;
+        parsed.extend(credentials.into_iter().map(ParsedBatchCredential::Official));
+    }
+    Ok(parsed)
+}
+
+fn parse_batch_credentials_file(
     platform: &str,
     path: &str,
     content: &str,
-) -> Result<Vec<ParsedOfficialCredential>, AppError> {
-    match parse_sub2api_file(platform, path, content) {
-        Ok(credentials) => Ok(credentials),
-        Err(err) if is_sub2api_shape_error(&err) => parse_cpa_file(platform, path, content),
-        Err(err) => Err(err),
+) -> Result<Vec<ParsedBatchCredential>, AppError> {
+    parse_batch_credentials_text(platform, content).map_err(|error| match error {
+        AppError::Validation {
+            code,
+            message,
+            details,
+            recoverable,
+        } => AppError::Validation {
+            code,
+            message: format!("{path}: {message}"),
+            details,
+            recoverable,
+        },
+        other => other,
+    })
+}
+
+async fn create_batch_credential(
+    pool: &SqlitePool,
+    platform: &str,
+    batch_id: Option<String>,
+    credential: ParsedBatchCredential,
+) -> Result<RouteCredential, AppError> {
+    let (kind, display_name, email, secret_payload_json, config_json, preview_json) =
+        match credential {
+            ParsedBatchCredential::Official(credential) => {
+                let preview_json = RoutePreviewService::generate(
+                    platform,
+                    "official",
+                    &credential.secret_payload_json,
+                    &credential.config_json,
+                );
+                (
+                    "official",
+                    credential.display_name,
+                    credential.email,
+                    credential.secret_payload_json,
+                    credential.config_json,
+                    preview_json,
+                )
+            }
+            ParsedBatchCredential::Api(credential) => (
+                "api",
+                credential.display_name,
+                credential.email,
+                credential.secret_payload_json,
+                credential.config_json,
+                credential.preview_json,
+            ),
+        };
+
+    RouteCredentialRepository::create(
+        pool,
+        platform,
+        kind,
+        &display_name,
+        email,
+        "ok",
+        batch_id,
+        &secret_payload_json,
+        &config_json,
+        &preview_json,
+    )
+    .await
+}
+
+fn is_api_batch_item(item: &Map<String, Value>) -> bool {
+    if item
+        .get("x-ai-switch")
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get("kind"))
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("api"))
+    {
+        return true;
+    }
+
+    ["api-key", "api_key", "api-key-entries", "api_key_entries"]
+        .iter()
+        .any(|field| item.get(*field).is_some_and(|value| !value.is_null()))
+        || item
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|value| {
+                matches!(
+                    value
+                        .trim()
+                        .to_ascii_lowercase()
+                        .replace([' ', '-'], "_")
+                        .as_str(),
+                    "api"
+                        | "claude_api_key"
+                        | "codex_api_key"
+                        | "gemini_api_key"
+                        | "xai_api_key"
+                        | "openai_compatibility"
+                )
+            })
+}
+
+fn normalize_api_batch_item(
+    platform: &str,
+    item: &Map<String, Value>,
+) -> Result<NormalizedImportItem, AppError> {
+    let text = Value::Array(vec![Value::Object(item.clone())]).to_string();
+    let normalized = normalize_transfer_items(&text, &[])?;
+    let result = normalized.into_iter().next().expect("one transfer item");
+    let result = match result {
+        Ok(item) => Ok(item),
+        Err(issue) if issue.code == "transfer.choice_required" => {
+            let platform_id = PlatformId::parse(platform)?;
+            let interface_format =
+                default_api_interface_format(platform_id).ok_or_else(|| AppError::Validation {
+                    code: "validation.cpa_api_platform_required",
+                    message: "API Key CPA requires an explicit platform and interface format"
+                        .to_string(),
+                    details: None,
+                    recoverable: true,
+                })?;
+            let choice = TransferPlatformChoice {
+                item_index: 0,
+                platform: platform.to_string(),
+                interface_format: Some(interface_format.to_string()),
+            };
+            normalize_transfer_items(&text, &[choice])?
+                .into_iter()
+                .next()
+                .expect("one transfer item")
+        }
+        Err(issue) => Err(issue),
+    };
+    let item = result.map_err(|issue| AppError::Validation {
+        code: "validation.cpa_api_key_invalid",
+        message: "API Key CPA credential is invalid".to_string(),
+        details: Some(issue.code),
+        recoverable: true,
+    })?;
+    if item.platform != platform {
+        return Err(AppError::Validation {
+            code: "validation.cpa_platform_mismatch",
+            message: "CPA credential type does not match the selected platform".to_string(),
+            details: Some(format!("expected {platform}, got {}", item.platform)),
+            recoverable: true,
+        });
+    }
+    Ok(item)
+}
+
+fn default_api_interface_format(platform: PlatformId) -> Option<&'static str> {
+    match platform {
+        PlatformId::Codex => Some("openai-responses"),
+        PlatformId::Claude => Some("anthropic"),
+        PlatformId::Gemini => Some("gemini"),
+        PlatformId::Grok => Some("openai"),
+        _ => None,
     }
 }
 
@@ -637,6 +821,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn batch_import_accepts_mixed_oauth_and_api_key_cpa_items() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let text = r#"[
+          {
+            "type": "codex",
+            "access_token": "oauth-access",
+            "refresh_token": "oauth-refresh"
+          },
+          {
+            "api-key": "sk-exported",
+            "base-url": "https://api.example.invalid/v1",
+            "x-ai-switch": {
+              "format": "ai-switch.route-credential",
+              "schema_version": 1,
+              "platform": "codex",
+              "kind": "api",
+              "cpa_section": "codex-api-key",
+              "display_name": "Exported API",
+              "interface_format": "openai-responses"
+            }
+          },
+          {
+            "type": "codex-api-key",
+            "api_key": "sk-legacy",
+            "base_url": "https://api.example.invalid/v1"
+          }
+        ]"#;
+
+        let result = RouteCredentialService::import_official_text(
+            &pool,
+            ImportOfficialTextInput {
+                platform: "codex".to_string(),
+                text: text.to_string(),
+                batch_name: Some("Mixed CPA".to_string()),
+            },
+        )
+        .await
+        .expect("import");
+
+        assert!(result.failed.is_empty());
+        assert_eq!(result.imported.len(), 3);
+        assert_eq!(
+            result
+                .imported
+                .iter()
+                .map(|credential| credential.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["official", "api", "api"]
+        );
+        assert_eq!(result.imported[1].display_name, "Exported API");
+        assert!(result.imported[1]
+            .secret_payload_json
+            .contains("sk-exported"));
+        assert!(result.imported[2].secret_payload_json.contains("sk-legacy"));
+        assert!(result.imported[1].config_json.contains("openai-responses"));
+        assert!(result
+            .imported
+            .iter()
+            .all(|credential| credential.batch_name.as_deref() == Some("Mixed CPA")));
+    }
+
+    #[tokio::test]
     async fn hermes_official_import_is_rejected_before_creating_a_batch() {
         let pool = crate::database::create_memory_pool().await.expect("pool");
         crate::database::run_migrations(&pool)
@@ -674,10 +923,13 @@ mod tests {
     ) -> Result<RouteCredentialPage, AppError> {
         let platform = PlatformId::parse(&request.platform)?;
         PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
-        RouteCredentialRepository::page(pool, RouteCredentialPageRequest {
-            platform: platform.as_str().to_string(),
-            ..request
-        })
+        RouteCredentialRepository::page(
+            pool,
+            RouteCredentialPageRequest {
+                platform: platform.as_str().to_string(),
+                ..request
+            },
+        )
         .await
     }
 
@@ -687,10 +939,13 @@ mod tests {
     ) -> Result<RouteCredentialPage, AppError> {
         let platform = PlatformId::parse(&input.platform)?;
         PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
-        RouteCredentialRepository::reorder(pool, ReorderRouteCredentialInput {
-            platform: platform.as_str().to_string(),
-            ..input
-        })
+        RouteCredentialRepository::reorder(
+            pool,
+            ReorderRouteCredentialInput {
+                platform: platform.as_str().to_string(),
+                ..input
+            },
+        )
         .await
     }
 

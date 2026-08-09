@@ -148,6 +148,9 @@ mod tests {
         let runtime = DeepLinkProtocolRuntime::with_registrar(registrar.clone());
         runtime.set_ccswitch_enabled(false).unwrap();
         assert!(!runtime.status().ccswitch_registered);
-        assert_eq!(registrar.calls.lock().unwrap().as_slice(), ["unregister:ccswitch"]);
+        assert_eq!(
+            registrar.calls.lock().unwrap().as_slice(),
+            ["unregister:ccswitch"]
+        );
     }
 }

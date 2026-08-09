@@ -8,8 +8,16 @@ export type DisplayModelMapping = {
   oneM: boolean;
 };
 
-const wildcardTooltipText =
-  "模型通配表示默认该账号支持当前智能体的常用基线模型，如支持有限请编辑后指定模型映射列表";
+const baselineModelsByPlatform: Record<string, readonly string[]> = {
+  codex: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
+  claude: ["claude-sonnet-5", "claude-opus-4-8", "claude-fable-5", "claude-haiku-4-5"],
+  gemini: ["gemini-2.5-flash"],
+  grok: ["grok-4.5"],
+};
+
+function baselineModelsForPlatform(platform: string) {
+  return baselineModelsByPlatform[platform.trim().toLowerCase()] ?? [];
+}
 
 function hasOneMSuffix(value: string) {
   return value.toLowerCase().endsWith("[1m]");
@@ -61,7 +69,7 @@ export function ModelMappingSummary({
   const displayMappings = expandDisplayModelMappings(platform, mappings);
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const wildcardTooltipId = useId();
+  const baselineTooltipId = useId();
 
   useEffect(() => {
     if (!open) {
@@ -88,19 +96,23 @@ export function ModelMappingSummary({
   }, [open]);
 
   if (displayMappings.length === 0) {
+    const baselineModels = baselineModelsForPlatform(platform);
+    const baselineTooltipText = baselineModels.length > 0
+      ? "未配置模型映射，仅匹配基线模型：" + baselineModels.join("、")
+      : "未配置模型映射，当前平台暂无预设基线模型";
     return (
       <span
-        aria-describedby={wildcardTooltipId}
+        aria-describedby={baselineTooltipId}
         className="group relative inline-flex rounded-full bg-stone-100 px-2 py-0.5 text-[11px] font-semibold text-stone-600 outline-none focus:ring-2 focus:ring-stone-300"
         tabIndex={0}
       >
-        <span>模型通配</span>
+        <span>基线模型</span>
         <span
           className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden w-64 max-w-[calc(100vw-2rem)] whitespace-normal break-words rounded-lg border border-stone-200 bg-stone-900 px-3 py-2 text-left text-[11px] font-medium leading-5 text-white shadow-xl group-hover:block group-focus-within:block"
-          id={wildcardTooltipId}
+          id={baselineTooltipId}
           role="tooltip"
         >
-          {wildcardTooltipText}
+          {baselineTooltipText}
         </span>
       </span>
     );

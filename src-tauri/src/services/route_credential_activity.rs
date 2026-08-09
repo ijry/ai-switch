@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 pub const ROUTE_CREDENTIAL_ACTIVITY_EVENT: &str = "route-credential-activity";
+pub const ROUTE_CREDENTIAL_STATUS_EVENT: &str = "route-credential-status";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteCredentialActivityEvent {
@@ -11,6 +12,12 @@ pub struct RouteCredentialActivityEvent {
     pub credential_id: String,
     pub active_request_count: i64,
     pub max_concurrency: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteCredentialStatusEvent {
+    pub platform: String,
+    pub credential_id: String,
 }
 
 #[derive(Clone, Default)]
@@ -82,6 +89,24 @@ impl RouteCredentialActivityRegistry {
             .unwrap_or(0)
     }
 
+    pub fn notify_status_change(&self, platform: &str, credential_id: &str) {
+        let emitter = self
+            .inner
+            .lock()
+            .expect("route credential activity lock")
+            .emitter
+            .clone();
+        if let Some(emitter) = emitter {
+            emitter.emit(
+                ROUTE_CREDENTIAL_STATUS_EVENT,
+                &RouteCredentialStatusEvent {
+                    platform: platform.to_string(),
+                    credential_id: credential_id.to_string(),
+                },
+            );
+        }
+    }
+
     fn release(&self, credential_id: &str) {
         let event = {
             let mut state = self.inner.lock().expect("route credential activity lock");
@@ -136,13 +161,13 @@ fn emit_activity_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::web::event_bridge::WebEventBroadcaster;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn enforces_concurrency_and_releases_on_drop() {
         let registry = RouteCredentialActivityRegistry::default();
-        let first = registry
-            .try_acquire("codex", "credential-a", 1)
-            .await;
+        let first = registry.try_acquire("codex", "credential-a", 1).await;
         assert!(first.is_some());
         assert!(registry
             .try_acquire("codex", "credential-a", 1)
@@ -187,5 +212,20 @@ mod tests {
             .is_none());
         drop(second);
         assert_eq!(registry.snapshot("credential-a"), 0);
+    }
+
+    #[test]
+    fn emits_status_change_events() {
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut receiver = broadcaster.subscribe();
+        let registry = RouteCredentialActivityRegistry::default();
+
+        registry.set_emitter(EventEmitter::Web(broadcaster));
+        registry.notify_status_change("codex", "credential-a");
+
+        let event = receiver.try_recv().expect("status event");
+        assert_eq!(event.channel, ROUTE_CREDENTIAL_STATUS_EVENT);
+        assert_eq!(event.payload["platform"], "codex");
+        assert_eq!(event.payload["credential_id"], "credential-a");
     }
 }

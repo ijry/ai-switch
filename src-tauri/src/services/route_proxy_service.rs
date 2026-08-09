@@ -15,16 +15,16 @@ use crate::services::official_agent_identity_service::{
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::response_failure_service::detect_response_failed;
-use crate::services::route_credential_activity::RouteCredentialActivityRegistry;
 use crate::services::route_config_service::generate_route_proxy_key;
+use crate::services::route_credential_activity::RouteCredentialActivityRegistry;
+use crate::services::route_model_capability::{
+    advertised_model_ids, codex_reasoning_metadata, parse_model_capability,
+    parse_model_capability_value, requested_model_from_body, supports_requested_model,
+};
 use crate::services::route_protocol_bridge::{
     prepare_request as prepare_protocol_bridge_request,
-    transform_response as transform_protocol_bridge_response, PreparedBridgeRequest,
-    ProtocolBridgeKind,
-};
-use crate::services::route_model_capability::{
-    advertised_model_ids, parse_model_capability, parse_model_capability_value,
-    requested_model_from_body, supports_requested_model,
+    transform_response_with_tool_namespaces as transform_protocol_bridge_response,
+    PreparedBridgeRequest, ProtocolBridgeKind,
 };
 use axum::body::Body;
 use axum::extract::State as AxumState;
@@ -64,6 +64,7 @@ pub const ROUTE_PROXY_TRACE_HEADER: &str = "x-ai-switch-test-trace-id";
 const ROUTE_PROXY_CORS_ALLOW_METHODS: &str = "GET, POST, PUT, PATCH, DELETE, OPTIONS";
 const ROUTE_PROXY_CORS_DEFAULT_ALLOW_HEADERS: &str =
     "Authorization, Content-Type, X-API-Key, API-Key, X-Google-API-Key, X-AI-Switch-Platform, X-AI-Switch-Test-Trace-Id, Accept";
+const ROUTE_PROXY_RESPONSE_BODY_LIMIT: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteProxyStatus {
@@ -123,6 +124,7 @@ pub(crate) struct BuiltUpstreamRequest {
     pub(crate) headers: HeaderMap,
     pub(crate) body: Vec<u8>,
     pub(crate) bridge_kind: Option<ProtocolBridgeKind>,
+    pub(crate) tool_namespaces: BTreeMap<String, String>,
 }
 
 impl RouteProxyKeyCache {
@@ -455,7 +457,11 @@ async fn forward_request(
             .await
             .map_err(|err| err.to_string())?;
         let credentials = filter_credentials_for_rule(credentials, &routing_rule);
-        return Ok(json_models_list_response(&platform, &credentials));
+        return Ok(json_models_list_response(
+            &platform,
+            &credentials,
+            query.as_deref(),
+        ));
     }
 
     let body_bytes = axum::body::to_bytes(body, 32 * 1024 * 1024)
@@ -469,7 +475,8 @@ async fn forward_request(
     if credentials.is_empty() {
         return Err("No enabled route credentials in pool".to_string());
     }
-    let credentials = filter_credentials_for_model(credentials, requested_model.as_deref());
+    let credentials =
+        filter_credentials_for_model(&platform, credentials, requested_model.as_deref());
     if credentials.is_empty() {
         let model = requested_model.as_deref().unwrap_or("unknown");
         return Err(format!(
@@ -510,37 +517,50 @@ async fn forward_request(
             continue;
         };
         acquired_any = true;
-        let credential = match maybe_refresh_official_credential(pool, selected).await {
-            Ok(credential) => credential,
-            Err(error) => {
-                if matches!(
-                    classify_proxy_failure(None, Some(&error)),
-                    ProxyFailureKind::Transient
-                ) {
-                    record_route_credential_failure(pool, &selected.id, "refresh", &error, None).await;
+        let credential =
+            match maybe_refresh_official_credential(pool, selected, Some(&state.activity)).await {
+                Ok(credential) => credential,
+                Err(error) => {
+                    if matches!(
+                        classify_proxy_failure(None, Some(&error)),
+                        ProxyFailureKind::Transient
+                    ) {
+                        record_route_credential_failure(
+                            &state.activity,
+                            &platform,
+                            pool,
+                            &selected.id,
+                            "refresh",
+                            &error,
+                            None,
+                        )
+                        .await;
+                    }
+                    let metadata = route_proxy_request_metadata(
+                        &platform,
+                        selected,
+                        &path,
+                        None,
+                        None,
+                        false,
+                        trace_id.as_deref(),
+                        request_start,
+                        Some(&error),
+                        requested_model.as_deref(),
+                        None,
+                        None,
+                    );
+                    let _ = insert_route_credential_request_event(
+                        pool,
+                        &selected.id,
+                        &metadata,
+                        &RouteUsageBreakdown::default(),
+                    )
+                    .await;
+                    retry_errors.push(format!("{}: {error}", selected.display_name));
+                    continue;
                 }
-                let metadata = route_proxy_request_metadata(
-                    &platform,
-                    selected,
-                    &path,
-                    None,
-                    None,
-                    false,
-                    trace_id.as_deref(),
-                    request_start,
-                    Some(&error),
-                );
-                let _ = insert_route_credential_request_event(
-                    pool,
-                    &selected.id,
-                    &metadata,
-                    &RouteUsageBreakdown::default(),
-                )
-                .await;
-                retry_errors.push(format!("{}: {error}", selected.display_name));
-                continue;
-            }
-        };
+            };
         let upstream_request = build_upstream_request_internal(
             &credential,
             &platform,
@@ -554,11 +574,20 @@ async fn forward_request(
             headers: request_headers,
             body: outbound_body,
             bridge_kind,
+            tool_namespaces,
         } = match upstream_request {
             Ok(request) => request,
             Err(error) => {
-                record_route_credential_failure(pool, &credential.id, "request_build", &error, None)
-                    .await;
+                record_route_credential_failure(
+                    &state.activity,
+                    &platform,
+                    pool,
+                    &credential.id,
+                    "request_build",
+                    &error,
+                    None,
+                )
+                .await;
                 let metadata = route_proxy_request_metadata(
                     &platform,
                     &credential,
@@ -569,6 +598,9 @@ async fn forward_request(
                     trace_id.as_deref(),
                     request_start,
                     Some(&error),
+                    requested_model.as_deref(),
+                    None,
+                    None,
                 );
                 let _ = insert_route_credential_request_event(
                     pool,
@@ -581,6 +613,7 @@ async fn forward_request(
                 continue;
             }
         };
+        let upstream_model = requested_model_from_body(&outbound_body);
         let upstream = client
             .request(request_method.clone(), &target_url)
             .headers(map_to_reqwest_headers(&request_headers))
@@ -595,8 +628,16 @@ async fn forward_request(
                     "{}: upstream request failed: {error}",
                     credential.display_name
                 );
-                record_route_credential_failure(pool, &credential.id, "transport", &error_message, None)
-                    .await;
+                record_route_credential_failure(
+                    &state.activity,
+                    &platform,
+                    pool,
+                    &credential.id,
+                    "transport",
+                    &error_message,
+                    None,
+                )
+                .await;
                 let metadata = route_proxy_request_metadata(
                     &platform,
                     &credential,
@@ -607,6 +648,9 @@ async fn forward_request(
                     trace_id.as_deref(),
                     request_start,
                     Some(&error_message),
+                    requested_model.as_deref(),
+                    upstream_model.as_deref(),
+                    None,
                 );
                 let _ = insert_route_credential_request_event(
                     pool,
@@ -629,8 +673,16 @@ async fn forward_request(
                     "{}: could not read upstream response: {error}",
                     credential.display_name
                 );
-                record_route_credential_failure(pool, &credential.id, "transport", &error_message, None)
-                    .await;
+                record_route_credential_failure(
+                    &state.activity,
+                    &platform,
+                    pool,
+                    &credential.id,
+                    "transport",
+                    &error_message,
+                    None,
+                )
+                .await;
                 let metadata = route_proxy_request_metadata(
                     &platform,
                     &credential,
@@ -641,6 +693,9 @@ async fn forward_request(
                     trace_id.as_deref(),
                     request_start,
                     Some(&error_message),
+                    requested_model.as_deref(),
+                    upstream_model.as_deref(),
+                    None,
                 );
                 let _ = insert_route_credential_request_event(
                     pool,
@@ -662,6 +717,7 @@ async fn forward_request(
                 status.as_u16(),
                 content_type,
                 &response_bytes,
+                &tool_namespaces,
             ) {
                 Ok(response) => response,
                 Err(error) => {
@@ -670,6 +726,8 @@ async fn forward_request(
                         credential.display_name
                     );
                     record_route_credential_failure(
+                        &state.activity,
+                        &platform,
                         pool,
                         &credential.id,
                         "response_transform",
@@ -687,6 +745,9 @@ async fn forward_request(
                         trace_id.as_deref(),
                         request_start,
                         Some(&error_message),
+                        requested_model.as_deref(),
+                        upstream_model.as_deref(),
+                        Some(&response_bytes),
                     );
                     let _ = insert_route_credential_request_event(
                         pool,
@@ -749,6 +810,9 @@ async fn forward_request(
             trace_id.as_deref(),
             request_start,
             retry_error.as_deref(),
+            requested_model.as_deref(),
+            upstream_model.as_deref(),
+            (!proxy_success).then_some(response_bytes.as_ref()),
         );
         let usage = extract_usage_breakdown(&response_bytes);
         let _ =
@@ -765,22 +829,31 @@ async fn forward_request(
             continue;
         }
         if let Some(failure) = semantic_failure {
-            let _ = RouteCredentialRepository::record_semantic_failure(
+            if RouteCredentialRepository::record_semantic_failure(
                 pool,
                 &credential.id,
                 &failure.message,
                 Some(&response_bytes),
             )
-            .await;
+            .await
+            .is_ok()
+            {
+                state
+                    .activity
+                    .notify_status_change(&platform, &credential.id);
+            }
             retry_errors.push(format!("{}: {}", credential.display_name, failure.message));
             continue;
         }
         if should_retry {
             let error_message = format!("upstream returned {}", status.as_u16());
             if matches!(failure_kind, ProxyFailureKind::Permanent) {
-                mark_route_credential_revoked(pool, &credential.id).await;
+                mark_route_credential_revoked(&state.activity, &platform, pool, &credential.id)
+                    .await;
             } else {
                 record_route_credential_failure(
+                    &state.activity,
+                    &platform,
                     pool,
                     &credential.id,
                     "upstream_status",
@@ -797,7 +870,14 @@ async fn forward_request(
             continue;
         }
 
-        let _ = RouteCredentialRepository::clear_transient_failure(pool, &credential.id).await;
+        if RouteCredentialRepository::clear_transient_failure(pool, &credential.id)
+            .await
+            .is_ok()
+        {
+            state
+                .activity
+                .notify_status_change(&platform, &credential.id);
+        }
         return proxy_upstream_response(status, upstream_headers, response_bytes.to_vec());
     }
 
@@ -874,8 +954,11 @@ fn route_proxy_request_metadata(
     trace_id: Option<&str>,
     started_at: Instant,
     error_message: Option<&str>,
+    requested_model: Option<&str>,
+    upstream_model: Option<&str>,
+    response_body: Option<&[u8]>,
 ) -> String {
-    serde_json::json!({
+    let mut metadata = serde_json::json!({
         "platform": platform,
         "route_credential_id": credential.id,
         "route_credential_name": credential.display_name,
@@ -887,8 +970,35 @@ fn route_proxy_request_metadata(
         "duration_ms": elapsed_millis(started_at),
         "trace_id": trace_id,
         "error_message": error_message,
-    })
-    .to_string()
+    });
+    if let Some(object) = metadata.as_object_mut() {
+        if let Some(model) = requested_model
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            object.insert("requested_model".to_string(), json!(model));
+        }
+        if let Some(model) = upstream_model
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            object.insert("upstream_model".to_string(), json!(model));
+        }
+        if let Some(response_body) = route_proxy_response_body_metadata(response_body) {
+            object.insert("response_body".to_string(), json!(response_body));
+        }
+    }
+    metadata.to_string()
+}
+
+fn route_proxy_response_body_metadata(response_body: Option<&[u8]>) -> Option<String> {
+    let body = response_body?;
+    if body.is_empty() {
+        return None;
+    }
+    let truncated_body = &body[..body.len().min(ROUTE_PROXY_RESPONSE_BODY_LIMIT)];
+    let text = String::from_utf8_lossy(truncated_body).to_string();
+    (!text.trim().is_empty()).then_some(text)
 }
 
 fn elapsed_millis(started_at: Instant) -> i64 {
@@ -975,24 +1085,40 @@ pub fn credential_is_retryable_now(
 }
 
 async fn record_route_credential_failure(
+    activity: &RouteCredentialActivityRegistry,
+    platform: &str,
     pool: &SqlitePool,
     credential_id: &str,
     kind: &str,
     message: &str,
     response_body: Option<&[u8]>,
 ) {
-    let _ = RouteCredentialRepository::record_transient_failure(
+    if RouteCredentialRepository::record_transient_failure(
         pool,
         credential_id,
         kind,
         message,
         response_body,
     )
-    .await;
+    .await
+    .is_ok()
+    {
+        activity.notify_status_change(platform, credential_id);
+    }
 }
 
-async fn mark_route_credential_revoked(pool: &SqlitePool, credential_id: &str) {
-    let _ = RouteCredentialRepository::update_status(pool, credential_id, "revoked").await;
+async fn mark_route_credential_revoked(
+    activity: &RouteCredentialActivityRegistry,
+    platform: &str,
+    pool: &SqlitePool,
+    credential_id: &str,
+) {
+    if RouteCredentialRepository::update_status(pool, credential_id, "revoked")
+        .await
+        .is_ok()
+    {
+        activity.notify_status_change(platform, credential_id);
+    }
 }
 
 fn json_error(status: StatusCode, message: &str) -> Response {
@@ -1277,6 +1403,7 @@ fn filter_credentials_for_rule(
 }
 
 fn filter_credentials_for_model(
+    platform: &str,
     mut credentials: Vec<SelectedCredential>,
     requested_model: Option<&str>,
 ) -> Vec<SelectedCredential> {
@@ -1286,7 +1413,7 @@ fn filter_credentials_for_model(
 
     credentials.retain(|credential| {
         let capability = parse_model_capability(&credential.config_json);
-        supports_requested_model(&capability, Some(requested_model))
+        supports_requested_model(platform, &capability, Some(requested_model))
     });
     credentials
 }
@@ -1551,6 +1678,7 @@ fn build_api_upstream_request(
         upstream_path,
         upstream_query,
         body: rewritten_body,
+        tool_namespaces,
         ..
     } = prepare_protocol_bridge_request(platform, dialect, &upstream_path, &rewritten_body)?;
     let merged_query = merge_query_parts(query, upstream_query.as_deref());
@@ -1589,6 +1717,7 @@ fn build_api_upstream_request(
         headers: headers.clone(),
         body: rewritten_body,
         bridge_kind,
+        tool_namespaces,
     })
 }
 
@@ -1646,6 +1775,7 @@ fn build_official_upstream_request(
         headers: headers.clone(),
         body: body.to_vec(),
         bridge_kind: None,
+        tool_namespaces: BTreeMap::new(),
     })
 }
 
@@ -1778,6 +1908,7 @@ fn access_token_is_expired_with_secret(config: &Value, secret: Option<&Value>) -
 pub async fn maybe_refresh_official_credential(
     pool: &SqlitePool,
     credential: &SelectedCredential,
+    activity: Option<&RouteCredentialActivityRegistry>,
 ) -> Result<SelectedCredential, String> {
     if credential.kind != "official" {
         return Ok(credential.clone());
@@ -1807,7 +1938,22 @@ pub async fn maybe_refresh_official_credential(
             Ok(value) => value,
             Err(err) => {
                 if is_permanent_oauth_refresh_failure(&err) {
-                    mark_route_credential_revoked(pool, &credential.id).await;
+                    if let Some(activity) = activity {
+                        mark_route_credential_revoked(
+                            activity,
+                            &credential.platform,
+                            pool,
+                            &credential.id,
+                        )
+                        .await;
+                    } else {
+                        let _ = RouteCredentialRepository::update_status(
+                            pool,
+                            &credential.id,
+                            "revoked",
+                        )
+                        .await;
+                    }
                 }
                 return Err(format_oauth_refresh_failure(&err));
             }
@@ -2633,12 +2779,27 @@ fn build_models_list_payload(platform: &str, credentials: &[SelectedCredential])
     let data: Vec<Value> = advertised_model_ids(platform, &capabilities)
         .into_iter()
         .map(|id| {
-            json!({
+            let mut model = json!({
                 "id": id,
                 "object": "model",
                 "created": created,
                 "owned_by": "ai-switch",
-            })
+            });
+            if platform.eq_ignore_ascii_case("codex") {
+                let (supported_reasoning_levels, default_reasoning_level) =
+                    codex_reasoning_metadata(&id);
+                if let Some(object) = model.as_object_mut() {
+                    object.insert(
+                        "supported_reasoning_levels".to_string(),
+                        Value::Array(supported_reasoning_levels),
+                    );
+                    object.insert(
+                        "default_reasoning_level".to_string(),
+                        Value::String(default_reasoning_level.to_string()),
+                    );
+                }
+            }
+            model
         })
         .collect();
 
@@ -2648,11 +2809,20 @@ fn build_models_list_payload(platform: &str, credentials: &[SelectedCredential])
     })
 }
 
-fn json_models_list_response(platform: &str, credentials: &[SelectedCredential]) -> Response {
+fn build_route_models_list_payload(platform: &str, credentials: &[SelectedCredential]) -> Value {
+    build_models_list_payload(platform, credentials)
+}
+
+fn json_models_list_response(
+    platform: &str,
+    credentials: &[SelectedCredential],
+    _query: Option<&str>,
+) -> Response {
+    let payload = build_route_models_list_payload(platform, credentials);
     (
         StatusCode::OK,
         [("content-type", "application/json")],
-        build_models_list_payload(platform, credentials).to_string(),
+        payload.to_string(),
     )
         .into_response()
 }
@@ -3193,6 +3363,15 @@ mod tests {
     }
 
     async fn create_proxy_api_credential(pool: &SqlitePool, name: &str, base_url: &str) -> String {
+        create_proxy_api_credential_with_mappings(pool, name, base_url, json!([])).await
+    }
+
+    async fn create_proxy_api_credential_with_mappings(
+        pool: &SqlitePool,
+        name: &str,
+        base_url: &str,
+        model_mappings: Value,
+    ) -> String {
         let credential = RouteCredentialRepository::create(
             pool,
             "codex",
@@ -3205,7 +3384,7 @@ mod tests {
             &json!({
                 "base_url": base_url,
                 "interface_format": "openai",
-                "model_mappings": []
+                "model_mappings": model_mappings
             })
             .to_string(),
             "{}",
@@ -3373,13 +3552,20 @@ mod tests {
         .execute(&pool)
         .await
         .expect("routing settings");
-        RoutePoolRepository::replace_members(&pool, "codex", &[first_id.clone(), second_id.clone()])
-            .await
-            .expect("pool members");
-        let route_key =
-            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test-priority")
-                .await
-                .expect("route key");
+        RoutePoolRepository::replace_members(
+            &pool,
+            "codex",
+            &[first_id.clone(), second_id.clone()],
+        )
+        .await
+        .expect("pool members");
+        let route_key = RouteProxyKeyRepository::ensure_platform_key(
+            &pool,
+            "codex",
+            "sk-ai-switch-test-priority",
+        )
+        .await
+        .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
         let held_lease = runtime
             .activity()
@@ -3399,16 +3585,13 @@ mod tests {
             .post(&endpoint)
             .bearer_auth(&route_key)
             .header(ROUTE_PROXY_PLATFORM_HEADER, "codex")
-            .json(&json!({"model":"gpt-5","messages":[]}))
+            .json(&json!({"model":"gpt-5.5","messages":[]}))
             .send()
             .await
             .expect("fallback response");
         assert_eq!(fallback_response.status(), reqwest::StatusCode::OK);
         assert_eq!(
-            fallback_response
-                .text()
-                .await
-                .expect("fallback body"),
+            fallback_response.text().await.expect("fallback body"),
             r#"{"route":"priority-two"}"#
         );
 
@@ -3417,7 +3600,7 @@ mod tests {
             .post(&endpoint)
             .bearer_auth(&route_key)
             .header(ROUTE_PROXY_PLATFORM_HEADER, "codex")
-            .json(&json!({"model":"gpt-5","messages":[]}))
+            .json(&json!({"model":"gpt-5.5","messages":[]}))
             .send()
             .await
             .expect("primary response");
@@ -3486,7 +3669,13 @@ mod tests {
         let (upstream_url, mut requests) = start_recording_chat_upstream().await;
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
-        let credential_id = create_proxy_api_credential(&pool, "chat-bridge", &upstream_url).await;
+        let credential_id = create_proxy_api_credential_with_mappings(
+            &pool,
+            "chat-bridge",
+            &upstream_url,
+            json!([{"from":"gpt-5","to":"deepseek-chat"}]),
+        )
+        .await;
         RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
             .await
             .expect("pool members");
@@ -3498,7 +3687,7 @@ mod tests {
         .await
         .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool, RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
             .await
             .expect("start proxy");
         let client = reqwest::Client::new();
@@ -3540,7 +3729,22 @@ mod tests {
             captured_json.body["messages"][0],
             json!({"role":"user","content":"hello"})
         );
+        assert_eq!(captured_json.body["model"], "deepseek-chat");
         assert!(captured_json.body.get("input").is_none());
+        let stats = RoutePoolRepository::stats(&pool, "codex", None, 1, 20)
+            .await
+            .expect("route stats");
+        assert_eq!(stats.requests.len(), 1);
+        let metadata: Value =
+            serde_json::from_str(&stats.requests[0].metadata_json).expect("request metadata");
+        assert_eq!(
+            metadata.pointer("/requested_model").and_then(Value::as_str),
+            Some("gpt-5")
+        );
+        assert_eq!(
+            metadata.pointer("/upstream_model").and_then(Value::as_str),
+            Some("deepseek-chat")
+        );
 
         let sse_response = client
             .post(&endpoint)
@@ -3577,7 +3781,9 @@ mod tests {
         use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
         use crate::database::{create_memory_pool, run_migrations};
 
-        let failed_upstream = start_fixed_upstream(StatusCode::UNAUTHORIZED, "expired").await;
+        let failed_response_body = r#"{"error":{"message":"expired"}}"#;
+        let failed_upstream =
+            start_fixed_upstream(StatusCode::UNAUTHORIZED, failed_response_body).await;
         let healthy_upstream = start_fixed_upstream(
             StatusCode::OK,
             r#"{"usage":{"prompt_tokens":120,"completion_tokens":30,"prompt_cache_hit_tokens":80,"price_cny":7.1}}"#,
@@ -3609,7 +3815,7 @@ mod tests {
                 proxy.base_url.as_deref().expect("base url")
             ))
             .bearer_auth(route_key)
-            .json(&json!({"model":"gpt-5","messages":[]}))
+            .json(&json!({"model":"gpt-5.5","messages":[]}))
             .send()
             .await
             .expect("proxy response");
@@ -3654,6 +3860,22 @@ mod tests {
             .iter()
             .find(|request| request.account_id.as_deref() == Some(healthy_id.as_str()))
             .expect("healthy request row");
+        let failed_request = stats
+            .requests
+            .iter()
+            .find(|request| request.account_id.as_deref() == Some(failed_id.as_str()))
+            .expect("failed request row");
+        let healthy_metadata: Value =
+            serde_json::from_str(&healthy_request.metadata_json).expect("healthy metadata");
+        let failed_metadata: Value =
+            serde_json::from_str(&failed_request.metadata_json).expect("failed metadata");
+        assert_eq!(
+            failed_metadata
+                .pointer("/response_body")
+                .and_then(Value::as_str),
+            Some(failed_response_body)
+        );
+        assert!(healthy_metadata.pointer("/response_body").is_none());
         assert_eq!(healthy_request.input_tokens, Some(120));
         assert_eq!(healthy_request.output_tokens, Some(30));
         assert_eq!(healthy_request.cache_tokens, Some(80));
@@ -3856,9 +4078,18 @@ mod tests {
         fallback.route_priority = 2;
         let credentials = vec![first, second, fallback];
 
-        assert_eq!(credential_indexes_by_priority(&credentials, 0), vec![0, 1, 2]);
-        assert_eq!(credential_indexes_by_priority(&credentials, 1), vec![1, 0, 2]);
-        assert_eq!(credential_indexes_by_priority(&credentials, 2), vec![0, 1, 2]);
+        assert_eq!(
+            credential_indexes_by_priority(&credentials, 0),
+            vec![0, 1, 2]
+        );
+        assert_eq!(
+            credential_indexes_by_priority(&credentials, 1),
+            vec![1, 0, 2]
+        );
+        assert_eq!(
+            credential_indexes_by_priority(&credentials, 2),
+            vec![0, 1, 2]
+        );
     }
 
     #[test]
@@ -5312,7 +5543,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_credentials_for_model_keeps_wildcard_and_matching_mappings_only() {
+    fn filter_credentials_for_model_keeps_baseline_and_matching_mappings_only() {
         let wildcard = api_credential_with_config("wildcard", r#"{"model_mappings":[]}"#);
         let sol = api_credential_with_config(
             "sol",
@@ -5324,6 +5555,7 @@ mod tests {
         );
 
         let selected = filter_credentials_for_model(
+            "codex",
             vec![wildcard.clone(), sol.clone(), luna],
             Some("gpt-5.6-sol"),
         );
@@ -5335,6 +5567,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["wildcard", "sol"]
         );
+
+        let selected = filter_credentials_for_model(
+            "codex",
+            vec![wildcard, sol],
+            Some("deepseek-v4-flash-0731"),
+        );
+        assert!(selected.is_empty());
     }
 
     #[tokio::test]
@@ -5374,12 +5613,7 @@ mod tests {
 
         assert_eq!(
             models,
-            vec![
-                "gpt-5.6-sol",
-                "gpt-5.6-terra",
-                "gpt-5.6-luna",
-                "gpt-5.5"
-            ]
+            vec!["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
         );
     }
 
@@ -5468,7 +5702,7 @@ mod tests {
         })
         .to_string();
 
-        let payload = build_models_list_payload("codex", &[credential]);
+        let payload = build_route_models_list_payload("codex", &[credential]);
         assert_eq!(payload.get("object").and_then(Value::as_str), Some("list"));
         let data = payload.get("data").and_then(Value::as_array).expect("data");
         assert_eq!(data.len(), 2);
@@ -5478,9 +5712,59 @@ mod tests {
             data[0].get("owned_by").and_then(Value::as_str),
             Some("ai-switch")
         );
+        assert_eq!(
+            data[0]["supported_reasoning_levels"]
+                .as_array()
+                .expect("reasoning levels")
+                .iter()
+                .filter_map(|level| level.get("effort").and_then(Value::as_str))
+                .collect::<Vec<_>>(),
+            vec!["low", "medium", "high", "xhigh"]
+        );
+        assert_eq!(data[0]["default_reasoning_level"].as_str(), Some("medium"));
         assert_eq!(data[1].get("id").and_then(Value::as_str), Some("gpt-5"));
+        assert!(payload.get("models").is_none());
 
-        let response = json_models_list_response("codex", &[]);
+        let response = json_models_list_response("codex", &[], None);
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn codex_catalog_payload_is_separate_from_models_endpoint() {
+        let mut credential = api_credential("first", "openai");
+        credential.config_json = serde_json::json!({
+            "model_mappings": [{"from":"gpt-5.6-sol","to":"sol-upstream"}]
+        })
+        .to_string();
+
+        let capability = parse_model_capability(&credential.config_json);
+        let payload =
+            crate::services::route_model_capability::codex_model_catalog_payload(&[capability]);
+        let models = payload
+            .get("models")
+            .and_then(Value::as_array)
+            .expect("codex models");
+        assert_eq!(models.len(), 1);
+        assert_eq!(
+            models[0].get("slug").and_then(Value::as_str),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(
+            models[0].get("display_name").and_then(Value::as_str),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(
+            models[0].get("visibility").and_then(Value::as_str),
+            Some("list")
+        );
+        assert_eq!(
+            models[0].get("supported_in_api").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(payload.get("object").is_none());
+        assert!(payload.get("data").is_none());
+        assert!(build_route_models_list_payload("codex", &[credential])
+            .get("models")
+            .is_none());
     }
 }

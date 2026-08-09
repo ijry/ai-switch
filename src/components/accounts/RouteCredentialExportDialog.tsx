@@ -11,6 +11,7 @@ import {
   exportRouteCredentials,
   saveRouteCredentialExport,
 } from "../../lib/api/client";
+import { useI18n } from "../../lib/i18n";
 import type {
   RouteCredentialExportResult,
   RouteCredentialSelectionContext,
@@ -41,8 +42,8 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function issueLabel(issue: RouteCredentialTransferIssue): string {
-  return issue.display_name?.trim() || `Selected item ${(issue.item_index ?? 0) + 1}`;
+function issueLabel(issue: RouteCredentialTransferIssue, t: ReturnType<typeof useI18n>["t"]): string {
+  return issue.display_name?.trim() || t("routeExport.selectedItem", { number: (issue.item_index ?? 0) + 1 });
 }
 
 export function RouteCredentialExportDialog({
@@ -51,6 +52,7 @@ export function RouteCredentialExportDialog({
   credential_ids,
   onClose,
 }: RouteCredentialExportDialogProps) {
+  const { t } = useI18n();
   const [selectionSnapshot, setSelectionSnapshot] = useState<SelectionSnapshot | null>(null);
   const [includeEnhancedMetadata, setIncludeEnhancedMetadata] = useState(true);
   const [activeTab, setActiveTab] = useState<ExportTab>("json");
@@ -229,7 +231,7 @@ export function RouteCredentialExportDialog({
     setActionStatus(null);
     try {
       await copySensitiveText(result.json_text);
-      setActionStatus("Migration JSON copied.");
+      setActionStatus(t("routeExport.copyJsonStatus"));
     } catch (error) {
       setActionError(errorMessage(error));
     } finally {
@@ -251,10 +253,10 @@ export function RouteCredentialExportDialog({
           suggested_file_name: result.suggested_file_name,
           json_text: result.json_text,
         });
-        setActionStatus(saveResult.cancelled ? "Save cancelled." : "Export saved.");
+        setActionStatus(saveResult.cancelled ? t("routeExport.saveCancelled") : t("routeExport.exportSaved"));
       } else {
         downloadRouteCredentialJson(result.json_text, result.suggested_file_name);
-        setActionStatus("Download started.");
+        setActionStatus(t("routeExport.downloadStarted"));
       }
     } catch (error) {
       setActionError(errorMessage(error));
@@ -265,7 +267,7 @@ export function RouteCredentialExportDialog({
 
   async function handleCopySchemeLink(url: string) {
     const confirmed = window.confirm(
-      "This scheme URL contains an API key. Copy it to the system clipboard?",
+      t("routeExport.schemeConfirm"),
     );
     if (!confirmed) {
       return;
@@ -276,7 +278,7 @@ export function RouteCredentialExportDialog({
     setActionStatus(null);
     try {
       await copySensitiveText(url);
-      setActionStatus("Scheme URL copied.");
+      setActionStatus(t("routeExport.schemeCopied"));
     } catch (error) {
       setActionError(errorMessage(error));
     } finally {
@@ -328,18 +330,22 @@ export function RouteCredentialExportDialog({
         <header className="flex items-start justify-between gap-4 border-b border-stone-200 px-5 py-4">
           <div className="min-w-0">
             <h2 id="route-credential-export-title" className="text-base font-semibold text-stone-950">
-              Export route credentials
+              {t("routeExport.title")}
             </h2>
             <p className="mt-1 text-xs text-stone-500">
-              {displayedCredentialCount} selected · {displayedSelectionContext.platform} · {displayedSelectionContext.pool_scope}
+              {t("routeExport.selectedSummary", {
+                count: displayedCredentialCount,
+                platform: displayedSelectionContext.platform,
+                scope: displayedSelectionContext.pool_scope,
+              })}
             </p>
           </div>
           <button
             ref={closeButtonRef}
-            aria-label="Close export dialog"
+            aria-label={t("routeExport.closeAria")}
             className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             onClick={handleClose}
-            title="Close"
+            title={t("routeExport.close")}
             type="button"
           >
             <X aria-hidden="true" className="h-4 w-4" />
@@ -350,17 +356,17 @@ export function RouteCredentialExportDialog({
           <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-950">
             <AlertTriangle aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
             <p>
-              This export contains credentials. Store it securely and remove copies you no longer need.
+              {t("routeExport.securityNotice")}
             </p>
           </div>
 
           <label className="flex cursor-pointer items-center justify-between gap-4 rounded-md border border-stone-200 px-3 py-2.5">
             <span>
-              <span className="block text-sm font-medium text-stone-900">Include enhanced metadata</span>
-              <span className="block text-xs text-stone-500">Adds display, batch, pool, and recovery metadata.</span>
+              <span className="block text-sm font-medium text-stone-900">{t("routeExport.includeMetadata")}</span>
+              <span className="block text-xs text-stone-500">{t("routeExport.metadataHelp")}</span>
             </span>
             <input
-              aria-label="Include enhanced metadata"
+              aria-label={t("routeExport.includeMetadata")}
               checked={includeEnhancedMetadata}
               className="h-4 w-4 accent-stone-900"
               disabled={loading}
@@ -371,7 +377,7 @@ export function RouteCredentialExportDialog({
 
           {loading || !selectionSnapshot ? (
             <div aria-live="polite" className="rounded-md border border-stone-200 bg-stone-50 px-3 py-4 text-sm text-stone-600">
-              Generating export...
+              {t("routeExport.generating")}
             </div>
           ) : null}
 
@@ -384,24 +390,24 @@ export function RouteCredentialExportDialog({
           {result ? (
             <>
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-stone-600">
-                <span>{result.counts.total} total</span>
-                <span>{result.counts.official} official</span>
-                <span>{result.counts.api} API</span>
+                <span>{t("routeExport.total", { count: result.counts.total })}</span>
+                <span>{t("routeExport.official", { count: result.counts.official })}</span>
+                <span>{t("routeExport.api", { count: result.counts.api })}</span>
                 {!hasBlockingErrors ? (
                   <span className="inline-flex items-center gap-1 font-medium text-emerald-700">
                     <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5" />
-                    Export generated
+                    {t("routeExport.generated")}
                   </span>
                 ) : null}
               </div>
 
               {result.errors.length ? (
-                <section aria-label="Export errors" className="rounded-md border border-red-200 bg-red-50 px-3 py-2.5">
-                  <h3 className="text-xs font-semibold uppercase text-red-800">Blocking errors</h3>
+                <section aria-label={t("routeExport.errorsAria")} className="rounded-md border border-red-200 bg-red-50 px-3 py-2.5">
+                  <h3 className="text-xs font-semibold uppercase text-red-800">{t("routeExport.blockingErrors")}</h3>
                   <ul className="mt-1.5 space-y-1 text-xs text-red-800">
                     {result.errors.map((issue, index) => (
                       <li key={`${issue.code}-${issue.item_index ?? index}`}>
-                        <span className="font-medium">{issueLabel(issue)}</span>: {" "}
+                        <span className="font-medium">{issueLabel(issue, t)}</span>: {" "}
                         <code>{issue.code}</code>
                       </li>
                     ))}
@@ -410,12 +416,12 @@ export function RouteCredentialExportDialog({
               ) : null}
 
               {result.warnings.length ? (
-                <section aria-label="Export warnings" className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5">
-                  <h3 className="text-xs font-semibold uppercase text-amber-900">Warnings</h3>
+                <section aria-label={t("routeExport.warningsAria")} className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5">
+                  <h3 className="text-xs font-semibold uppercase text-amber-900">{t("routeExport.warnings")}</h3>
                   <ul className="mt-1.5 space-y-1 text-xs text-amber-900">
                     {result.warnings.map((issue, index) => (
                       <li key={`${issue.code}-${issue.item_index ?? index}`}>
-                        <span className="font-medium">{issueLabel(issue)}</span>: {" "}
+                        <span className="font-medium">{issueLabel(issue, t)}</span>: {" "}
                         <code>{issue.code}</code>
                       </li>
                     ))}
@@ -424,7 +430,7 @@ export function RouteCredentialExportDialog({
               ) : null}
 
               <div className="flex min-h-0 flex-1 flex-col">
-                <div aria-label="Export formats" className="flex w-fit rounded-md bg-stone-100 p-1" role="tablist">
+                <div aria-label={t("routeExport.formatsAria")} className="flex w-fit rounded-md bg-stone-100 p-1" role="tablist">
                   <button
                     ref={jsonTabRef}
                     aria-controls="route-export-json-panel"
@@ -439,7 +445,7 @@ export function RouteCredentialExportDialog({
                     tabIndex={activeTab === "json" ? 0 : -1}
                     type="button"
                   >
-                    Migration JSON
+                    {t("routeExport.jsonTab")}
                   </button>
                   <button
                     ref={linksTabRef}
@@ -455,7 +461,7 @@ export function RouteCredentialExportDialog({
                     tabIndex={activeTab === "links" ? 0 : -1}
                     type="button"
                   >
-                    Scheme links
+                    {t("routeExport.linksTab")}
                   </button>
                 </div>
 
@@ -467,7 +473,7 @@ export function RouteCredentialExportDialog({
                     role="tabpanel"
                   >
                     <pre className="whitespace-pre-wrap break-all font-mono text-xs leading-5 text-stone-100">
-                      {result.json_text ?? "Migration JSON is unavailable because the export is blocked."}
+                      {result.json_text ?? t("routeExport.jsonUnavailable")}
                     </pre>
                   </div>
                 ) : (
@@ -479,7 +485,7 @@ export function RouteCredentialExportDialog({
                   >
                     <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-xs leading-5 text-red-800">
                       <AlertTriangle aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
-                      <p>Copying scheme URLs places API keys on the system clipboard.</p>
+                      <p>{t("routeExport.linksSecurityNotice")}</p>
                     </div>
                     {result.scheme_links.length ? (
                       <ul className="space-y-2">
@@ -491,15 +497,15 @@ export function RouteCredentialExportDialog({
                                 {link.url ? (
                                   <p className="mt-1 break-all font-mono text-xs leading-5 text-stone-600">{link.url}</p>
                                 ) : (
-                                  <p className="mt-1 text-xs text-amber-800">{link.issue_code ?? "Scheme URL unavailable"}</p>
+                                  <p className="mt-1 text-xs text-amber-800">{link.issue_code ?? t("routeExport.schemeUnavailable")}</p>
                                 )}
                               </div>
                               <button
-                                aria-label={`Copy scheme URL for ${link.display_name}`}
+                                aria-label={t("routeExport.copySchemeAria", { name: link.display_name })}
                                 className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-stone-200 text-stone-600 transition-colors hover:bg-stone-100 hover:text-stone-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
                                 disabled={!link.url || sensitiveActionsDisabled}
                                 onClick={() => link.url && void handleCopySchemeLink(link.url)}
-                                title="Copy scheme URL"
+                                title={t("routeExport.copySchemeTitle")}
                                 type="button"
                               >
                                 <Clipboard aria-hidden="true" className="h-4 w-4" />
@@ -510,7 +516,7 @@ export function RouteCredentialExportDialog({
                       </ul>
                     ) : (
                       <p className="rounded-md border border-stone-200 bg-stone-50 px-3 py-4 text-sm text-stone-600">
-                        No scheme links are available for this export.
+                        {t("routeExport.noSchemeLinks")}
                       </p>
                     )}
                   </div>
@@ -525,10 +531,10 @@ export function RouteCredentialExportDialog({
 
         <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-stone-200 px-5 py-3">
           <Button type="button" variant="secondary" onClick={handleClose}>
-            Close
+            {t("routeExport.close")}
           </Button>
           <Button
-            aria-label="Copy migration JSON"
+            aria-label={t("routeExport.copyJsonAria")}
             className="inline-flex items-center gap-1.5"
             disabled={sensitiveActionsDisabled}
             onClick={() => void handleCopyJson()}
@@ -536,17 +542,17 @@ export function RouteCredentialExportDialog({
             variant="secondary"
           >
             <Clipboard aria-hidden="true" className="h-4 w-4" />
-            Copy JSON
+            {t("routeExport.copyJson")}
           </Button>
           <Button
-            aria-label={desktop ? "Save JSON" : "Download JSON"}
+            aria-label={desktop ? t("routeExport.saveJson") : t("routeExport.downloadJson")}
             className="inline-flex items-center gap-1.5"
             disabled={sensitiveActionsDisabled}
             onClick={() => void handleSaveJson()}
             type="button"
           >
             {desktop ? <Save aria-hidden="true" className="h-4 w-4" /> : <Download aria-hidden="true" className="h-4 w-4" />}
-            {desktop ? "Save JSON" : "Download JSON"}
+            {desktop ? t("routeExport.saveJson") : t("routeExport.downloadJson")}
           </Button>
         </footer>
       </div>

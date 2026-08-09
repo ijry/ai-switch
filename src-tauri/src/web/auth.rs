@@ -39,9 +39,7 @@ pub fn is_query_token_authorized(query: Option<&str>, token: &str) -> bool {
         .unwrap_or_default()
         .split('&')
         .filter_map(|part| part.split_once('='))
-        .any(|(key, value)| {
-            key == "token" && constant_time_eq(value.as_bytes(), token.as_bytes())
-        })
+        .any(|(key, value)| key == "token" && constant_time_eq(value.as_bytes(), token.as_bytes()))
 }
 
 pub async fn authorize_api_request(

@@ -38,8 +38,13 @@ export async function fetchRouteProxyModels(
     throw new Error(message || `模型列表请求失败（HTTP ${response.status}）。`);
   }
 
-  const data = asRecord(payload)?.data;
-  if (!Array.isArray(data)) {
+  const payloadRecord = asRecord(payload);
+  const data = Array.isArray(payloadRecord?.data)
+    ? payloadRecord.data
+    : Array.isArray(payloadRecord?.models)
+      ? payloadRecord.models
+      : null;
+  if (!data) {
     throw new Error("模型列表响应格式无效。");
   }
 
@@ -49,13 +54,47 @@ export async function fetchRouteProxyModels(
       if (!record) {
         return null;
       }
-      const id = typeof record.id === "string" ? record.id.trim() : "";
+      const id = typeof record.id === "string"
+        ? record.id.trim()
+        : typeof record.slug === "string"
+          ? record.slug.trim()
+          : "";
       if (!id) {
         return null;
       }
+      const supportedReasoningLevels = Array.isArray(record.supported_reasoning_levels)
+        ? record.supported_reasoning_levels
+            .map((item) => {
+              if (typeof item === "string") {
+                const effort = item.trim();
+                return effort ? { effort } : null;
+              }
+              const level = asRecord(item);
+              const effort = typeof level?.effort === "string" ? level.effort.trim() : "";
+              return effort
+                ? {
+                    effort,
+                    ...(typeof level?.description === "string"
+                      ? { description: level.description }
+                      : {}),
+                  }
+                : null;
+            })
+            .filter(
+              (level): level is NonNullable<typeof level> => level !== null,
+            )
+        : [];
+      const defaultReasoningLevel =
+        typeof record.default_reasoning_level === "string"
+          ? record.default_reasoning_level.trim()
+          : "";
       return {
         id,
         owned_by: typeof record.owned_by === "string" ? record.owned_by : null,
+        ...(supportedReasoningLevels.length > 0
+          ? { supported_reasoning_levels: supportedReasoningLevels }
+          : {}),
+        ...(defaultReasoningLevel ? { default_reasoning_level: defaultReasoningLevel } : {}),
       };
     })
     .filter((model): model is FetchedRouteModel => model !== null);

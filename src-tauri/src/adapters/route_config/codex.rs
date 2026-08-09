@@ -8,6 +8,12 @@ use toml_edit::{value, Document, Item, Table};
 
 pub(super) struct CodexAdapter;
 
+pub(crate) const CODEX_MODEL_CATALOG_FILENAME: &str = "ai-switch-model-catalog.json";
+
+pub(crate) fn codex_model_catalog_path(home: &Path) -> PathBuf {
+    home.join(".codex").join(CODEX_MODEL_CATALOG_FILENAME)
+}
+
 impl TargetAdapter for CodexAdapter {
     fn target_key(&self) -> &'static str {
         "codex"
@@ -81,6 +87,7 @@ fn apply_managed_config(
     input: &RouteConfigInput,
 ) -> Result<(), AppError> {
     document["model_provider"] = value("ai-switch");
+    document["model_catalog_json"] = value(CODEX_MODEL_CATALOG_FILENAME);
     if document.get("model_providers").is_none() {
         document["model_providers"] = Item::Table(Table::new());
     }

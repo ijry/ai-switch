@@ -43,6 +43,7 @@ import type {
   RouteCredentialActivityEvent,
   RoutePoolModelTestOutcome,
   RoutePoolStats,
+  RoutePoolUsageLog,
 } from "../src/lib/api/types";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -78,6 +79,7 @@ vi.mock("../src/lib/api/client", () => ({
 
 const transportTestState = vi.hoisted(() => ({
   activityHandler: null as ((payload: unknown) => void) | null,
+  statusHandler: null as ((payload: unknown) => void) | null,
   subscribe: vi.fn(),
 }));
 
@@ -261,11 +263,15 @@ describe("AccountsScreen", () => {
     vi.mocked(restoreRouteCredentials).mockReset();
     vi.mocked(routePoolTestModel).mockReset();
     transportTestState.activityHandler = null;
+    transportTestState.statusHandler = null;
     transportTestState.subscribe.mockReset();
     transportTestState.subscribe.mockImplementation(
       async (event: string, handler: (payload: unknown) => void) => {
         if (event === "route-credential-activity") {
           transportTestState.activityHandler = handler;
+        }
+        if (event === "route-credential-status") {
+          transportTestState.statusHandler = handler;
         }
         return () => undefined;
       },
@@ -523,8 +529,9 @@ describe("AccountsScreen", () => {
     expect(screen.getByText(/成功率 66\.7%/)).toBeInTheDocument();
     expect(screen.getByText("暂无请求")).toBeInTheDocument();
     expect(screen.queryByText("team@example.com ·", { exact: false })).not.toBeInTheDocument();
-    expect(screen.getByText("批量 · Codex Batch")).toBeInTheDocument();
-    expect(screen.getByText("批量 Codex Batch")).toBeInTheDocument();
+    expect(screen.getByText(/批量 Codex Batch/)).toBeInTheDocument();
+    expect(screen.getAllByText("P3-")).toHaveLength(2);
+    expect(screen.queryByText("并发 1")).not.toBeInTheDocument();
 
     expect(screen.queryByLabelText("导出选中账号")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("批量加入算力池")).not.toBeInTheDocument();
@@ -588,8 +595,8 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     expect(await screen.findByText("Team Account")).toBeInTheDocument();
-    expect(screen.getAllByText("P3")).toHaveLength(2);
-    expect(screen.getAllByText("并发 2")).toHaveLength(1);
+    expect(screen.getAllByText("P3-")).toHaveLength(2);
+    expect(screen.queryByText("并发 2")).not.toBeInTheDocument();
     expect(screen.queryByTestId("credential-activity-cred-official-1")).not.toBeInTheDocument();
 
     const event: RouteCredentialActivityEvent = {
@@ -612,6 +619,29 @@ describe("AccountsScreen", () => {
     await waitFor(() =>
       expect(screen.queryByTestId("credential-activity-cred-official-1")).not.toBeInTheDocument(),
     );
+  });
+
+  it("refreshes account and pool caches after a route credential status event", async () => {
+    renderScreen();
+
+    await screen.findByText("Team Account");
+    await waitFor(() => expect(transportTestState.statusHandler).not.toBeNull());
+    const pageCallCount = vi.mocked(listRouteCredentialPage).mock.calls.length;
+    const allCredentialsCallCount = vi.mocked(listRouteCredentials).mock.calls.length;
+    const poolCallCount = vi.mocked(getRoutePool).mock.calls.length;
+
+    act(() => {
+      transportTestState.statusHandler?.({
+        platform: "codex",
+        credential_id: "cred-official-1",
+      });
+    });
+
+    await waitFor(() => {
+      expect(vi.mocked(listRouteCredentialPage).mock.calls.length).toBeGreaterThan(pageCallCount);
+      expect(vi.mocked(listRouteCredentials).mock.calls.length).toBeGreaterThan(allCredentialsCallCount);
+      expect(vi.mocked(getRoutePool).mock.calls.length).toBeGreaterThan(poolCallCount);
+    });
   });
 
   it("shows account model mapping tags and the complete mapping popover", async () => {
@@ -656,8 +686,25 @@ describe("AccountsScreen", () => {
       base_url: "http://127.0.0.1:43111",
     });
     vi.mocked(fetchRouteProxyModels).mockResolvedValue([
-      { id: "gpt-5.6-sol", owned_by: "ai-switch" },
-      { id: "gpt-5.6-terra", owned_by: "ai-switch" },
+      {
+        id: "gpt-5.6-sol",
+        owned_by: "ai-switch",
+        supported_reasoning_levels: [
+          { effort: "low", description: "Fast" },
+          { effort: "medium", description: "Balanced" },
+          { effort: "high", description: "Deep" },
+        ],
+        default_reasoning_level: "low",
+      },
+      {
+        id: "gpt-5.6-terra",
+        owned_by: "ai-switch",
+        supported_reasoning_levels: [
+          { effort: "low", description: "Fast" },
+          { effort: "medium", description: "Balanced" },
+        ],
+        default_reasoning_level: "medium",
+      },
     ]);
 
     renderScreen("codex", "in_pool");
@@ -670,6 +717,8 @@ describe("AccountsScreen", () => {
     expect(within(dialog).getByText("gpt-5.6-sol")).toBeInTheDocument();
     expect(within(dialog).getByText("gpt-5.6-terra")).toBeInTheDocument();
     expect(within(dialog).getByText("映射的上游模型：sol-upstream")).toBeInTheDocument();
+    expect(within(dialog).getByText("推理等级：low、medium、high · 默认 low")).toBeInTheDocument();
+    expect(within(dialog).getByText("推理等级：low、medium · 默认 medium")).toBeInTheDocument();
     expect(fetchRouteProxyModels).toHaveBeenCalledWith(
       "http://127.0.0.1:43111",
       "sk-ai-switch-codex-key",
@@ -1713,8 +1762,86 @@ describe("AccountsScreen", () => {
     expectedMonthStart.setHours(0, 0, 0, 0);
     expectedMonthStart.setDate(1);
 
-    vi.mocked(getRoutePool).mockImplementation(
-      async (platform, since, requestPage = 1, requestPageSize = 20) => ({
+    vi.mocked(getRoutePool).mockImplementation(async (platform, since, requestPage = 1, requestPageSize = 20) => {
+      const requests: RoutePoolUsageLog[] =
+        requestPage === 2
+          ? [
+              {
+                id: "request-page-2",
+                account_id: "cred-api-1",
+                account_name: "API Account",
+                source_label: "route_proxy",
+                metric_type: "request",
+                amount: 1,
+                unit: "count",
+                input_tokens: 50,
+                output_tokens: 10,
+                cache_tokens: 5,
+                price_usd_micros: null,
+                price_cny_micros: null,
+                price_currency: null,
+                metadata_json: JSON.stringify({
+                  requested_model: "gpt-5",
+                  upstream_model: "gpt-5",
+                  path: "/chat/completions",
+                  status: 401,
+                  success: false,
+                  error_message: "upstream returned 401",
+                  response_body: "{\"error\":{\"message\":\"expired\"}}",
+                }),
+                created_at: "2026-07-17T08:02:00Z",
+              },
+            ]
+          : [
+              {
+                id: "request-success",
+                account_id: "cred-official-1",
+                account_name: "Team Account",
+                source_label: "route_proxy",
+                metric_type: "request",
+                amount: 1,
+                unit: "count",
+                input_tokens: 120,
+                output_tokens: 30,
+                cache_tokens: 80,
+                price_usd_micros: null,
+                price_cny_micros: 7_100_000,
+                price_currency: "cny",
+                metadata_json: JSON.stringify({
+                  source: "ui_model_connectivity_test",
+                  request_kind: "model_connectivity",
+                  platform: "codex",
+                  route_credential_id: "cred-official-1",
+                  route_credential_name: "Team Account",
+                  interface_format: "openai",
+                  requested_model: "gpt-5.6-sol",
+                  upstream_model: "sol-upstream",
+                  path: "/chat/completions",
+                  status: 200,
+                  success: true,
+                  duration_ms: 321,
+                  request_body_json:
+                    "{\"model\":\"gpt-5\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: ai-switch-ok\"}]}",
+                  response_body: "{\"choices\":[{\"message\":{\"content\":\"ai-switch-ok\"}}]}",
+                  response_text: "ai-switch-ok",
+                  error_message: null,
+                }),
+                created_at: "2026-07-17T08:00:00Z",
+              },
+              {
+                id: "request-invalid-metadata",
+                account_id: "cred-api-1",
+                account_name: "Broken Metadata Account",
+                source_label: "route_proxy",
+                metric_type: "request",
+                amount: 1,
+                unit: "count",
+                metadata_json: "{bad json",
+                created_at: "2026-07-17T08:01:00Z",
+              },
+            ];
+
+      return {
         platform,
         account_ids: ["cred-official-1"],
         stats: statsFixture({
@@ -1728,55 +1855,10 @@ describe("AccountsScreen", () => {
           request_row_count: 42,
           request_page: requestPage ?? 1,
           request_page_size: requestPageSize ?? 20,
-          requests: [
-            {
-              id: "request-success",
-              account_id: "cred-official-1",
-              account_name: "Team Account",
-              source_label: "route_proxy",
-              metric_type: "request",
-              amount: 1,
-              unit: "count",
-              input_tokens: 120,
-              output_tokens: 30,
-              cache_tokens: 80,
-              price_usd_micros: null,
-              price_cny_micros: 7_100_000,
-              price_currency: "cny",
-              metadata_json: JSON.stringify({
-                source: "ui_model_connectivity_test",
-                request_kind: "model_connectivity",
-                platform: "codex",
-                route_credential_id: "cred-official-1",
-                route_credential_name: "Team Account",
-                interface_format: "openai",
-                path: "/chat/completions",
-                status: 200,
-                success: true,
-                duration_ms: 321,
-                request_body_json:
-                  "{\"model\":\"gpt-5\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: ai-switch-ok\"}]}",
-                response_body: "{\"choices\":[{\"message\":{\"content\":\"ai-switch-ok\"}}]}",
-                response_text: "ai-switch-ok",
-                error_message: null,
-              }),
-              created_at: "2026-07-17T08:00:00Z",
-            },
-            {
-              id: "request-invalid-metadata",
-              account_id: "cred-api-1",
-              account_name: "Broken Metadata Account",
-              source_label: "route_proxy",
-              metric_type: "request",
-              amount: 1,
-              unit: "count",
-              metadata_json: "{bad json",
-              created_at: "2026-07-17T08:01:00Z",
-            },
-          ],
+          requests,
         }),
-      }),
-    );
+      };
+    });
 
     renderScreen();
 
@@ -1800,7 +1882,7 @@ describe("AccountsScreen", () => {
 
     const invalidMetadataRow = screen.getByText("Broken Metadata Account").closest("[data-route-request-row]");
     expect(invalidMetadataRow).not.toBeNull();
-    expect(within(invalidMetadataRow as HTMLElement).getAllByText("-")).toHaveLength(6);
+    expect(within(invalidMetadataRow as HTMLElement).getAllByText("-")).toHaveLength(5);
 
     expect(screen.getByText("输入 Token")).toBeInTheDocument();
     expect(screen.getByText("输出 Token")).toBeInTheDocument();
@@ -1811,6 +1893,10 @@ describe("AccountsScreen", () => {
     expect(screen.getAllByText("120").length).toBeGreaterThan(0);
     expect(screen.getAllByText("30").length).toBeGreaterThan(0);
     expect(screen.getAllByText("80").length).toBeGreaterThan(0);
+    expect(screen.getByText("gpt-5.6-sol->sol-upstream")).toBeInTheDocument();
+    expect(
+      screen.getByTitle("输入 Token：120；输出 Token：30；缓存 Token：80"),
+    ).toBeInTheDocument();
     const successRow = screen.getByText("Team Account").closest("[data-route-request-row]");
     expect(successRow).not.toBeNull();
     expect((successRow as HTMLElement).firstElementChild).toHaveClass(
@@ -1835,7 +1921,7 @@ describe("AccountsScreen", () => {
     expect(within(successDetail).getByText(/model_connectivity/)).toBeInTheDocument();
     expect(within(successDetail).getByText(/request_body_json/)).toBeInTheDocument();
     expect(within(successDetail).getByText(/response_body/)).toBeInTheDocument();
-    expect(within(successDetail).getByText(/ai-switch-ok/)).toBeInTheDocument();
+    expect(within(successDetail).getAllByText(/ai-switch-ok/).length).toBeGreaterThan(0);
 
     await userEvent.click(screen.getByLabelText("查看请求 request-invalid-metadata 详情"));
 
@@ -1853,6 +1939,15 @@ describe("AccountsScreen", () => {
         20,
       ),
     );
+    expect(await screen.findByText("请求 2/3")).toBeInTheDocument();
+    const pageTwoDetailButton = await screen.findByLabelText("查看请求 request-page-2 详情");
+    expect(pageTwoDetailButton).toBeInTheDocument();
+    await userEvent.click(pageTwoDetailButton);
+    expect(await screen.findByText("request-page-2")).toBeInTheDocument();
+    const failedDetail = await screen.findByLabelText("请求 request-page-2 详情");
+    expect(within(failedDetail).getByText("上游原始响应")).toBeInTheDocument();
+    expect(within(failedDetail).getByText(/"message": "expired"/)).toBeInTheDocument();
+    expect(screen.queryByText("request-success")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "本月" }));
 

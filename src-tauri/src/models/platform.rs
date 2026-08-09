@@ -263,7 +263,10 @@ mod tests {
             ApiDialect::parse("openai-responses").unwrap(),
             ApiDialect::OpenAiResponses
         );
-        assert_eq!(ApiDialect::parse("anthropic").unwrap(), ApiDialect::Anthropic);
+        assert_eq!(
+            ApiDialect::parse("anthropic").unwrap(),
+            ApiDialect::Anthropic
+        );
         let legacy_dash = ["anthropic", "messages"].join("-");
         let legacy_underscore = ["anthropic", "messages"].join("_");
         assert!(ApiDialect::parse(&legacy_dash).is_err());

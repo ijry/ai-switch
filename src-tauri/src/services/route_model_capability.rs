@@ -1,5 +1,5 @@
 use crate::models::route_credential::ModelMapping;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7,15 +7,123 @@ pub(crate) struct ModelCapability {
     pub(crate) mappings: Vec<ModelMapping>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CodexReasoningProfile {
+    pub(crate) levels: &'static [&'static str],
+    pub(crate) default_level: &'static str,
+}
+
+const SOL_REASONING_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
+const TERRA_REASONING_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
+const LUNA_REASONING_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+const GPT_55_REASONING_LEVELS: &[&str] = &["low", "medium", "high", "xhigh"];
+const DEFAULT_REASONING_LEVELS: &[&str] = &["low", "medium", "high"];
+
+pub(crate) fn codex_reasoning_profile(model: &str) -> CodexReasoningProfile {
+    match model.trim().to_ascii_lowercase().as_str() {
+        "gpt-5.6-sol" => CodexReasoningProfile {
+            levels: SOL_REASONING_LEVELS,
+            default_level: "low",
+        },
+        "gpt-5.6-terra" => CodexReasoningProfile {
+            levels: TERRA_REASONING_LEVELS,
+            default_level: "medium",
+        },
+        "gpt-5.6-luna" => CodexReasoningProfile {
+            levels: LUNA_REASONING_LEVELS,
+            default_level: "medium",
+        },
+        "gpt-5.5" => CodexReasoningProfile {
+            levels: GPT_55_REASONING_LEVELS,
+            default_level: "medium",
+        },
+        _ => CodexReasoningProfile {
+            levels: DEFAULT_REASONING_LEVELS,
+            default_level: "medium",
+        },
+    }
+}
+
+pub(crate) fn codex_reasoning_metadata(model: &str) -> (Vec<Value>, &'static str) {
+    let profile = codex_reasoning_profile(model);
+    let levels = profile
+        .levels
+        .iter()
+        .map(|effort| {
+            json!({
+                "effort": effort,
+                "description": codex_reasoning_description(effort),
+            })
+        })
+        .collect();
+    (levels, profile.default_level)
+}
+
+pub(crate) fn codex_model_catalog_payload(capabilities: &[ModelCapability]) -> Value {
+    let model_ids = advertised_model_ids("codex", capabilities);
+    let models = model_ids
+        .into_iter()
+        .enumerate()
+        .map(|(index, id)| {
+            let (supported_reasoning_levels, default_reasoning_level) =
+                codex_reasoning_metadata(&id);
+            json!({
+                "additional_speed_tiers": [],
+                "availability_nux": null,
+                "base_instructions": "You are Codex, a coding agent. You and the user share the same workspace and collaborate to achieve the user's goals.",
+                "context_window": 128000,
+                "default_reasoning_level": default_reasoning_level,
+                "default_reasoning_summary": "none",
+                "description": id,
+                "display_name": id,
+                "effective_context_window_percent": 95,
+                "experimental_supported_tools": [],
+                "input_modalities": ["text", "image"],
+                "max_context_window": 128000,
+                "priority": index as i32 + 1,
+                "service_tiers": [],
+                "shell_type": "shell_command",
+                "slug": id,
+                "support_verbosity": false,
+                "supported_in_api": true,
+                "supported_reasoning_levels": supported_reasoning_levels,
+                "supports_image_detail_original": false,
+                "supports_parallel_tool_calls": false,
+                "supports_reasoning_summaries": true,
+                "supports_search_tool": false,
+                "truncation_policy": { "mode": "bytes", "limit": 10000 },
+                "upgrade": null,
+                "visibility": "list"
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({ "models": models })
+}
+
+fn codex_reasoning_description(effort: &str) -> &'static str {
+    match effort {
+        "low" => "Fast responses with lighter reasoning",
+        "medium" => "Balances speed and reasoning depth for everyday tasks",
+        "high" => "Greater reasoning depth for complex problems",
+        "xhigh" => "Extra high reasoning depth for complex problems",
+        "max" => "Maximum reasoning depth for the hardest problems",
+        "ultra" => "Maximum reasoning with automatic task delegation",
+        _ => "Reasoning effort",
+    }
+}
+
 pub(crate) fn requested_model_from_body(body: &[u8]) -> Option<String> {
-    serde_json::from_slice::<Value>(body).ok().and_then(|value| {
-        value
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|model| !model.is_empty())
-            .map(str::to_string)
-    })
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(str::to_string)
+        })
 }
 
 pub(crate) fn parse_model_capability(config_json: &str) -> ModelCapability {
@@ -44,19 +152,27 @@ pub(crate) fn parse_model_capability_value(config: &Value) -> ModelCapability {
 }
 
 pub(crate) fn supports_requested_model(
+    platform: &str,
     capability: &ModelCapability,
     requested_model: Option<&str>,
 ) -> bool {
-    let Some(requested_model) = requested_model.map(str::trim).filter(|model| !model.is_empty())
+    let Some(requested_model) = requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
     else {
         return true;
     };
 
-    capability.mappings.is_empty()
-        || capability
-            .mappings
+    if capability.mappings.is_empty() {
+        return default_client_models(platform)
             .iter()
-            .any(|mapping| model_mapping_matches(&mapping.from, requested_model))
+            .any(|model| model.eq_ignore_ascii_case(requested_model));
+    }
+
+    capability
+        .mappings
+        .iter()
+        .any(|mapping| model_mapping_matches(&mapping.from, requested_model))
 }
 
 pub(crate) fn advertised_model_ids(
@@ -168,9 +284,29 @@ fn is_claude_route_model(model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        advertised_model_ids, parse_model_capability, requested_model_from_body,
-        supports_requested_model,
+        advertised_model_ids, codex_reasoning_profile, parse_model_capability,
+        requested_model_from_body, supports_requested_model,
     };
+
+    #[test]
+    fn codex_baseline_models_use_distinct_reasoning_profiles() {
+        let sol = codex_reasoning_profile("gpt-5.6-sol");
+        assert_eq!(sol.default_level, "low");
+        assert_eq!(
+            sol.levels,
+            &["low", "medium", "high", "xhigh", "max", "ultra"]
+        );
+
+        let terra = codex_reasoning_profile("gpt-5.6-terra");
+        assert_eq!(terra.default_level, "medium");
+        assert_eq!(terra.levels, sol.levels);
+
+        let luna = codex_reasoning_profile("gpt-5.6-luna");
+        assert_eq!(luna.levels, &["low", "medium", "high", "xhigh", "max"]);
+
+        let gpt_55 = codex_reasoning_profile("gpt-5.5");
+        assert_eq!(gpt_55.levels, &["low", "medium", "high", "xhigh"]);
+    }
 
     #[test]
     fn requested_model_reads_only_a_non_empty_top_level_model() {
@@ -178,7 +314,10 @@ mod tests {
             requested_model_from_body(br#"{"model":"gpt-5.6-sol","input":"hi"}"#),
             Some("gpt-5.6-sol".to_string())
         );
-        assert_eq!(requested_model_from_body(br#"{"nested":{"model":"gpt-5"}}"#), None);
+        assert_eq!(
+            requested_model_from_body(br#"{"nested":{"model":"gpt-5"}}"#),
+            None
+        );
         assert_eq!(requested_model_from_body(br#"{"model":""}"#), None);
         assert_eq!(requested_model_from_body(b"not-json"), None);
     }
@@ -190,10 +329,27 @@ mod tests {
             r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"sol-upstream"}]}"#,
         );
 
-        assert!(supports_requested_model(&wildcard, Some("gpt-5.6-luna")));
-        assert!(supports_requested_model(&limited, Some("gpt-5.6-sol")));
-        assert!(!supports_requested_model(&limited, Some("gpt-5.6-luna")));
-        assert!(supports_requested_model(&limited, None));
+        assert!(supports_requested_model(
+            "codex",
+            &wildcard,
+            Some("gpt-5.6-luna")
+        ));
+        assert!(!supports_requested_model(
+            "codex",
+            &wildcard,
+            Some("deepseek")
+        ));
+        assert!(supports_requested_model(
+            "codex",
+            &limited,
+            Some("gpt-5.6-sol")
+        ));
+        assert!(!supports_requested_model(
+            "codex",
+            &limited,
+            Some("gpt-5.6-luna")
+        ));
+        assert!(supports_requested_model("codex", &limited, None));
     }
 
     #[test]
@@ -216,7 +372,10 @@ mod tests {
                 "custom"
             ]
         );
-        assert_eq!(advertised_model_ids("codex", &[limited]), vec!["gpt-5.6-sol"]);
+        assert_eq!(
+            advertised_model_ids("codex", &[limited]),
+            vec!["gpt-5.6-sol"]
+        );
     }
 
     #[test]

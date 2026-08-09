@@ -65,18 +65,20 @@ impl RouteProxyHttpsService {
         }
 
         let contents = tokio::fs::read_to_string(&paths.route_proxy_https_config_file).await?;
-        let raw: serde_json::Value = serde_json::from_str(&contents).map_err(|error| AppError::Validation {
-            code: "validation.route_proxy_https_config",
-            message: "Local route proxy HTTPS configuration is invalid".to_string(),
-            details: Some(error.to_string()),
-            recoverable: true,
-        })?;
-        let mut config: RouteProxyHttpsConfig = serde_json::from_value(raw.clone()).map_err(|error| AppError::Validation {
-            code: "validation.route_proxy_https_config",
-            message: "Local route proxy HTTPS configuration is invalid".to_string(),
-            details: Some(error.to_string()),
-            recoverable: true,
-        })?;
+        let raw: serde_json::Value =
+            serde_json::from_str(&contents).map_err(|error| AppError::Validation {
+                code: "validation.route_proxy_https_config",
+                message: "Local route proxy HTTPS configuration is invalid".to_string(),
+                details: Some(error.to_string()),
+                recoverable: true,
+            })?;
+        let mut config: RouteProxyHttpsConfig =
+            serde_json::from_value(raw.clone()).map_err(|error| AppError::Validation {
+                code: "validation.route_proxy_https_config",
+                message: "Local route proxy HTTPS configuration is invalid".to_string(),
+                details: Some(error.to_string()),
+                recoverable: true,
+            })?;
         // Older versions only persisted the HTTPS flag. Preserve their active
         // proxy intent on the first restart while allowing an explicit stop to
         // persist `autoStart: false` going forward.
@@ -1204,7 +1206,8 @@ mod tests {
                 paths: AppPaths::from_data_dir(temp.path().join("app-data")),
                 pool,
                 config_writes: ConfigWriteRuntimeState::default(),
-                deeplink_protocols: crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime::default(),
+                deeplink_protocols:
+                    crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime::default(),
                 route_proxy: RouteProxyRuntimeState::default(),
                 web_service: WebServiceRuntimeState::default(),
                 tailscale: TailscaleRuntimeState::default(),
@@ -1221,12 +1224,9 @@ mod tests {
         let paths = AppPaths::from_data_dir(temp.path().join("app-data"));
         paths.ensure().await.expect("paths");
 
-        tokio::fs::write(
-            &paths.route_proxy_https_config_file,
-            r#"{"enabled":true}"#,
-        )
-        .await
-        .expect("legacy config");
+        tokio::fs::write(&paths.route_proxy_https_config_file, r#"{"enabled":true}"#)
+            .await
+            .expect("legacy config");
         let migrated = RouteProxyHttpsService::load_config(&paths)
             .await
             .expect("load legacy config");
@@ -1347,8 +1347,8 @@ mod tests {
                 auto_start: false,
             },
         )
-            .await
-            .expect("save");
+        .await
+        .expect("save");
 
         let error = RouteProxyHttpsService::delete_material(&paths)
             .await
@@ -1362,8 +1362,8 @@ mod tests {
                 auto_start: false,
             },
         )
-            .await
-            .expect("save disabled");
+        .await
+        .expect("save disabled");
         RouteProxyHttpsService::delete_material(&paths)
             .await
             .expect("delete material");

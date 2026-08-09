@@ -5,13 +5,16 @@ mod common;
 mod responses_chat;
 mod responses_claude;
 mod responses_gemini;
+mod responses_responses;
 mod sse;
 
 use crate::models::platform::{ApiDialect, PlatformId};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolBridgeKind {
     ResponsesToChat,
+    ResponsesToResponses,
     ResponsesToAnthropic,
     ResponsesToGemini,
     ClaudeToChat,
@@ -26,6 +29,7 @@ pub struct PreparedBridgeRequest {
     pub upstream_query: Option<String>,
     pub body: Vec<u8>,
     pub streaming: bool,
+    pub tool_namespaces: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,14 +57,23 @@ pub fn prepare_request(
                 upstream_query: None,
                 body: responses_chat::responses_request_to_chat(body)?,
                 streaming,
+                tool_namespaces: common::responses_tool_namespaces_from_body(body)?,
             }),
-            ApiDialect::OpenAiResponses => Ok(passthrough_request("/responses", body, streaming)),
+            ApiDialect::OpenAiResponses => Ok(PreparedBridgeRequest {
+                kind: Some(ProtocolBridgeKind::ResponsesToResponses),
+                upstream_path: "/responses".to_string(),
+                upstream_query: None,
+                body: responses_responses::responses_request_to_responses(body)?,
+                streaming,
+                tool_namespaces: common::responses_tool_namespaces_from_body(body)?,
+            }),
             ApiDialect::Anthropic => Ok(PreparedBridgeRequest {
                 kind: Some(ProtocolBridgeKind::ResponsesToAnthropic),
                 upstream_path: "/v1/messages".to_string(),
                 upstream_query: None,
                 body: responses_claude::responses_request_to_anthropic(body)?,
                 streaming,
+                tool_namespaces: common::responses_tool_namespaces_from_body(body)?,
             }),
             ApiDialect::Gemini => {
                 let model = common::gemini_model_from_body(body)?;
@@ -71,6 +84,7 @@ pub fn prepare_request(
                     upstream_query,
                     body: responses_gemini::responses_request_to_gemini(body)?,
                     streaming,
+                    tool_namespaces: common::responses_tool_namespaces_from_body(body)?,
                 })
             }
         };
@@ -84,6 +98,7 @@ pub fn prepare_request(
                 upstream_query: None,
                 body: claude_chat::anthropic_request_to_chat(body)?,
                 streaming,
+                tool_namespaces: BTreeMap::new(),
             }),
             ApiDialect::OpenAiResponses => Ok(PreparedBridgeRequest {
                 kind: Some(ProtocolBridgeKind::ClaudeToResponses),
@@ -91,6 +106,7 @@ pub fn prepare_request(
                 upstream_query: None,
                 body: claude_responses::anthropic_request_to_responses(body)?,
                 streaming,
+                tool_namespaces: BTreeMap::new(),
             }),
             ApiDialect::Anthropic => Ok(passthrough_request("/v1/messages", body, streaming)),
             ApiDialect::Gemini => {
@@ -102,6 +118,7 @@ pub fn prepare_request(
                     upstream_query,
                     body: claude_gemini::anthropic_request_to_gemini(body)?,
                     streaming,
+                    tool_namespaces: BTreeMap::new(),
                 })
             }
         };
@@ -116,16 +133,42 @@ pub fn transform_response(
     content_type: Option<&str>,
     body: &[u8],
 ) -> Result<TransformedBridgeResponse, String> {
+    transform_response_with_tool_namespaces(kind, status, content_type, body, &BTreeMap::new())
+}
+
+pub fn transform_response_with_tool_namespaces(
+    kind: ProtocolBridgeKind,
+    status: u16,
+    content_type: Option<&str>,
+    body: &[u8],
+    tool_namespaces: &BTreeMap<String, String>,
+) -> Result<TransformedBridgeResponse, String> {
     match kind {
         ProtocolBridgeKind::ResponsesToChat => {
-            responses_chat::chat_response_to_responses(status, content_type, body)
+            responses_chat::chat_response_to_responses(status, content_type, body, tool_namespaces)
+        }
+        ProtocolBridgeKind::ResponsesToResponses => {
+            responses_responses::responses_response_to_responses(
+                status,
+                content_type,
+                body,
+                tool_namespaces,
+            )
         }
         ProtocolBridgeKind::ResponsesToAnthropic => {
-            responses_claude::anthropic_response_to_responses(status, content_type, body)
+            responses_claude::anthropic_response_to_responses(
+                status,
+                content_type,
+                body,
+                tool_namespaces,
+            )
         }
-        ProtocolBridgeKind::ResponsesToGemini => {
-            responses_gemini::gemini_response_to_responses(status, content_type, body)
-        }
+        ProtocolBridgeKind::ResponsesToGemini => responses_gemini::gemini_response_to_responses(
+            status,
+            content_type,
+            body,
+            tool_namespaces,
+        ),
         ProtocolBridgeKind::ClaudeToChat => {
             claude_chat::chat_response_to_anthropic(status, content_type, body)
         }
@@ -137,7 +180,6 @@ pub fn transform_response(
         }
     }
 }
-
 fn passthrough_request(path: &str, body: &[u8], streaming: bool) -> PreparedBridgeRequest {
     PreparedBridgeRequest {
         kind: None,
@@ -145,14 +187,19 @@ fn passthrough_request(path: &str, body: &[u8], streaming: bool) -> PreparedBrid
         upstream_query: None,
         body: body.to_vec(),
         streaming,
+        tool_namespaces: BTreeMap::new(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{prepare_request, transform_response, ProtocolBridgeKind};
+    use super::{
+        prepare_request, transform_response, transform_response_with_tool_namespaces,
+        ProtocolBridgeKind,
+    };
     use crate::models::platform::{ApiDialect, PlatformId};
     use serde_json::{json, Value};
+    use std::collections::BTreeMap;
 
     #[test]
     fn selects_responses_to_chat_only_for_codex_chat_upstreams() {
@@ -195,8 +242,23 @@ mod tests {
             let body = br#"{"model":"gpt-5","input":"hello"}"#;
             let prepared = prepare_request(platform, dialect, path, body).expect("request");
 
-            assert_eq!(prepared.kind, None, "unexpected bridge for {path}");
-            assert_eq!(prepared.body, body);
+            if platform == PlatformId::Codex && dialect == ApiDialect::OpenAiResponses {
+                assert_eq!(
+                    prepared.kind,
+                    Some(ProtocolBridgeKind::ResponsesToResponses),
+                    "expected native Responses sanitation for {path}"
+                );
+            } else {
+                assert_eq!(prepared.kind, None, "unexpected bridge for {path}");
+            }
+            if platform == PlatformId::Codex && dialect == ApiDialect::OpenAiResponses {
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&prepared.body).unwrap(),
+                    serde_json::from_slice::<Value>(body).unwrap()
+                );
+            } else {
+                assert_eq!(prepared.body, body);
+            }
             assert_eq!(prepared.upstream_query, None);
         }
     }
@@ -211,7 +273,12 @@ mod tests {
                 "/chat/completions",
                 None,
             ),
-            (ApiDialect::OpenAiResponses, None, "/responses", None),
+            (
+                ApiDialect::OpenAiResponses,
+                Some(ProtocolBridgeKind::ResponsesToResponses),
+                "/responses",
+                None,
+            ),
             (
                 ApiDialect::Anthropic,
                 Some(ProtocolBridgeKind::ResponsesToAnthropic),
@@ -334,6 +401,305 @@ mod tests {
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["function"]["name"], "lookup");
         assert_eq!(body["tools"][0]["function"]["strict"], true);
+    }
+
+    #[test]
+    fn ignores_responses_reasoning_items_when_bridging_to_chat() {
+        let body = serde_json::to_vec(&json!({
+            "model": "deepseek-chat",
+            "input": [
+                {"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"opaque"},
+                {"type":"message","role":"user","content":[{"type":"input_text","text":"继续"}]}
+            ]
+        }))
+        .expect("responses json");
+        let prepared = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAi,
+            "/v1/responses",
+            &body,
+        )
+        .expect("converted request");
+        let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
+
+        assert_eq!(converted["messages"].as_array().map(Vec::len), Some(1));
+        assert_eq!(converted["messages"][0]["content"], "继续");
+    }
+
+    #[test]
+    fn preserves_reasoning_and_tool_turns_when_bridging_to_chat() {
+        let prepared = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAi,
+            "/v1/responses",
+            serde_json::to_vec(&json!({
+                "model": "deepseek-reasoner",
+                "input": [
+                    {"type":"reasoning","summary":[{"type":"summary_text","text":"先查询。"}]},
+                    {"type":"function_call","call_id":"call_1","name":"lookup","arguments":{"q":"rust"}},
+                    {"type":"function_call_output","call_id":"call_1","output":{"ok":true}},
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":"继续"}]}
+                ],
+                "tools": [{
+                    "type":"function",
+                    "name":"lookup",
+                    "parameters":{"type":"object","properties":{"q":{"type":"string"}}}
+                }]
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .expect("converted request");
+        let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
+
+        assert_eq!(converted["messages"][0]["role"], "assistant");
+        assert_eq!(converted["messages"][0]["reasoning_content"], "先查询。");
+        assert_eq!(converted["messages"][0]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(
+            converted["messages"][0]["tool_calls"][0]["function"]["name"],
+            "lookup"
+        );
+        assert_eq!(
+            converted["messages"][1],
+            json!({
+                "role":"tool",
+                "tool_call_id":"call_1",
+                "content":"{\"ok\":true}"
+            })
+        );
+        assert_eq!(converted["messages"][2]["content"], "继续");
+    }
+
+    #[test]
+    fn converts_custom_tools_to_chat_functions() {
+        let prepared = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAi,
+            "/v1/responses",
+            serde_json::to_vec(&json!({
+                "model":"gpt-5.6-sol",
+                "input":"hello",
+                "tools":[{"type":"custom","name":"apply_patch","description":"patch files"}],
+                "tool_choice":{"type":"custom","name":"apply_patch"}
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .expect("converted request");
+        let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
+
+        assert_eq!(converted["tools"][0]["function"]["name"], "apply_patch");
+        assert_eq!(
+            converted["tools"][0]["function"]["parameters"]["required"],
+            json!(["input"])
+        );
+        assert_eq!(
+            converted["tool_choice"],
+            json!({
+                "type":"function",
+                "function":{"name":"apply_patch"}
+            })
+        );
+    }
+
+    #[test]
+    fn skips_builtin_output_history_items_when_bridging_to_chat() {
+        let prepared = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAi,
+            "/v1/responses",
+            br#"{
+                "model":"deepseek-chat",
+                "input":[
+                    {"type":"web_search_call","id":"ws_1","status":"completed"},
+                    {"type":"web_search_call_output","call_id":"ws_1","output":"result"},
+                    {"type":"message","role":"user","content":"continue"}
+                ]
+            }"#,
+        )
+        .expect("converted request");
+        let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
+
+        assert_eq!(converted["messages"].as_array().map(Vec::len), Some(1));
+        assert_eq!(converted["messages"][0]["content"], "continue");
+    }
+
+    #[test]
+    fn ignores_responses_builtin_tools_when_bridging_to_chat() {
+        let prepared = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAi,
+            "/v1/responses",
+            serde_json::to_vec(&json!({
+                "model": "deepseek-chat",
+                "input": "search this",
+                "tools": [
+                    {"type": "web_search"},
+                    {
+                        "type": "function",
+                        "name": "lookup",
+                        "parameters": {"type": "object", "properties": {}}
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .expect("converted request");
+        let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
+
+        assert_eq!(converted["tools"].as_array().map(Vec::len), Some(1));
+        assert_eq!(converted["tools"][0]["function"]["name"], "lookup");
+    }
+
+    #[test]
+    fn tolerates_empty_text_parts_when_bridging_to_chat() {
+        let prepared = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAi,
+            "/v1/responses",
+            serde_json::to_vec(&json!({
+                "model": "deepseek-chat",
+                "input": [
+                    {"type":"message","role":"assistant","content":[{"type":"output_text","text":""}]},
+                    {"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"},
+                    {"type":"function_call_output","call_id":"call_1","output":"ok"},
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":"继续"}]}
+                ],
+                "tools": [{
+                    "type":"function",
+                    "name":"lookup",
+                    "parameters": {"type":"object","properties":{}}
+                }]
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .expect("converted request");
+        let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
+
+        let messages = converted["messages"].as_array().expect("messages");
+        let assistant = messages
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .expect("assistant message");
+        assert_eq!(assistant["content"], "");
+        let user = messages
+            .iter()
+            .find(|message| message["role"] == "user")
+            .expect("user message");
+        assert_eq!(user["content"], "继续");
+    }
+
+    #[test]
+    fn omits_builtin_tools_and_downgrades_required_choice_when_no_chat_tools_remain() {
+        let prepared = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAi,
+            "/v1/responses",
+            serde_json::to_vec(&json!({
+                "model": "deepseek-chat",
+                "input": "search this",
+                "tools": [{"type": "web_search"}],
+                "tool_choice": "required"
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .expect("converted request");
+        let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
+
+        assert!(converted.get("tools").is_none());
+        assert_eq!(converted["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn downgrades_builtin_tool_choice_when_bridging_to_chat() {
+        let prepared = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAi,
+            "/v1/responses",
+            serde_json::to_vec(&json!({
+                "model": "deepseek-chat",
+                "input": "search this",
+                "tools": [{"type": "web_search"}],
+                "tool_choice": {"type": "web_search"}
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .expect("converted request");
+        let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
+
+        assert!(converted.get("tool_choice").is_none());
+    }
+    #[test]
+    fn converts_responses_reasoning_effort_to_chat_reasoning_effort() {
+        let prepared = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAi,
+            "/v1/responses",
+            br#"{
+                "model":"gpt-5.6-sol",
+                "input":"hello",
+                "reasoning":{"effort":"xhigh"}
+            }"#,
+        )
+        .expect("converted request");
+        let body: Value = serde_json::from_slice(&prepared.body).expect("chat json");
+
+        assert_eq!(body["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn converts_responses_reasoning_effort_to_anthropic_thinking() {
+        let prepared = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::Anthropic,
+            "/v1/responses",
+            br#"{
+                "model":"claude-sonnet-4-20250514",
+                "input":"hello",
+                "max_output_tokens":65536,
+                "temperature":0.2,
+                "reasoning":{"effort":"high"}
+            }"#,
+        )
+        .expect("converted request");
+        let body: Value = serde_json::from_slice(&prepared.body).expect("anthropic json");
+
+        assert_eq!(
+            body["thinking"],
+            json!({"type":"enabled","budget_tokens":16384})
+        );
+        assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn converts_responses_reasoning_effort_to_gemini_thinking_config() {
+        let cases = [
+            ("gemini-2.5-flash", json!({"thinkingBudget":4096})),
+            ("gemini-3-pro", json!({"thinkingLevel":"high"})),
+        ];
+
+        for (model, expected) in cases {
+            let body = serde_json::to_vec(&json!({
+                "model": model,
+                "input": "hello",
+                "reasoning": {"effort": "medium"}
+            }))
+            .expect("responses json");
+            let prepared = prepare_request(
+                PlatformId::Codex,
+                ApiDialect::Gemini,
+                "/v1/responses",
+                &body,
+            )
+            .expect("converted request");
+            let converted: Value = serde_json::from_slice(&prepared.body).expect("gemini json");
+
+            assert_eq!(converted["generationConfig"]["thinkingConfig"], expected);
+        }
     }
 
     #[test]
@@ -460,6 +826,273 @@ mod tests {
             2
         );
         assert_eq!(converted.content_type.as_deref(), Some("application/json"));
+    }
+
+    #[test]
+    fn restores_namespace_for_chat_tool_calls() {
+        let input = json!({
+            "id": "chatcmpl-namespace",
+            "model": "deepseek-chat",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "arguments": "{}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+        let mut namespaces = BTreeMap::new();
+        namespaces.insert("lookup".to_string(), "database".to_string());
+        let converted = transform_response_with_tool_namespaces(
+            ProtocolBridgeKind::ResponsesToChat,
+            200,
+            Some("application/json"),
+            serde_json::to_vec(&input).unwrap().as_slice(),
+            &namespaces,
+        )
+        .expect("converted response");
+        let output: Value = serde_json::from_slice(&converted.body).unwrap();
+
+        assert_eq!(output["output"][0]["namespace"], "database");
+    }
+
+    #[test]
+    fn restores_namespace_for_anthropic_tool_calls() {
+        let input = json!({
+            "id": "msg-namespace",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet",
+            "content": [{
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "lookup",
+                "input": {"key": "x"}
+            }],
+            "stop_reason": "tool_use"
+        });
+        let mut namespaces = BTreeMap::new();
+        namespaces.insert("lookup".to_string(), "database".to_string());
+        let converted = transform_response_with_tool_namespaces(
+            ProtocolBridgeKind::ResponsesToAnthropic,
+            200,
+            Some("application/json"),
+            serde_json::to_vec(&input).unwrap().as_slice(),
+            &namespaces,
+        )
+        .expect("converted response");
+        let output: Value = serde_json::from_slice(&converted.body).unwrap();
+
+        assert_eq!(output["output"][0]["namespace"], "database");
+    }
+
+    #[test]
+    fn restores_namespace_for_gemini_tool_calls() {
+        let input = json!({
+            "responseId": "resp-namespace",
+            "modelVersion": "gemini-2.5-flash",
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{
+                        "functionCall": {
+                            "name": "lookup",
+                            "args": {"key": "x"}
+                        }
+                    }]
+                },
+                "finishReason": "STOP"
+            }]
+        });
+        let mut namespaces = BTreeMap::new();
+        namespaces.insert("lookup".to_string(), "database".to_string());
+        let converted = transform_response_with_tool_namespaces(
+            ProtocolBridgeKind::ResponsesToGemini,
+            200,
+            Some("application/json"),
+            serde_json::to_vec(&input).unwrap().as_slice(),
+            &namespaces,
+        )
+        .expect("converted response");
+        let output: Value = serde_json::from_slice(&converted.body).unwrap();
+
+        assert_eq!(output["output"][0]["namespace"], "database");
+    }
+
+    #[test]
+    fn flattens_codex_namespace_tools_for_all_response_bridges() {
+        let body = serde_json::to_vec(&json!({
+            "model": "gpt-5",
+            "input": "hello",
+            "tools": [{
+                "type": "namespace",
+                "name": "database",
+                "description": "Database tools",
+                "tools": [{
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Lookup",
+                    "parameters": {"type": "object", "properties": {}}
+                }]
+            }]
+        }))
+        .unwrap();
+
+        for dialect in [
+            ApiDialect::OpenAi,
+            ApiDialect::Anthropic,
+            ApiDialect::Gemini,
+        ] {
+            let prepared = prepare_request(PlatformId::Codex, dialect, "/v1/responses", &body)
+                .expect("converted request");
+            let converted: Value = serde_json::from_slice(&prepared.body).unwrap();
+            assert_eq!(
+                prepared.tool_namespaces.get("lookup"),
+                Some(&"database".to_string())
+            );
+            match dialect {
+                ApiDialect::OpenAi => {
+                    assert_eq!(
+                        converted["tools"][0]["function"]["name"],
+                        "database__lookup"
+                    );
+                    assert_eq!(
+                        converted["tools"][0]["function"]["parameters"]["type"],
+                        "object"
+                    );
+                }
+                ApiDialect::Anthropic => {
+                    assert_eq!(converted["tools"][0]["name"], "database__lookup");
+                    assert_eq!(converted["tools"][0]["input_schema"]["type"], "object");
+                }
+                ApiDialect::Gemini => assert_eq!(
+                    converted["tools"][0]["functionDeclarations"][0]["name"],
+                    "database__lookup"
+                ),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn flattens_codex_namespace_tools_with_input_schema_and_mcp_name() {
+        let body = serde_json::to_vec(&json!({
+            "model": "gpt-5.6-sol",
+            "input": "hello",
+            "tools": [{
+                "type": "namespace",
+                "name": "mcp__playwright__",
+                "tools": [{
+                    "type": "function",
+                    "name": "browser_navigate",
+                    "description": "Navigate",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"url": {"type": "string"}}
+                    }
+                }]
+            }]
+        }))
+        .unwrap();
+
+        let prepared = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAi,
+            "/v1/responses",
+            &body,
+        )
+        .expect("converted request");
+        let converted: Value = serde_json::from_slice(&prepared.body).unwrap();
+
+        assert_eq!(
+            converted["tools"][0]["function"]["name"],
+            "mcp__playwright__browser_navigate"
+        );
+        assert_eq!(
+            converted["tools"][0]["function"]["parameters"]["properties"]["url"]["type"],
+            "string"
+        );
+        assert_eq!(
+            prepared
+                .tool_namespaces
+                .get("mcp__playwright__browser_navigate"),
+            Some(&"mcp__playwright__".to_string())
+        );
+    }
+
+    #[test]
+    fn flattens_namespace_tools_for_native_responses_upstreams() {
+        let body = serde_json::to_vec(&json!({
+            "model": "deepseek-reasoner",
+            "input": "hello",
+            "tools": [{
+                "type": "namespace",
+                "name": "mcp__browser__",
+                "tools": [{
+                    "type": "function",
+                    "name": "open",
+                    "inputSchema": {"type": "object", "properties": {}}
+                }]
+            }]
+        }))
+        .unwrap();
+
+        let prepared = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAiResponses,
+            "/v1/responses",
+            &body,
+        )
+        .expect("converted request");
+        let converted: Value = serde_json::from_slice(&prepared.body).unwrap();
+
+        assert_eq!(converted["tools"][0]["name"], "mcp__browser__open");
+        assert_eq!(converted["tools"][0]["type"], "function");
+        assert!(converted["tools"][0].get("inputSchema").is_none());
+        assert_eq!(converted["tools"][0]["parameters"]["type"], "object");
+        assert_eq!(
+            prepared.tool_namespaces.get("mcp__browser__open"),
+            Some(&"mcp__browser__".to_string())
+        );
+    }
+
+    #[test]
+    fn restores_namespace_for_native_responses_tool_calls() {
+        let input = json!({
+            "id": "resp-namespace",
+            "object": "response",
+            "output": [{
+                "type": "function_call",
+                "name": "mcp__browser__open",
+                "call_id": "call_1",
+                "arguments": "{}"
+            }]
+        });
+        let mut namespaces = BTreeMap::new();
+        namespaces.insert(
+            "mcp__browser__open".to_string(),
+            "mcp__browser__".to_string(),
+        );
+
+        let converted = transform_response_with_tool_namespaces(
+            ProtocolBridgeKind::ResponsesToResponses,
+            200,
+            Some("application/json"),
+            serde_json::to_vec(&input).unwrap().as_slice(),
+            &namespaces,
+        )
+        .expect("converted response");
+        let output: Value = serde_json::from_slice(&converted.body).unwrap();
+
+        assert_eq!(output["output"][0]["name"], "open");
+        assert_eq!(output["output"][0]["namespace"], "mcp__browser__");
     }
 
     #[test]

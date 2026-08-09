@@ -147,10 +147,17 @@ export type RouteModelsFetchRequest = {
   api_key_field?: AnthropicApiKeyField | string | null;
 };
 
+export type FetchedRouteModelReasoningLevel = {
+  effort: string;
+  description?: string | null;
+};
+
 export type FetchedRouteModel = {
   id: string;
   owned_by?: string | null;
   supports_1m?: boolean | null;
+  supported_reasoning_levels?: FetchedRouteModelReasoningLevel[];
+  default_reasoning_level?: string | null;
 };
 
 export type RouteCredential = {

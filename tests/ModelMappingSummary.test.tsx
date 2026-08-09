@@ -7,15 +7,15 @@ import {
 } from "../src/components/accounts/ModelMappingSummary";
 
 describe("ModelMappingSummary", () => {
-  it("shows the full wrapped wildcard tooltip for empty mappings", async () => {
+  it("shows the baseline models for empty mappings", async () => {
     const user = userEvent.setup();
     render(<ModelMappingSummary platform="codex" mappings={[]} />);
 
-    const label = screen.getByText("模型通配");
+    const label = screen.getByText("基线模型");
     const tooltip = screen.getByRole("tooltip", { hidden: true });
     expect(label.parentElement).toHaveAttribute("aria-describedby", tooltip.id);
     expect(tooltip).toHaveTextContent(
-      "模型通配表示默认该账号支持当前智能体的常用基线模型，如支持有限请编辑后指定模型映射列表",
+      "未配置模型映射，仅匹配基线模型：gpt-5.6-sol、gpt-5.6-terra、gpt-5.6-luna、gpt-5.5",
     );
     expect(tooltip).toHaveClass("group-hover:block", "whitespace-normal");
     await user.hover(label);

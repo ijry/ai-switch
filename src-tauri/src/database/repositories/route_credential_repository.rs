@@ -1,8 +1,7 @@
 use crate::error::AppError;
 use crate::models::route_credential::{
-    ReorderRouteCredentialInput, RouteCredential, RouteCredentialFilterOption,
-    RouteCredentialPage, RouteCredentialPageRequest, RouteCredentialPoolScope,
-    UpdateRouteCredentialInput,
+    ReorderRouteCredentialInput, RouteCredential, RouteCredentialFilterOption, RouteCredentialPage,
+    RouteCredentialPageRequest, RouteCredentialPoolScope, UpdateRouteCredentialInput,
 };
 use crate::models::route_credential_transfer::RouteCredentialSelectionContext;
 use chrono::Utc;
@@ -58,7 +57,10 @@ const PAGE_SELECT: &str = "SELECT
   AND ue.metric_type = 'request'";
 
 fn push_filter_predicate(builder: &mut QueryBuilder<Sqlite>, filters: &[String]) {
-    let filters: Vec<&String> = filters.iter().filter(|filter| !filter.trim().is_empty()).collect();
+    let filters: Vec<&String> = filters
+        .iter()
+        .filter(|filter| !filter.trim().is_empty())
+        .collect();
     if filters.is_empty() {
         return;
     }
@@ -76,10 +78,7 @@ fn push_filter_predicate(builder: &mut QueryBuilder<Sqlite>, filters: &[String])
     builder.push(")");
 }
 
-fn push_pool_scope_predicate(
-    builder: &mut QueryBuilder<Sqlite>,
-    scope: RouteCredentialPoolScope,
-) {
+fn push_pool_scope_predicate(builder: &mut QueryBuilder<Sqlite>, scope: RouteCredentialPoolScope) {
     builder.push(" AND ");
     match scope {
         RouteCredentialPoolScope::Archived => {
@@ -125,9 +124,8 @@ async fn boundary_id(
     request: &RouteCredentialPageRequest,
     offset: i64,
 ) -> Result<Option<String>, AppError> {
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT rc.id FROM route_credentials rc WHERE rc.platform = ",
-    );
+    let mut query =
+        QueryBuilder::<Sqlite>::new("SELECT rc.id FROM route_credentials rc WHERE rc.platform = ");
     query.push_bind(&request.platform);
     push_pool_scope_predicate(&mut query, request.pool_scope);
     push_filter_predicate(&mut query, &request.filters);
@@ -138,7 +136,13 @@ async fn boundary_id(
         .build_query_scalar::<String>()
         .fetch_optional(pool)
         .await
-        .map_err(|err| database_error("database.route_credential_boundary", "Could not load page boundary", err))
+        .map_err(|err| {
+            database_error(
+                "database.route_credential_boundary",
+                "Could not load page boundary",
+                err,
+            )
+        })
 }
 
 async fn load_filter_options(
@@ -153,14 +157,26 @@ async fn load_filter_options(
     .bind(platform)
     .fetch_all(pool)
     .await
-    .map_err(|err| database_error("database.route_credential_filter_options", "Could not load account filters", err))?;
+    .map_err(|err| {
+        database_error(
+            "database.route_credential_filter_options",
+            "Could not load account filters",
+            err,
+        )
+    })?;
     let has_single = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM route_credentials WHERE platform = ? AND batch_id IS NULL)",
     )
     .bind(platform)
     .fetch_one(pool)
     .await
-    .map_err(|err| database_error("database.route_credential_filter_single", "Could not load unbatched filter", err))?;
+    .map_err(|err| {
+        database_error(
+            "database.route_credential_filter_single",
+            "Could not load unbatched filter",
+            err,
+        )
+    })?;
     let mut options = rows
         .into_iter()
         .map(|(key, label)| RouteCredentialFilterOption { key, label })
@@ -696,12 +712,14 @@ impl RouteCredentialRepository {
         pool: &SqlitePool,
         request: RouteCredentialPageRequest,
     ) -> Result<RouteCredentialPage, AppError> {
-        let page_size = request.normalized_page_size().map_err(|message| AppError::Validation {
-            code: "validation.route_credential_page_size",
-            message,
-            details: None,
-            recoverable: true,
-        })?;
+        let page_size = request
+            .normalized_page_size()
+            .map_err(|message| AppError::Validation {
+                code: "validation.route_credential_page_size",
+                message,
+                details: None,
+                recoverable: true,
+            })?;
         let requested_page = request.normalized_page();
 
         let mut count_query = QueryBuilder::<Sqlite>::new(
@@ -714,13 +732,25 @@ impl RouteCredentialRepository {
             .build_query_scalar()
             .fetch_one(pool)
             .await
-            .map_err(|err| database_error("database.route_credential_page_count", "Could not count route credentials", err))?;
-        let page_count = if total == 0 { 1 } else { (total + page_size - 1) / page_size };
+            .map_err(|err| {
+                database_error(
+                    "database.route_credential_page_count",
+                    "Could not count route credentials",
+                    err,
+                )
+            })?;
+        let page_count = if total == 0 {
+            1
+        } else {
+            (total + page_size - 1) / page_size
+        };
         let page = requested_page.min(page_count);
         let offset = (page - 1) * page_size;
 
         let mut item_query = QueryBuilder::<Sqlite>::new(PAGE_SELECT);
-        item_query.push(" WHERE rc.platform = ").push_bind(&request.platform);
+        item_query
+            .push(" WHERE rc.platform = ")
+            .push_bind(&request.platform);
         push_pool_scope_predicate(&mut item_query, request.pool_scope);
         push_filter_predicate(&mut item_query, &request.filters);
         item_query
@@ -732,7 +762,13 @@ impl RouteCredentialRepository {
             .build_query_as::<RouteCredential>()
             .fetch_all(pool)
             .await
-            .map_err(|err| database_error("database.route_credential_page_items", "Could not load route credential page", err))?;
+            .map_err(|err| {
+                database_error(
+                    "database.route_credential_page_items",
+                    "Could not load route credential page",
+                    err,
+                )
+            })?;
 
         let previous_page_account_id = if page > 1 {
             boundary_id(pool, &request, offset - 1).await?
@@ -773,14 +809,22 @@ impl RouteCredentialRepository {
     ) -> Result<RouteCredentialPage, AppError> {
         let page_size = match input.page_size {
             20 | 50 | 100 => input.page_size,
-            _ => return Err(AppError::Validation {
-                code: "validation.route_credential_page_size",
-                message: "page_size must be 20, 50, or 100".to_string(),
-                details: None,
-                recoverable: true,
-            }),
+            _ => {
+                return Err(AppError::Validation {
+                    code: "validation.route_credential_page_size",
+                    message: "page_size must be 20, 50, or 100".to_string(),
+                    details: None,
+                    recoverable: true,
+                })
+            }
         };
-        let mut tx = pool.begin().await.map_err(|err| database_error("database.route_credential_reorder_tx", "Could not start account reorder", err))?;
+        let mut tx = pool.begin().await.map_err(|err| {
+            database_error(
+                "database.route_credential_reorder_tx",
+                "Could not start account reorder",
+                err,
+            )
+        })?;
         let rows = sqlx::query_as::<_, (String, Option<String>, i64, i64)>(
             "SELECT rc.id, rc.batch_id,
                     EXISTS (
@@ -797,7 +841,13 @@ impl RouteCredentialRepository {
         .bind(&input.platform)
         .fetch_all(&mut *tx)
         .await
-        .map_err(|err| database_error("database.route_credential_reorder_read", "Could not load account order", err))?;
+        .map_err(|err| {
+            database_error(
+                "database.route_credential_reorder_read",
+                "Could not load account order",
+                err,
+            )
+        })?;
         let all_ids: Vec<String> = rows.iter().map(|(id, _, _, _)| id.clone()).collect();
         let pool_matches = |in_pool: i64, archived: i64| match input.pool_scope {
             RouteCredentialPoolScope::InPool => archived == 0 && in_pool != 0,
@@ -817,8 +867,13 @@ impl RouteCredentialRepository {
             .filter(|(_, batch_id, in_pool, archived)| matches(batch_id, *in_pool, *archived))
             .map(|(id, _, _, _)| id.clone())
             .collect();
-        let Some(moved_index) = filtered_ids.iter().position(|id| id == &input.moved_account_id) else {
-            return Err(reorder_validation_error("Moved route credential is not in the active filter"));
+        let Some(moved_index) = filtered_ids
+            .iter()
+            .position(|id| id == &input.moved_account_id)
+        else {
+            return Err(reorder_validation_error(
+                "Moved route credential is not in the active filter",
+            ));
         };
         let previous_account_id = input
             .previous_account_id
@@ -832,7 +887,9 @@ impl RouteCredentialRepository {
         remaining.remove(moved_index);
         if let Some(previous) = previous_account_id {
             if !remaining.iter().any(|id| id == previous) {
-                return Err(reorder_validation_error("Previous route credential is invalid"));
+                return Err(reorder_validation_error(
+                    "Previous route credential is invalid",
+                ));
             }
         }
         if let Some(next) = next_account_id {
@@ -843,13 +900,17 @@ impl RouteCredentialRepository {
         let insert_at = if let Some(next) = next_account_id {
             let index = remaining.iter().position(|id| id == next).unwrap();
             if previous_account_id != remaining.get(index.saturating_sub(1)).map(String::as_str) {
-                return Err(reorder_validation_error("Route credential neighbors are not adjacent"));
+                return Err(reorder_validation_error(
+                    "Route credential neighbors are not adjacent",
+                ));
             }
             index
         } else if let Some(previous) = previous_account_id {
             let index = remaining.iter().position(|id| id == previous).unwrap();
             if remaining.get(index + 1).is_some() {
-                return Err(reorder_validation_error("Route credential neighbors are not adjacent"));
+                return Err(reorder_validation_error(
+                    "Route credential neighbors are not adjacent",
+                ));
             }
             index + 1
         } else if remaining.is_empty() {
@@ -861,7 +922,8 @@ impl RouteCredentialRepository {
         let mut reordered = all_ids.clone();
         let mut filtered_cursor = 0;
         for id in &mut reordered {
-            let (_, batch_id, in_pool, archived) = rows.iter().find(|(row_id, _, _, _)| row_id == id).unwrap();
+            let (_, batch_id, in_pool, archived) =
+                rows.iter().find(|(row_id, _, _, _)| row_id == id).unwrap();
             if matches(batch_id, *in_pool, *archived) {
                 *id = remaining[filtered_cursor].clone();
                 filtered_cursor += 1;
@@ -875,17 +937,36 @@ impl RouteCredentialRepository {
                 .bind(id)
                 .execute(&mut *tx)
                 .await
-                .map_err(|err| database_error("database.route_credential_reorder_update", "Could not save account order", err))?;
+                .map_err(|err| {
+                    database_error(
+                        "database.route_credential_reorder_update",
+                        "Could not save account order",
+                        err,
+                    )
+                })?;
         }
-        tx.commit().await.map_err(|err| database_error("database.route_credential_reorder_commit", "Could not commit account order", err))?;
-        let moved_position = remaining.iter().position(|id| id == &input.moved_account_id).unwrap_or(0);
-        Self::page(pool, RouteCredentialPageRequest {
-            platform: input.platform,
-            page: moved_position as i64 / page_size + 1,
-            page_size,
-            filters: input.filters,
-            pool_scope: input.pool_scope,
-        }).await
+        tx.commit().await.map_err(|err| {
+            database_error(
+                "database.route_credential_reorder_commit",
+                "Could not commit account order",
+                err,
+            )
+        })?;
+        let moved_position = remaining
+            .iter()
+            .position(|id| id == &input.moved_account_id)
+            .unwrap_or(0);
+        Self::page(
+            pool,
+            RouteCredentialPageRequest {
+                platform: input.platform,
+                page: moved_position as i64 / page_size + 1,
+                page_size,
+                filters: input.filters,
+                pool_scope: input.pool_scope,
+            },
+        )
+        .await
     }
 
     pub async fn update(
@@ -1037,9 +1118,8 @@ impl RouteCredentialRepository {
             )
         })?;
 
-        let mut count_query = QueryBuilder::<Sqlite>::new(
-            "SELECT COUNT(*) FROM route_credentials WHERE id IN (",
-        );
+        let mut count_query =
+            QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM route_credentials WHERE id IN (");
         let mut count_separated = count_query.separated(", ");
         for id in &unique_ids {
             count_separated.push_bind(id);
@@ -1269,7 +1349,13 @@ impl RouteCredentialRepository {
         .bind(id)
         .execute(pool)
         .await
-        .map_err(|err| database_error("database.route_credential_semantic_failure", "Could not record semantic response failure", err))?;
+        .map_err(|err| {
+            database_error(
+                "database.route_credential_semantic_failure",
+                "Could not record semantic response failure",
+                err,
+            )
+        })?;
         if result.rows_affected() == 0 {
             return Err(AppError::Validation {
                 code: "validation.route_credential_not_found",
@@ -1281,10 +1367,7 @@ impl RouteCredentialRepository {
         Ok(())
     }
 
-    pub async fn recover_after_explicit_test(
-        pool: &SqlitePool,
-        id: &str,
-    ) -> Result<(), AppError> {
+    pub async fn recover_after_explicit_test(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
             "UPDATE route_credentials
@@ -1299,15 +1382,26 @@ impl RouteCredentialRepository {
         .bind(id)
         .execute(pool)
         .await
-        .map_err(|err| database_error("database.route_credential_recover", "Could not recover route credential", err))?;
-        if result.rows_affected() == 0 {
-            let exists = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM route_credentials WHERE id = ?",
+        .map_err(|err| {
+            database_error(
+                "database.route_credential_recover",
+                "Could not recover route credential",
+                err,
             )
-            .bind(id)
-            .fetch_one(pool)
-            .await
-            .map_err(|err| database_error("database.route_credential_recover", "Could not verify route credential", err))?;
+        })?;
+        if result.rows_affected() == 0 {
+            let exists =
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM route_credentials WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(pool)
+                    .await
+                    .map_err(|err| {
+                        database_error(
+                            "database.route_credential_recover",
+                            "Could not verify route credential",
+                            err,
+                        )
+                    })?;
             if exists == 0 {
                 return Err(AppError::Validation {
                     code: "validation.route_credential_not_found",
@@ -1350,9 +1444,8 @@ impl RouteCredentialRepository {
             )
         })?;
 
-        let mut count_query = QueryBuilder::<Sqlite>::new(
-            "SELECT COUNT(*) FROM route_credentials WHERE id IN (",
-        );
+        let mut count_query =
+            QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM route_credentials WHERE id IN (");
         let mut count_ids = count_query.separated(", ");
         for id in &unique_ids {
             count_ids.push_bind(id);
@@ -1380,9 +1473,8 @@ impl RouteCredentialRepository {
 
         let now = Utc::now().to_rfc3339();
         let archived_at = archived.then_some(now.clone());
-        let mut update_query = QueryBuilder::<Sqlite>::new(
-            "UPDATE route_credentials SET archived_at = ",
-        );
+        let mut update_query =
+            QueryBuilder::<Sqlite>::new("UPDATE route_credentials SET archived_at = ");
         update_query
             .push_bind(archived_at)
             .push(", updated_at = ")
@@ -1968,7 +2060,11 @@ mod tests {
         assert_eq!(in_pool.page, 1);
         assert_eq!(in_pool.page_count, 1);
         assert_eq!(
-            in_pool.items.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            in_pool
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
             vec![first.id.as_str(), second.id.as_str()]
         );
 
@@ -2012,7 +2108,11 @@ mod tests {
 
         RouteCredentialRepository::set_archived(
             &pool,
-            &[in_pool.id.clone(), out_of_pool.id.clone(), in_pool.id.clone()],
+            &[
+                in_pool.id.clone(),
+                out_of_pool.id.clone(),
+                in_pool.id.clone(),
+            ],
             true,
         )
         .await
@@ -2054,17 +2154,21 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(member_ids, vec![in_pool.id.clone()]);
-        assert!(
-            RouteCredentialRepository::list_by_platform(&pool, "codex")
-                .await
-                .unwrap()
-                .is_empty()
-        );
+        assert!(RouteCredentialRepository::list_by_platform(&pool, "codex")
+            .await
+            .unwrap()
+            .is_empty());
 
         let empty_error = RouteCredentialRepository::set_archived(&pool, &[], true)
             .await
             .unwrap_err();
-        assert!(matches!(empty_error, AppError::Validation { code: "validation.route_credential_selection_empty", .. }));
+        assert!(matches!(
+            empty_error,
+            AppError::Validation {
+                code: "validation.route_credential_selection_empty",
+                ..
+            }
+        ));
 
         let missing_error = RouteCredentialRepository::set_archived(
             &pool,
@@ -2073,7 +2177,13 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(missing_error, AppError::Validation { code: "validation.route_credential_not_found", .. }));
+        assert!(matches!(
+            missing_error,
+            AppError::Validation {
+                code: "validation.route_credential_not_found",
+                ..
+            }
+        ));
         assert!(RouteCredentialRepository::get(&pool, &out_of_pool.id)
             .await
             .unwrap()
@@ -2125,10 +2235,8 @@ mod tests {
         crate::database::run_migrations(&pool).await.unwrap();
         let mut credentials = Vec::new();
         for index in 0..23 {
-            credentials.push(
-                create_api_credential(&pool, "codex", &format!("Account {index:02}"))
-                    .await,
-            );
+            credentials
+                .push(create_api_credential(&pool, "codex", &format!("Account {index:02}")).await);
         }
         let outside_id = credentials[1].id.clone();
         let member_ids = credentials
@@ -2158,8 +2266,14 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(first_page.total, 22);
-        assert_eq!(first_page.next_page_account_id.as_deref(), Some(member_ids[20].as_str()));
-        assert_eq!(second_page.previous_page_account_id.as_deref(), Some(member_ids[19].as_str()));
+        assert_eq!(
+            first_page.next_page_account_id.as_deref(),
+            Some(member_ids[20].as_str())
+        );
+        assert_eq!(
+            second_page.previous_page_account_id.as_deref(),
+            Some(member_ids[19].as_str())
+        );
 
         let reordered_page = RouteCredentialRepository::reorder(
             &pool,
@@ -2193,7 +2307,11 @@ mod tests {
             Some(member_ids[20].as_str())
         );
         assert_eq!(
-            second_page_after.items.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            second_page_after
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
             vec![member_ids[19].as_str(), member_ids[21].as_str()]
         );
     }

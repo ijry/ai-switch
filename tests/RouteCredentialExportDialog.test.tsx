@@ -13,6 +13,7 @@ import {
   downloadRouteCredentialJson,
 } from "../src/lib/routeCredentialTransfer";
 import { isDesktop } from "../src/lib/transport";
+import { I18nProvider } from "../src/lib/i18n";
 
 vi.mock("../src/lib/api/client", () => ({
   exportRouteCredentials: vi.fn(),
@@ -64,7 +65,7 @@ function exportResult(
   };
 }
 
-function renderDialog(open = true) {
+function renderDialog(open = true, language: "en" | "zh-CN" = "en") {
   return render(
     <RouteCredentialExportDialog
       open={open}
@@ -72,11 +73,15 @@ function renderDialog(open = true) {
       credential_ids={credentialIds}
       onClose={vi.fn()}
     />,
+    {
+      wrapper: ({ children }) => <I18nProvider initialLanguage={language}>{children}</I18nProvider>,
+    },
   );
 }
 
 describe("RouteCredentialExportDialog", () => {
   beforeEach(() => {
+    window.localStorage.removeItem("ai-switch.language");
     vi.mocked(exportRouteCredentials).mockReset();
     vi.mocked(saveRouteCredentialExport).mockReset();
     vi.mocked(copySensitiveText).mockReset();
@@ -144,6 +149,17 @@ describe("RouteCredentialExportDialog", () => {
     expect(screen.getByText("ccswitch://import?api_key=secret")).toBeInTheDocument();
     expect(screen.getByText(/API keys.*system clipboard/i)).toBeInTheDocument();
     expect(screen.getByText("Production API")).toBeInTheDocument();
+  });
+
+  it("renders export controls in Chinese", async () => {
+    renderDialog(true, "zh-CN");
+
+    expect(await screen.findByRole("heading", { name: "导出路由凭据" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "包含增强元数据" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "复制迁移 JSON" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("tab", { name: "方案链接" }));
+    expect(screen.getByText(/复制方案链接会将 API 密钥放入系统剪贴板/)).toBeInTheDocument();
   });
 
   it("confirms before copying a scheme URL containing an API key", async () => {

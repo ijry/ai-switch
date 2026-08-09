@@ -17,10 +17,10 @@ use crate::services::route_credential_activity::{
 use crate::services::route_protocol_bridge::transform_response as transform_protocol_bridge_response;
 use crate::services::route_proxy_service::{
     build_target_url, build_upstream_request_with_bridge, classify_proxy_failure,
-    extract_usage_breakdown, maybe_persist_official_quota_from_response,
-    credential_indexes_by_priority, maybe_refresh_official_credential, normalize_api_upstream_path,
-    select_pool_credentials, ProxyFailureKind, RouteProxyService, SelectedCredential,
-    ROUTE_PROXY_TRACE_HEADER,
+    credential_indexes_by_priority, extract_usage_breakdown,
+    maybe_persist_official_quota_from_response, maybe_refresh_official_credential,
+    normalize_api_upstream_path, select_pool_credentials, ProxyFailureKind, RouteProxyService,
+    SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
 };
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
@@ -50,12 +50,8 @@ impl RouteModelTestService {
         pool: &SqlitePool,
         request: RoutePoolModelTestRequest,
     ) -> Result<RoutePoolModelTestOutcome, AppError> {
-        Self::test_model_with_activity(
-            pool,
-            &RouteCredentialActivityRegistry::default(),
-            request,
-        )
-        .await
+        Self::test_model_with_activity(pool, &RouteCredentialActivityRegistry::default(), request)
+            .await
     }
 
     pub async fn test_model_with_activity(
@@ -84,7 +80,9 @@ impl RouteModelTestService {
         let explicit_account_test = requested_account_id.is_some();
         let cursor = RoutePoolRepository::next_cursor_index(pool, &platform).await?;
 
-        let (credential, next_index, activity_lease) = if let Some(account_id) = requested_account_id {
+        let (credential, next_index, activity_lease) = if let Some(account_id) =
+            requested_account_id
+        {
             (
                 load_account_credential(pool, &platform, &account_id).await?,
                 cursor,
@@ -141,7 +139,7 @@ impl RouteModelTestService {
                     recoverable: true,
                 })?,
         };
-        let credential = maybe_refresh_official_credential(pool, &credential)
+        let credential = maybe_refresh_official_credential(pool, &credential, Some(activity))
             .await
             .map_err(|error| AppError::Validation {
                 code: "validation.route_credential_refresh",

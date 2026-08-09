@@ -16,6 +16,7 @@ import {
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { agentPlatforms, type AgentPlatform, agentScreenByPlatform } from "../components/layout/AppLayout";
 import { getSessionMessages, listSessions } from "../lib/api/client";
+import { useI18n, type Language } from "../lib/i18n";
 import type { SessionMessage, SessionMeta } from "../lib/api/types";
 
 type SessionsScreenProps = {
@@ -23,6 +24,7 @@ type SessionsScreenProps = {
 };
 
 type ListMode = "flat" | "grouped";
+type Translator = ReturnType<typeof useI18n>["t"];
 
 const platformLabels: Record<AgentPlatform, string> = {
   codex: "Codex",
@@ -42,33 +44,33 @@ function sessionKey(session: Pick<SessionMeta, "providerId" | "sessionId" | "sou
   return `${session.providerId}:${session.sessionId}:${session.sourcePath}`;
 }
 
-function formatTime(value?: number | null) {
+function formatTime(value: number | null | undefined, language: Language, t: Translator) {
   if (!value) {
-    return "Unknown";
+    return t("sessions.unknown");
   }
   const date = new Date(value < 1_000_000_000_000 ? value * 1000 : value);
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(language, {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
 }
 
-function formatRelativeTime(value?: number | null) {
+function formatRelativeTime(value: number | null | undefined, t: Translator) {
   if (!value) {
-    return "Unknown";
+    return t("sessions.unknown");
   }
   const ms = (value < 1_000_000_000_000 ? value * 1000 : value);
   const diff = Date.now() - ms;
   const minutes = Math.max(1, Math.round(diff / 60_000));
   if (minutes < 60) {
-    return `${minutes}m ago`;
+    return t("sessions.relativeMinutes", { count: minutes });
   }
   const hours = Math.round(minutes / 60);
   if (hours < 48) {
-    return `${hours}h ago`;
+    return t("sessions.relativeHours", { count: hours });
   }
   const days = Math.round(hours / 24);
-  return `${days}d ago`;
+  return t("sessions.relativeDays", { count: days });
 }
 
 function summarize(text: string, limit = 160) {
@@ -84,8 +86,25 @@ function providerLabel(providerId: string) {
   return isAgentPlatform(providerId) ? platformLabels[providerId] : providerId;
 }
 
-function directoryLabel(projectDir?: string | null) {
-  return projectDir?.trim() || "Unknown directory";
+function directoryLabel(projectDir: string | null | undefined, unknownDirectory: string) {
+  return projectDir?.trim() || unknownDirectory;
+}
+
+function messageRoleLabel(role: string, t: Translator) {
+  switch (role.toLowerCase()) {
+    case "user":
+      return t("sessions.role.user");
+    case "assistant":
+      return t("sessions.role.assistant");
+    case "system":
+      return t("sessions.role.system");
+    case "tool":
+      return t("sessions.role.tool");
+    case "developer":
+      return t("sessions.role.developer");
+    default:
+      return role;
+  }
 }
 
 function messageMatches(message: SessionMessage, query: string) {
@@ -96,6 +115,7 @@ function messageMatches(message: SessionMessage, query: string) {
 }
 
 export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) {
+  const { language, t } = useI18n();
   const [platform, setPlatform] = useState<AgentPlatform | "all">(
     isAgentPlatform(initialPlatform) ? initialPlatform : "all",
   );
@@ -148,7 +168,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
     const providers = new Map<string, Map<string, SessionMeta[]>>();
     for (const session of filteredSessions) {
       const directories = providers.get(session.providerId) ?? new Map<string, SessionMeta[]>();
-      const directory = directoryLabel(session.projectDir);
+      const directory = directoryLabel(session.projectDir, t("sessions.unknownDirectory"));
       directories.set(directory, [...(directories.get(directory) ?? []), session]);
       providers.set(session.providerId, directories);
     }
@@ -156,7 +176,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
       providerId,
       directories: Array.from(directories.entries()).map(([directory, items]) => ({ directory, items })),
     }));
-  }, [filteredSessions]);
+  }, [filteredSessions, t]);
 
   useEffect(() => {
     if (filteredSessions.length === 0) {
@@ -231,13 +251,13 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
               {titleForSession(session)}
             </p>
             <p className={`mt-0.5 truncate text-[12px] ${active ? "text-emerald-100" : "text-stone-500"}`}>
-              {providerLabel(session.providerId)} · {directoryLabel(session.projectDir)}
+              {providerLabel(session.providerId)} · {directoryLabel(session.projectDir, t("sessions.unknownDirectory"))}
             </p>
           </div>
           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
             active ? "bg-white/12 text-white" : "bg-stone-100 text-stone-600"
           }`}>
-            {formatRelativeTime(session.lastActiveAt ?? session.createdAt)}
+            {formatRelativeTime(session.lastActiveAt ?? session.createdAt, t)}
           </span>
         </div>
         <p className={`mt-2 max-h-10 overflow-hidden text-[12px] ${active ? "text-emerald-50" : "text-stone-500"}`}>
@@ -251,10 +271,10 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
     <section className="grid gap-3 2xl:grid-cols-[430px_minmax(0,1fr)]">
       <div className="space-y-3">
         <div className="rounded-2xl border border-stone-200 bg-white/84 p-4 shadow-sm">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Session manager</p>
-          <h1 className="mt-0.5 text-xl font-semibold tracking-tight text-stone-950">Local agent sessions</h1>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">{t("sessions.kicker")}</p>
+          <h1 className="mt-0.5 text-xl font-semibold tracking-tight text-stone-950">{t("sessions.title")}</h1>
           <p className="mt-1 text-[13px] text-stone-600">
-            Search local transcripts, recover the right project directory, and copy resume commands.
+            {t("sessions.subtitle")}
           </p>
         </div>
 
@@ -264,7 +284,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
             <input
               className="w-full bg-transparent outline-none"
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search title, directory, command, or session id"
+              placeholder={t("sessions.searchPlaceholder")}
               value={search}
             />
           </label>
@@ -279,7 +299,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
               onClick={() => setPlatform("all")}
               type="button"
             >
-              All · {sessions.length}
+              {t("sessions.all")} · {sessions.length}
             </button>
             {agentPlatforms.map((item) => (
               <button
@@ -308,7 +328,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
               type="button"
             >
               <ListTree className="h-3.5 w-3.5" />
-              Grouped
+              {t("sessions.grouped")}
             </button>
             <button
               className={`inline-flex cursor-pointer items-center gap-1.5 rounded-xl border px-3 py-2 text-[12px] font-semibold transition-colors ${
@@ -320,16 +340,16 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
               type="button"
             >
               <Rows3 className="h-3.5 w-3.5" />
-              Flat
+              {t("sessions.flat")}
             </button>
           </div>
         </div>
 
         <div className="rounded-2xl border border-stone-200 bg-white/84 p-2 shadow-sm">
           <div className="max-h-[62vh] space-y-2 overflow-auto p-1">
-            {sessionsQuery.isLoading && <p className="p-3 text-sm text-stone-500">Loading sessions...</p>}
+            {sessionsQuery.isLoading && <p className="p-3 text-sm text-stone-500">{t("sessions.loading")}</p>}
             {!sessionsQuery.isLoading && filteredSessions.length === 0 && (
-              <p className="p-3 text-sm text-stone-500">No sessions matched the current filters.</p>
+              <p className="p-3 text-sm text-stone-500">{t("sessions.noMatches")}</p>
             )}
 
             {listMode === "flat" && filteredSessions.map(renderSessionItem)}
@@ -339,7 +359,9 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                   <div className="flex items-center justify-between px-1">
                     <p className="text-[12px] font-semibold text-stone-950">{providerLabel(providerGroup.providerId)}</p>
                     <p className="text-[11px] text-stone-500">
-                      {providerGroup.directories.reduce((total, group) => total + group.items.length, 0)} sessions
+                      {t("sessions.count", {
+                        count: providerGroup.directories.reduce((total, group) => total + group.items.length, 0),
+                      })}
                     </p>
                   </div>
                   {providerGroup.directories.map((directoryGroup) => (
@@ -363,7 +385,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
             <div className="rounded-2xl border border-stone-200 bg-white/86 p-4 shadow-sm">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">Selected session</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">{t("sessions.selected")}</p>
                   <h2 className="truncate text-xl font-semibold tracking-tight text-stone-950">
                     {titleForSession(selectedSession)}
                   </h2>
@@ -379,7 +401,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                     type="button"
                   >
                     {copiedValue === "project" ? <Check className="h-4 w-4" /> : <FolderOpen className="h-4 w-4" />}
-                    {copiedValue === "project" ? "Copied" : "Copy directory"}
+                    {copiedValue === "project" ? t("sessions.copied") : t("sessions.copyDirectory")}
                   </button>
                   <button
                     className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 transition-colors hover:bg-stone-50"
@@ -387,7 +409,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                     type="button"
                   >
                     {copiedValue === "source" ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                    {copiedValue === "source" ? "Copied" : "Copy source"}
+                    {copiedValue === "source" ? t("sessions.copied") : t("sessions.copySource")}
                   </button>
                   {selectedSession.resumeCommand && (
                     <button
@@ -396,7 +418,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                       type="button"
                     >
                       {copiedValue === "resume" ? <Check className="h-4 w-4" /> : <Terminal className="h-4 w-4" />}
-                      {copiedValue === "resume" ? "Copied" : "Copy resume"}
+                      {copiedValue === "resume" ? t("sessions.copied") : t("sessions.copyResume")}
                     </button>
                   )}
                 </div>
@@ -404,34 +426,34 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
 
               <div className="mt-4 grid gap-2 md:grid-cols-4">
                 <div className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-stone-400">Provider</p>
+                  <p className="text-[11px] uppercase tracking-wide text-stone-400">{t("sessions.provider")}</p>
                   <p className="mt-1 truncate text-[13px] font-semibold text-stone-950">
                     {agentScreenByPlatform[selectedSession.providerId as AgentPlatform] ?? selectedSession.providerId}
                   </p>
                 </div>
                 <div className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-stone-400">Project</p>
+                  <p className="text-[11px] uppercase tracking-wide text-stone-400">{t("sessions.project")}</p>
                   <p className="mt-1 truncate text-[13px] font-semibold text-stone-950">
-                    {directoryLabel(selectedSession.projectDir)}
+                    {directoryLabel(selectedSession.projectDir, t("sessions.unknownDirectory"))}
                   </p>
                 </div>
                 <div className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-stone-400">Created</p>
+                  <p className="text-[11px] uppercase tracking-wide text-stone-400">{t("sessions.created")}</p>
                   <p className="mt-1 text-[13px] font-semibold text-stone-950">
-                    {formatTime(selectedSession.createdAt)}
+                    {formatTime(selectedSession.createdAt, language, t)}
                   </p>
                 </div>
                 <div className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2">
-                  <p className="text-[11px] uppercase tracking-wide text-stone-400">Updated</p>
+                  <p className="text-[11px] uppercase tracking-wide text-stone-400">{t("sessions.updated")}</p>
                   <p className="mt-1 text-[13px] font-semibold text-stone-950">
-                    {formatTime(selectedSession.lastActiveAt)}
+                    {formatTime(selectedSession.lastActiveAt, language, t)}
                   </p>
                 </div>
               </div>
 
               <div className="mt-3 rounded-2xl border border-stone-200 bg-stone-50 p-3">
                 <p className="break-all font-mono text-[11px] text-stone-700">
-                  {selectedSession.resumeCommand ?? "No resume command available."}
+                  {selectedSession.resumeCommand ?? t("sessions.noResumeCommand")}
                 </p>
                 <p className="mt-2 break-all font-mono text-[11px] text-stone-500">{selectedSession.sourcePath}</p>
               </div>
@@ -442,23 +464,23 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2 text-[12px] font-semibold text-stone-500">
                     <FileText className="h-4 w-4" />
-                    Message timeline · {visibleMessages.length}/{messages.length}
+                    {t("sessions.messageTimeline")} · {visibleMessages.length}/{messages.length}
                   </div>
                   <label className="flex min-w-[260px] items-center gap-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] text-stone-500">
                     <Search className="h-4 w-4 shrink-0" />
                     <input
                       className="w-full bg-transparent outline-none"
                       onChange={(event) => setMessageSearch(event.target.value)}
-                      placeholder="Search inside this session"
+                      placeholder={t("sessions.searchMessages")}
                       value={messageSearch}
                     />
                   </label>
                 </div>
 
                 <div className="mt-3 max-h-[58vh] space-y-2 overflow-auto pr-1">
-                  {messagesQuery.isLoading && <p className="text-sm text-stone-500">Loading messages...</p>}
+                  {messagesQuery.isLoading && <p className="text-sm text-stone-500">{t("sessions.loadingMessages")}</p>}
                   {!messagesQuery.isLoading && visibleMessages.length === 0 && (
-                    <p className="text-sm text-stone-500">No messages matched the current search.</p>
+                    <p className="text-sm text-stone-500">{t("sessions.noMessageMatches")}</p>
                   )}
                   {visibleMessages.map(({ message, index }) => (
                     <article
@@ -474,9 +496,9 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                     >
                       <div className="flex items-center justify-between gap-3">
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-500">
-                          {message.role}
+                          {messageRoleLabel(message.role, t)}
                         </p>
-                        <p className="text-[11px] text-stone-400">{formatTime(message.ts)}</p>
+                        <p className="text-[11px] text-stone-400">{formatTime(message.ts, language, t)}</p>
                       </div>
                       <p className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap text-[13px] leading-5 text-stone-800">
                         {message.content}
@@ -489,10 +511,10 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
               <aside className="rounded-2xl border border-stone-200 bg-white/86 p-3 shadow-sm">
                 <div className="flex items-center gap-2 text-[12px] font-semibold text-stone-500">
                   <Layers3 className="h-4 w-4" />
-                  Quick navigation
+                  {t("sessions.quickNavigation")}
                 </div>
                 <div className="mt-3 max-h-[58vh] space-y-1.5 overflow-auto">
-                  {tocItems.length === 0 && <p className="text-[12px] text-stone-500">No navigation items.</p>}
+                  {tocItems.length === 0 && <p className="text-[12px] text-stone-500">{t("sessions.noNavigation")}</p>}
                   {tocItems.map(({ message, index }, tocIndex) => (
                     <a
                       className="flex items-start gap-2 rounded-xl border border-stone-200 bg-stone-50 px-2 py-2 text-[12px] text-stone-600 transition-colors hover:border-emerald-200 hover:bg-emerald-50"
@@ -505,7 +527,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                       <span className="min-w-0">
                         <span className="flex items-center gap-1 text-[11px] font-semibold uppercase text-stone-400">
                           {message.role === "user" ? <MessageSquareText className="h-3 w-3" /> : <Hash className="h-3 w-3" />}
-                          {message.role}
+                          {messageRoleLabel(message.role, t)}
                         </span>
                         <span className="mt-0.5 block max-h-10 overflow-hidden">{summarize(message.content, 96)}</span>
                       </span>
@@ -519,8 +541,8 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
           <div className="grid min-h-[55vh] place-items-center rounded-2xl border border-dashed border-stone-200 bg-white/80 text-center">
             <div>
               <Clock className="mx-auto h-8 w-8 text-stone-300" />
-              <p className="mt-2 text-sm font-semibold text-stone-950">No session selected</p>
-              <p className="mt-1 text-[13px] text-stone-500">Pick a session to inspect its transcript and recovery data.</p>
+              <p className="mt-2 text-sm font-semibold text-stone-950">{t("sessions.noSelection")}</p>
+              <p className="mt-1 text-[13px] text-stone-500">{t("sessions.noSelectionBody")}</p>
             </div>
           </div>
         )}

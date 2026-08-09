@@ -247,6 +247,8 @@ function formatUsageTime(value: string) {
 type ParsedUsageMetadata = {
   path: string;
   status: string;
+  model: string;
+  responseBody: string | null;
   formattedJson: string;
   raw: string;
   valid: boolean;
@@ -263,6 +265,17 @@ function metadataField(record: Record<string, unknown>, key: string) {
   return "-";
 }
 
+function optionalMetadataField(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return null;
+}
+
 function parseUsageMetadata(metadataJson: string): ParsedUsageMetadata {
   try {
     const value = JSON.parse(metadataJson) as unknown;
@@ -271,15 +284,25 @@ function parseUsageMetadata(metadataJson: string): ParsedUsageMetadata {
       return {
         path: "-",
         status: "-",
+        model: "-",
+        responseBody: null,
         formattedJson,
         raw: metadataJson,
         valid: true,
       };
     }
     const record = value as Record<string, unknown>;
+    const requestedModel = optionalMetadataField(record, "requested_model");
+    const upstreamModel = optionalMetadataField(record, "upstream_model");
+    const model =
+      requestedModel && upstreamModel && requestedModel !== upstreamModel
+        ? `${requestedModel}->${upstreamModel}`
+        : requestedModel ?? upstreamModel ?? "-";
     return {
       path: metadataField(record, "path"),
       status: metadataField(record, "status"),
+      model,
+      responseBody: optionalMetadataField(record, "response_body"),
       formattedJson,
       raw: metadataJson,
       valid: true,
@@ -288,6 +311,8 @@ function parseUsageMetadata(metadataJson: string): ParsedUsageMetadata {
     return {
       path: "-",
       status: "-",
+      model: "-",
+      responseBody: null,
       formattedJson: metadataJson,
       raw: metadataJson,
       valid: false,
@@ -297,6 +322,17 @@ function parseUsageMetadata(metadataJson: string): ParsedUsageMetadata {
 
 function formatUsageCount(value: number | null | undefined) {
   return value == null ? "-" : value.toLocaleString();
+}
+
+function formatUsageTotalTokens(request: RoutePoolUsageLog) {
+  if (request.input_tokens == null && request.output_tokens == null) {
+    return "-";
+  }
+  return ((request.input_tokens ?? 0) + (request.output_tokens ?? 0)).toLocaleString();
+}
+
+function usageTokenTooltip(request: RoutePoolUsageLog) {
+  return `输入 Token：${formatUsageCount(request.input_tokens)}；输出 Token：${formatUsageCount(request.output_tokens)}；缓存 Token：${formatUsageCount(request.cache_tokens)}`;
 }
 
 function formatUsagePrice(request: RoutePoolUsageLog) {
@@ -366,6 +402,14 @@ function RouteRequestDetail({
           <p className="mt-0.5 text-stone-800">{formatUsageTime(request.created_at)}</p>
         </div>
       </div>
+      {metadata.responseBody ? (
+        <div className="mt-3">
+          <p className="text-[11px] font-medium text-stone-500">上游原始响应</p>
+          <pre className="mt-1 max-h-56 overflow-auto rounded-lg border border-stone-200 bg-white p-2 font-mono text-[11px] leading-relaxed text-stone-700">
+            {prettyJsonOrText(metadata.responseBody)}
+          </pre>
+        </div>
+      ) : null}
       <div className="mt-3">
         <p className="text-[11px] font-medium text-stone-500">
           {metadata.valid ? "metadata_json" : "metadata_json 无法解析，显示原始内容。"}
@@ -535,6 +579,13 @@ function isAnthropicInterfaceFormat(value: InterfaceFormat | string) {
 
 function shouldShowResponsesCustomToolCompat(platform: PlatformKey) {
   return platform === "codex";
+}
+
+function shouldShowResponsesCustomToolCompatForFormat(
+  platform: PlatformKey,
+  interfaceFormat: InterfaceFormat,
+) {
+  return shouldShowResponsesCustomToolCompat(platform) && interfaceFormat === "openai-responses";
 }
 
 function defaultAnthropicApiKeyFieldForCreate(platform: PlatformKey): AnthropicApiKeyField {
@@ -1794,6 +1845,7 @@ export function AccountsScreen({
   const routePoolQuery = useQuery({
     queryKey: ["route-pool", activePlatform, statsSince, requestPage, routeStatsPageSize],
     queryFn: () => getRoutePool(activePlatform, statsSince, requestPage, routeStatsPageSize),
+    placeholderData: keepPreviousData,
     refetchInterval: statsOpen ? routeStatsRefreshMs : false,
   });
   const routeProxyQuery = useQuery({
@@ -1804,10 +1856,12 @@ export function AccountsScreen({
 
   useEffect(() => {
     let disposed = false;
-    let unsubscribe: (() => void) | undefined;
+    let activityUnsubscribe: (() => void) | undefined;
+    let statusUnsubscribe: (() => void) | undefined;
+    const transport = getTransport();
 
-    void getTransport()
-      .subscribe<RouteCredentialActivityEvent>(
+    void Promise.all([
+      transport.subscribe<RouteCredentialActivityEvent>(
         "route-credential-activity",
         (event) => {
           if (event.platform !== activePlatform) {
@@ -1847,19 +1901,42 @@ export function AccountsScreen({
               ),
           );
         },
-      )
-      .then((nextUnsubscribe) => {
+      ),
+      transport.subscribe<{ platform: string; credential_id: string }>(
+        "route-credential-status",
+        (event) => {
+          if (event.platform !== activePlatform) {
+            return;
+          }
+          void Promise.all([
+            queryClient.invalidateQueries({
+              queryKey: ["route-credential-page", activePlatform],
+            }),
+            queryClient.invalidateQueries({
+              queryKey: ["route-credentials-all", activePlatform],
+            }),
+            queryClient.invalidateQueries({
+              queryKey: ["route-pool", activePlatform],
+            }),
+          ]);
+        },
+      ),
+    ])
+      .then(([nextActivityUnsubscribe, nextStatusUnsubscribe]) => {
         if (disposed) {
-          nextUnsubscribe();
+          nextActivityUnsubscribe();
+          nextStatusUnsubscribe();
         } else {
-          unsubscribe = nextUnsubscribe;
+          activityUnsubscribe = nextActivityUnsubscribe;
+          statusUnsubscribe = nextStatusUnsubscribe;
         }
       })
       .catch(() => undefined);
 
     return () => {
       disposed = true;
-      unsubscribe?.();
+      activityUnsubscribe?.();
+      statusUnsubscribe?.();
     };
   }, [activePlatform, queryClient]);
 
@@ -3612,24 +3689,23 @@ export function AccountsScreen({
                     const expanded = expandedRequestId === request.id;
                     return (
                       <div className="bg-white" data-route-request-row key={request.id}>
-                        <div className="grid grid-cols-2 gap-2 px-3 py-2.5 text-[12px] text-stone-600 sm:grid-cols-4 lg:grid-cols-[1.2fr_1fr_0.5fr_1.4fr_0.6fr_0.6fr_0.6fr_0.8fr_0.8fr_auto] lg:items-center">
+                        <div className="grid grid-cols-2 gap-2 px-3 py-2.5 text-[12px] text-stone-600 sm:grid-cols-4 lg:grid-cols-[1.2fr_1fr_0.5fr_1.4fr_1.4fr_0.8fr_0.8fr_0.8fr_auto] lg:items-center">
                           <span className="font-medium text-stone-800">{formatUsageTime(request.created_at)}</span>
                           <span className="truncate">{request.account_name ?? request.account_id ?? "-"}</span>
                           <span className="rounded-lg bg-stone-100 px-2 py-1 text-center font-semibold text-stone-700">
                             {metadata.status}
                           </span>
                           <span className="truncate font-mono text-[11px]">{metadata.path}</span>
-                          <span title="输入 Token">
-                            <span className="mr-1 text-[10px] text-stone-400 lg:hidden">输入</span>
-                            {formatUsageCount(request.input_tokens)}
+                          <span className="truncate" title={metadata.model}>
+                            <span className="mr-1 text-[10px] text-stone-400 lg:hidden">模型</span>
+                            {metadata.model}
                           </span>
-                          <span title="输出 Token">
-                            <span className="mr-1 text-[10px] text-stone-400 lg:hidden">输出</span>
-                            {formatUsageCount(request.output_tokens)}
-                          </span>
-                          <span title="缓存 Token">
-                            <span className="mr-1 text-[10px] text-stone-400 lg:hidden">缓存</span>
-                            {formatUsageCount(request.cache_tokens)}
+                          <span
+                            aria-label={usageTokenTooltip(request)}
+                            title={usageTokenTooltip(request)}
+                          >
+                            <span className="mr-1 text-[10px] text-stone-400 lg:hidden">Token</span>
+                            {formatUsageTotalTokens(request)}
                           </span>
                           <span title="价格">
                             <span className="mr-1 text-[10px] text-stone-400 lg:hidden">价格</span>
@@ -4056,32 +4132,17 @@ export function AccountsScreen({
                       <div className="flex flex-wrap items-center gap-2">
                         <p
                           className="w-[36ch] max-w-full shrink-0 truncate text-[13px] font-semibold text-stone-950"
-                          title={credential.display_name}
+                          title={`P${credential.route_priority}-${credential.display_name}`}
                         >
-                          {credential.display_name}
+                          <span className="text-stone-500">{`P${credential.route_priority}-`}</span>
+                          <span>{credential.display_name}</span>
                         </p>
                         <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
                           {kindLabel(credential.kind)}
                         </span>
-                        {draftPoolIds.has(credential.id) && (
-                          <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800">
-                            已入池
-                          </span>
-                        )}
                         {credential.archived_at && (
                           <span className="rounded-full bg-stone-200 px-2 py-0.5 text-[11px] font-semibold text-stone-700">
                             已归档
-                          </span>
-                        )}
-                        {credential.batch_id && (
-                          <span
-                            className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-800"
-                            title={credential.batch_name?.trim() || credential.batch_id}
-                          >
-                            批量 {credential.batch_name?.trim() || shortId(credential.batch_id)}
-                            <span className="sr-only">
-                              批量 · {credential.batch_name?.trim() || shortId(credential.batch_id)}
-                            </span>
                           </span>
                         )}
                         <CredentialFailureTooltip credential={credential}>
@@ -4092,18 +4153,6 @@ export function AccountsScreen({
                             {accountStatusLabel(credential.status)}
                           </span>
                         </CredentialFailureTooltip>
-                        <span
-                          className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700"
-                          title="数字越小优先级越高"
-                        >
-                          P{credential.route_priority}
-                        </span>
-                        <span
-                          className="rounded-full bg-cyan-50 px-2 py-0.5 text-[11px] font-semibold text-cyan-800"
-                          title="账号最大并发数"
-                        >
-                          并发 {credential.max_concurrency}
-                        </span>
                         {(credential.active_request_count ?? 0) > 0 && (
                           <span
                             aria-label={`正在处理请求，当前 ${credential.active_request_count}/${credential.max_concurrency}`}
@@ -4161,16 +4210,24 @@ export function AccountsScreen({
                       <p className="mt-0.5 truncate text-[12px] text-stone-500">
                         {(() => {
                           const requestStats = credentialRequestStats(credential);
-                          if (requestStats.requestCount <= 0) {
-                            return "暂无请求";
-                          }
                           return (
                             <>
-                              <span>请求 {requestStats.requestCount}</span>
-                              <span className={sidebarCollapsed ? "hidden" : "max-[599px]:hidden"}>
-                                {` · 成功 ${requestStats.successCount} · 失败 ${requestStats.failureCount}`}
-                              </span>
-                              <span>{` · 成功率 ${requestStats.rateLabel}`}</span>
+                              {requestStats.requestCount <= 0 ? (
+                                <span>暂无请求</span>
+                              ) : (
+                                <>
+                                  <span>请求 {requestStats.requestCount}</span>
+                                  <span className={sidebarCollapsed ? "hidden" : "max-[599px]:hidden"}>
+                                    {` · 成功 ${requestStats.successCount} · 失败 ${requestStats.failureCount}`}
+                                  </span>
+                                  <span>{` · 成功率 ${requestStats.rateLabel}`}</span>
+                                </>
+                              )}
+                              {credential.batch_id && (
+                                <span title={credential.batch_name?.trim() || credential.batch_id}>
+                                  {` · 批量 ${credential.batch_name?.trim() || shortId(credential.batch_id)}`}
+                                </span>
+                              )}
                             </>
                           );
                         })()}
@@ -4552,6 +4609,7 @@ export function AccountsScreen({
                   <div className="grid max-h-72 gap-1.5 overflow-y-auto rounded-xl border border-stone-200 bg-stone-50 p-2">
                     {routePoolModelsMutation.data.map((model) => {
                       const mappingTargets = poolModelMappingTargets.get(model.id.trim().toLowerCase());
+                      const reasoningLevels = model.supported_reasoning_levels ?? [];
                       return (
                         <div className="flex gap-3 rounded-lg bg-white px-3 py-2" key={model.id}>
                           <div className="min-w-0 flex-1">
@@ -4569,6 +4627,14 @@ export function AccountsScreen({
                             {mappingTargets?.length ? (
                               <p className="mt-0.5 break-words text-[11px] leading-4 text-sky-700">
                                 映射的上游模型：{mappingTargets.join("、")}
+                              </p>
+                            ) : null}
+                            {reasoningLevels.length > 0 ? (
+                              <p className="mt-0.5 break-words text-[11px] leading-4 text-violet-700">
+                                推理等级：{reasoningLevels.map((level) => level.effort).join("、")}
+                                {model.default_reasoning_level
+                                  ? ` · 默认 ${model.default_reasoning_level}`
+                                  : ""}
                               </p>
                             ) : null}
                           </div>
@@ -4783,7 +4849,7 @@ export function AccountsScreen({
                     </span>
                   </label>
                 ) : null}
-                {shouldShowResponsesCustomToolCompat(activePlatform) ? (
+                {shouldShowResponsesCustomToolCompatForFormat(activePlatform, apiInterfaceFormat) ? (
                   <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
                     <input
                       aria-label="兼容 custom 工具（Responses 中转）"
@@ -4795,7 +4861,7 @@ export function AccountsScreen({
                     <span className="grid gap-1">
                       <span>兼容 custom 工具（Responses 中转）</span>
                       <span className="text-[11px] font-medium text-stone-500">
-                        把 custom 工具改写成 function，给不支持 custom 的中转站用。默认关闭。
+                        仅当上游为 Responses 中转且不支持 custom 工具时勾选，把 custom 改写成 function。Chat/Anthropic/Gemini 上游会自动处理，无需勾选。
                       </span>
                     </span>
                   </label>
@@ -4830,7 +4896,7 @@ export function AccountsScreen({
             {createMode === "official" && (
               <div className="mt-4 grid gap-3">
                 <p className="text-[13px] leading-5 text-stone-600">
-                  粘贴 session JSON、auth.json、账号 JSON、Sub2API JSON、accessToken 或 refresh_token。
+                  粘贴 OAuth CPA、API Key CPA、session JSON、auth.json、Sub2API JSON、accessToken 或 refresh_token。
                 </p>
                 <details className="overflow-hidden rounded-xl border border-stone-200 bg-white">
                   <summary className="flex cursor-pointer list-none items-center gap-2 border-b border-stone-100 px-3 py-2 text-[12px] font-semibold text-stone-700">
@@ -4838,7 +4904,7 @@ export function AccountsScreen({
                     必填字段与示例（点击展开）
                   </summary>
                   <div className="space-y-3 p-3 text-[12px] text-stone-600">
-                    <p>支持 session JSON、完整 tokens（id_token + access_token）、Sub2API 导出 JSON、仅 accessToken 或仅 refresh_token。</p>
+                    <p>支持 OAuth CPA、API Key CPA（api-key / api-key-entries）、完整 tokens（id_token + access_token）、Sub2API 导出 JSON、仅 accessToken 或仅 refresh_token。</p>
                     <div>
                       <p className="mb-1 font-semibold text-stone-500">完整 tokens 示例</p>
                       <pre className="overflow-auto rounded-xl border border-stone-200 bg-slate-100 p-3 font-mono text-[12px] leading-5 text-slate-900">{`{
@@ -5166,7 +5232,7 @@ export function AccountsScreen({
                       </span>
                     </label>
                   ) : null}
-                  {shouldShowResponsesCustomToolCompat(activePlatform) ? (
+                  {shouldShowResponsesCustomToolCompatForFormat(activePlatform, editApiInterfaceFormat) ? (
                     <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
                       <input
                         aria-label="兼容 custom 工具（Responses 中转）"
@@ -5178,7 +5244,7 @@ export function AccountsScreen({
                       <span className="grid gap-1">
                         <span>兼容 custom 工具（Responses 中转）</span>
                         <span className="text-[11px] font-medium text-stone-500">
-                          把 custom 工具改写成 function，给不支持 custom 的中转站用。默认关闭。
+                          仅当上游为 Responses 中转且不支持 custom 工具时勾选，把 custom 改写成 function。Chat/Anthropic/Gemini 上游会自动处理，无需勾选。
                         </span>
                       </span>
                     </label>

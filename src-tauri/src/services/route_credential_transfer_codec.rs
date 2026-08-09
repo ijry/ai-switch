@@ -38,6 +38,8 @@ fn api_fingerprint_material(value: &Value) -> Result<Value, AppError> {
     let api_key = string_at(object, &["api-key"])
         .or_else(|| string_at(object, &["api_key"]))
         .or_else(|| string_at(object, &["api-key-entries", "0", "api-key"]))
+        .or_else(|| string_at(object, &["api_key_entries", "0", "api-key"]))
+        .or_else(|| string_at(object, &["api_key_entries", "0", "api_key"]))
         .ok_or_else(|| {
             validation_error(
                 "validation.transfer_fingerprint_api_key",
@@ -58,6 +60,11 @@ fn api_fingerprint_material(value: &Value) -> Result<Value, AppError> {
         .or_else(|| {
             object
                 .contains_key("api-key-entries")
+                .then_some("openai-compatibility")
+        })
+        .or_else(|| {
+            object
+                .contains_key("api_key_entries")
                 .then_some("openai-compatibility")
         })
         .ok_or_else(|| {

@@ -404,9 +404,13 @@ pub async fn dispatch_command(
             if route_model_test_targets_single_account(&request) {
                 let activity = state.route_proxy.activity();
                 to_value(
-                    RouteModelTestService::test_model_with_activity(&state.pool, &activity, request)
-                        .await
-                        .map_err(to_error)?,
+                    RouteModelTestService::test_model_with_activity(
+                        &state.pool,
+                        &activity,
+                        request,
+                    )
+                    .await
+                    .map_err(to_error)?,
                 )
             } else {
                 let base_url = route_model_test_proxy_base_url(state.as_ref()).await?;

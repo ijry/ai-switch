@@ -82,12 +82,8 @@ impl RoutePoolService {
         pool: &SqlitePool,
         request: RoutePoolRouteRequest,
     ) -> Result<RoutePoolRouteOutcome, AppError> {
-        Self::route_once_with_activity(
-            pool,
-            &RouteCredentialActivityRegistry::default(),
-            request,
-        )
-        .await
+        Self::route_once_with_activity(pool, &RouteCredentialActivityRegistry::default(), request)
+            .await
     }
 
     pub async fn route_once_with_activity(
@@ -205,22 +201,22 @@ impl RoutePoolService {
         })
     }
 
-fn member_indexes_by_priority(
-    members: &[crate::models::route_pool::RoutePoolMemberAccount],
-    cursor: i64,
-) -> Vec<usize> {
-    let mut groups = BTreeMap::<i64, Vec<usize>>::new();
-    for (index, member) in members.iter().enumerate() {
-        groups.entry(member.route_priority).or_default().push(index);
+    fn member_indexes_by_priority(
+        members: &[crate::models::route_pool::RoutePoolMemberAccount],
+        cursor: i64,
+    ) -> Vec<usize> {
+        let mut groups = BTreeMap::<i64, Vec<usize>>::new();
+        for (index, member) in members.iter().enumerate() {
+            groups.entry(member.route_priority).or_default().push(index);
+        }
+        groups
+            .into_values()
+            .flat_map(|indexes| {
+                let first = cursor.rem_euclid(indexes.len() as i64) as usize;
+                (0..indexes.len()).map(move |offset| indexes[(first + offset) % indexes.len()])
+            })
+            .collect()
     }
-    groups
-        .into_values()
-        .flat_map(|indexes| {
-            let first = cursor.rem_euclid(indexes.len() as i64) as usize;
-            (0..indexes.len()).map(move |offset| indexes[(first + offset) % indexes.len()])
-        })
-        .collect()
-}
 
     async fn state(
         pool: &SqlitePool,

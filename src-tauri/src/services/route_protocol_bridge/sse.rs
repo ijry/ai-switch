@@ -20,7 +20,9 @@ pub(super) fn parse_sse_data_records(body: &[u8]) -> Result<Vec<Value>, String> 
     Ok(records)
 }
 
-pub(super) fn responses_events_from_completed_response(response: &Value) -> Result<Vec<u8>, String> {
+pub(super) fn responses_events_from_completed_response(
+    response: &Value,
+) -> Result<Vec<u8>, String> {
     let response_id = response
         .get("id")
         .and_then(Value::as_str)
@@ -64,12 +66,9 @@ pub(super) fn responses_events_from_completed_response(response: &Value) -> Resu
                 item,
                 response_id,
             )?,
-            Some("function_call") => emit_function_call_item(
-                &mut output,
-                &mut sequence_number,
-                output_index,
-                item,
-            )?,
+            Some("function_call") => {
+                emit_function_call_item(&mut output, &mut sequence_number, output_index, item)?
+            }
             _ => {}
         }
     }
@@ -108,7 +107,10 @@ fn emit_message_item(
         .unwrap_or(response_id);
     let mut started_item = item.clone();
     started_item["status"] = Value::String("in_progress".to_string());
-    if let Some(content) = started_item.get_mut("content").and_then(Value::as_array_mut) {
+    if let Some(content) = started_item
+        .get_mut("content")
+        .and_then(Value::as_array_mut)
+    {
         for part in content {
             if part.get("type").and_then(Value::as_str) == Some("output_text") {
                 part["text"] = Value::String(String::new());
@@ -222,7 +224,10 @@ fn emit_function_call_item(
         .get("id")
         .and_then(Value::as_str)
         .unwrap_or("fc_ai_switch");
-    let arguments = item.get("arguments").and_then(Value::as_str).unwrap_or("{}");
+    let arguments = item
+        .get("arguments")
+        .and_then(Value::as_str)
+        .unwrap_or("{}");
     let mut started_item = item.clone();
     started_item["status"] = Value::String("in_progress".to_string());
     started_item["arguments"] = Value::String(String::new());

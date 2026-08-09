@@ -1,8 +1,8 @@
 use crate::error::AppError;
 use crate::models::settings::{AppSettings, AppSettingsView};
 use crate::paths::AppPaths;
-use crate::services::settings_service::SettingsService;
 use crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime;
+use crate::services::settings_service::SettingsService;
 
 pub async fn get_settings_core(
     paths: &AppPaths,
@@ -17,8 +17,8 @@ pub async fn save_settings_core(
     settings: AppSettings,
 ) -> Result<AppSettingsView, AppError> {
     let previous = SettingsService::load(paths).await?;
-    let changed = previous.ccswitch_deeplink_compat_enabled
-        != settings.ccswitch_deeplink_compat_enabled;
+    let changed =
+        previous.ccswitch_deeplink_compat_enabled != settings.ccswitch_deeplink_compat_enabled;
     if changed {
         runtime.set_ccswitch_enabled(settings.ccswitch_deeplink_compat_enabled)?;
     }

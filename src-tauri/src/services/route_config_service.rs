@@ -1,13 +1,22 @@
-use crate::adapters::route_config::{RouteConfigInput, TargetAdapter, TargetAdapterRegistry};
+use crate::adapters::route_config::{
+    codex_model_catalog_path, RouteConfigInput, TargetAdapter, TargetAdapterRegistry,
+};
+use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
+use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
 use crate::error::AppError;
 use crate::models::config_snapshot::ConfigWriteOutcome;
 use crate::models::platform::{PlatformId, PlatformOperation};
+use crate::models::route_credential::RouteCredentialPoolScope;
+use crate::models::route_credential_transfer::RouteCredentialSelectionContext;
 use crate::paths::AppPaths;
 use crate::services::config_write_service::{
     ConfigWriteCoordinator, ConfigWriteRequest, ConfigWriteRuntimeState,
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
+use crate::services::route_model_capability::{
+    codex_model_catalog_payload, parse_model_capability,
+};
 use directories::BaseDirs;
 use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
@@ -60,6 +69,9 @@ impl RouteConfigService {
             &generate_route_proxy_key(),
         )
         .await?;
+        if platform == PlatformId::Codex {
+            Self::write_codex_model_catalog(pool, home).await?;
+        }
         let request = ConfigWriteRequest {
             adapter,
             home: home.to_path_buf(),
@@ -147,6 +159,9 @@ impl RouteConfigService {
                 ));
                 continue;
             };
+            if parsed == PlatformId::Codex {
+                Self::write_codex_model_catalog(pool, home).await?;
+            }
             requests.push(ConfigWriteRequest {
                 adapter,
                 home: home.to_path_buf(),
@@ -190,6 +205,9 @@ impl RouteConfigService {
                 route_proxy_key: route_proxy_key.to_string(),
             },
         };
+        if platform == PlatformId::Codex {
+            Self::write_codex_model_catalog(pool, home).await?;
+        }
         ConfigWriteCoordinator::write_group(paths, pool, runtime, vec![request])
             .await?
             .into_iter()
@@ -199,6 +217,49 @@ impl RouteConfigService {
                 message: "Configuration write returned no target outcome".to_string(),
                 details: None,
                 recoverable: false,
+            })
+    }
+
+    async fn write_codex_model_catalog(pool: &SqlitePool, home: &Path) -> Result<(), AppError> {
+        let ids = RoutePoolRepository::list_member_ids(pool, PlatformId::Codex.as_str()).await?;
+        let credentials = RouteCredentialRepository::list_by_ids(
+            pool,
+            &ids,
+            &RouteCredentialSelectionContext {
+                platform: PlatformId::Codex.as_str().to_string(),
+                pool_scope: RouteCredentialPoolScope::InPool,
+            },
+        )
+        .await?;
+        let capabilities = credentials
+            .iter()
+            .map(|credential| parse_model_capability(&credential.config_json))
+            .collect::<Vec<_>>();
+        let payload = codex_model_catalog_payload(&capabilities);
+        let bytes = serde_json::to_vec_pretty(&payload).map_err(|err| AppError::Validation {
+            code: "validation.codex_model_catalog_serialization",
+            message: "Could not serialize Codex model catalog".to_string(),
+            details: Some(err.to_string()),
+            recoverable: false,
+        })?;
+        let path = codex_model_catalog_path(home);
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|err| AppError::Filesystem {
+                    code: "filesystem.codex_model_catalog_dir",
+                    message: "Could not create Codex configuration directory".to_string(),
+                    details: Some(err.to_string()),
+                    recoverable: true,
+                })?;
+        }
+        tokio::fs::write(&path, bytes)
+            .await
+            .map_err(|err| AppError::Filesystem {
+                code: "filesystem.codex_model_catalog_write",
+                message: "Could not write Codex model catalog".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
             })
     }
 }
@@ -479,6 +540,15 @@ mod tests {
             .await
             .expect("codex config");
         assert!(codex_config.contains("https://127.0.0.1:43111"));
+        assert!(codex_config.contains("model_catalog_json = \"ai-switch-model-catalog.json\""));
+        let catalog: serde_json::Value = serde_json::from_slice(
+            &tokio::fs::read(home.path().join(".codex/ai-switch-model-catalog.json"))
+                .await
+                .expect("codex model catalog"),
+        )
+        .expect("valid codex model catalog");
+        assert!(catalog.get("models").is_some());
+        assert!(catalog.get("data").is_none());
         assert!(!home.path().join(".claude/settings.json").exists());
         assert!(!home.path().join(".gemini/settings.json").exists());
         assert!(!home.path().join(".grok/settings.json").exists());

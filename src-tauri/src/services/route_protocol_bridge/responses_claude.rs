@@ -2,6 +2,7 @@
 mod tests {
     use super::{anthropic_response_to_responses, responses_request_to_anthropic};
     use serde_json::Value;
+    use std::collections::BTreeMap;
 
     #[test]
     fn converts_responses_request_to_claude_messages() {
@@ -62,7 +63,10 @@ mod tests {
 
         assert_eq!(converted["messages"][0]["content"][0]["type"], "text");
         assert_eq!(converted["messages"][0]["content"][1]["type"], "image");
-        assert_eq!(converted["messages"][0]["content"][1]["source"]["type"], "base64");
+        assert_eq!(
+            converted["messages"][0]["content"][1]["source"]["type"],
+            "base64"
+        );
         assert_eq!(
             converted["messages"][0]["content"][1]["source"]["media_type"],
             "image/png"
@@ -92,6 +96,7 @@ mod tests {
             200,
             Some("application/json"),
             serde_json::to_vec(&upstream).unwrap().as_slice(),
+            &BTreeMap::new(),
         )
         .unwrap();
         let output: Value = serde_json::from_slice(&converted.body).unwrap();
@@ -122,9 +127,13 @@ mod tests {
             "data: {\"type\":\"message_stop\"}\n\n"
         );
 
-        let converted =
-            anthropic_response_to_responses(200, Some("text/event-stream"), upstream.as_bytes())
-                .unwrap();
+        let converted = anthropic_response_to_responses(
+            200,
+            Some("text/event-stream"),
+            upstream.as_bytes(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
         let output = String::from_utf8(converted.body).unwrap();
 
         assert!(output.contains("event: response.created"));
@@ -134,6 +143,11 @@ mod tests {
     }
 }
 
+use super::common::{
+    anthropic_thinking_budget, flatten_responses_function_tools, is_reasoning_input_item,
+    response_tool_name, response_tool_namespace, response_tool_parameters,
+    responses_reasoning_effort, ResponsesToolNamespaces,
+};
 use super::{common::parse_base64_data_url, sse, TransformedBridgeResponse};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -160,15 +174,33 @@ pub(super) fn responses_request_to_anthropic(body: &[u8]) -> Result<Vec<u8>, Str
         messages.extend(convert_input(input)?);
     }
     result.insert("messages".to_string(), Value::Array(messages));
+    let max_tokens = object.get("max_output_tokens").and_then(Value::as_i64);
     if let Some(max_tokens) = object.get("max_output_tokens") {
         result.insert("max_tokens".to_string(), max_tokens.clone());
     }
+    if let Some(effort) = responses_reasoning_effort(object)
+        .and_then(|effort| anthropic_thinking_budget(&effort, max_tokens))
+    {
+        result.insert(
+            "thinking".to_string(),
+            json!({"type": "enabled", "budget_tokens": effort}),
+        );
+    }
     copy_fields(object, &mut result, &["temperature", "top_p", "stream"]);
+    if result.get("thinking").is_some() {
+        result.remove("temperature");
+    }
     if let Some(stop) = object.get("stop") {
         result.insert("stop_sequences".to_string(), stop.clone());
     }
     if let Some(tools) = object.get("tools") {
-        result.insert("tools".to_string(), convert_tools(tools)?);
+        let converted_tools = convert_tools(tools)?;
+        if converted_tools
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty())
+        {
+            result.insert("tools".to_string(), converted_tools);
+        }
     }
 
     serde_json::to_vec(&Value::Object(result))
@@ -179,6 +211,7 @@ pub(super) fn anthropic_response_to_responses(
     status: u16,
     content_type: Option<&str>,
     body: &[u8],
+    tool_namespaces: &ResponsesToolNamespaces,
 ) -> Result<TransformedBridgeResponse, String> {
     if !(200..300).contains(&status) {
         return Ok(TransformedBridgeResponse {
@@ -189,28 +222,34 @@ pub(super) fn anthropic_response_to_responses(
     if content_type.is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"))
         || looks_like_sse(body)
     {
-        let response = anthropic_sse_to_responses_json(body)?;
+        let response = anthropic_sse_to_responses_json(body, tool_namespaces)?;
         return Ok(TransformedBridgeResponse {
             body: sse::responses_events_from_completed_response(&response)?,
             content_type: Some("text/event-stream".to_string()),
         });
     }
     Ok(TransformedBridgeResponse {
-        body: anthropic_json_to_responses(body)?,
+        body: anthropic_json_to_responses(body, tool_namespaces)?,
         content_type: Some("application/json".to_string()),
     })
 }
 
-fn anthropic_json_to_responses(body: &[u8]) -> Result<Vec<u8>, String> {
+fn anthropic_json_to_responses(
+    body: &[u8],
+    tool_namespaces: &ResponsesToolNamespaces,
+) -> Result<Vec<u8>, String> {
     let value = serde_json::from_slice::<Value>(body)
         .map_err(|error| format!("Anthropic response JSON is invalid: {error}"))?;
     if value.get("error").is_some() {
         return Ok(body.to_vec());
     }
-    anthropic_value_to_responses_json(&value)
+    anthropic_value_to_responses_json(&value, tool_namespaces)
 }
 
-fn anthropic_value_to_responses_json(value: &Value) -> Result<Vec<u8>, String> {
+fn anthropic_value_to_responses_json(
+    value: &Value,
+    tool_namespaces: &ResponsesToolNamespaces,
+) -> Result<Vec<u8>, String> {
     let response_id = value
         .get("id")
         .and_then(Value::as_str)
@@ -223,6 +262,7 @@ fn anthropic_value_to_responses_json(value: &Value) -> Result<Vec<u8>, String> {
     let (output, output_text) = anthropic_content_to_responses_output(
         response_id,
         value.get("content").and_then(Value::as_array),
+        tool_namespaces,
     )?;
     let response = json!({
         "id": response_id,
@@ -240,7 +280,10 @@ fn anthropic_value_to_responses_json(value: &Value) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("Could not serialize Responses response: {error}"))
 }
 
-fn anthropic_sse_to_responses_json(body: &[u8]) -> Result<Value, String> {
+fn anthropic_sse_to_responses_json(
+    body: &[u8],
+    tool_namespaces: &ResponsesToolNamespaces,
+) -> Result<Value, String> {
     let mut state = AnthropicSseState::default();
     for value in sse::parse_sse_data_records(body)? {
         match value.get("type").and_then(Value::as_str) {
@@ -262,13 +305,14 @@ fn anthropic_sse_to_responses_json(body: &[u8]) -> Result<Value, String> {
                 state.apply_delta(index, value.get("delta").unwrap_or(&Value::Null))?;
             }
             Some("message_delta") => {
-                if let Some(stop_reason) = value
-                    .pointer("/delta/stop_reason")
-                    .and_then(Value::as_str)
+                if let Some(stop_reason) =
+                    value.pointer("/delta/stop_reason").and_then(Value::as_str)
                 {
                     state.stop_reason = stop_reason.to_string();
                 }
-                if let Some(output_tokens) = value.pointer("/usage/output_tokens").and_then(Value::as_i64)
+                if let Some(output_tokens) = value
+                    .pointer("/usage/output_tokens")
+                    .and_then(Value::as_i64)
                 {
                     state.output_tokens = output_tokens;
                 }
@@ -288,7 +332,7 @@ fn anthropic_sse_to_responses_json(body: &[u8]) -> Result<Value, String> {
             "output_tokens": state.output_tokens
         }
     });
-    let bytes = anthropic_value_to_responses_json(&message)?;
+    let bytes = anthropic_value_to_responses_json(&message, tool_namespaces)?;
     serde_json::from_slice(&bytes)
         .map_err(|error| format!("Could not parse buffered Responses JSON: {error}"))
 }
@@ -383,7 +427,11 @@ impl AnthropicSseState {
 fn convert_input(input: &Value) -> Result<Vec<Value>, String> {
     match input {
         Value::String(text) => Ok(vec![json!({"role": "user", "content": [text_block(text)]})]),
-        Value::Array(items) => items.iter().map(convert_input_item).collect(),
+        Value::Array(items) => items
+            .iter()
+            .filter(|item| !is_reasoning_input_item(item))
+            .map(convert_input_item)
+            .collect(),
         Value::Null => Ok(Vec::new()),
         _ => Err("Responses input must be a string or array".to_string()),
     }
@@ -446,34 +494,43 @@ fn convert_input_item(item: &Value) -> Result<Value, String> {
 fn convert_message_content(content: &Value) -> Result<Vec<Value>, String> {
     match content {
         Value::String(text) => Ok(vec![text_block(text)]),
-        Value::Array(parts) => parts.iter().map(convert_content_part).collect(),
+        Value::Array(parts) => parts
+            .iter()
+            .map(convert_content_part)
+            .filter_map(|result| match result {
+                Ok(Some(value)) => Some(Ok(value)),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect(),
         Value::Null => Ok(Vec::new()),
         _ => Err("Responses message content must be a string or array".to_string()),
     }
 }
 
-fn convert_content_part(part: &Value) -> Result<Value, String> {
+fn convert_content_part(part: &Value) -> Result<Option<Value>, String> {
     let object = part
         .as_object()
         .ok_or_else(|| "Responses content parts must be objects".to_string())?;
     match object.get("type").and_then(Value::as_str) {
-        Some("input_text" | "output_text" | "text") => {
-            let text = required_string(object, "text", "text content")?;
-            Ok(text_block(text))
-        }
+        Some("input_text" | "output_text" | "text") => Ok(object
+            .get("text")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(|text| text_block(text))),
         Some("input_image") => {
             let image_url = required_string(object, "image_url", "input_image")?;
             let Some((media_type, data)) = parse_base64_data_url(image_url) else {
                 return Err("Anthropic bridge only supports base64 data URL images".to_string());
             };
-            Ok(json!({
+            Ok(Some(json!({
                 "type": "image",
                 "source": {
                     "type": "base64",
                     "media_type": media_type,
                     "data": data
                 }
-            }))
+            })))
         }
         Some(other) => Err(format!("Unsupported Responses content type: {other}")),
         None => Err("Responses content part is missing type".to_string()),
@@ -481,22 +538,10 @@ fn convert_content_part(part: &Value) -> Result<Value, String> {
 }
 
 fn convert_tools(tools: &Value) -> Result<Value, String> {
-    let tools = tools
-        .as_array()
-        .ok_or_else(|| "Responses tools must be an array".to_string())?;
+    let tools = flatten_responses_function_tools(tools)?;
     let mut converted = Vec::with_capacity(tools.len());
-    for tool in tools {
-        let object = tool
-            .as_object()
-            .ok_or_else(|| "Responses tool entries must be objects".to_string())?;
-        let tool_type = object
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("function");
-        if tool_type != "function" {
-            return Err(format!("Unsupported Responses tool type: {tool_type}"));
-        }
-        let name = required_string(object, "name", "function tool")?;
+    for object in tools {
+        let name = required_string(&object, "name", "function tool")?;
         let mut converted_tool = Map::new();
         converted_tool.insert("name".to_string(), Value::String(name.to_string()));
         if let Some(description) = object.get("description") {
@@ -504,10 +549,7 @@ fn convert_tools(tools: &Value) -> Result<Value, String> {
         }
         converted_tool.insert(
             "input_schema".to_string(),
-            object
-                .get("parameters")
-                .cloned()
-                .unwrap_or_else(|| json!({"type": "object", "properties": {}})),
+            response_tool_parameters(&object),
         );
         converted.push(Value::Object(converted_tool));
     }
@@ -517,6 +559,7 @@ fn convert_tools(tools: &Value) -> Result<Value, String> {
 fn anthropic_content_to_responses_output(
     response_id: &str,
     content: Option<&Vec<Value>>,
+    tool_namespaces: &ResponsesToolNamespaces,
 ) -> Result<(Vec<Value>, String), String> {
     let mut output = Vec::new();
     let mut text = String::new();
@@ -542,19 +585,24 @@ fn anthropic_content_to_responses_output(
                     .and_then(Value::as_str)
                     .unwrap_or("call_ai_switch");
                 let name = item.get("name").and_then(Value::as_str).unwrap_or("tool");
+                let response_name = response_tool_name(name, tool_namespaces);
                 let arguments =
                     serde_json::to_string(item.get("input").unwrap_or(&Value::Object(Map::new())))
                         .map_err(|error| {
                             format!("Could not serialize Anthropic tool input: {error}")
                         })?;
-                output.push(json!({
+                let mut function_call = json!({
                     "id": format!("fc_{}_{}", sanitize_id(response_id), output.len()),
                     "type": "function_call",
                     "status": "completed",
                     "call_id": call_id,
-                    "name": name,
+                    "name": response_name,
                     "arguments": arguments
-                }));
+                });
+                if let Some(namespace) = response_tool_namespace(name, tool_namespaces) {
+                    function_call["namespace"] = Value::String(namespace.to_string());
+                }
+                output.push(function_call);
             }
             Some(other) => return Err(format!("Unsupported Anthropic content type: {other}")),
             None => return Err("Anthropic content block is missing type".to_string()),

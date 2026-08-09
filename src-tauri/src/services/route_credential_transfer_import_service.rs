@@ -3043,11 +3043,13 @@ fn parse_api_payload(
     display_name_masked: &str,
 ) -> Result<ApiPayload, RouteCredentialTransferIssue> {
     let compatibility = section_hint == Some("openai-compatibility")
-        || (section_hint.is_none() && item.contains_key("api-key-entries"));
+        || (section_hint.is_none()
+            && (item.contains_key("api-key-entries") || item.contains_key("api_key_entries")));
     let mut issue_codes = Vec::new();
     let api_key = if compatibility {
         let entries = item
             .get("api-key-entries")
+            .or_else(|| item.get("api_key_entries"))
             .and_then(Value::as_array)
             .ok_or_else(|| {
                 transfer_issue(
@@ -3087,7 +3089,7 @@ fn parse_api_payload(
             }
             push_issue_code(&mut issue_codes, "transfer.api_field_ignored");
         }
-        string_value(entry, &["api-key"]).ok_or_else(|| {
+        string_value(entry, &["api-key", "api_key"]).ok_or_else(|| {
             transfer_issue(
                 item_index,
                 display_name_masked,
@@ -3096,7 +3098,7 @@ fn parse_api_payload(
             )
         })?
     } else {
-        string_value(item, &["api-key"]).ok_or_else(|| {
+        string_value(item, &["api-key", "api_key"]).ok_or_else(|| {
             transfer_issue(
                 item_index,
                 display_name_masked,
@@ -3105,7 +3107,7 @@ fn parse_api_payload(
             )
         })?
     };
-    let base_url = string_value(item, &["base-url"]).ok_or_else(|| {
+    let base_url = string_value(item, &["base-url", "base_url"]).ok_or_else(|| {
         transfer_issue(
             item_index,
             display_name_masked,
@@ -3150,6 +3152,7 @@ fn parse_api_payload(
             "base-url",
             "headers",
             "api-key-entries",
+            "api_key_entries",
             "models",
             "x-ai-switch",
         ][..]
@@ -3157,7 +3160,9 @@ fn parse_api_payload(
         &[
             "type",
             "api-key",
+            "api_key",
             "base-url",
+            "base_url",
             "headers",
             "models",
             "name",
@@ -3704,8 +3709,10 @@ fn api_fingerprint_credential(item: &Map<String, Value>, cpa_section: &str) -> V
     credential.remove("type");
     if cpa_section == "openai-compatibility" {
         credential.remove("api-key");
+        credential.remove("api_key");
     } else {
         credential.remove("api-key-entries");
+        credential.remove("api_key_entries");
     }
     Value::Object(credential)
 }
@@ -3828,9 +3835,15 @@ fn mask_display_name(value: &str) -> String {
 }
 
 fn has_api_shape(item: &Map<String, Value>) -> bool {
-    ["api-key", "api-key-entries", "base-url"]
-        .iter()
-        .any(|field| item.get(*field).is_some_and(is_nonempty))
+    [
+        "api-key",
+        "api_key",
+        "api-key-entries",
+        "api_key_entries",
+        "base-url",
+    ]
+    .iter()
+    .any(|field| item.get(*field).is_some_and(is_nonempty))
 }
 
 fn has_official_auth_shape(item: &Map<String, Value>) -> bool {

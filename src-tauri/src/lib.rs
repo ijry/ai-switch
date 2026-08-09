@@ -30,12 +30,11 @@ use commands::import_commands::import_example_json;
 use commands::platform_commands::list_platform_capabilities;
 use commands::route_credential_commands::{
     archive_route_credentials, copy_route_credential, create_api_route_credential,
-    delete_route_credential,
-    get_route_credential, import_official_route_credentials_from_files,
+    delete_route_credential, get_route_credential, import_official_route_credentials_from_files,
     import_official_route_credentials_from_text, list_route_credentials,
-    list_route_credentials_page, reorder_route_credentials,
-    refresh_route_credential_quota, refresh_route_credentials_quota, update_route_credential,
-    restore_route_credentials, set_route_credential_statuses,
+    list_route_credentials_page, refresh_route_credential_quota, refresh_route_credentials_quota,
+    reorder_route_credentials, restore_route_credentials, set_route_credential_statuses,
+    update_route_credential,
 };
 use commands::route_credential_transfer_commands::{
     export_route_credentials, import_route_credentials, preview_route_credential_import,
@@ -73,16 +72,15 @@ use database::open_migrated_pool;
 use paths::AppPaths;
 use services::config_write_service::ConfigWriteRuntimeState;
 use services::deeplink_protocol_service::{
-    DeepLinkProtocolRegistrar, DeepLinkProtocolRuntime, DeepLinkProtocolStatus,
-    UNSUPPORTED_REASON,
+    DeepLinkProtocolRegistrar, DeepLinkProtocolRuntime, DeepLinkProtocolStatus, UNSUPPORTED_REASON,
 };
 use services::deeplink_service::{parse_deeplink_url, DeepLinkErrorPayload};
-use services::route_proxy_service::RouteProxyRuntimeState;
 use services::route_proxy_https_service::RouteProxyHttpsService;
+use services::route_proxy_service::RouteProxyRuntimeState;
 use services::tailscale_service::TailscaleRuntimeState;
 use services::web_service::{WebService, WebServiceRuntimeState};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
@@ -176,23 +174,26 @@ impl DeepLinkProtocolRegistrar for TauriDeepLinkRegistrar {
                     }
                 })
             } else {
-                let owns_scheme = self.app.deep_link().is_registered("ccswitch").map_err(|error| {
-                    crate::error::AppError::Validation {
-                        code: "capability.deeplink_compat_status",
-                        message: "Could not inspect cc-switch deep link ownership".into(),
-                        details: Some(error.to_string()),
-                        recoverable: true,
-                    }
-                })?;
+                let owns_scheme =
+                    self.app
+                        .deep_link()
+                        .is_registered("ccswitch")
+                        .map_err(|error| crate::error::AppError::Validation {
+                            code: "capability.deeplink_compat_status",
+                            message: "Could not inspect cc-switch deep link ownership".into(),
+                            details: Some(error.to_string()),
+                            recoverable: true,
+                        })?;
                 if owns_scheme {
-                    self.app.deep_link().unregister("ccswitch").map_err(|error| {
-                        crate::error::AppError::Validation {
+                    self.app
+                        .deep_link()
+                        .unregister("ccswitch")
+                        .map_err(|error| crate::error::AppError::Validation {
                             code: "capability.deeplink_compat_unregister",
                             message: "Could not unregister cc-switch deep link".into(),
                             details: Some(error.to_string()),
                             recoverable: true,
-                        }
-                    })?;
+                        })?;
                 }
                 Ok(())
             }
@@ -202,7 +203,8 @@ impl DeepLinkProtocolRegistrar for TauriDeepLinkRegistrar {
             if enabled {
                 Err(crate::error::AppError::Validation {
                     code: UNSUPPORTED_REASON,
-                    message: "cc-switch deep-link compatibility is unavailable on this runtime".into(),
+                    message: "cc-switch deep-link compatibility is unavailable on this runtime"
+                        .into(),
                     details: None,
                     recoverable: true,
                 })
@@ -273,7 +275,10 @@ pub fn run() {
                 .items(&[&show_item, &quit_item])
                 .build()?;
             let tray = app.tray_by_id("main").ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, "AI Switch tray icon is unavailable")
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "AI Switch tray icon is unavailable",
+                )
             })?;
             tray.set_menu(Some(tray_menu))?;
             tray.on_tray_icon_event(|tray, event| {
@@ -303,9 +308,11 @@ pub fn run() {
                 .set_emitter(EventEmitter::Tauri(app.handle().clone()));
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             {
-                state.deeplink_protocols.attach_registrar(Arc::new(TauriDeepLinkRegistrar {
-                    app: app.handle().clone(),
-                }));
+                state
+                    .deeplink_protocols
+                    .attach_registrar(Arc::new(TauriDeepLinkRegistrar {
+                        app: app.handle().clone(),
+                    }));
                 if let Ok(settings) = tauri::async_runtime::block_on(
                     services::settings_service::SettingsService::load(&state.paths),
                 ) {
@@ -326,7 +333,9 @@ pub fn run() {
 
             let route_proxy_state = app.state::<AppState>().inner().clone();
             tauri::async_runtime::spawn(async move {
-                let Ok(config) = RouteProxyHttpsService::load_config(&route_proxy_state.paths).await else {
+                let Ok(config) =
+                    RouteProxyHttpsService::load_config(&route_proxy_state.paths).await
+                else {
                     return;
                 };
                 if !config.auto_start {

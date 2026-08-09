@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, RawPathParams, Request, State};
@@ -197,7 +197,6 @@ fn api_error_response(status: StatusCode, error: ApiError) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::to_bytes;
     use crate::database::{create_memory_pool, run_migrations};
     use crate::services::config_write_service::ConfigWriteRuntimeState;
     use crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime;
@@ -206,6 +205,7 @@ mod tests {
     use crate::services::web_service::WebServiceRuntimeState;
     use crate::terminal_manager::TerminalManager;
     use crate::web::event_bridge::WebEventBroadcaster;
+    use axum::body::to_bytes;
     use std::net::SocketAddr;
     use tempfile::tempdir;
 
@@ -219,11 +219,8 @@ mod tests {
         sensitive_commands_enabled: bool,
         token: &str,
     ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-        spawn_test_router_with_gate(
-            Arc::new(AtomicBool::new(sensitive_commands_enabled)),
-            token,
-        )
-        .await
+        spawn_test_router_with_gate(Arc::new(AtomicBool::new(sensitive_commands_enabled)), token)
+            .await
     }
 
     async fn spawn_test_router_with_gate(
@@ -250,9 +247,7 @@ mod tests {
             temp.path().to_path_buf(),
             sensitive_command_gate,
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
@@ -347,9 +342,7 @@ mod tests {
     async fn percent_encoded_export_command_cannot_bypass_sensitive_auth() {
         let (address, server) = spawn_test_router_with_token(true, "").await;
         let response = reqwest::Client::new()
-            .post(format!(
-                "http://{address}/api/%65xport_route_credentials"
-            ))
+            .post(format!("http://{address}/api/%65xport_route_credentials"))
             .json(&json!({
                 "input": {
                     "selection_context": {"platform": "claude", "pool_scope": "in_pool"},
@@ -417,7 +410,9 @@ mod tests {
     async fn import_route_enforces_sensitive_auth_body_limit_and_cache_headers() {
         let (address, server) = spawn_test_router(true).await;
         let response = reqwest::Client::new()
-            .post(format!("http://{address}/api/preview_route_credential_import"))
+            .post(format!(
+                "http://{address}/api/preview_route_credential_import"
+            ))
             .bearer_auth("secret")
             .header(header::CONTENT_TYPE, "application/json")
             .body(vec![b' '; SENSITIVE_COMMAND_BODY_LIMIT + 1])
@@ -511,8 +506,7 @@ mod tests {
     #[tokio::test]
     async fn sensitive_command_gate_updates_without_rebuilding_the_router() {
         let gate = Arc::new(AtomicBool::new(true));
-        let (address, server) =
-            spawn_test_router_with_gate(Arc::clone(&gate), "secret").await;
+        let (address, server) = spawn_test_router_with_gate(Arc::clone(&gate), "secret").await;
         let client = reqwest::Client::new();
         let enabled = client
             .post(format!("http://{address}/api/export_route_credentials"))
