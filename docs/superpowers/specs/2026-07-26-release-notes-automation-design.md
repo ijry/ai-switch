@@ -5,7 +5,7 @@
 
 ## 目标
 
-在手动发布工作流中自动生成 GitHub Release 发布说明，并将同一份内容写入 Tauri 更新清单，使桌面端更新窗口可以显示更新日志。
+在标签自动发布工作流中生成 GitHub Release 发布说明，并将同一份内容写入 Tauri 更新清单，使桌面端更新窗口可以显示更新日志。
 
 ## 方案
 
@@ -13,7 +13,7 @@
 - 发布资源生成前，先使用 `ncipollo/release-action` 创建或更新一个草稿 Release，并启用 `generateReleaseNotes: true`。
 - 通过 GitHub API 读取草稿 Release 的正文，保存为临时的 `release-notes.md` 文件。
 - 扩展 `scripts/create-updater-manifest.mjs`，支持可选的 `--notes-file` 参数，并将文件内容写入 `latest.json` 的 `notes` 字段。
-- 校验清单和签名后，再次执行 `ncipollo/release-action` 上传资源，并按照工作流输入决定是否取消草稿状态。
+- 校验清单和签名后，再次执行 `ncipollo/release-action` 上传资源，并将草稿 Release 自动发布。
 - 不新增提交到仓库的 `CHANGELOG.md`，也不维护自定义 commit 解析脚本。
 
 ## 兼容性

@@ -1,34 +1,79 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag, for example v0.1.0"
-        required: true
-        type: string
-      release_name:
-        description: "Release display name. Defaults to tag when empty."
-        required: false
-        type: string
-      draft:
-        description: "Create or keep the release as a draft"
-        required: true
-        default: true
-        type: boolean
-      prerelease:
-        description: "Mark the release as a prerelease"
-        required: true
-        default: false
-        type: boolean
+  push:
+    tags:
+      - "v*.*.*"
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  prepare:
+    name: Prepare GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate release tag
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(rc|beta|alpha)(\.[0-9]+)?)?$ ]]; then
+            echo "Unsupported release tag format: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+          package_version="$(node -p "require('./package.json').version")"
+          tauri_version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ "$package_version" != "$tauri_version" ]]; then
+            echo "package.json version ${package_version} does not match Tauri version ${tauri_version}."
+            exit 1
+          fi
+          if [[ "$tag_version" != "$tauri_version" ]]; then
+            echo "Release tag ${GITHUB_REF_NAME} does not match app version v${tauri_version}."
+            exit 1
+          fi
+
+      - name: Check tag commit belongs to default branch
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git fetch origin "$DEFAULT_BRANCH"
+          tag_commit="$(git rev-list -n 1 "$GITHUB_REF_NAME")"
+          if ! git merge-base --is-ancestor "$tag_commit" "origin/$DEFAULT_BRANCH"; then
+            echo "Tag ${GITHUB_REF_NAME} is not based on ${DEFAULT_BRANCH}."
+            exit 1
+          fi
+
+      - name: Create draft release and generate notes
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          commit: ${{ github.sha }}
+          name: ${{ github.ref_name }}
+          draft: true
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+          allowUpdates: true
+          generateReleaseNotes: true
+
   build:
     name: Build ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -163,7 +208,7 @@ jobs:
       - name: Stage release assets
         shell: pwsh
         run: |
-          $tag = "${{ inputs.tag }}"
+          $tag = "${{ github.ref_name }}"
           $dest = "release-assets/$env:UPDATER_PLATFORM"
           New-Item -ItemType Directory -Force $dest | Out-Null
 
@@ -201,7 +246,9 @@ jobs:
   publish:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
-    needs: build
+    needs:
+      - prepare
+      - build
 
     steps:
       - name: Checkout
@@ -217,27 +264,16 @@ jobs:
         with:
           path: release-assets
 
-      - name: Create draft release and generate notes
-        uses: ncipollo/release-action@v1
-        with:
-          tag: ${{ inputs.tag }}
-          commit: ${{ github.sha }}
-          name: ${{ inputs.release_name != '' && inputs.release_name || inputs.tag }}
-          draft: true
-          prerelease: ${{ inputs.prerelease }}
-          allowUpdates: true
-          generateReleaseNotes: true
-
       - name: Read generated release notes
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api "repos/${{ github.repository }}/releases/tags/${{ inputs.tag }}" --jq '.body // ""' > release-notes.md
+        run: gh api "repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}" --jq '.body // ""' > release-notes.md
 
       - name: Generate updater manifest
         run: |
           node scripts/create-updater-manifest.mjs \
             --assets-dir release-assets \
-            --tag "${{ inputs.tag }}" \
+            --tag "${{ github.ref_name }}" \
             --repo "${{ github.repository }}" \
             --output release-assets/latest.json \
             --notes-file release-notes.md
@@ -248,11 +284,11 @@ jobs:
       - name: Create or update release
         uses: ncipollo/release-action@v1
         with:
-          tag: ${{ inputs.tag }}
+          tag: ${{ github.ref_name }}
           commit: ${{ github.sha }}
-          name: ${{ inputs.release_name != '' && inputs.release_name || inputs.tag }}
-          draft: ${{ inputs.draft }}
-          prerelease: ${{ inputs.prerelease }}
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
           allowUpdates: true
           generateReleaseNotes: false
           replacesArtifacts: true

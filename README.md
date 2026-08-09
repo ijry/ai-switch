@@ -75,7 +75,7 @@ pnpm tauri:build
 
 ## Release Automation
 
-GitHub Actions can build cross-platform release assets manually from the **Release** workflow.
+GitHub Actions automatically builds and publishes cross-platform release assets when a version tag is pushed.
 
 Required repository secret:
 
@@ -85,12 +85,21 @@ Optional repository secret:
 
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 
-Run the workflow from GitHub Actions with:
+Create and push a version tag:
 
-- `tag`: release tag such as `v0.1.0`
-- `release_name`: optional display name
-- `draft`: keep `true` for review before publishing
-- `prerelease`: set `true` for prerelease builds
+```bash
+git tag v0.4.2
+git push origin v0.4.2
+```
+
+Tags containing `-rc`, `-beta`, or `-alpha` are published as prereleases. For example:
+
+```bash
+git tag v0.4.2-rc.1
+git push origin v0.4.2-rc.1
+```
+
+The tag version without the `v` prefix must exactly match both `package.json` and `src-tauri/tauri.conf.json`, including any prerelease suffix. The tagged commit must belong to the repository's default branch.
 
 The workflow builds signed Tauri desktop bundles, `ai-switch-server`, `ai-switch-tsnet`, and `latest.json` updater metadata for GitHub Releases.
 
