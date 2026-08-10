@@ -535,6 +535,17 @@ describe("AccountsScreen", () => {
     expect(screen.queryByLabelText("Codex 已支持")).not.toBeInTheDocument();
     expect(await screen.findByText("Team Account")).toBeInTheDocument();
     expect(screen.getByText("API Account")).toBeInTheDocument();
+    // The API credential derives a clickable domain link from its base_url.
+    const openLinkButton = screen.getByLabelText("打开 api.example.com");
+    expect(openLinkButton).toHaveAttribute("title", "https://api.example.com");
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    await userEvent.click(openLinkButton);
+    expect(openSpy).toHaveBeenCalledWith(
+      "https://api.example.com",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    openSpy.mockRestore();
     expect(screen.getByText("算力中心")).toBeInTheDocument();
     expect(screen.getByText("请求 3")).toBeInTheDocument();
     expect(screen.getByText(/成功 2/)).toBeInTheDocument();

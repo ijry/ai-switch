@@ -183,7 +183,11 @@ fn install_commands(
             program: "security".to_string(),
             args: vec![
                 "add-trusted-cert".to_string(),
-                "-d".to_string(),
+                // No `-d`: install into the *user* trust domain (login keychain)
+                // like the per-user Windows Root store. `-d` targets the admin
+                // domain, which needs sudo and fails non-interactively from the
+                // app — leaving the cert present but untrusted, so browsers hit
+                // ERR_CERT_AUTHORITY_INVALID.
                 "-r".to_string(),
                 "trustRoot".to_string(),
                 "-k".to_string(),
@@ -983,7 +987,7 @@ fn manual_instructions(material: &RouteProxyHttpsMaterial) -> Vec<String> {
     }
     if cfg!(target_os = "macos") {
         return vec![format!(
-            "security add-trusted-cert -d -r trustRoot -k {} {root}",
+            "security add-trusted-cert -r trustRoot -k {} {root}",
             login_keychain_path().display()
         )];
     }
@@ -1071,6 +1075,27 @@ mod tests {
                 "-Z".to_string(),
                 material.root_thumbprint_sha1,
                 login_keychain_path().display().to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn macos_install_uses_user_trust_domain_without_admin() {
+        let material = fixture_material();
+        let install = install_commands(TrustPlatform::MacOsLoginKeychain, &material, None);
+
+        assert_eq!(install[0].program, "security");
+        // Must not use `-d` (admin domain requires sudo and fails silently).
+        assert!(!install[0].args.contains(&"-d".to_string()));
+        assert_eq!(
+            install[0].args,
+            vec![
+                "add-trusted-cert".to_string(),
+                "-r".to_string(),
+                "trustRoot".to_string(),
+                "-k".to_string(),
+                login_keychain_path().display().to_string(),
+                material.root_certificate_pem.display().to_string(),
             ]
         );
     }

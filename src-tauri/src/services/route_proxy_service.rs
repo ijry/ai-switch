@@ -520,6 +520,14 @@ async fn forward_request(
     let custom_tool_names = collect_custom_tool_names(&body_bytes);
     let upstream_query = strip_route_proxy_auth_query(query.as_deref());
     let client = build_outbound_http_client(None)?;
+    // Fallback for upstreams that fetch remote image URLs and reject non-image
+    // Content-Types (e.g. OSS objects served as text/plain): when a routed
+    // credential opts in, inline remote images as base64 data URLs up front.
+    let body_bytes = if credentials.iter().any(selected_credential_inlines_images) {
+        axum::body::Bytes::from(inline_remote_image_urls_in_body(&body_bytes, &client).await)
+    } else {
+        body_bytes
+    };
     let request_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
         .map_err(|err| format!("Unsupported method: {err}"))?;
     let retry_indexes = credential_indexes_by_priority(&credentials, cursor);
@@ -1798,6 +1806,190 @@ fn strip_one_m_suffix_for_route_lookup(model: &str) -> &str {
 fn is_claude_route_model(model: &str) -> bool {
     let lower = model.to_ascii_lowercase();
     lower.starts_with("claude-") || lower.starts_with("anthropic/claude-")
+}
+
+/// Max remote images inlined per request, and max bytes per image.
+const INLINE_IMAGE_MAX_COUNT: usize = 16;
+const INLINE_IMAGE_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// Whether this credential opts into inlining remote image URLs (fallback for
+/// upstreams that fetch `image_url` links and reject non-`image/*` responses,
+/// e.g. OSS objects served as `text/plain`).
+fn selected_credential_inlines_images(credential: &SelectedCredential) -> bool {
+    parse_json_object(&credential.config_json, "config")
+        .ok()
+        .is_some_and(|config| inline_remote_images_enabled(&config))
+}
+
+fn inline_remote_images_enabled(config: &Value) -> bool {
+    config
+        .get("inline_remote_images")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn is_remote_http_url(value: &str) -> bool {
+    let value = value.trim();
+    value.starts_with("http://") || value.starts_with("https://")
+}
+
+/// Fetch every remote `image_url` in the request body and replace it with a
+/// base64 `data:` URL carrying the sniffed image MIME. Best-effort: images that
+/// cannot be fetched or identified are left untouched.
+async fn inline_remote_image_urls_in_body(body: &[u8], client: &reqwest::Client) -> Vec<u8> {
+    let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
+        return body.to_vec();
+    };
+    let mut urls: Vec<String> = Vec::new();
+    collect_remote_image_urls(&value, &mut urls);
+    urls.sort();
+    urls.dedup();
+    urls.truncate(INLINE_IMAGE_MAX_COUNT);
+    if urls.is_empty() {
+        return body.to_vec();
+    }
+    let mut replacements: HashMap<String, String> = HashMap::new();
+    for url in urls {
+        if let Some(data_url) = fetch_image_as_data_url(client, &url).await {
+            replacements.insert(url, data_url);
+        }
+    }
+    if replacements.is_empty() {
+        return body.to_vec();
+    }
+    replace_remote_image_urls(&mut value, &replacements);
+    serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec())
+}
+
+fn collect_remote_image_urls(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            match map.get("image_url") {
+                Some(Value::String(url)) if is_remote_http_url(url) => {
+                    out.push(url.trim().to_string());
+                }
+                Some(Value::Object(inner)) => {
+                    if let Some(Value::String(url)) = inner.get("url") {
+                        if is_remote_http_url(url) {
+                            out.push(url.trim().to_string());
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for child in map.values() {
+                collect_remote_image_urls(child, out);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                collect_remote_image_urls(child, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn replace_remote_image_urls(value: &mut Value, replacements: &HashMap<String, String>) {
+    if let Value::Object(map) = value {
+        match map.get_mut("image_url") {
+            Some(Value::String(url)) => {
+                if let Some(data_url) = replacements.get(url.trim()) {
+                    *url = data_url.clone();
+                }
+            }
+            Some(Value::Object(inner)) => {
+                if let Some(Value::String(url)) = inner.get_mut("url") {
+                    if let Some(data_url) = replacements.get(url.trim()) {
+                        *url = data_url.clone();
+                    }
+                }
+            }
+            _ => {}
+        }
+        for child in map.values_mut() {
+            replace_remote_image_urls(child, replacements);
+        }
+    } else if let Value::Array(items) = value {
+        for child in items {
+            replace_remote_image_urls(child, replacements);
+        }
+    }
+}
+
+async fn fetch_image_as_data_url(client: &reqwest::Client, url: &str) -> Option<String> {
+    let response = client.get(url).send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    if let Some(length) = response.content_length() {
+        if length as usize > INLINE_IMAGE_MAX_BYTES {
+            return None;
+        }
+    }
+    let header_mime = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or(value)
+                .trim()
+                .to_ascii_lowercase()
+        });
+    let bytes = response.bytes().await.ok()?;
+    if bytes.is_empty() || bytes.len() > INLINE_IMAGE_MAX_BYTES {
+        return None;
+    }
+    let mime = sniff_image_mime(&bytes)
+        .or_else(|| header_mime.filter(|mime| mime.starts_with("image/")))
+        .or_else(|| image_mime_from_url(url))?;
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+    use base64::Engine as _;
+    Some(format!(
+        "data:{mime};base64,{}",
+        BASE64_STANDARD.encode(&bytes)
+    ))
+}
+
+fn sniff_image_mime(bytes: &[u8]) -> Option<String> {
+    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        return Some("image/png".to_string());
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg".to_string());
+    }
+    if bytes.starts_with(b"GIF8") {
+        return Some("image/gif".to_string());
+    }
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp".to_string());
+    }
+    if bytes.starts_with(b"BM") {
+        return Some("image/bmp".to_string());
+    }
+    None
+}
+
+fn image_mime_from_url(url: &str) -> Option<String> {
+    let path = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .to_ascii_lowercase();
+    let extension = path.rsplit('.').next()?;
+    let mime = match extension {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        _ => return None,
+    };
+    Some(mime.to_string())
 }
 
 pub fn build_upstream_request(
@@ -4676,6 +4868,76 @@ mod tests {
             .filter_map(|v| v.to_str().ok())
             .collect();
         assert_eq!(values, vec!["identity"]);
+    }
+
+    #[test]
+    fn collects_and_replaces_remote_image_urls() {
+        let body = serde_json::json!({
+            "messages": [
+                {"role":"user","content":[
+                    {"type":"text","text":"hi"},
+                    {"type":"image_url","image_url":{"url":"https://example.com/a.png"}},
+                    {"type":"input_image","image_url":"https://example.com/b.jpg"},
+                    {"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}
+                ]}
+            ]
+        });
+        let mut urls = Vec::new();
+        collect_remote_image_urls(&body, &mut urls);
+        urls.sort();
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.com/a.png".to_string(),
+                "https://example.com/b.jpg".to_string()
+            ]
+        );
+
+        let mut value = body.clone();
+        let mut replacements = std::collections::HashMap::new();
+        replacements.insert(
+            "https://example.com/a.png".to_string(),
+            "data:image/png;base64,ZZZ".to_string(),
+        );
+        replacements.insert(
+            "https://example.com/b.jpg".to_string(),
+            "data:image/jpeg;base64,YYY".to_string(),
+        );
+        replace_remote_image_urls(&mut value, &replacements);
+        assert_eq!(
+            value["messages"][0]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,ZZZ"
+        );
+        assert_eq!(
+            value["messages"][0]["content"][2]["image_url"],
+            "data:image/jpeg;base64,YYY"
+        );
+        assert_eq!(
+            value["messages"][0]["content"][3]["image_url"]["url"],
+            "data:image/png;base64,AAAA"
+        );
+    }
+
+    #[test]
+    fn sniffs_image_mime_and_reads_flag() {
+        assert_eq!(
+            sniff_image_mime(&[0x89, 0x50, 0x4E, 0x47, 0, 0]).as_deref(),
+            Some("image/png")
+        );
+        assert_eq!(
+            sniff_image_mime(&[0xFF, 0xD8, 0xFF, 0]).as_deref(),
+            Some("image/jpeg")
+        );
+        assert_eq!(sniff_image_mime(b"GIF89a").as_deref(), Some("image/gif"));
+        assert!(sniff_image_mime(b"plain text bytes").is_none());
+        assert_eq!(
+            image_mime_from_url("https://x/y/a.PNG?v=1").as_deref(),
+            Some("image/png")
+        );
+        assert!(!inline_remote_images_enabled(&serde_json::json!({})));
+        assert!(inline_remote_images_enabled(
+            &serde_json::json!({"inline_remote_images": true})
+        ));
     }
 
     #[test]

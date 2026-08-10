@@ -12,6 +12,7 @@ import {
   Copy,
   Download,
   Edit3,
+  ExternalLink,
   FileCode2,
   GripVertical,
   KeyRound,
@@ -889,6 +890,25 @@ function stringFromRecord(record: Record<string, unknown>, key: string) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+/// Extract the domain (origin) from a credential's configured base_url so the
+/// account row can offer a clickable link. Returns null when there is no valid
+/// http(s) base_url (e.g. most official credentials).
+function credentialBaseUrlLink(credential: RouteCredential): { href: string; host: string } | null {
+  const baseUrl = stringFromRecord(parseJsonObject(credential.config_json), "base_url");
+  if (!baseUrl) {
+    return null;
+  }
+  try {
+    const url = new URL(baseUrl);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return null;
+    }
+    return { href: url.origin, host: url.host };
+  } catch {
+    return null;
+  }
+}
+
 function interfaceFormatFromConfig(config: Record<string, unknown>): InterfaceFormat {
   const value = stringFromRecord(config, "interface_format");
   return routeInterfaceFormats.includes(value as InterfaceFormat) ? (value as InterfaceFormat) : "openai";
@@ -904,6 +924,10 @@ function responsesCustomToolCompatFromConfig(config: Record<string, unknown>): b
   return config.responses_custom_tool_compat === true;
 }
 
+function inlineRemoteImagesFromConfig(config: Record<string, unknown>): boolean {
+  return config.inline_remote_images === true;
+}
+
 function apiConfigJsonWithFields(
   configJson: string,
   baseUrl: string,
@@ -912,12 +936,14 @@ function apiConfigJsonWithFields(
   apiKeyField: AnthropicApiKeyField,
   responsesCustomToolCompat = false,
   userAgent = "",
+  inlineRemoteImages = false,
 ) {
   const config = parseJsonObject(configJson);
   config.base_url = baseUrl.trim();
   config.interface_format = interfaceFormat;
   config.model_mappings = mappings;
   config.responses_custom_tool_compat = responsesCustomToolCompat;
+  config.inline_remote_images = inlineRemoteImages;
   if (isAnthropicInterfaceFormat(interfaceFormat)) {
     config.api_key_field = apiKeyField;
   } else {
@@ -1591,6 +1617,7 @@ export function AccountsScreen({
   const [editApiBaseUrl, setEditApiBaseUrl] = useState("");
   const [editApiInterfaceFormat, setEditApiInterfaceFormat] = useState<InterfaceFormat>("openai");
   const [editResponsesCustomToolCompat, setEditResponsesCustomToolCompat] = useState(false);
+  const [editInlineRemoteImages, setEditInlineRemoteImages] = useState(false);
   const [editUserAgent, setEditUserAgent] = useState("");
   const [editApiKeyField, setEditApiKeyField] = useState<AnthropicApiKeyField>("ANTHROPIC_API_KEY");
   const [editSecretJson, setEditSecretJson] = useState("{}");
@@ -2065,6 +2092,7 @@ export function AccountsScreen({
       setEditApiInterfaceFormat(interfaceFormat);
       setEditApiKeyField(anthropicApiKeyFieldFromConfig(config, "ANTHROPIC_API_KEY"));
       setEditResponsesCustomToolCompat(responsesCustomToolCompatFromConfig(config));
+      setEditInlineRemoteImages(inlineRemoteImagesFromConfig(config));
       setEditApiKeyDecodeError(null);
       setEditApiKeyOcrError(null);
     } else {
@@ -2073,6 +2101,7 @@ export function AccountsScreen({
       setEditApiInterfaceFormat("openai");
       setEditApiKeyField("ANTHROPIC_API_KEY");
       setEditResponsesCustomToolCompat(false);
+      setEditInlineRemoteImages(false);
       setEditApiKeyDecodeError(null);
       setEditApiKeyOcrError(null);
     }
@@ -2657,6 +2686,7 @@ export function AccountsScreen({
               editApiKeyField,
               editResponsesCustomToolCompat,
               editUserAgent,
+              editInlineRemoteImages,
             )
           : JSON.stringify(
               writeUserAgentToConfig(parseJsonObject(editConfigJson.trim() || "{}"), editUserAgent),
@@ -4148,6 +4178,7 @@ export function AccountsScreen({
                   const latestReset = officialLatestResetLabel(credential);
                   const retryLabel = credentialRetryLabel(credential);
                   const modelMappings = parseModelMappingsFromConfig(credential.config_json);
+                  const baseUrlLink = credentialBaseUrlLink(credential);
                   return (
                   <div
                     aria-label={`放置在 ${credential.display_name} 前`}
@@ -4222,6 +4253,20 @@ export function AccountsScreen({
                           <span className="text-stone-500">{`P${credential.route_priority}-`}</span>
                           <span>{credential.display_name}</span>
                         </p>
+                        {baseUrlLink && (
+                          <button
+                            aria-label={`打开 ${baseUrlLink.host}`}
+                            className="shrink-0 text-stone-400 transition-colors hover:text-blue-600"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              window.open(baseUrlLink.href, "_blank", "noopener,noreferrer");
+                            }}
+                            title={baseUrlLink.href}
+                            type="button"
+                          >
+                            <ExternalLink aria-hidden="true" className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                         <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
                           {kindLabel(credential.kind)}
                         </span>
@@ -5418,6 +5463,21 @@ export function AccountsScreen({
                       </span>
                     </label>
                   ) : null}
+                  <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
+                    <input
+                      aria-label="内联远程图片"
+                      checked={editInlineRemoteImages}
+                      className="mt-0.5"
+                      onChange={(event) => setEditInlineRemoteImages(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span className="grid gap-1">
+                      <span>内联远程图片</span>
+                      <span className="text-[11px] font-medium text-stone-500">
+                        转发前把请求里的 http(s) 图片链接抓取并转成 base64 data URL。用于上游会抓取图片链接、且因图床返回非 image/* 类型而报错的情况（如 OSS 对象被当作 text/plain）。会增加延迟，仅在需要时勾选。
+                      </span>
+                    </span>
+                  </label>
                   <ModelMappingsEditor
                     error={editModelMappingsError}
                     fetchError={editFetchModelsError}
