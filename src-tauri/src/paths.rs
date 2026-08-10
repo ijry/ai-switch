@@ -2,6 +2,16 @@ use crate::error::AppError;
 use directories::BaseDirs;
 use std::path::PathBuf;
 
+/// Database file name. Debug builds (`tauri dev` / `cargo run`) use a separate
+/// `ai-switch-dev.db` so development never clobbers or quarantines the installed
+/// release's `ai-switch.db` (they share the same `~/.ai-switch` data dir but
+/// keep independent databases). Release builds use the production database.
+pub const DATABASE_FILE_NAME: &str = if cfg!(debug_assertions) {
+    "ai-switch-dev.db"
+} else {
+    "ai-switch.db"
+};
+
 #[derive(Debug, Clone)]
 pub struct AppPaths {
     pub data_dir: PathBuf,
@@ -31,7 +41,7 @@ impl AppPaths {
 
     pub fn from_data_dir(data_dir: PathBuf) -> Self {
         Self {
-            database_file: data_dir.join("ai-switch.db"),
+            database_file: data_dir.join(DATABASE_FILE_NAME),
             settings_file: data_dir.join("settings.json"),
             web_service_file: data_dir.join("web-service.json"),
             route_proxy_https_config_file: data_dir.join("route-proxy-https.json"),
@@ -81,6 +91,26 @@ mod tests {
         assert_eq!(
             paths.tailscale_dir,
             PathBuf::from("C:/tmp/ai-switch-data/tailscale")
+        );
+    }
+
+    #[test]
+    fn debug_builds_use_a_separate_dev_database() {
+        let paths = AppPaths::from_data_dir(PathBuf::from("C:/tmp/ai-switch-data"));
+        assert_eq!(
+            paths.database_file,
+            PathBuf::from("C:/tmp/ai-switch-data").join(super::DATABASE_FILE_NAME)
+        );
+        // Development (debug) must never point at the release database file.
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            paths.database_file,
+            PathBuf::from("C:/tmp/ai-switch-data/ai-switch-dev.db")
+        );
+        #[cfg(not(debug_assertions))]
+        assert_eq!(
+            paths.database_file,
+            PathBuf::from("C:/tmp/ai-switch-data/ai-switch.db")
         );
     }
 
