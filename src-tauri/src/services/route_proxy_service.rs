@@ -88,7 +88,11 @@ fn overload_retry_delay(retry_count: usize) -> Duration {
     OVERLOAD_RETRY_DELAYS
         .get(retry_count)
         .copied()
-        .unwrap_or_else(|| *OVERLOAD_RETRY_DELAYS.last().expect("retry delays are non-empty"))
+        .unwrap_or_else(|| {
+            *OVERLOAD_RETRY_DELAYS
+                .last()
+                .expect("retry delays are non-empty")
+        })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4639,9 +4643,13 @@ mod tests {
         run_migrations(&pool).await.expect("migrations");
         let first_id = create_proxy_api_credential(&pool, "first", &first_upstream).await;
         let second_id = create_proxy_api_credential(&pool, "second", &second_upstream).await;
-        RoutePoolRepository::replace_members(&pool, "codex", &[first_id.clone(), second_id.clone()])
-            .await
-            .expect("pool members");
+        RoutePoolRepository::replace_members(
+            &pool,
+            "codex",
+            &[first_id.clone(), second_id.clone()],
+        )
+        .await
+        .expect("pool members");
         let route_key =
             RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
                 .await
@@ -4670,10 +4678,7 @@ mod tests {
             first_calls.load(std::sync::atomic::Ordering::SeqCst),
             OVERLOAD_MAX_EXTRA_RETRIES + 1
         );
-        assert_eq!(
-            second_calls.load(std::sync::atomic::Ordering::SeqCst),
-            1
-        );
+        assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(
             RouteCredentialRepository::get(&pool, &first_id)
                 .await
