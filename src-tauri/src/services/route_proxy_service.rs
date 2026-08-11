@@ -42,7 +42,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -75,6 +75,21 @@ const ROUTE_PROXY_RESPONSE_BODY_LIMIT: usize = 16 * 1024;
 /// upstream returned real AI content (vs. a fake/empty 200) without bloating
 /// `usage_events`, which is never pruned.
 const ROUTE_PROXY_SUCCESS_BODY_LIMIT: usize = 2 * 1024;
+const OVERLOAD_MAX_EXTRA_RETRIES: usize = 5;
+const OVERLOAD_RETRY_DELAYS: [Duration; OVERLOAD_MAX_EXTRA_RETRIES] = [
+    Duration::from_millis(300),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(3),
+    Duration::from_secs(5),
+];
+
+fn overload_retry_delay(retry_count: usize) -> Duration {
+    OVERLOAD_RETRY_DELAYS
+        .get(retry_count)
+        .copied()
+        .unwrap_or_else(|| *OVERLOAD_RETRY_DELAYS.last().expect("retry delays are non-empty"))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteProxyStatus {
@@ -533,11 +548,17 @@ async fn forward_request(
     let request_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
         .map_err(|err| format!("Unsupported method: {err}"))?;
     let retry_indexes = credential_indexes_by_priority(&credentials, cursor);
+    let mut retry_queue = retry_indexes
+        .into_iter()
+        .map(|credential_index| (credential_index, 0usize))
+        .collect::<VecDeque<_>>();
     let mut retry_errors = Vec::new();
     let request_start = Instant::now();
     let mut acquired_any = false;
+    let mut attempt = 0usize;
 
-    for (attempt, credential_index) in retry_indexes.into_iter().enumerate() {
+    while let Some((credential_index, overload_retry_count)) = retry_queue.pop_front() {
+        attempt += 1;
         let selected = &credentials[credential_index];
         let Some(_activity_lease) = state
             .activity
@@ -1014,6 +1035,15 @@ async fn forward_request(
                     Some(&response_bytes),
                 )
                 .await;
+                if overload_retry_count < OVERLOAD_MAX_EXTRA_RETRIES {
+                    tokio::time::sleep(overload_retry_delay(overload_retry_count)).await;
+                    retry_queue.push_front((credential_index, overload_retry_count + 1));
+                } else {
+                    retry_errors.push(format!(
+                        "{}: overload retries exhausted",
+                        credential.display_name
+                    ));
+                }
             } else if RouteCredentialRepository::record_semantic_failure(
                 pool,
                 &credential.id,
@@ -3896,6 +3926,56 @@ mod tests {
         format!("http://{address}/v1")
     }
 
+    #[derive(Clone)]
+    struct SequenceUpstreamState {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        overload_attempts: usize,
+        success_body: &'static str,
+    }
+
+    async fn sequence_upstream_handler(
+        AxumState(state): AxumState<SequenceUpstreamState>,
+    ) -> Response {
+        let attempt = state
+            .calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        let body = if attempt <= state.overload_attempts {
+            r#"{"type":"response.failed","response":{"status":"failed","error":{"message":"Our servers are currently overloaded. Please try again later."}}}"#
+        } else {
+            state.success_body
+        };
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .expect("sequence response")
+    }
+
+    async fn start_sequence_upstream(
+        overload_attempts: usize,
+        success_body: &'static str,
+    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let app = Router::new()
+            .fallback(sequence_upstream_handler)
+            .with_state(SequenceUpstreamState {
+                calls: Arc::clone(&calls),
+                overload_attempts,
+                success_body,
+            });
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind sequence upstream");
+        let address = listener.local_addr().expect("sequence upstream address");
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve sequence upstream");
+        });
+        (format!("http://{address}/v1"), calls)
+    }
+
     async fn create_proxy_api_credential(pool: &SqlitePool, name: &str, base_url: &str) -> String {
         create_proxy_api_credential_with_mappings(pool, name, base_url, json!([])).await
     }
@@ -4451,6 +4531,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retries_overloaded_account_until_success() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let (upstream, calls) = start_sequence_upstream(5, r#"{"ok":true}"#).await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_proxy_api_credential(&pool, "overloaded", &upstream).await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5.5","messages":[]}))
+            .send()
+            .await
+            .expect("proxy response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.json::<Value>().await.expect("proxy body")["ok"],
+            true
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            OVERLOAD_MAX_EXTRA_RETRIES + 1
+        );
+        assert_eq!(
+            RouteCredentialRepository::get(&pool, &credential_id)
+                .await
+                .expect("credential")
+                .status,
+            "ok"
+        );
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
     async fn overloaded_response_does_not_mark_account_error() {
         use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
         use crate::database::{create_memory_pool, run_migrations};
@@ -4488,7 +4619,75 @@ mod tests {
             .await
             .expect("credential");
         assert_eq!(credential.status, "ok");
-        assert_eq!(credential.transient_failure_count, 1);
+        assert_eq!(
+            credential.transient_failure_count,
+            OVERLOAD_MAX_EXTRA_RETRIES as i64 + 1
+        );
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn switches_accounts_after_overload_retries_are_exhausted() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let (first_upstream, first_calls) = start_sequence_upstream(6, r#"{"ok":"first"}"#).await;
+        let (second_upstream, second_calls) =
+            start_sequence_upstream(0, r#"{"ok":"second"}"#).await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let first_id = create_proxy_api_credential(&pool, "first", &first_upstream).await;
+        let second_id = create_proxy_api_credential(&pool, "second", &second_upstream).await;
+        RoutePoolRepository::replace_members(&pool, "codex", &[first_id.clone(), second_id.clone()])
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5.5","messages":[]}))
+            .send()
+            .await
+            .expect("proxy response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.json::<Value>().await.expect("proxy body")["ok"],
+            "second"
+        );
+        assert_eq!(
+            first_calls.load(std::sync::atomic::Ordering::SeqCst),
+            OVERLOAD_MAX_EXTRA_RETRIES + 1
+        );
+        assert_eq!(
+            second_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            RouteCredentialRepository::get(&pool, &first_id)
+                .await
+                .expect("first credential")
+                .status,
+            "ok"
+        );
+        assert_eq!(
+            RouteCredentialRepository::get(&pool, &second_id)
+                .await
+                .expect("second credential")
+                .status,
+            "ok"
+        );
 
         RouteProxyService::stop(&runtime).await.expect("stop proxy");
     }
@@ -5060,6 +5259,16 @@ mod tests {
         assert!(!should_retry_proxy_failure(
             StatusCode::INTERNAL_SERVER_ERROR
         ));
+    }
+
+    #[test]
+    fn overload_retry_delay_uses_bounded_backoff_sequence() {
+        assert_eq!(overload_retry_delay(0), Duration::from_millis(300));
+        assert_eq!(overload_retry_delay(1), Duration::from_secs(1));
+        assert_eq!(overload_retry_delay(2), Duration::from_secs(2));
+        assert_eq!(overload_retry_delay(3), Duration::from_secs(3));
+        assert_eq!(overload_retry_delay(4), Duration::from_secs(5));
+        assert_eq!(overload_retry_delay(5), Duration::from_secs(5));
     }
 
     #[test]
