@@ -14,7 +14,8 @@ pub struct HermesAdapter {
 impl Default for HermesAdapter {
     fn default() -> Self {
         Self {
-            path: common::home_dir().join(".hermes/config.yaml"),
+            path: common::env_path("HERMES_HOME", common::home_dir().join(".hermes"))
+                .join("config.yaml"),
         }
     }
 }
@@ -33,7 +34,11 @@ impl HermesAdapter {
             .unwrap_or_default();
         let typ = if object.get("command").is_some() {
             "stdio"
-        } else if object.get("transport").and_then(Value::as_str) == Some("sse") {
+        } else if object
+            .get("transport")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case("sse"))
+        {
             "sse"
         } else {
             "http"
@@ -66,6 +71,17 @@ impl HermesAdapter {
             }
             if let Some(headers) = object.get("headers") {
                 output.insert("headers".to_string(), headers.clone());
+            }
+        }
+        for (key, value) in object {
+            if matches!(
+                key.as_str(),
+                "type" | "command" | "args" | "env" | "cwd" | "url" | "headers" | "transport"
+            ) {
+                continue;
+            }
+            if !value.is_null() {
+                output.insert(key.to_string(), value.clone());
             }
         }
         serde_yaml::to_value(Value::Object(output)).map_err(|error| AppError::Validation {

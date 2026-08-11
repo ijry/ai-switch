@@ -435,6 +435,23 @@ fn option_id(source: &str, index: usize, protocol: &str) -> String {
     format!("{source}:{index}:{protocol}")
 }
 
+fn protocol_priority(protocol: &str) -> u8 {
+    match normalize_mcp_type(protocol) {
+        Some("stdio") => 0,
+        Some("http") => 1,
+        Some("sse") => 2,
+        _ => 3,
+    }
+}
+
+fn default_option(options: &[McpMarketplaceInstallOption]) -> Option<&McpMarketplaceInstallOption> {
+    options
+        .iter()
+        .enumerate()
+        .min_by_key(|(index, option)| (protocol_priority(&option.protocol), *index))
+        .map(|(_, option)| option)
+}
+
 fn official_options(server: &OfficialServer) -> Vec<McpMarketplaceInstallOption> {
     let mut options = Vec::new();
     for (index, transport) in server.remotes.iter().enumerate() {
@@ -785,9 +802,21 @@ async fn fetch_official(server_id: &str) -> Result<OfficialEntry, AppError> {
     json(response, "official detail response").await
 }
 
+fn smithery_detail_url(server_id: &str) -> Result<url::Url, AppError> {
+    let mut url = url::Url::parse(&format!("{SMITHERY_SERVERS_URL}/"))
+        .map_err(|error| invalid(error.to_string()))?;
+    url.path_segments_mut()
+        .map_err(|_| invalid("invalid Smithery URL"))?
+        .push(server_id.trim());
+    Ok(url)
+}
+
 async fn fetch_smithery(server_id: &str) -> Result<SmitheryDetail, AppError> {
-    let url = format!("{SMITHERY_SERVERS_URL}/{}", server_id.trim());
-    let response = send(client()?.get(url), "Smithery detail request").await?;
+    let response = send(
+        client()?.get(smithery_detail_url(server_id)?),
+        "Smithery detail request",
+    )
+    .await?;
     json(response, "Smithery detail response").await
 }
 
@@ -906,8 +935,7 @@ pub async fn get_detail(
         OFFICIAL => {
             let entry = fetch_official(&server_id).await?;
             let options = official_options(&entry.server);
-            let selected = options
-                .first()
+            let selected = default_option(&options)
                 .ok_or_else(|| not_found("official server has no installable transport"))?;
             let item = official_item(&entry);
             Ok(McpMarketplaceServerDetail {
@@ -934,8 +962,7 @@ pub async fn get_detail(
         SMITHERY => {
             let detail = fetch_smithery(&server_id).await?;
             let options = smithery_options(&detail);
-            let selected = options
-                .first()
+            let selected = default_option(&options)
                 .ok_or_else(|| not_found("Smithery server has no installable connection"))?;
             Ok(McpMarketplaceServerDetail {
                 provider_id: SMITHERY.to_string(),
@@ -994,6 +1021,12 @@ mod tests {
     fn official_server_path_encodes_qualified_names_as_one_segment() {
         let url = official_detail_url("com.example/my-server").unwrap();
         assert!(url.contains("com.example%2Fmy-server"), "{url}");
+    }
+
+    #[test]
+    fn smithery_server_path_encodes_qualified_names_as_one_segment() {
+        let url = smithery_detail_url("namespace/server?x").unwrap();
+        assert!(url.as_str().contains("namespace%2Fserver%3Fx"), "{url}");
     }
 
     #[test]

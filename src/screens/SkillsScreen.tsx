@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, FilePenLine, FolderOpen, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Check, FilePenLine, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   skillsDelete,
@@ -9,7 +9,10 @@ import {
   skillsSave,
 } from "../lib/api/client";
 import type { SkillAgentType, SkillItem, SkillLayout, SkillScope } from "../lib/api/types";
+import { isDesktop } from "../lib/transport";
 import { DEFAULT_SKILL_CONTENT } from "../components/skills/catalog";
+import { SkillsList } from "../components/skills/SkillsList";
+import { SkillsToolbar } from "../components/skills/SkillsToolbar";
 
 export function SkillsScreen() {
   const queryClient = useQueryClient();
@@ -22,6 +25,8 @@ export function SkillsScreen() {
   const [draft, setDraft] = useState("");
   const [draftId, setDraftId] = useState("");
   const [layout, setLayout] = useState<SkillLayout>("skill_directory");
+  const [filterText, setFilterText] = useState("");
+  const [pickerError, setPickerError] = useState<string | null>(null);
   const agentsQuery = useQuery({ queryKey: ["skills-agents"], queryFn: skillsListAgents });
   const listQuery = useQuery({
     queryKey: ["skills", agentType, scope, workspacePath],
@@ -70,6 +75,11 @@ export function SkillsScreen() {
       : listQuery.data?.skills.find((item) => item.id === selectedId) ?? readQuery.data?.skill,
     [creating, draftId, layout, listQuery.data?.skills, readQuery.data?.skill, scope, selectedId],
   );
+  const visibleSkills = useMemo(() => {
+    const needle = filterText.trim().toLowerCase();
+    if (!needle) return listQuery.data?.skills ?? [];
+    return (listQuery.data?.skills ?? []).filter((item) => `${item.id} ${item.name} ${item.description ?? ""}`.toLowerCase().includes(needle));
+  }, [filterText, listQuery.data?.skills]);
   const error = listQuery.error ?? readQuery.error ?? saveMutation.error ?? deleteMutation.error;
   const agentOptions = agentsQuery.data ?? [];
 
@@ -84,33 +94,38 @@ export function SkillsScreen() {
 
   return (
     <section className="space-y-3">
-      <header className="flex flex-wrap items-end justify-between gap-3 border-b border-stone-200 px-1 pb-3">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">Instructions</p>
-          <h1 className="mt-0.5 text-lg font-semibold text-stone-950">Skills</h1>
-          <p className="mt-1 text-[12px] text-stone-500">Browse, edit and share agent Skills from global or project scope.</p>
-        </div>
-        <button className="inline-flex items-center gap-1.5 border border-stone-300 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-800 hover:bg-stone-50" onClick={() => queryClient.invalidateQueries({ queryKey: ["skills"] })} title="Refresh Skills" type="button"><RefreshCw className="h-3.5 w-3.5" /> Refresh</button>
-      </header>
-
-      <div className="grid gap-2 border-b border-stone-200 pb-3 lg:grid-cols-[minmax(180px,240px)_auto_minmax(220px,1fr)_auto] lg:items-end">
-        <label className="grid gap-1 text-[11px] font-semibold uppercase tracking-wide text-stone-400"><span>Agent</span><select className="border border-stone-300 bg-white px-2.5 py-2 text-[12px] font-medium normal-case tracking-normal text-stone-800" onChange={(event) => { setAgentType(event.target.value as SkillAgentType); setSelectedId(null); setCreating(false); }} value={agentType}>{agentOptions.map((agent) => <option key={agent.agent_type} value={agent.agent_type}>{agent.display_name}</option>)}</select></label>
-        <div className="inline-flex border border-stone-200 bg-white p-0.5"><button className={`px-3 py-1.5 text-[12px] font-semibold ${scope === "global" ? "bg-stone-900 text-white" : "text-stone-600 hover:bg-stone-50"}`} onClick={() => { setScope("global"); setSelectedId(null); setCreating(false); }} type="button">Global</button><button className={`px-3 py-1.5 text-[12px] font-semibold ${scope === "project" ? "bg-stone-900 text-white" : "text-stone-600 hover:bg-stone-50"}`} onClick={() => { setScope("project"); setSelectedId(null); setCreating(false); }} type="button">Project</button></div>
-        {scope === "project" ? <label className="grid gap-1 text-[11px] font-semibold uppercase tracking-wide text-stone-400"><span>Project directory</span><div className="flex items-center gap-2 border border-stone-300 bg-white px-2.5 py-1.5"><FolderOpen className="h-3.5 w-3.5 text-stone-400" /><input className="min-w-0 flex-1 text-[12px] normal-case tracking-normal outline-none" onChange={(event) => { setWorkspacePath(event.target.value); setSelectedId(null); setCreating(false); }} placeholder="C:\\Projects\\my-app" value={workspacePath} /></div></label> : <div className="hidden lg:block" />}
-        <button className="inline-flex items-center justify-center gap-1.5 bg-stone-900 px-2.5 py-2 text-[12px] font-semibold text-white hover:bg-stone-800" onClick={newSkill} type="button"><Plus className="h-3.5 w-3.5" /> New Skill</button>
-      </div>
+      <SkillsToolbar
+        agentType={agentType}
+        agents={agentOptions}
+        desktop={isDesktop()}
+        filterText={filterText}
+        onAgentChange={(nextAgent) => { setAgentType(nextAgent); setSelectedId(null); setCreating(false); }}
+        onFilterChange={setFilterText}
+        onNew={newSkill}
+        onPickerError={setPickerError}
+        onRefresh={() => void queryClient.invalidateQueries({ queryKey: ["skills"] })}
+        onScopeChange={(nextScope) => { setScope(nextScope); setSelectedId(null); setCreating(false); }}
+        onWorkspaceChange={(path) => { setPickerError(null); setWorkspacePath(path); setSelectedId(null); setCreating(false); }}
+        scope={scope}
+        workspacePath={workspacePath}
+      />
 
       <div className="grid min-h-[420px] gap-3 lg:grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="border border-stone-200 bg-white p-2 shadow-sm"><div className="flex items-center justify-between px-2 py-1"><p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">Available Skills</p><span className="font-mono text-[11px] text-stone-400">{listQuery.data?.skills.length ?? 0}</span></div>{scope === "project" && !workspacePath.trim() ? <p className="px-2 py-5 text-[12px] text-stone-500">Enter a project directory to scan Skills.</p> : listQuery.isLoading ? <p className="px-2 py-5 text-[12px] text-stone-500">Scanning Skill directories...</p> : <div className="mt-1 space-y-0.5">{(listQuery.data?.skills ?? []).map((item) => <SkillListRow item={item} selected={item.id === selectedId} onClick={() => { setSelectedId(item.id); setCreating(false); setEditing(false); }} key={item.id} />)}</div>}{listQuery.data?.locations.length ? <div className="mt-3 border-t border-stone-100 px-2 pt-2">{listQuery.data.locations.map((location) => <p className="truncate font-mono text-[10px] text-stone-400" key={location.path} title={location.path}>{location.exists ? "●" : "○"} {location.path}</p>)}</div> : null}</aside>
+        <SkillsList
+          filterText={filterText}
+          items={visibleSkills}
+          loading={listQuery.isLoading}
+          locations={listQuery.data?.locations ?? []}
+          onSelect={(item) => { setSelectedId(item.id); setCreating(false); setEditing(false); }}
+          projectMissing={scope === "project" && !workspacePath.trim()}
+          selectedId={selectedId}
+          total={listQuery.data?.skills.length ?? 0}
+        />
         <main className="border border-stone-200 bg-white p-3 shadow-sm">{selected ? <SkillEditor item={selected} draft={draft} draftId={draftId} editing={editing || creating} layout={layout} saving={saveMutation.isPending} onEdit={() => { setEditing(true); if (readQuery.data) { setDraft(readQuery.data.content); setDraftId(readQuery.data.skill.id); setLayout(readQuery.data.skill.layout); } }} onDraftChange={setDraft} onIdChange={setDraftId} onLayoutChange={setLayout} onCancel={() => { setEditing(false); if (creating) { setCreating(false); setSelectedId(null); } }} onSave={() => saveMutation.mutate()} onDelete={() => { if (window.confirm(`Delete ${selected.id}?`)) deleteMutation.mutate(); }} /> : <div className="grid h-full min-h-[360px] place-items-center text-center text-[13px] text-stone-500"><div><FilePenLine className="mx-auto h-8 w-8 text-stone-300" /><p className="mt-2">Select a Skill to preview it, or create a new one.</p></div></div>}</main>
       </div>
-      {error ? <p className="border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-800" role="alert">{error instanceof Error ? error.message : "The Skill operation failed."}</p> : null}
+      {error || pickerError ? <p className="border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-800" role="alert">{pickerError ?? (error instanceof Error ? error.message : "The Skill operation failed.")}</p> : null}
     </section>
   );
-}
-
-function SkillListRow({ item, selected, onClick }: { item: SkillItem; selected: boolean; onClick: () => void }) {
-  return <button aria-current={selected ? "true" : undefined} className={`w-full border px-2.5 py-2 text-left ${selected ? "border-stone-300 bg-stone-100" : "border-transparent hover:border-stone-200 hover:bg-stone-50"}`} onClick={onClick} type="button"><div className="flex items-center justify-between gap-2"><span className="truncate text-[12px] font-semibold text-stone-900">{item.name}</span>{item.read_only ? <span className="shrink-0 text-[10px] text-stone-400">built-in</span> : null}</div><p className="mt-0.5 truncate font-mono text-[10px] text-stone-500">{item.id}</p>{item.description ? <p className="mt-1 line-clamp-1 text-[11px] text-stone-500">{item.description}</p> : null}</button>;
 }
 
 function SkillEditor({ item, draft, draftId, editing, layout, saving, onEdit, onDraftChange, onIdChange, onLayoutChange, onCancel, onSave, onDelete }: { item: SkillItem; draft: string; draftId: string; editing: boolean; layout: SkillLayout; saving: boolean; onEdit: () => void; onDraftChange: (value: string) => void; onIdChange: (value: string) => void; onLayoutChange: (value: SkillLayout) => void; onCancel: () => void; onSave: () => void; onDelete: () => void }) {

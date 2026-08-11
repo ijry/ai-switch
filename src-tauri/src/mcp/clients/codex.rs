@@ -95,7 +95,7 @@ impl CodexAdapter {
         }
         let mut output = Map::new();
         if typ == "stdio" {
-            for key in ["command", "args", "env", "cwd", "enabled", "required"] {
+            for key in ["command", "args", "env", "cwd"] {
                 if let Some(value) = object.get(key) {
                     output.insert(key.to_string(), value.clone());
                 }
@@ -106,11 +106,6 @@ impl CodexAdapter {
             }
             if let Some(headers) = object.get("headers") {
                 output.insert("http_headers".to_string(), headers.clone());
-            }
-            for key in ["enabled", "required"] {
-                if let Some(value) = object.get(key) {
-                    output.insert(key.to_string(), value.clone());
-                }
             }
         }
         super::super::normalize::json_to_toml(&Value::Object(output)).ok_or_else(|| {

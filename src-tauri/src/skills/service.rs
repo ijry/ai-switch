@@ -207,6 +207,17 @@ pub fn save_skill(
         });
     }
     let content_file = content_path(chosen_layout, &target);
+    if let Ok(canonical_content) = content_file.canonicalize() {
+        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        if canonical_content != canonical_root && !canonical_content.starts_with(&canonical_root) {
+            return Err(AppError::Validation {
+                code: "skills.path_invalid",
+                message: "Skill path escapes its storage directory".to_string(),
+                details: None,
+                recoverable: true,
+            });
+        }
+    }
     if let Some(parent) = content_file.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             io_error("Could not create Skill directory", Some(error.to_string()))
@@ -216,7 +227,6 @@ pub fn save_skill(
     fs::write(&temp, content)
         .map_err(|error| io_error("Could not write Skill content", Some(error.to_string())))?;
     if let Err(error) = fs::rename(&temp, &content_file) {
-        let _ = fs::remove_file(&temp);
         if content_file.exists() {
             fs::remove_file(&content_file).map_err(|remove_error| {
                 io_error(
@@ -225,12 +235,14 @@ pub fn save_skill(
                 )
             })?;
             fs::rename(&temp, &content_file).map_err(|rename_error| {
+                let _ = fs::remove_file(&temp);
                 io_error(
                     "Could not replace Skill content",
                     Some(rename_error.to_string()),
                 )
             })?;
         } else {
+            let _ = fs::remove_file(&temp);
             return Err(io_error(
                 "Could not replace Skill content",
                 Some(error.to_string()),

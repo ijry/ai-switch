@@ -62,6 +62,15 @@ impl GrokAdapter {
                 output.insert("headers".to_string(), headers.clone());
             }
         }
+        for (key, value) in object {
+            if matches!(
+                key.as_str(),
+                "type" | "command" | "args" | "env" | "cwd" | "url" | "headers"
+            ) {
+                continue;
+            }
+            output.insert(key.to_string(), value.clone());
+        }
         super::super::normalize::json_to_toml(&Value::Object(output)).ok_or_else(|| {
             AppError::Validation {
                 code: "mcp.config_invalid",

@@ -88,9 +88,11 @@ pub fn skill_storage_spec(agent: SkillAgentType) -> SkillStorageSpec {
             vec!["skills"],
             vec![],
         ),
-        SkillAgentType::Hermes => {
-            SkillStorageSpec::directory_only(vec![home.join(".hermes/skills")], vec![], vec![])
-        }
+        SkillAgentType::Hermes => SkillStorageSpec::directory_only(
+            vec![env_path("HERMES_HOME", home.join(".hermes")).join("skills")],
+            vec![],
+            vec![],
+        ),
         SkillAgentType::Cline => SkillStorageSpec::directory_only(
             vec![home.join(".agents/skills"), home.join(".cline/skills")],
             vec![
@@ -168,8 +170,11 @@ pub fn validate_skill_id(id: &str) -> Result<String, AppError> {
     if trimmed.is_empty()
         || trimmed == "."
         || trimmed == ".."
+        || trimmed.starts_with('.')
         || trimmed.contains('/')
         || trimmed.contains('\\')
+        || trimmed.contains(':')
+        || trimmed.chars().any(char::is_whitespace)
         || trimmed.chars().any(|char| char.is_control())
     {
         return Err(AppError::Validation {
@@ -240,6 +245,18 @@ pub fn resolve_skill_path(root: &Path, id: &str, layout: SkillLayout) -> Result<
             recoverable: true,
         });
     }
+    if let Ok(candidate_canonical) = path.canonicalize() {
+        if candidate_canonical != root_canonical
+            && !candidate_canonical.starts_with(&root_canonical)
+        {
+            return Err(AppError::Validation {
+                code: "skills.path_invalid",
+                message: "Skill path escapes its storage directory".to_string(),
+                details: None,
+                recoverable: true,
+            });
+        }
+    }
     Ok(path)
 }
 
@@ -251,6 +268,9 @@ mod tests {
     fn rejects_unsafe_ids() {
         assert!(validate_skill_id("../outside").is_err());
         assert!(validate_skill_id("nested/skill").is_err());
+        assert!(validate_skill_id(".hidden").is_err());
+        assert!(validate_skill_id("a b").is_err());
+        assert!(validate_skill_id("a:b").is_err());
         assert_eq!(validate_skill_id("demo-skill").unwrap(), "demo-skill");
     }
 
