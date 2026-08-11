@@ -22,6 +22,7 @@ import {
   refreshRouteCredentialsQuota,
   restoreRouteCredentials,
   routePoolTestModel,
+  setRouteCredentialRecovery,
   setRouteCredentialStatuses,
   setRoutePoolMembers,
   startRouteProxy,
@@ -71,6 +72,7 @@ vi.mock("../src/lib/api/client", () => ({
   refreshRouteCredentialsQuota: vi.fn(),
   restoreRouteCredentials: vi.fn(),
   routePoolTestModel: vi.fn(),
+  setRouteCredentialRecovery: vi.fn(),
   setRouteCredentialStatuses: vi.fn(),
   setRoutePoolMembers: vi.fn(),
   startRouteProxy: vi.fn(),
@@ -267,6 +269,7 @@ describe("AccountsScreen", () => {
     vi.mocked(refreshRouteCredentialsQuota).mockReset();
     vi.mocked(restoreRouteCredentials).mockReset();
     vi.mocked(routePoolTestModel).mockReset();
+    vi.mocked(setRouteCredentialRecovery).mockReset();
     transportTestState.activityHandler = null;
     transportTestState.statusHandler = null;
     transportTestState.liveLogHandler = null;
@@ -452,6 +455,7 @@ describe("AccountsScreen", () => {
     });
     vi.mocked(routePoolTestModel).mockResolvedValue(modelTestOutcomeFixture());
     vi.mocked(setRouteCredentialStatuses).mockResolvedValue(undefined);
+    vi.mocked(setRouteCredentialRecovery).mockResolvedValue(credentialsFixture[0]);
     vi.mocked(startRouteProxy).mockResolvedValue({
       running: true,
       bind_host: "127.0.0.1",
@@ -573,6 +577,27 @@ describe("AccountsScreen", () => {
     expect(screen.getByText("已加入 1 个账号")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "算力池" })).toBeInTheDocument();
     expect(screen.queryByLabelText("批量加入算力池")).not.toBeInTheDocument();
+  });
+
+  it("switches to the imported account pool scope and consumes the focus nonce", async () => {
+    const onPoolScopeFocusConsumed = vi.fn();
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <AccountsScreen
+          onPoolScopeFocusConsumed={onPoolScopeFocusConsumed}
+          platform="codex"
+          poolScopeFocus={{ platform: "codex", scope: "in_pool", nonce: 42 }}
+        />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(onPoolScopeFocusConsumed).toHaveBeenCalledWith(42);
+      expect(screen.getByRole("button", { name: "算力池" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    });
   });
 
   it("batch updates selected account statuses and clears the selection", async () => {
@@ -916,6 +941,31 @@ describe("AccountsScreen", () => {
     await userEvent.click(await screen.findByLabelText("复制 Team Account"));
     await waitFor(() => expect(copyRouteCredential).toHaveBeenCalledWith("cred-official-1"));
     expect(screen.getByLabelText("复制 Team Account")).toHaveTextContent("已复制");
+  });
+
+  it("keeps a copied account visible in the compute pool", async () => {
+    let copiedCredential: RouteCredential | null = null;
+    vi.mocked(listRouteCredentials).mockImplementation(async () => [
+      ...credentialsFixture,
+      ...(copiedCredential ? [copiedCredential] : []),
+    ]);
+    vi.mocked(copyRouteCredential).mockImplementationOnce(async (id: string) => {
+      const source = credentialsFixture.find((item) => item.id === id) ?? credentialsFixture[0];
+      copiedCredential = {
+        ...source,
+        id: `${source.id}-copy`,
+        display_name: `${source.display_name} 2026-07-25`,
+      };
+      poolStateByPlatform.set("codex", ["cred-official-1", copiedCredential.id]);
+      return copiedCredential;
+    });
+    poolStateByPlatform.set("codex", ["cred-official-1"]);
+    renderScreen("codex", "in_pool");
+
+    await userEvent.click(await screen.findByLabelText("复制 Team Account"));
+
+    expect(await screen.findByText("Team Account 2026-07-25")).toBeInTheDocument();
+    expect(setRoutePoolMembers).not.toHaveBeenCalled();
   });
 
   it("supports batch remove from pool and batch delete for selected accounts", async () => {
@@ -1824,6 +1874,25 @@ describe("AccountsScreen", () => {
         secret_payload_json: "{\n  \"access_token\": \"at\",\n  \"refresh_token\": \"rt\"\n}",
         config_json: "{\n  \"type\": \"codex\"\n}",
         preview_json: "{\n  \"auth_json\": {}\n}",
+      }),
+    );
+  });
+
+  it("saves per-account scheduled recovery settings", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+    await userEvent.selectOptions(screen.getByLabelText("自动恢复模式"), "scheduled");
+    fireEvent.change(screen.getByLabelText("恢复时间 1"), { target: { value: "03:30" } });
+    await userEvent.click(screen.getByLabelText("添加恢复时间"));
+    fireEvent.change(screen.getByLabelText("恢复时间 2"), { target: { value: "15:45" } });
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() =>
+      expect(setRouteCredentialRecovery).toHaveBeenCalledWith("cred-official-1", {
+        mode: "scheduled",
+        times: ["03:30", "15:45"],
+        probe_interval_minutes: null,
       }),
     );
   });

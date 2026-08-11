@@ -133,6 +133,36 @@ impl RoutePoolRepository {
         Self::list_member_ids(pool, platform).await
     }
 
+    /// Append members outside of a caller-owned transaction, committing on success.
+    /// Existing memberships are preserved (ON CONFLICT DO NOTHING).
+    pub async fn append_members(
+        pool: &SqlitePool,
+        platform: &str,
+        credential_ids: &[String],
+    ) -> Result<usize, AppError> {
+        if credential_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut tx = pool.begin().await.map_err(|err| AppError::Database {
+            code: "database.route_pool_tx",
+            message: "Could not start route pool update".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+
+        let inserted = Self::append_members_tx(&mut tx, platform, credential_ids).await?;
+
+        tx.commit().await.map_err(|err| AppError::Database {
+            code: "database.route_pool_commit",
+            message: "Could not save route pool members".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+
+        Ok(inserted)
+    }
+
     pub async fn append_members_tx(
         tx: &mut Transaction<'_, Sqlite>,
         platform: &str,

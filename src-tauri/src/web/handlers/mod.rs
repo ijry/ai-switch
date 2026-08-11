@@ -39,6 +39,7 @@ use crate::services::route_pool_service::RoutePoolService;
 use crate::services::route_proxy_https_service::RouteProxyHttpsService;
 use crate::services::route_proxy_service::RouteProxyService;
 use crate::services::route_quota_service::RouteQuotaService;
+use crate::services::route_recovery_service::{RecoveryRule, RouteRecoveryService};
 use crate::services::target_service::TargetService;
 use crate::services::web_service::{WebService, WebServiceConfig};
 use crate::terminal_manager::CreateTerminalSessionInput;
@@ -51,6 +52,12 @@ pub fn is_sensitive_command(command: &str) -> bool {
             | "preview_route_credential_import"
             | "import_route_credentials"
             | "get_route_proxy_key"
+            | "mcp_install_from_marketplace"
+            | "mcp_upsert_local_server"
+            | "mcp_set_server_apps"
+            | "mcp_remove_server"
+            | "skills_save"
+            | "skills_delete"
     )
 }
 
@@ -61,6 +68,119 @@ pub async fn dispatch_command(
 ) -> Result<Value, ApiError> {
     match command {
         "health" => to_value(json!({ "ok": true })),
+        "mcp_scan_local" => to_value(crate::mcp::command::mcp_scan_local().await?),
+        "mcp_list_marketplaces" => to_value(crate::mcp::command::mcp_list_marketplaces().await?),
+        "mcp_search_marketplace" => {
+            let provider_id = required_string_arg(&args, "providerId")?;
+            let query = optional_string_arg(&args, "query")?;
+            let limit = optional_i64_arg(&args, "limit")?
+                .map(|value| {
+                    u32::try_from(value).map_err(|_| {
+                        invalid_argument("limit", Some("expected non-negative integer".to_string()))
+                    })
+                })
+                .transpose()?;
+            to_value(crate::mcp::command::mcp_search_marketplace(provider_id, query, limit).await?)
+        }
+        "mcp_get_marketplace_server_detail" => {
+            let provider_id = required_string_arg(&args, "providerId")?;
+            let server_id = required_string_arg(&args, "serverId")?;
+            to_value(
+                crate::mcp::command::mcp_get_marketplace_server_detail(provider_id, server_id)
+                    .await?,
+            )
+        }
+        "mcp_install_from_marketplace" => {
+            let provider_id = required_string_arg(&args, "providerId")?;
+            let server_id = required_string_arg(&args, "serverId")?;
+            let apps = parse_arg(&args, "apps")?;
+            let option_id = optional_string_arg(&args, "optionId")?;
+            let protocol = optional_string_arg(&args, "protocol")?;
+            let parameter_values = args.get("parameterValues").cloned();
+            to_value(
+                crate::mcp::command::mcp_install_from_marketplace(
+                    provider_id,
+                    server_id,
+                    apps,
+                    option_id,
+                    protocol,
+                    parameter_values,
+                )
+                .await?,
+            )
+        }
+        "mcp_upsert_local_server" => {
+            let server_id = required_string_arg(&args, "serverId")?;
+            let spec: Value = parse_arg(&args, "spec")?;
+            let apps = parse_arg(&args, "apps")?;
+            to_value(crate::mcp::command::mcp_upsert_local_server(server_id, spec, apps).await?)
+        }
+        "mcp_set_server_apps" => {
+            let server_id = required_string_arg(&args, "serverId")?;
+            let apps = parse_arg(&args, "apps")?;
+            to_value(crate::mcp::command::mcp_set_server_apps(server_id, apps).await?)
+        }
+        "mcp_remove_server" => {
+            let server_id = required_string_arg(&args, "serverId")?;
+            let apps = args
+                .get("apps")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|error| invalid_argument("apps", Some(error.to_string())))?;
+            to_value(crate::mcp::command::mcp_remove_server(server_id, apps).await?)
+        }
+        "skills_list_agents" => to_value(crate::skills::command::skills_list_agents().await?),
+        "skills_list" => {
+            let agent_type = parse_arg(&args, "agentType")?;
+            let scope = parse_arg(&args, "scope")?;
+            let workspace_path = optional_string_arg(&args, "workspacePath")?;
+            to_value(crate::skills::command::skills_list(agent_type, scope, workspace_path).await?)
+        }
+        "skills_read" => {
+            let agent_type = parse_arg(&args, "agentType")?;
+            let scope = parse_arg(&args, "scope")?;
+            let skill_id = required_string_arg(&args, "skillId")?;
+            let workspace_path = optional_string_arg(&args, "workspacePath")?;
+            to_value(
+                crate::skills::command::skills_read(agent_type, scope, skill_id, workspace_path)
+                    .await?,
+            )
+        }
+        "skills_save" => {
+            let agent_type = parse_arg(&args, "agentType")?;
+            let scope = parse_arg(&args, "scope")?;
+            let skill_id = required_string_arg(&args, "skillId")?;
+            let content = required_raw_string_arg(&args, "content")?;
+            let layout = args
+                .get("layout")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|error| invalid_argument("layout", Some(error.to_string())))?;
+            let workspace_path = optional_string_arg(&args, "workspacePath")?;
+            to_value(
+                crate::skills::command::skills_save(
+                    agent_type,
+                    scope,
+                    skill_id,
+                    content,
+                    layout,
+                    workspace_path,
+                )
+                .await?,
+            )
+        }
+        "skills_delete" => {
+            let agent_type = parse_arg(&args, "agentType")?;
+            let scope = parse_arg(&args, "scope")?;
+            let skill_id = required_string_arg(&args, "skillId")?;
+            let workspace_path = optional_string_arg(&args, "workspacePath")?;
+            to_value(
+                crate::skills::command::skills_delete(agent_type, scope, skill_id, workspace_path)
+                    .await?,
+            )
+        }
         "list_batch_groups" => {
             let search = optional_string_arg(&args, "search")?;
             to_value(
@@ -294,6 +414,15 @@ pub async fn dispatch_command(
             let id = required_string_arg(&args, "id")?;
             to_value(
                 RouteCredentialService::copy(&state.pool, id)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "set_route_credential_recovery" => {
+            let id = required_string_arg(&args, "id")?;
+            let rule: RecoveryRule = parse_arg(&args, "rule")?;
+            to_value(
+                RouteRecoveryService::set_rule(&state.pool, id, rule)
                     .await
                     .map_err(to_error)?,
             )
@@ -810,6 +939,50 @@ mod tests {
         let invalid = optional_i64_arg(&json!({ "limit": [] }), "limit").unwrap_err();
         assert_eq!(invalid.code, "web.argument_invalid");
         assert_eq!(invalid.details.as_deref(), Some("limit: expected integer"));
+
+        let negative = u32::try_from(-1_i64).map_err(|_| {
+            invalid_argument("limit", Some("expected non-negative integer".to_string()))
+        });
+        let negative = negative.unwrap_err();
+        assert_eq!(negative.code, "web.argument_invalid");
+        assert_eq!(
+            negative.details.as_deref(),
+            Some("limit: expected non-negative integer")
+        );
+    }
+
+    #[test]
+    fn mcp_and_skill_mutations_are_sensitive_web_commands() {
+        for command in [
+            "mcp_install_from_marketplace",
+            "mcp_upsert_local_server",
+            "mcp_set_server_apps",
+            "mcp_remove_server",
+            "skills_save",
+            "skills_delete",
+        ] {
+            assert!(is_sensitive_command(command), "{command} must require auth");
+        }
+        assert!(!is_sensitive_command("mcp_scan_local"));
+        assert!(!is_sensitive_command("skills_list"));
+    }
+
+    #[tokio::test]
+    async fn dispatches_marketplace_and_skill_catalog_commands() {
+        let fixture = test_state().await;
+        let marketplaces = dispatch_command(
+            Arc::clone(&fixture.state),
+            "mcp_list_marketplaces",
+            json!({}),
+        )
+        .await
+        .expect("marketplaces");
+        assert_eq!(marketplaces.as_array().map(Vec::len), Some(2));
+
+        let agents = dispatch_command(fixture.state, "skills_list_agents", json!({}))
+            .await
+            .expect("skill agents");
+        assert_eq!(agents.as_array().map(Vec::len), Some(11));
     }
 
     #[tokio::test]
@@ -822,6 +995,48 @@ mod tests {
         assert_eq!(error.code, "web.command_unknown");
         assert_eq!(error.details.as_deref(), Some("not_a_command"));
         assert!(!error.recoverable);
+    }
+
+    #[tokio::test]
+    async fn dispatches_route_credential_recovery_rule() {
+        let fixture = test_state().await;
+        let credential = dispatch_command(
+            Arc::clone(&fixture.state),
+            "create_api_route_credential",
+            json!({
+                "input": {
+                    "platform": "codex",
+                    "display_name": "Scheduled account",
+                    "api_key": "sk-test",
+                    "base_url": "https://api.example.com/v1",
+                    "interface_format": "openai",
+                    "model_mappings_json": "[]"
+                }
+            }),
+        )
+        .await
+        .expect("create credential");
+        let id = credential["id"].as_str().expect("credential id");
+
+        let updated = dispatch_command(
+            fixture.state,
+            "set_route_credential_recovery",
+            json!({
+                "id": id,
+                "rule": {
+                    "mode": "scheduled",
+                    "times": ["3:00", "15:00"]
+                }
+            }),
+        )
+        .await
+        .expect("set recovery rule");
+        let config: Value =
+            serde_json::from_str(updated["config_json"].as_str().expect("config json"))
+                .expect("config value");
+
+        assert_eq!(config["recovery"]["mode"], "scheduled");
+        assert_eq!(config["recovery"]["times"], json!(["03:00", "15:00"]));
     }
 
     #[tokio::test]

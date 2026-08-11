@@ -7,6 +7,7 @@ use crate::models::route_credential::{
 };
 use crate::services::route_credential_service::RouteCredentialService;
 use crate::services::route_quota_service::{QuotaRefreshOutcome, RouteQuotaService};
+use crate::services::route_recovery_service::{RecoveryRule, RouteRecoveryService};
 use tauri::State;
 
 #[tauri::command]
@@ -99,6 +100,17 @@ pub async fn copy_route_credential(
     id: String,
 ) -> Result<RouteCredential, ApiError> {
     RouteCredentialService::copy(&state.pool, id)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn set_route_credential_recovery(
+    state: State<'_, AppState>,
+    id: String,
+    rule: RecoveryRule,
+) -> Result<RouteCredential, ApiError> {
+    RouteRecoveryService::set_rule(&state.pool, id, rule)
         .await
         .map_err(ApiError::from)
 }

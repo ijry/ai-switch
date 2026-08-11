@@ -27,6 +27,7 @@ pub mod route_proxy_https_trust;
 pub mod route_proxy_live_log;
 pub mod route_proxy_service;
 pub mod route_quota_service;
+pub mod route_recovery_service;
 pub mod settings_service;
 pub mod tailscale_service;
 pub mod tailscale_sidecar;

@@ -9,6 +9,7 @@ use crate::paths::AppPaths;
 use crate::services::config_write_service::ConfigWriteRuntimeState;
 use crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime;
 use crate::services::route_proxy_service::RouteProxyRuntimeState;
+use crate::services::route_recovery_service::RouteRecoveryService;
 use crate::services::tailscale_service::TailscaleRuntimeState;
 use crate::services::web_service::WebServiceRuntimeState;
 use crate::terminal_manager::TerminalManager;
@@ -250,6 +251,15 @@ pub async fn run_from_env() -> Result<(), String> {
         .route_proxy
         .live_log()
         .set_emitter(EventEmitter::Web(Arc::clone(&state.event_broadcaster)));
+
+    // Auto-recovery scheduler for the standalone server binary.
+    {
+        let pool = state.pool.clone();
+        let activity = state.route_proxy.activity();
+        tokio::spawn(async move {
+            RouteRecoveryService::run_loop(pool, activity).await;
+        });
+    }
 
     let router = build_router(state, token, static_dir);
     let addr = tokio::net::lookup_host((host.as_str(), port))

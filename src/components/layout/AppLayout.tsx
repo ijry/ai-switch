@@ -2,8 +2,10 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import {
   KeyRound,
   Menu,
+  PlugZap,
   ScanText,
   Settings2,
+  Sparkles,
   TerminalSquare,
   type LucideIcon,
 } from "lucide-react";
@@ -333,6 +335,20 @@ export function AppLayout({
                   icon={ScanText}
                   label={t("nav.ocr")}
                   onClick={() => onNavigate("OCR")}
+                />
+                <NavButton
+                  active={activeScreen === "MCP"}
+                  collapsed={sidebarCollapsed}
+                  icon={PlugZap}
+                  label={t("nav.mcp")}
+                  onClick={() => onNavigate("MCP")}
+                />
+                <NavButton
+                  active={activeScreen === "Skills"}
+                  collapsed={sidebarCollapsed}
+                  icon={Sparkles}
+                  label={t("nav.skills")}
+                  onClick={() => onNavigate("Skills")}
                 />
                 <NavButton
                   active={settingsActive}

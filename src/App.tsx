@@ -25,6 +25,8 @@ import { SettingsScreen } from "./screens/SettingsScreen";
 import { TargetsScreen } from "./screens/TargetsScreen";
 import { UpdatesScreen } from "./screens/UpdatesScreen";
 import { VibeScreen } from "./screens/VibeScreen";
+import { McpScreen } from "./screens/McpScreen";
+import { SkillsScreen } from "./screens/SkillsScreen";
 
 const queryClient = createQueryClient();
 
@@ -51,6 +53,8 @@ const implementedScreens = new Set([
   "Sessions",
   "Updates",
   "Log",
+  "MCP",
+  "Skills",
   "Vibe",
 ]);
 
@@ -58,11 +62,18 @@ function canSkipWebAuthGate() {
   return isDesktop() || isLocalWebDevRuntime();
 }
 
+export type PoolScopeFocus = {
+  platform: string;
+  scope: "in_pool" | "out_of_pool";
+  nonce: number;
+};
+
 export function App() {
   const [screen, setScreen] = useState("Codex");
   const [sessionPlatform, setSessionPlatform] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [webReady, setWebReady] = useState(canSkipWebAuthGate);
+  const [poolScopeFocus, setPoolScopeFocus] = useState<PoolScopeFocus | null>(null);
   const agentPlatform = platformByAgentScreen[screen];
 
   useEffect(() => {
@@ -86,11 +97,24 @@ export function App() {
     setScreen("Sessions");
   };
 
-  const handleDeepLinkImported = useCallback((platform: string) => {
-    const nextScreen = agentScreenByPlatform[platform as AgentPlatform];
-    if (nextScreen) {
-      setScreen(nextScreen);
-    }
+  const handleDeepLinkImported = useCallback(
+    (platform: string, options?: { joinedPool?: boolean }) => {
+      const nextScreen = agentScreenByPlatform[platform as AgentPlatform];
+      if (nextScreen) {
+        setScreen(nextScreen);
+      }
+      // Land the user on the segment where the imported account now lives so it
+      // doesn't look like the import silently failed.
+      setPoolScopeFocus({
+        platform,
+        scope: options?.joinedPool ? "in_pool" : "out_of_pool",
+        nonce: Date.now(),
+      });
+    },
+    [],
+  );
+  const handlePoolScopeFocusConsumed = useCallback((nonce: number) => {
+    setPoolScopeFocus((current) => (current?.nonce === nonce ? null : current));
   }, []);
 
   return (
@@ -114,6 +138,8 @@ export function App() {
               <AccountsScreen
                 onOpenSessions={openSessions}
                 platform={agentPlatform}
+                poolScopeFocus={poolScopeFocus}
+                onPoolScopeFocusConsumed={handlePoolScopeFocusConsumed}
                 sidebarCollapsed={sidebarCollapsed}
               />
             )}
@@ -127,6 +153,8 @@ export function App() {
             {screen === "Sessions" && <SessionsScreen initialPlatform={sessionPlatform} />}
             {screen === "Updates" && <UpdatesScreen />}
             {screen === "Settings" && <SettingsScreen onOpenFeature={navigate} />}
+            {screen === "MCP" && <McpScreen />}
+            {screen === "Skills" && <SkillsScreen />}
             {screen === "Log" && <OperationLogScreen />}
             {!implementedScreens.has(screen) && (
               <div className="rounded-2xl border border-stone-200 bg-white/80 p-5 text-sm text-stone-500 shadow-sm">

@@ -6,12 +6,14 @@ mod core;
 mod database;
 mod error;
 mod importers;
+mod mcp;
 mod models;
 mod paths;
 mod security;
 pub mod server;
 mod services;
 mod session_manager;
+mod skills;
 mod terminal_manager;
 mod web;
 
@@ -33,8 +35,8 @@ use commands::route_credential_commands::{
     delete_route_credential, get_route_credential, import_official_route_credentials_from_files,
     import_official_route_credentials_from_text, list_route_credentials,
     list_route_credentials_page, refresh_route_credential_quota, refresh_route_credentials_quota,
-    reorder_route_credentials, restore_route_credentials, set_route_credential_statuses,
-    update_route_credential,
+    reorder_route_credentials, restore_route_credentials, set_route_credential_recovery,
+    set_route_credential_statuses, update_route_credential,
 };
 use commands::route_credential_transfer_commands::{
     export_route_credentials, import_route_credentials, preview_route_credential_import,
@@ -69,6 +71,11 @@ use commands::web_service_commands::{
     start_web_server, stop_web_server,
 };
 use database::open_migrated_pool;
+use mcp::command::{
+    mcp_get_marketplace_server_detail, mcp_install_from_marketplace, mcp_list_marketplaces,
+    mcp_remove_server, mcp_scan_local, mcp_search_marketplace, mcp_set_server_apps,
+    mcp_upsert_local_server,
+};
 use paths::AppPaths;
 use services::config_write_service::ConfigWriteRuntimeState;
 use services::deeplink_protocol_service::{
@@ -77,8 +84,10 @@ use services::deeplink_protocol_service::{
 use services::deeplink_service::{parse_deeplink_url, DeepLinkErrorPayload};
 use services::route_proxy_https_service::RouteProxyHttpsService;
 use services::route_proxy_service::RouteProxyRuntimeState;
+use services::route_recovery_service::RouteRecoveryService;
 use services::tailscale_service::TailscaleRuntimeState;
 use services::web_service::{WebService, WebServiceRuntimeState};
+use skills::command::{skills_delete, skills_list, skills_list_agents, skills_read, skills_save};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -350,6 +359,17 @@ pub fn run() {
                 }
             });
 
+            // Auto-recovery scheduler: periodically re-enable accounts per their
+            // configured recovery rule (scheduled times / health-check probe).
+            let recovery_state = app.state::<AppState>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                RouteRecoveryService::run_loop(
+                    recovery_state.pool.clone(),
+                    recovery_state.route_proxy.activity(),
+                )
+                .await;
+            });
+
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             {
                 if let Err(err) = app.deep_link().register_all() {
@@ -392,6 +412,7 @@ pub fn run() {
             get_route_credential,
             create_api_route_credential,
             copy_route_credential,
+            set_route_credential_recovery,
             import_official_route_credentials_from_text,
             import_official_route_credentials_from_files,
             update_route_credential,
@@ -445,7 +466,20 @@ pub fn run() {
             get_tailscale_status,
             start_tailscale_login,
             start_tailscale_with_auth_key,
-            disconnect_tailscale
+            disconnect_tailscale,
+            mcp_scan_local,
+            mcp_list_marketplaces,
+            mcp_search_marketplace,
+            mcp_get_marketplace_server_detail,
+            mcp_install_from_marketplace,
+            mcp_upsert_local_server,
+            mcp_set_server_apps,
+            mcp_remove_server,
+            skills_list_agents,
+            skills_list,
+            skills_read,
+            skills_save,
+            skills_delete
         ])
         .run(tauri::generate_context!())
         .expect("failed to run AI Switch");

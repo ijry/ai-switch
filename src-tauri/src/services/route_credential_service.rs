@@ -1,6 +1,7 @@
 use self::sub2api_import_service::{is_sub2api_shape_error, parse_sub2api_text};
 use crate::database::repositories::batch_repository::BatchRepository;
 use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
+use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::error::AppError;
 use crate::models::batch::NewBatch;
 use crate::models::platform::{PlatformId, PlatformOperation};
@@ -239,7 +240,7 @@ impl RouteCredentialService {
     pub async fn copy(pool: &SqlitePool, id: String) -> Result<RouteCredential, AppError> {
         let source = RouteCredentialRepository::get(pool, &id).await?;
         let display_name = duplicated_display_name(&source.display_name);
-        RouteCredentialRepository::create(
+        let created = RouteCredentialRepository::create(
             pool,
             &source.platform,
             &source.kind,
@@ -251,7 +252,27 @@ impl RouteCredentialService {
             &source.config_json,
             &source.preview_json,
         )
-        .await
+        .await?;
+
+        // Preserve the source's compute-pool membership: a copy made from the
+        // "算力池" view should stay in the pool rather than dropping to "未入池".
+        let source_in_pool = RoutePoolRepository::pool_membership_map(
+            pool,
+            &source.platform,
+            std::slice::from_ref(&source.id),
+        )
+        .await?
+        .contains(&source.id);
+        if source_in_pool {
+            RoutePoolRepository::append_members(
+                pool,
+                &source.platform,
+                std::slice::from_ref(&created.id),
+            )
+            .await?;
+        }
+
+        Ok(created)
     }
 
     pub async fn delete(pool: &SqlitePool, id: String) -> Result<(), AppError> {
@@ -990,6 +1011,92 @@ mod tests {
             copied.display_name
         );
         assert_eq!(copied.display_name.len(), "Team Account YYYY-MM-DD".len());
+    }
+
+    #[tokio::test]
+    async fn copy_route_credential_inherits_pool_membership() {
+        use crate::database::repositories::route_pool_repository::RoutePoolRepository;
+
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+
+        let source = RouteCredentialService::create_api(
+            &pool,
+            CreateApiRouteCredentialInput {
+                platform: "codex".into(),
+                display_name: "Pooled Account".into(),
+                api_key: "sk-test".into(),
+                base_url: "https://api.example.com/v1".into(),
+                interface_format: "openai".into(),
+                model_mappings_json: "[]".into(),
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: None,
+                user_agent: None,
+            },
+        )
+        .await
+        .expect("create");
+
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&source.id))
+            .await
+            .expect("seed pool member");
+
+        let copied = RouteCredentialService::copy(&pool, source.id.clone())
+            .await
+            .expect("copy");
+
+        let members = RoutePoolRepository::list_member_ids(&pool, "codex")
+            .await
+            .expect("members");
+        assert!(
+            members.contains(&copied.id),
+            "copy of a pool member should also be in the pool: {members:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_route_credential_stays_out_of_pool_when_source_is_out() {
+        use crate::database::repositories::route_pool_repository::RoutePoolRepository;
+
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+
+        let source = RouteCredentialService::create_api(
+            &pool,
+            CreateApiRouteCredentialInput {
+                platform: "codex".into(),
+                display_name: "Solo Account".into(),
+                api_key: "sk-test".into(),
+                base_url: "https://api.example.com/v1".into(),
+                interface_format: "openai".into(),
+                model_mappings_json: "[]".into(),
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: None,
+                user_agent: None,
+            },
+        )
+        .await
+        .expect("create");
+
+        let copied = RouteCredentialService::copy(&pool, source.id.clone())
+            .await
+            .expect("copy");
+
+        let members = RoutePoolRepository::list_member_ids(&pool, "codex")
+            .await
+            .expect("members");
+        assert!(
+            !members.contains(&copied.id),
+            "copy of a non-pool source should remain out of the pool: {members:?}"
+        );
     }
 
     #[tokio::test]

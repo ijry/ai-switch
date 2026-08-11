@@ -46,6 +46,7 @@ import { neighborsForDrop } from "../lib/accountReorder";
 import {
   createBatch,
   copyRouteCredential,
+  setRouteCredentialRecovery,
   createApiRouteCredential,
   archiveRouteCredentials,
   deleteRouteCredential,
@@ -85,6 +86,8 @@ import type {
   RouteCredentialPage,
   RouteCredentialPoolScope,
   RouteCredentialSelectionContext,
+  RecoveryMode,
+  RecoveryRule,
   RouteModelsFetchRequest,
   RoutePoolModelTestOutcome,
   RoutePoolModelTestRequest,
@@ -446,6 +449,12 @@ type AccountsScreenProps = {
   platform?: PlatformKey;
   onOpenSessions?: (platform: PlatformKey) => void;
   sidebarCollapsed?: boolean;
+  onPoolScopeFocusConsumed?: (nonce: number) => void;
+  poolScopeFocus?: {
+    platform: string;
+    scope: "in_pool" | "out_of_pool";
+    nonce: number;
+  } | null;
 };
 
 const platformLabels: Record<PlatformKey, string> = {
@@ -883,6 +892,28 @@ function parseJsonObject(value: string) {
   } catch {
     return {};
   }
+}
+
+function recoveryRuleFromConfig(config: Record<string, unknown>): RecoveryRule {
+  const raw = config.recovery;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { mode: "off", times: [], probe_interval_minutes: null };
+  }
+  const record = raw as Record<string, unknown>;
+  const mode =
+    record.mode === "scheduled" || record.mode === "healthcheck" ? record.mode : "off";
+  const times = Array.isArray(record.times)
+    ? record.times.filter((value): value is string => typeof value === "string")
+    : [];
+  const interval =
+    typeof record.probe_interval_minutes === "number" && Number.isFinite(record.probe_interval_minutes)
+      ? Math.trunc(record.probe_interval_minutes)
+      : null;
+  return {
+    mode,
+    times,
+    probe_interval_minutes: interval,
+  };
 }
 
 function stringFromRecord(record: Record<string, unknown>, key: string) {
@@ -1530,6 +1561,8 @@ export function AccountsScreen({
   onOpenSessions,
   platform = "codex",
   sidebarCollapsed = false,
+  onPoolScopeFocusConsumed,
+  poolScopeFocus = null,
 }: AccountsScreenProps) {
   const queryClient = useQueryClient();
   const activePlatform = platform;
@@ -1609,6 +1642,9 @@ export function AccountsScreen({
   const [editStatus, setEditStatus] = useState<AccountStatus>("ok");
   const [editPriority, setEditPriority] = useState(3);
   const [editMaxConcurrency, setEditMaxConcurrency] = useState("1");
+  const [editRecoveryMode, setEditRecoveryMode] = useState<RecoveryMode>("off");
+  const [editRecoveryTimes, setEditRecoveryTimes] = useState<string[]>([]);
+  const [editRecoveryProbeInterval, setEditRecoveryProbeInterval] = useState("30");
   const [editApiKey, setEditApiKey] = useState("");
   const [editApiKeyDecodeError, setEditApiKeyDecodeError] = useState<string | null>(null);
   const [editApiKeyOcrError, setEditApiKeyOcrError] = useState<string | null>(null);
@@ -2082,6 +2118,10 @@ export function AccountsScreen({
     setEditMaxConcurrency(String(editingCredential.max_concurrency ?? 1));
     const secret = parseJsonObject(editingCredential.secret_payload_json);
     const config = parseJsonObject(editingCredential.config_json);
+    const recovery = recoveryRuleFromConfig(config);
+    setEditRecoveryMode(recovery.mode);
+    setEditRecoveryTimes(recovery.times.length ? recovery.times : ["00:00"]);
+    setEditRecoveryProbeInterval(String(recovery.probe_interval_minutes ?? 30));
     setEditSecretJson(parseJsonPreview(editingCredential.secret_payload_json, editingCredential.secret_payload_json));
     setEditConfigJson(parseJsonPreview(editingCredential.config_json, editingCredential.config_json));
     setEditUserAgent(readUserAgentFromConfig(config));
@@ -2245,6 +2285,19 @@ export function AccountsScreen({
       queryClient.refetchQueries({ queryKey: ["route-pool", activePlatform], type: "active" }),
     ]);
   };
+
+  // A deep-link import elsewhere in the app switches us to the segment where the
+  // freshly imported account landed, so it never looks like the import failed.
+  // Runs after the platform-change reset effect above, so it wins the segment.
+  useEffect(() => {
+    if (!poolScopeFocus || poolScopeFocus.platform !== activePlatform) {
+      return;
+    }
+    setAccountView(poolScopeFocus.scope);
+    setAccountPage(1);
+    void invalidateAccountData();
+    onPoolScopeFocusConsumed?.(poolScopeFocus.nonce);
+  }, [activePlatform, onPoolScopeFocusConsumed, poolScopeFocus]);
 
   const mergeCredentialsIntoCache = (imported: RouteCredential[]) => {
     if (!imported.length) {
@@ -2697,7 +2750,7 @@ export function AccountsScreen({
         editingCredential.kind === "api"
           ? apiPreviewJsonFromPayloads(activePlatform, nextSecretJson, nextConfigJson)
           : editPreviewJson.trim() || "{}";
-      return updateRouteCredential(editingCredential.id, {
+      const updated = await updateRouteCredential(editingCredential.id, {
         display_name: editName.trim(),
         email: editingCredential.kind === "api" ? null : editEmail.trim() || null,
         status: editStatus,
@@ -2707,6 +2760,13 @@ export function AccountsScreen({
         config_json: nextConfigJson,
         preview_json: nextPreviewJson,
       });
+      const recovery: RecoveryRule = {
+        mode: editRecoveryMode,
+        times: editRecoveryMode === "scheduled" ? editRecoveryTimes : [],
+        probe_interval_minutes:
+          editRecoveryMode === "healthcheck" ? Number(editRecoveryProbeInterval) : null,
+      };
+      return setRouteCredentialRecovery(updated.id, recovery);
     },
     onSuccess: async () => {
       setEditingCredential(null);
@@ -2728,6 +2788,15 @@ export function AccountsScreen({
       window.setTimeout(() => {
         setCopiedCredentialId((current) => (current === sourceId ? null : current));
       }, 1400);
+      // Backend mirrors the source's pool membership onto the copy; keep the
+      // local draft in sync so the copy shows up in the current segment.
+      if (draftPoolIds.has(sourceId)) {
+        setDraftPoolIds((current) => {
+          const next = new Set(current);
+          next.add(credential.id);
+          return next;
+        });
+      }
       await invalidateAccountData();
     },
   });
@@ -5323,6 +5392,78 @@ export function AccountsScreen({
                   />
                 </label>
               </div>
+              <div className="rounded-xl border border-stone-200 bg-stone-50/70 p-3">
+                <label className={labelClass}>
+                  自动恢复
+                  <select
+                    aria-label="自动恢复模式"
+                    className={fieldClass}
+                    onChange={(event) => setEditRecoveryMode(event.target.value as RecoveryMode)}
+                    value={editRecoveryMode}
+                  >
+                    <option value="off">关闭</option>
+                    <option value="scheduled">每日定时</option>
+                    <option value="healthcheck">探活恢复</option>
+                  </select>
+                </label>
+                {editRecoveryMode === "scheduled" ? (
+                  <div className="mt-3 grid gap-2">
+                    {editRecoveryTimes.map((time, index) => (
+                      <div className="flex items-center gap-2" key={`${index}-${time}`}>
+                        <input
+                          aria-label={`恢复时间 ${index + 1}`}
+                          className={fieldClass}
+                          onChange={(event) =>
+                            setEditRecoveryTimes((current) =>
+                              current.map((value, currentIndex) =>
+                                currentIndex === index ? event.target.value : value,
+                              ),
+                            )
+                          }
+                          type="time"
+                          value={time}
+                        />
+                        <button
+                          aria-label={`删除恢复时间 ${index + 1}`}
+                          className="rounded-lg border border-stone-200 p-2 text-stone-500 hover:bg-white disabled:opacity-50"
+                          disabled={editRecoveryTimes.length <= 1}
+                          onClick={() =>
+                            setEditRecoveryTimes((current) => current.filter((_, currentIndex) => currentIndex !== index))
+                          }
+                          title="删除恢复时间"
+                          type="button"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      aria-label="添加恢复时间"
+                      className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 hover:bg-stone-100"
+                      onClick={() => setEditRecoveryTimes((current) => [...current, "00:00"])}
+                      type="button"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      添加时间
+                    </button>
+                  </div>
+                ) : null}
+                {editRecoveryMode === "healthcheck" ? (
+                  <label className={`${labelClass} mt-3`}>
+                    探活间隔（分钟）
+                    <input
+                      aria-label="探活间隔（分钟）"
+                      className={fieldClass}
+                      min={1}
+                      max={1440}
+                      onChange={(event) => setEditRecoveryProbeInterval(event.target.value)}
+                      step={1}
+                      type="number"
+                      value={editRecoveryProbeInterval}
+                    />
+                  </label>
+                ) : null}
+              </div>
               {editingCredential.kind === "official" && (
                 <UserAgentFields
                   fieldClass={fieldClass}
@@ -5546,7 +5687,9 @@ export function AccountsScreen({
             </div>
 
             {updateMutation.error && (
-              <p className="mt-4 rounded-xl bg-red-50 p-3 text-[13px] font-semibold text-red-700">保存账号失败。</p>
+              <p className="mt-4 rounded-xl bg-red-50 p-3 text-[13px] font-semibold text-red-700">
+                {formatApiError(updateMutation.error, "保存账号失败。")}
+              </p>
             )}
             {deleteMutation.error && (
               <p className="mt-4 rounded-xl bg-red-50 p-3 text-[13px] font-semibold text-red-700">删除账号失败。</p>

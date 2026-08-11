@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { createApiRouteCredential } from "../../lib/api/client";
+import { createApiRouteCredential, getRoutePool, setRoutePoolMembers } from "../../lib/api/client";
 import type { CreateApiRouteCredentialInput, InterfaceFormat } from "../../lib/api/types";
 import { getTransport, isDesktop } from "../../lib/transport";
 import { Button } from "../ui/Button";
@@ -27,7 +27,7 @@ type DeepLinkErrorPayload = {
 };
 
 type DeepLinkImportDialogProps = {
-  onImported: (platform: string) => void;
+  onImported: (platform: string, options?: { joinedPool?: boolean }) => void;
 };
 
 function mappingSummary(modelMappingsJson: string) {
@@ -47,6 +47,7 @@ export function DeepLinkImportDialog({ onImported }: DeepLinkImportDialogProps) 
   const [error, setError] = useState<string | null>(null);
   const [bannerError, setBannerError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [joinPool, setJoinPool] = useState(true);
 
   useEffect(() => {
     if (!isDesktop()) {
@@ -68,6 +69,7 @@ export function DeepLinkImportDialog({ onImported }: DeepLinkImportDialogProps) 
             setPayload(next);
             setError(null);
             setBannerError(null);
+            setJoinPool(true);
           },
         );
         const unlistenError = await transport.subscribe<DeepLinkErrorPayload>(
@@ -127,10 +129,20 @@ export function DeepLinkImportDialog({ onImported }: DeepLinkImportDialogProps) 
         interface_format: payload.interface_format as InterfaceFormat,
         model_mappings_json: payload.model_mappings_json,
       };
-      await createApiRouteCredential(input);
-      const platform = payload.platform;
+      const created = await createApiRouteCredential(input);
+      const platform = created.platform;
+      let joinedPool = false;
+      if (joinPool) {
+        // Append to the pool without clobbering existing members.
+        const pool = await getRoutePool(platform);
+        const nextIds = pool.account_ids.includes(created.id)
+          ? pool.account_ids
+          : [...pool.account_ids, created.id];
+        await setRoutePoolMembers({ platform, account_ids: nextIds });
+        joinedPool = true;
+      }
       setPayload(null);
-      onImported(platform);
+      onImported(platform, { joinedPool });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -189,6 +201,21 @@ export function DeepLinkImportDialog({ onImported }: DeepLinkImportDialogProps) 
                 <dd>{payload.scheme}</dd>
               </div>
             </dl>
+            <label className="mt-4 flex items-start gap-2 text-sm text-stone-700">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 rounded border-stone-300"
+                checked={joinPool}
+                disabled={submitting}
+                onChange={(event) => setJoinPool(event.target.checked)}
+              />
+              <span>
+                导入后加入算力池
+                <span className="mt-0.5 block text-xs text-stone-500">
+                  导入成功后自动切换到对应列表；取消则放入未入池。
+                </span>
+              </span>
+            </label>
             {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
             <div className="mt-5 flex justify-end gap-2">
               <Button

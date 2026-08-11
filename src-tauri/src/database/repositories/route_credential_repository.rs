@@ -1,7 +1,8 @@
 use crate::error::AppError;
 use crate::models::route_credential::{
-    ReorderRouteCredentialInput, RouteCredential, RouteCredentialFilterOption, RouteCredentialPage,
-    RouteCredentialPageRequest, RouteCredentialPoolScope, UpdateRouteCredentialInput,
+    RecoveryCandidate, ReorderRouteCredentialInput, RouteCredential, RouteCredentialFilterOption,
+    RouteCredentialPage, RouteCredentialPageRequest, RouteCredentialPoolScope,
+    UpdateRouteCredentialInput,
 };
 use crate::models::route_credential_transfer::RouteCredentialSelectionContext;
 use chrono::Utc;
@@ -1210,6 +1211,62 @@ impl RouteCredentialRepository {
         Ok(())
     }
 
+    /// Overwrite only the free-form config JSON (used by the recovery-rule editor,
+    /// which stores its rule under the `recovery` key). Quota-derived columns are
+    /// left untouched because the recovery key never affects them.
+    pub async fn update_config_json(
+        pool: &SqlitePool,
+        id: &str,
+        config_json: &str,
+    ) -> Result<(), AppError> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE route_credentials
+             SET config_json = ?, updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(config_json)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_credential_config_update",
+            message: "Could not update route credential config".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::Validation {
+                code: "validation.route_credential_not_found",
+                message: "Route credential does not exist".to_string(),
+                details: Some(id.to_string()),
+                recoverable: true,
+            });
+        }
+        Ok(())
+    }
+
+    /// Load the minimal fields the auto-recovery scheduler needs for every
+    /// non-archived account across all platforms.
+    pub async fn list_recovery_candidates(
+        pool: &SqlitePool,
+    ) -> Result<Vec<RecoveryCandidate>, AppError> {
+        sqlx::query_as::<_, RecoveryCandidate>(
+            "SELECT id, platform, status, config_json, next_retry_at, cooldown_until
+             FROM route_credentials
+             WHERE archived_at IS NULL",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_credential_recovery_candidates",
+            message: "Could not load route credential recovery candidates".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })
+    }
+
     pub async fn record_transient_failure(
         pool: &SqlitePool,
         id: &str,
@@ -1368,6 +1425,13 @@ impl RouteCredentialRepository {
     }
 
     pub async fn recover_after_explicit_test(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
+        Self::reactivate_credential(pool, id).await
+    }
+
+    /// Set the account back to "ok" and clear any cooldown/retry backoff, unless
+    /// it is `revoked` (a hard auth failure that must not be silently re-enabled).
+    /// Shared by explicit model tests and the auto-recovery scheduler.
+    pub async fn reactivate_credential(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
             "UPDATE route_credentials

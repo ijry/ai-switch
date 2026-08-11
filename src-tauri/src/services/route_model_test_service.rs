@@ -10,7 +10,9 @@ use crate::services::http_client::{
     build_outbound_http_client, build_outbound_http_client_with_root_certificate,
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
-use crate::services::response_failure_service::detect_response_failed;
+use crate::services::response_failure_service::{
+    detect_response_failed, is_transient_response_failure,
+};
 use crate::services::route_credential_activity::{
     RouteCredentialActivityLease, RouteCredentialActivityRegistry,
 };
@@ -1136,13 +1138,24 @@ async fn finish_outcome(
         }
     } else {
         if let Some(failure) = detect_response_failed(response_body.as_bytes()) {
-            RouteCredentialRepository::record_semantic_failure(
-                pool,
-                &credential.id,
-                &failure.message,
-                Some(response_body.as_bytes()),
-            )
-            .await?;
+            if is_transient_response_failure(&failure.message) {
+                RouteCredentialRepository::record_transient_failure(
+                    pool,
+                    &credential.id,
+                    "semantic_response_transient",
+                    &failure.message,
+                    Some(response_body.as_bytes()),
+                )
+                .await?;
+            } else {
+                RouteCredentialRepository::record_semantic_failure(
+                    pool,
+                    &credential.id,
+                    &failure.message,
+                    Some(response_body.as_bytes()),
+                )
+                .await?;
+            }
         } else {
             let status =
                 response_status.and_then(|value| axum::http::StatusCode::from_u16(value).ok());
@@ -1364,14 +1377,9 @@ fn validate_model_test_credential(
     platform: PlatformId,
     credential: &SelectedCredential,
 ) -> Result<(), AppError> {
-    if credential.status == "paused" {
-        return Err(AppError::Validation {
-            code: "validation.route_credential_paused",
-            message: "Paused route credentials cannot be tested".to_string(),
-            details: Some(credential.id.clone()),
-            recoverable: true,
-        });
-    }
+    // Paused (暂停) accounts are intentionally testable: an explicit per-account
+    // test is how a user probes whether a paused account has recovered, and a
+    // successful test restores it to "ok" via recover_after_explicit_test.
     let rule = PlatformCapabilityService::require(platform, PlatformOperation::ModelTest)?;
     if !rule.credential_kinds.is_empty()
         && !rule
@@ -2276,6 +2284,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_model_restores_paused_account_status_on_success() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let base_url = start_json_test_server(
+            axum::http::StatusCode::OK,
+            json!({
+                "choices": [{"message": {"content": "ai-switch-ok"}}]
+            }),
+        )
+        .await;
+        let credential_id = create_api_credential(&pool, &base_url).await;
+        RouteCredentialRepository::update_status(&pool, &credential_id, "paused")
+            .await
+            .expect("status");
+
+        let outcome = RouteModelTestService::test_model(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "codex".to_string(),
+                account_id: Some(credential_id.clone()),
+                model: None,
+                interface_format: None,
+            },
+        )
+        .await
+        .expect("outcome");
+
+        assert!(outcome.success);
+
+        let credential = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("credential");
+        assert_eq!(credential.status, "ok");
+    }
+
+    #[tokio::test]
     async fn test_model_keeps_revoked_account_status_on_success() {
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
@@ -2499,6 +2543,68 @@ mod tests {
         assert_eq!(credential.status, "ok");
         assert_eq!(credential.transient_failure_count, 1);
         assert!(credential.next_retry_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_model_overloaded_response_keeps_account_ok() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let base_url = start_json_test_server(
+            axum::http::StatusCode::OK,
+            json!({
+                "type": "response.failed",
+                "response": {
+                    "status": "failed",
+                    "error": {
+                        "message": "Our servers are currently overloaded. Please try again later."
+                    }
+                }
+            }),
+        )
+        .await;
+        let credential = RouteCredentialRepository::create(
+            &pool,
+            "hermes",
+            "api",
+            "Overloaded API Account",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-test"}"#,
+            &json!({
+                "base_url": base_url,
+                "interface_format": "openai",
+                "model_mappings": []
+            })
+            .to_string(),
+            r#"{"config_toml":""}"#,
+        )
+        .await
+        .expect("credential");
+
+        let outcome = RouteModelTestService::test_model(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "hermes".to_string(),
+                account_id: Some(credential.id.clone()),
+                model: None,
+                interface_format: Some("openai".to_string()),
+            },
+        )
+        .await
+        .expect("outcome");
+
+        assert!(!outcome.success);
+        assert_eq!(outcome.response_status, Some(200));
+        let stored = RouteCredentialRepository::get(&pool, &credential.id)
+            .await
+            .expect("stored credential");
+        assert_eq!(stored.status, "ok");
+        assert_eq!(stored.transient_failure_count, 1);
+        assert_eq!(
+            stored.last_failure_kind.as_deref(),
+            Some("semantic_response_transient")
+        );
     }
 
     #[tokio::test]

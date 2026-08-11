@@ -15,7 +15,9 @@ use crate::services::official_agent_identity_service::{
     CODEX_AGENT_IDENTITY_BASE_URL,
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
-use crate::services::response_failure_service::detect_response_failed;
+use crate::services::response_failure_service::{
+    detect_auto_pause_code, detect_response_failed, is_transient_response_failure,
+};
 use crate::services::route_config_service::generate_route_proxy_key;
 use crate::services::route_credential_activity::RouteCredentialActivityRegistry;
 use crate::services::route_model_capability::{
@@ -921,12 +923,20 @@ async fn forward_request(
         };
         let response_text = std::str::from_utf8(&response_bytes).ok();
         let semantic_failure = detect_response_failed(&response_bytes);
+        // A gateway-level fixed-window quota error means this account is spent for
+        // the current window; auto-pause it so routing skips it until reset.
+        let auto_pause_code = detect_auto_pause_code(&response_bytes);
         let failure_kind = classify_proxy_failure(Some(status), response_text);
         let should_retry = !matches!(failure_kind, ProxyFailureKind::None);
-        let proxy_success =
-            status.is_success() && !quota_exhausted && !should_retry && semantic_failure.is_none();
+        let proxy_success = status.is_success()
+            && !quota_exhausted
+            && !should_retry
+            && auto_pause_code.is_none()
+            && semantic_failure.is_none();
         let retry_error = if let Some(failure) = semantic_failure.as_ref() {
             Some(failure.message.clone())
+        } else if let Some(code) = auto_pause_code.as_ref() {
+            Some(format!("upstream quota exhausted ({code}); account paused"))
         } else if quota_exhausted {
             Some("upstream quota exhausted".to_string())
         } else if should_retry {
@@ -977,6 +987,14 @@ async fn forward_request(
         let next_index = (credential_index + 1) % credentials.len();
         let _ = RoutePoolRepository::save_cursor_index(pool, &platform, next_index as i64).await;
 
+        if let Some(code) = auto_pause_code {
+            mark_route_credential_paused(&state.activity, &platform, pool, &credential.id).await;
+            retry_errors.push(format!(
+                "{}: upstream quota exhausted ({code}); account paused",
+                credential.display_name
+            ));
+            continue;
+        }
         if quota_exhausted {
             retry_errors.push(format!(
                 "{}: upstream quota exhausted",
@@ -985,7 +1003,18 @@ async fn forward_request(
             continue;
         }
         if let Some(failure) = semantic_failure {
-            if RouteCredentialRepository::record_semantic_failure(
+            if is_transient_response_failure(&failure.message) {
+                record_route_credential_failure(
+                    &state.activity,
+                    &platform,
+                    pool,
+                    &credential.id,
+                    "semantic_response_transient",
+                    &failure.message,
+                    Some(&response_bytes),
+                )
+                .await;
+            } else if RouteCredentialRepository::record_semantic_failure(
                 pool,
                 &credential.id,
                 &failure.message,
@@ -1346,6 +1375,20 @@ async fn mark_route_credential_revoked(
     credential_id: &str,
 ) {
     if RouteCredentialRepository::update_status(pool, credential_id, "revoked")
+        .await
+        .is_ok()
+    {
+        activity.notify_status_change(platform, credential_id);
+    }
+}
+
+async fn mark_route_credential_paused(
+    activity: &RouteCredentialActivityRegistry,
+    platform: &str,
+    pool: &SqlitePool,
+    credential_id: &str,
+) {
+    if RouteCredentialRepository::update_status(pool, credential_id, "paused")
         .await
         .is_ok()
     {
@@ -4403,6 +4446,49 @@ mod tests {
         assert_eq!(healthy_request.cache_tokens, Some(80));
         assert_eq!(healthy_request.price_cny_micros, Some(7_100_000));
         assert_eq!(healthy_request.price_currency.as_deref(), Some("cny"));
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn overloaded_response_does_not_mark_account_error() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let overloaded_body = r#"{"type":"response.failed","response":{"status":"failed","error":{"message":"Our servers are currently overloaded. Please try again later."}}}"#;
+        let upstream = start_fixed_upstream(StatusCode::OK, overloaded_body).await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_proxy_api_credential(&pool, "overloaded", &upstream).await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5.5","messages":[]}))
+            .send()
+            .await
+            .expect("proxy response");
+        let _ = response.bytes().await.expect("proxy body");
+
+        let credential = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("credential");
+        assert_eq!(credential.status, "ok");
+        assert_eq!(credential.transient_failure_count, 1);
 
         RouteProxyService::stop(&runtime).await.expect("stop proxy");
     }

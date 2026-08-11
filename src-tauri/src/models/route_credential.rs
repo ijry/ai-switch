@@ -58,6 +58,18 @@ pub struct RouteCredential {
     pub updated_at: String,
 }
 
+/// Lightweight projection used by the auto-recovery scheduler to evaluate each
+/// account's recovery rule without loading the full aggregate row.
+#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
+pub struct RecoveryCandidate {
+    pub id: String,
+    pub platform: String,
+    pub status: String,
+    pub config_json: String,
+    pub next_retry_at: Option<String>,
+    pub cooldown_until: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateApiRouteCredentialInput {
     pub platform: String,

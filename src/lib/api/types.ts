@@ -244,6 +244,14 @@ export type RouteCredentialFilterOption = {
 
 export type RouteCredentialPoolScope = "in_pool" | "out_of_pool" | "archived";
 
+export type RecoveryMode = "off" | "scheduled" | "healthcheck";
+
+export type RecoveryRule = {
+  mode: RecoveryMode;
+  times: string[];
+  probe_interval_minutes?: number | null;
+};
+
 export type TransferPlatformChoice = {
   item_index: number;
   platform: string;
@@ -700,4 +708,115 @@ export type TerminalExitEvent = {
 export type TerminalErrorEvent = {
   sessionId: string;
   message: string;
+};
+
+export type McpAppType =
+  | "claude_code"
+  | "codex"
+  | "gemini"
+  | "grok"
+  | "open_claw"
+  | "open_code"
+  | "hermes"
+  | "cline"
+  | "cursor"
+  | "kimi_code"
+  | "code_buddy";
+
+export type McpSpec = Record<string, unknown>;
+
+export type LocalMcpServer = {
+  id: string;
+  spec: McpSpec;
+  apps: McpAppType[];
+};
+
+export type McpMarketplaceProvider = {
+  id: string;
+  name: string;
+  description: string;
+};
+
+export type McpMarketplaceItem = {
+  provider_id: string;
+  server_id: string;
+  name: string;
+  description: string;
+  homepage?: string | null;
+  remote: boolean;
+  verified: boolean;
+  icon_url?: string | null;
+  latest_version?: string | null;
+  protocols: string[];
+  owner?: string | null;
+  namespace?: string | null;
+  downloads?: number | null;
+  score?: number | null;
+  is_deployed?: boolean | null;
+};
+
+export type McpMarketplaceInstallParameter = {
+  key: string;
+  label: string;
+  description?: string | null;
+  required: boolean;
+  secret: boolean;
+  kind: string;
+  default_value?: unknown;
+  placeholder?: string | null;
+  enum_values: string[];
+  location?: string | null;
+};
+
+export type McpMarketplaceInstallOption = {
+  id: string;
+  protocol: string;
+  label: string;
+  description?: string | null;
+  spec: McpSpec;
+  parameters: McpMarketplaceInstallParameter[];
+};
+
+export type McpMarketplaceServerDetail = McpMarketplaceItem & {
+  default_option_id?: string | null;
+  install_options: McpMarketplaceInstallOption[];
+  spec: McpSpec;
+};
+
+export type SkillAgentType = McpAppType;
+export type SkillScope = "global" | "project";
+export type SkillLayout = "markdown_file" | "skill_directory";
+
+export type SkillLocation = {
+  scope: SkillScope;
+  path: string;
+  exists: boolean;
+};
+
+export type SkillItem = {
+  id: string;
+  name: string;
+  scope: SkillScope;
+  layout: SkillLayout;
+  path: string;
+  description?: string | null;
+  read_only: boolean;
+};
+
+export type SkillsListResult = {
+  supported: boolean;
+  message?: string | null;
+  locations: SkillLocation[];
+  skills: SkillItem[];
+};
+
+export type SkillContent = {
+  skill: SkillItem;
+  content: string;
+};
+
+export type SkillAgentInfo = {
+  agent_type: SkillAgentType;
+  display_name: string;
+  skills_capable: boolean;
 };

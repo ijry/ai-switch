@@ -26,6 +26,7 @@ import type {
   ReorderRouteCredentialInput,
   RouteCredentialImportResult,
   QuotaRefreshOutcome,
+  RecoveryRule,
   RouteModelsFetchRequest,
   RoutePoolModelTestOutcome,
   RoutePoolModelTestRequest,
@@ -48,6 +49,19 @@ import type {
   WebServiceConfig,
   UpdateOfficialAccount,
   UpdateRouteCredentialInput,
+  LocalMcpServer,
+  McpAppType,
+  McpMarketplaceItem,
+  McpMarketplaceProvider,
+  McpMarketplaceServerDetail,
+  McpSpec,
+  SkillAgentInfo,
+  SkillAgentType,
+  SkillContent,
+  SkillItem,
+  SkillLayout,
+  SkillScope,
+  SkillsListResult,
 } from "./types";
 
 function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -294,6 +308,13 @@ export function copyRouteCredential(id: string): Promise<RouteCredential> {
   return invoke("copy_route_credential", { id });
 }
 
+export function setRouteCredentialRecovery(
+  id: string,
+  rule: RecoveryRule,
+): Promise<RouteCredential> {
+  return invoke("set_route_credential_recovery", { id, rule });
+}
+
 export function deleteRouteCredential(id: string): Promise<void> {
   return invoke("delete_route_credential", { id });
 }
@@ -395,4 +416,106 @@ export function startTailscaleWithAuthKey(authKey: string): Promise<TailscaleSta
 
 export function disconnectTailscale(): Promise<TailscaleStatus> {
   return invoke("disconnect_tailscale");
+}
+
+export function mcpScanLocal(): Promise<LocalMcpServer[]> {
+  return invoke("mcp_scan_local");
+}
+
+export function mcpListMarketplaces(): Promise<McpMarketplaceProvider[]> {
+  return invoke("mcp_list_marketplaces");
+}
+
+export function mcpSearchMarketplace(input: {
+  providerId: string;
+  query?: string | null;
+  limit?: number | null;
+}): Promise<McpMarketplaceItem[]> {
+  return invoke("mcp_search_marketplace", {
+    providerId: input.providerId,
+    query: input.query ?? null,
+    limit: input.limit ?? null,
+  });
+}
+
+export function mcpGetMarketplaceServerDetail(
+  providerId: string,
+  serverId: string,
+): Promise<McpMarketplaceServerDetail> {
+  return invoke("mcp_get_marketplace_server_detail", { providerId, serverId });
+}
+
+export function mcpInstallFromMarketplace(input: {
+  providerId: string;
+  serverId: string;
+  apps: McpAppType[];
+  optionId?: string | null;
+  protocol?: string | null;
+  parameterValues?: Record<string, unknown> | null;
+}): Promise<LocalMcpServer> {
+  return invoke("mcp_install_from_marketplace", {
+    providerId: input.providerId,
+    serverId: input.serverId,
+    apps: input.apps,
+    optionId: input.optionId ?? null,
+    protocol: input.protocol ?? null,
+    parameterValues: input.parameterValues ?? null,
+  });
+}
+
+export function mcpUpsertLocalServer(input: {
+  serverId: string;
+  spec: McpSpec;
+  apps: McpAppType[];
+}): Promise<LocalMcpServer> {
+  return invoke("mcp_upsert_local_server", input);
+}
+
+export function mcpSetServerApps(serverId: string, apps: McpAppType[]): Promise<LocalMcpServer | null> {
+  return invoke("mcp_set_server_apps", { serverId, apps });
+}
+
+export function mcpRemoveServer(serverId: string, apps?: McpAppType[] | null): Promise<boolean> {
+  return invoke("mcp_remove_server", { serverId, apps: apps ?? null });
+}
+
+export function skillsListAgents(): Promise<SkillAgentInfo[]> {
+  return invoke("skills_list_agents");
+}
+
+export function skillsList(input: {
+  agentType: SkillAgentType;
+  scope: SkillScope;
+  workspacePath?: string | null;
+}): Promise<SkillsListResult> {
+  return invoke("skills_list", { ...input, workspacePath: input.workspacePath ?? null });
+}
+
+export function skillsRead(input: {
+  agentType: SkillAgentType;
+  scope: SkillScope;
+  skillId: string;
+  workspacePath?: string | null;
+}): Promise<SkillContent> {
+  return invoke("skills_read", { ...input, workspacePath: input.workspacePath ?? null });
+}
+
+export function skillsSave(input: {
+  agentType: SkillAgentType;
+  scope: SkillScope;
+  skillId: string;
+  content: string;
+  layout?: SkillLayout | null;
+  workspacePath?: string | null;
+}): Promise<SkillItem> {
+  return invoke("skills_save", { ...input, workspacePath: input.workspacePath ?? null });
+}
+
+export function skillsDelete(input: {
+  agentType: SkillAgentType;
+  scope: SkillScope;
+  skillId: string;
+  workspacePath?: string | null;
+}): Promise<boolean> {
+  return invoke("skills_delete", { ...input, workspacePath: input.workspacePath ?? null });
 }
