@@ -579,6 +579,20 @@ describe("AccountsScreen", () => {
     expect(screen.queryByLabelText("批量加入算力池")).not.toBeInTheDocument();
   });
 
+  it("uses the red status treatment for paused accounts", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      {
+        ...credentialsFixture[0],
+        status: "paused",
+      },
+    ]);
+
+    renderScreen();
+
+    const pausedStatus = await screen.findByText("暂停");
+    expect(pausedStatus).toHaveClass("bg-red-50", "text-red-800", "ring-red-200");
+  });
+
   it("switches to the imported account pool scope and consumes the focus nonce", async () => {
     const onPoolScopeFocusConsumed = vi.fn();
     render(
@@ -1832,6 +1846,79 @@ describe("AccountsScreen", () => {
     expect(JSON.parse(updateInput.preview_json).auth_json.api_key).toBe("sk-edit");
   });
 
+  it("shows default failure policy values and explains handled failures", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+
+    expect(screen.getByLabelText("额外重试次数")).toHaveValue(2);
+    expect(screen.getByLabelText("重试间隔（毫秒）")).toHaveValue(200);
+    expect(screen.getByLabelText("异常触发次数")).toHaveValue(10);
+    expect(screen.getByText(/网络连接失败、请求超时、响应读取失败/)).toBeInTheDocument();
+    expect(screen.getByText(/相同且连续达到设定次数后/)).toBeInTheDocument();
+    expect(screen.getByText(/HTTP 401 \/ 403/)).toBeInTheDocument();
+  });
+
+  it("hydrates custom failure policy and preserves other account config when saving", async () => {
+    const api = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://api.example.com/v1",
+        interface_format: "openai",
+        model_mappings: [{ from: "gpt-5", to: "existing-upstream" }],
+        headers: { "User-Agent": "ExistingBot/1.0" },
+        custom_option: "keep-me",
+        failure_policy: {
+          retry_count: 4,
+          retry_interval_ms: 750,
+          semantic_error_threshold: 18,
+        },
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([api]);
+    vi.mocked(updateRouteCredential).mockResolvedValue(api);
+
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    expect(screen.getByLabelText("额外重试次数")).toHaveValue(4);
+    expect(screen.getByLabelText("重试间隔（毫秒）")).toHaveValue(750);
+    expect(screen.getByLabelText("异常触发次数")).toHaveValue(18);
+
+    fireEvent.change(screen.getByLabelText("额外重试次数"), { target: { value: "6" } });
+    fireEvent.change(screen.getByLabelText("重试间隔（毫秒）"), { target: { value: "900" } });
+    fireEvent.change(screen.getByLabelText("异常触发次数"), { target: { value: "25" } });
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const payload = vi.mocked(updateRouteCredential).mock.calls[0][1];
+    expect(JSON.parse(payload.config_json)).toMatchObject({
+      base_url: "https://api.example.com/v1",
+      interface_format: "openai",
+      model_mappings: [{ from: "gpt-5", to: "existing-upstream" }],
+      headers: { "User-Agent": "ExistingBot/1.0" },
+      custom_option: "keep-me",
+      failure_policy: {
+        retry_count: 6,
+        retry_interval_ms: 900,
+        semantic_error_threshold: 25,
+      },
+    });
+  });
+
+  it("rejects an invalid retry count before saving the account", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+    fireEvent.change(screen.getByLabelText("额外重试次数"), { target: { value: "11" } });
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    expect(
+      await screen.findAllByText("额外重试次数必须是 0-10 的整数"),
+    ).toHaveLength(2);
+    expect(updateRouteCredential).not.toHaveBeenCalled();
+  });
+
   it("recognizes an API key from a clipboard image while editing an API credential", async () => {
     const imageBlob = new Blob(["fake"], { type: "image/png" });
     const clipboardItem = {
@@ -1872,7 +1959,7 @@ describe("AccountsScreen", () => {
         route_priority: 3,
         max_concurrency: 1,
         secret_payload_json: "{\n  \"access_token\": \"at\",\n  \"refresh_token\": \"rt\"\n}",
-        config_json: "{\n  \"type\": \"codex\"\n}",
+        config_json: expect.stringContaining('"failure_policy"'),
         preview_json: "{\n  \"auth_json\": {}\n}",
       }),
     );

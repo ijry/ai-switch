@@ -1,23 +1,16 @@
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Download, RefreshCw, RotateCcw, ShieldAlert, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../../lib/i18n";
 import { isDesktop } from "../../lib/transport";
 
-const LAST_UPDATE_CHECK_STORAGE_KEY = "ai-switch.last-update-check";
+const AUTO_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
 type DownloadState = {
   downloaded: number;
   total?: number;
 };
-
-function localDateKey() {
-  const now = new Date();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  return `${now.getFullYear()}-${month}-${day}`;
-}
 
 function formatBytes(value: number) {
   if (value < 1024) {
@@ -36,35 +29,39 @@ export function AutoUpdatePrompt() {
   const [installed, setInstalled] = useState(false);
   const [download, setDownload] = useState<DownloadState>({ downloaded: 0 });
   const [error, setError] = useState<string | null>(null);
+  const checkInProgressRef = useRef(false);
 
   useEffect(() => {
     if (!isDesktop() || typeof window === "undefined") {
       return;
     }
 
-    const today = localDateKey();
-    try {
-      if (window.localStorage.getItem(LAST_UPDATE_CHECK_STORAGE_KEY) === today) {
+    let cancelled = false;
+    const checkForUpdate = async () => {
+      if (checkInProgressRef.current) {
         return;
       }
-      window.localStorage.setItem(LAST_UPDATE_CHECK_STORAGE_KEY, today);
-    } catch {
-      // Restricted webviews may not provide storage; still try the check once.
-    }
 
-    let cancelled = false;
-    void check()
-      .then((nextUpdate) => {
+      checkInProgressRef.current = true;
+      try {
+        const nextUpdate = await check();
         if (!cancelled && nextUpdate) {
           setUpdate(nextUpdate);
         }
-      })
-      .catch(() => {
-        // Automatic checks are silent when the endpoint is unavailable.
-      });
+      } catch {
+      } finally {
+        checkInProgressRef.current = false;
+      }
+    };
+
+    void checkForUpdate();
+    const intervalId = window.setInterval(() => {
+      void checkForUpdate();
+    }, AUTO_UPDATE_CHECK_INTERVAL_MS);
 
     return () => {
       cancelled = true;
+      window.clearInterval(intervalId);
     };
   }, []);
 

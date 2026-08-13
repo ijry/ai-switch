@@ -83,6 +83,7 @@ import type {
   QuotaRefreshOutcome,
   RouteCredential,
   RouteCredentialActivityEvent,
+  RouteCredentialFailurePolicy,
   RouteCredentialPage,
   RouteCredentialPoolScope,
   RouteCredentialSelectionContext,
@@ -135,6 +136,12 @@ type RoutePoolMutationInput = {
   account_ids: string[];
   action: RoutePoolAction;
   affectedCount: number;
+};
+
+const defaultRouteCredentialFailurePolicy: RouteCredentialFailurePolicy = {
+  retry_count: 2,
+  retry_interval_ms: 200,
+  semantic_error_threshold: 10,
 };
 
 function formatApiError(error: unknown, fallback: string): string {
@@ -198,7 +205,7 @@ function accountStatusClass(status: string): string {
     case "revoked":
       return "bg-rose-100 text-rose-900 ring-1 ring-rose-200";
     case "paused":
-      return "bg-slate-100 text-slate-700 ring-1 ring-slate-200";
+      return "bg-red-50 text-red-800 ring-1 ring-red-200";
     default:
       return "bg-stone-100 text-stone-600";
   }
@@ -913,6 +920,35 @@ function recoveryRuleFromConfig(config: Record<string, unknown>): RecoveryRule {
     mode,
     times,
     probe_interval_minutes: interval,
+  };
+}
+
+function failurePolicyFromConfig(config: Record<string, unknown>): RouteCredentialFailurePolicy {
+  const raw = config.failure_policy;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ...defaultRouteCredentialFailurePolicy };
+  }
+  const record = raw as Record<string, unknown>;
+  const integerOrDefault = (key: keyof RouteCredentialFailurePolicy) => {
+    const value = record[key];
+    return typeof value === "number" && Number.isInteger(value)
+      ? value
+      : defaultRouteCredentialFailurePolicy[key];
+  };
+  return {
+    retry_count: integerOrDefault("retry_count"),
+    retry_interval_ms: integerOrDefault("retry_interval_ms"),
+    semantic_error_threshold: integerOrDefault("semantic_error_threshold"),
+  };
+}
+
+function writeFailurePolicyToConfig(
+  config: Record<string, unknown>,
+  failurePolicy: RouteCredentialFailurePolicy,
+) {
+  return {
+    ...config,
+    failure_policy: failurePolicy,
   };
 }
 
@@ -1642,6 +1678,10 @@ export function AccountsScreen({
   const [editStatus, setEditStatus] = useState<AccountStatus>("ok");
   const [editPriority, setEditPriority] = useState(3);
   const [editMaxConcurrency, setEditMaxConcurrency] = useState("1");
+  const [editRetryCount, setEditRetryCount] = useState("2");
+  const [editRetryIntervalMs, setEditRetryIntervalMs] = useState("200");
+  const [editSemanticErrorThreshold, setEditSemanticErrorThreshold] = useState("10");
+  const [editFailurePolicyError, setEditFailurePolicyError] = useState<string | null>(null);
   const [editRecoveryMode, setEditRecoveryMode] = useState<RecoveryMode>("off");
   const [editRecoveryTimes, setEditRecoveryTimes] = useState<string[]>([]);
   const [editRecoveryProbeInterval, setEditRecoveryProbeInterval] = useState("30");
@@ -2119,9 +2159,14 @@ export function AccountsScreen({
     const secret = parseJsonObject(editingCredential.secret_payload_json);
     const config = parseJsonObject(editingCredential.config_json);
     const recovery = recoveryRuleFromConfig(config);
+    const failurePolicy = failurePolicyFromConfig(config);
     setEditRecoveryMode(recovery.mode);
     setEditRecoveryTimes(recovery.times.length ? recovery.times : ["00:00"]);
     setEditRecoveryProbeInterval(String(recovery.probe_interval_minutes ?? 30));
+    setEditRetryCount(String(failurePolicy.retry_count));
+    setEditRetryIntervalMs(String(failurePolicy.retry_interval_ms));
+    setEditSemanticErrorThreshold(String(failurePolicy.semantic_error_threshold));
+    setEditFailurePolicyError(null);
     setEditSecretJson(parseJsonPreview(editingCredential.secret_payload_json, editingCredential.secret_payload_json));
     setEditConfigJson(parseJsonPreview(editingCredential.config_json, editingCredential.config_json));
     setEditUserAgent(readUserAgentFromConfig(config));
@@ -2724,28 +2769,63 @@ export function AccountsScreen({
       if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
         throw new Error("最大并发数必须是大于等于 1 的整数");
       }
+      const retryCount = Number(editRetryCount);
+      const retryIntervalMs = Number(editRetryIntervalMs);
+      const semanticErrorThreshold = Number(editSemanticErrorThreshold);
+      let failurePolicyError: string | null = null;
+      if (!Number.isInteger(retryCount) || retryCount < 0 || retryCount > 10) {
+        failurePolicyError = "额外重试次数必须是 0-10 的整数";
+      } else if (
+        !Number.isInteger(retryIntervalMs) ||
+        retryIntervalMs < 0 ||
+        retryIntervalMs > 60_000
+      ) {
+        failurePolicyError = "重试间隔必须是 0-60000 毫秒的整数";
+      } else if (
+        !Number.isInteger(semanticErrorThreshold) ||
+        semanticErrorThreshold < 1 ||
+        semanticErrorThreshold > 1_000
+      ) {
+        failurePolicyError = "异常触发次数必须是 1-1000 的整数";
+      }
+      if (failurePolicyError) {
+        setEditFailurePolicyError(failurePolicyError);
+        throw new Error(failurePolicyError);
+      }
+      const failurePolicy: RouteCredentialFailurePolicy = {
+        retry_count: retryCount,
+        retry_interval_ms: retryIntervalMs,
+        semantic_error_threshold: semanticErrorThreshold,
+      };
+      setEditFailurePolicyError(null);
       setEditModelMappingsError(null);
       const nextSecretJson =
         editingCredential.kind === "api"
           ? apiSecretJsonWithKey(editSecretJson, editApiKey)
           : editSecretJson.trim() || "{}";
-      const nextConfigJson =
+      const baseConfig =
         editingCredential.kind === "api"
-          ? apiConfigJsonWithFields(
-              editConfigJson.trim() || "{}",
-              editApiBaseUrl,
-              editApiInterfaceFormat,
-              normalizedMappings.mappings,
-              editApiKeyField,
-              editResponsesCustomToolCompat,
-              editUserAgent,
-              editInlineRemoteImages,
+          ? parseJsonObject(
+              apiConfigJsonWithFields(
+                editConfigJson.trim() || "{}",
+                editApiBaseUrl,
+                editApiInterfaceFormat,
+                normalizedMappings.mappings,
+                editApiKeyField,
+                editResponsesCustomToolCompat,
+                editUserAgent,
+                editInlineRemoteImages,
+              ),
             )
-          : JSON.stringify(
-              writeUserAgentToConfig(parseJsonObject(editConfigJson.trim() || "{}"), editUserAgent),
-              null,
-              2,
+          : writeUserAgentToConfig(
+              parseJsonObject(editConfigJson.trim() || "{}"),
+              editUserAgent,
             );
+      const nextConfigJson = JSON.stringify(
+        writeFailurePolicyToConfig(baseConfig, failurePolicy),
+        null,
+        2,
+      );
       const nextPreviewJson =
         editingCredential.kind === "api"
           ? apiPreviewJsonFromPayloads(activePlatform, nextSecretJson, nextConfigJson)
@@ -5392,6 +5472,91 @@ export function AccountsScreen({
                   />
                 </label>
               </div>
+              <section
+                aria-label="账号失败处理策略"
+                className="rounded-xl border border-blue-100 bg-blue-50/60 p-3"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[13px] font-semibold text-stone-900">失败处理策略</p>
+                    <p className="mt-0.5 text-[11px] font-medium text-stone-500">
+                      此账号在代理请求和模型测试中共用以下规则。
+                    </p>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-blue-700">
+                    按账号生效
+                  </span>
+                </div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                  <label className={labelClass}>
+                    额外重试次数
+                    <input
+                      aria-label="额外重试次数"
+                      className={fieldClass}
+                      max={10}
+                      min={0}
+                      onChange={(event) => {
+                        setEditRetryCount(event.target.value);
+                        setEditFailurePolicyError(null);
+                      }}
+                      step={1}
+                      type="number"
+                      value={editRetryCount}
+                    />
+                  </label>
+                  <label className={labelClass}>
+                    重试间隔（毫秒）
+                    <input
+                      aria-label="重试间隔（毫秒）"
+                      className={fieldClass}
+                      max={60_000}
+                      min={0}
+                      onChange={(event) => {
+                        setEditRetryIntervalMs(event.target.value);
+                        setEditFailurePolicyError(null);
+                      }}
+                      step={1}
+                      type="number"
+                      value={editRetryIntervalMs}
+                    />
+                  </label>
+                  <label className={labelClass}>
+                    异常触发次数
+                    <input
+                      aria-label="异常触发次数"
+                      className={fieldClass}
+                      max={1_000}
+                      min={1}
+                      onChange={(event) => {
+                        setEditSemanticErrorThreshold(event.target.value);
+                        setEditFailurePolicyError(null);
+                      }}
+                      step={1}
+                      type="number"
+                      value={editSemanticErrorThreshold}
+                    />
+                  </label>
+                </div>
+                {editFailurePolicyError && (
+                  <p className="mt-2 text-[12px] font-semibold text-red-700">
+                    {editFailurePolicyError}
+                  </p>
+                )}
+                <div className="mt-3 grid gap-2 text-[11px] leading-5 text-stone-600">
+                  <p>
+                    <span className="font-semibold text-emerald-700">会自动重试：</span>
+                    网络连接失败、请求超时、响应读取失败、HTTP 408 / 429 / 5xx，以及 Codex“服务器当前过载”。
+                  </p>
+                  <p>
+                    <span className="font-semibold text-amber-700">会累计为异常：</span>
+                    不可重试的永久语义错误，在 HTTP 状态和规范化错误消息相同且连续达到设定次数后，账号才会标记为异常；成功、临时错误或错误变化会清零。
+                  </p>
+                  <p>
+                    <span className="font-semibold text-red-700">不会同账号重试：</span>
+                    HTTP 401 / 403；它们继续按现有鉴权失效和切换账号逻辑处理。
+                  </p>
+                </div>
+              </section>
               <div className="rounded-xl border border-stone-200 bg-stone-50/70 p-3">
                 <label className={labelClass}>
                   自动恢复

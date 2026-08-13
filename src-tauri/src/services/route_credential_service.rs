@@ -8,8 +8,8 @@ use crate::models::platform::{PlatformId, PlatformOperation};
 use crate::models::route_credential::{
     normalize_anthropic_api_key_field, CreateApiRouteCredentialInput, ImportOfficialFilesInput,
     ImportOfficialTextInput, ModelMapping, ReorderRouteCredentialInput, RouteCredential,
-    RouteCredentialImportFailure, RouteCredentialImportResult, RouteCredentialPage,
-    RouteCredentialPageRequest, UpdateRouteCredentialInput,
+    RouteCredentialFailurePolicy, RouteCredentialImportFailure, RouteCredentialImportResult,
+    RouteCredentialPage, RouteCredentialPageRequest, UpdateRouteCredentialInput,
 };
 use crate::models::route_credential_transfer::TransferPlatformChoice;
 use crate::services::cpa_import_service::{parse_cpa_text, ParsedOfficialCredential};
@@ -234,6 +234,7 @@ impl RouteCredentialService {
         validate_route_credential_status(&input.status)?;
         validate_route_priority(input.route_priority)?;
         validate_max_concurrency(input.max_concurrency)?;
+        validate_failure_policy_config(&input.config_json)?;
         RouteCredentialRepository::update(pool, &id, &input).await
     }
 
@@ -396,6 +397,24 @@ fn validate_max_concurrency(value: i64) -> Result<i64, AppError> {
             recoverable: true,
         })
     }
+}
+
+fn validate_failure_policy_config(config_json: &str) -> Result<(), AppError> {
+    let Ok(config) = serde_json::from_str::<Value>(config_json) else {
+        return Ok(());
+    };
+    if config.get("failure_policy").is_none() {
+        return Ok(());
+    }
+    RouteCredentialFailurePolicy::from_config_value(&config).map_err(|message| {
+        AppError::Validation {
+            code: "validation.route_credential_failure_policy",
+            message: "Route credential failure policy is invalid".to_string(),
+            details: Some(message),
+            recoverable: true,
+        }
+    })?;
+    Ok(())
 }
 
 fn validate_interface_format(value: &str) -> Result<(), AppError> {

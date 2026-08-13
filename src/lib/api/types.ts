@@ -20,6 +20,12 @@ export type AccountStatus = "ok" | "warning" | "error" | "revoked" | "paused";
 
 export type RouteCredentialKind = "official" | "api";
 
+export type RouteCredentialFailurePolicy = {
+  retry_count: number;
+  retry_interval_ms: number;
+  semantic_error_threshold: number;
+};
+
 export type PlatformId =
   | "codex"
   | "claude"
@@ -786,6 +792,7 @@ export type McpMarketplaceServerDetail = McpMarketplaceItem & {
 export type SkillAgentType = McpAppType;
 export type SkillScope = "global" | "project";
 export type SkillLayout = "markdown_file" | "skill_directory";
+export type SkillSource = "builtin" | "codex" | "agents" | "project" | "unknown";
 
 export type SkillLocation = {
   scope: SkillScope;
@@ -801,6 +808,15 @@ export type SkillItem = {
   path: string;
   description?: string | null;
   read_only: boolean;
+  package_id?: string | null;
+  package_name?: string | null;
+  category?: string | null;
+  tags?: string[];
+  language?: string | null;
+  source?: SkillSource;
+  version?: string | null;
+  installed_at?: string | null;
+  target_clients?: SkillAgentType[];
 };
 
 export type SkillsListResult = {
@@ -819,4 +835,55 @@ export type SkillAgentInfo = {
   agent_type: SkillAgentType;
   display_name: string;
   skills_capable: boolean;
+};
+
+export type SkillPackage = {
+  id: string;
+  name: string;
+  description?: string | null;
+  source: SkillSource;
+  version?: string | null;
+  manifest_path?: string | null;
+  skill_ids: string[];
+  skill_count: number;
+  installed_skill_ids: string[];
+  installed_count: number;
+  installed_at?: string | null;
+  read_only: boolean;
+  target_clients: SkillAgentType[];
+};
+
+export type SkillPackageMember = {
+  id: string;
+  name: string;
+  description?: string | null;
+  category?: string | null;
+  tags: string[];
+  language?: string | null;
+  installed: boolean;
+  skill?: SkillItem | null;
+};
+
+export type SkillScanWarning = {
+  code: string;
+  path: string;
+  message: string;
+};
+
+export type SkillsPackageListResult = {
+  packages: SkillPackage[];
+  skills: SkillItem[];
+  warnings: SkillScanWarning[];
+};
+
+export type SkillPackageInstallResult = {
+  package_id: string;
+  installed_skill_ids: string[];
+  skipped_skill_ids: string[];
+};
+
+export type SkillPackageDetail = {
+  package: SkillPackage;
+  skills: SkillItem[];
+  members: SkillPackageMember[];
 };

@@ -1,4 +1,5 @@
 import type { McpAppType } from "../../lib/api/types";
+import { useI18n } from "../../lib/i18n";
 import { MCP_APPS } from "./catalog";
 
 type McpAppSelectorProps = {
@@ -8,6 +9,8 @@ type McpAppSelectorProps = {
 };
 
 export function McpAppSelector({ selectedApps, onChange, legend }: McpAppSelectorProps) {
+  const { t } = useI18n();
+
   return (
     <fieldset>
       <legend className="text-[12px] font-semibold text-stone-800">{legend}</legend>
@@ -25,7 +28,7 @@ export function McpAppSelector({ selectedApps, onChange, legend }: McpAppSelecto
               }
               type="checkbox"
             />
-            {app.label}
+            {t(app.labelKey)}
           </label>
         ))}
       </div>

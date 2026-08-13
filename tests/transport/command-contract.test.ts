@@ -85,4 +85,31 @@ describe("command contract", () => {
     expect(desktopOnlyCommands).not.toContain("preview_route_credential_import");
     expect(desktopOnlyCommands).not.toContain("import_route_credentials");
   });
+
+  it("exposes Skill package commands in both transports", () => {
+    const clientSource = readSource("src/lib/api/client.ts");
+    const tauriSource = readSource("src-tauri/src/lib.rs");
+    const webSource = readSource("src-tauri/src/web/handlers/mod.rs");
+
+    for (const command of ["skills_list_packages", "skills_read_package", "skills_install_package"]) {
+      expect(clientSource).toContain(`invoke("${command}"`);
+      expect(tauriSource).toMatch(new RegExp(`generate_handler![\\s\\S]*\\b${command}\\b`));
+      expect(webSource).toMatch(new RegExp(`^\\s*"${command}"\\s*=>`, "m"));
+    }
+    for (const command of ["skills_list_packages", "skills_read_package"]) {
+      expect(webSource).not.toMatch(new RegExp(`"${command}"\\s*\\|`));
+    }
+    expect(webSource).toMatch(/"skills_delete"\s*\|\s*"skills_install_package"/);
+  });
+
+  it("keeps system terminal recovery desktop-only", () => {
+    const clientSource = readSource("src/lib/api/client.ts");
+    const tauriSource = readSource("src-tauri/src/lib.rs");
+    const webSource = readSource("src-tauri/src/web/handlers/mod.rs");
+
+    expect(clientSource).toContain('invoke("open_session_terminal", { input })');
+    expect(tauriSource).toMatch(/generate_handler![\s\S]*\bopen_session_terminal\b/);
+    expect(desktopOnlyCommands).toContain("open_session_terminal");
+    expect(webSource).not.toMatch(/^\s*"open_session_terminal"\s*=>/m);
+  });
 });

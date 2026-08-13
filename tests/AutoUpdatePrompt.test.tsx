@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AutoUpdatePrompt } from "../src/components/updates/AutoUpdatePrompt";
 import { I18nProvider } from "../src/lib/i18n";
 
@@ -21,34 +21,103 @@ function renderPrompt() {
 }
 
 describe("AutoUpdatePrompt", () => {
+  const updateIntervalMs = 60 * 60 * 1000;
+
   beforeEach(() => {
     window.localStorage.clear();
     mocks.check.mockReset();
     mocks.relaunch.mockReset();
   });
 
-  it("checks once per local day and prompts when a release is available", async () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("checks immediately and every hour while the app is running", async () => {
+    vi.useFakeTimers();
     mocks.check.mockResolvedValue({ version: "0.3.0", body: "修复问题" });
 
     renderPrompt();
 
-    expect(await screen.findByRole("dialog", { name: "发现新版本" })).toBeInTheDocument();
-    expect(screen.getByText("AI Switch 0.3.0 已准备好安装。"),).toBeInTheDocument();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("dialog", { name: "发现新版本" })).toBeInTheDocument();
+    expect(screen.getByText("AI Switch 0.3.0 已准备好安装。")).toBeInTheDocument();
     expect(mocks.check).toHaveBeenCalledTimes(1);
 
-    renderPrompt();
-    await waitFor(() => expect(mocks.check).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(updateIntervalMs - 1);
+    });
+    expect(mocks.check).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(mocks.check).toHaveBeenCalledTimes(2);
   });
 
-  it("dismisses the prompt without checking again on the same day", async () => {
+  it("shows the same release again after dismissal on the next hourly check", async () => {
+    vi.useFakeTimers();
     mocks.check.mockResolvedValue({ version: "0.3.0" });
 
     renderPrompt();
-    const dialog = await screen.findByRole("dialog", { name: "发现新版本" });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const dialog = screen.getByRole("dialog", { name: "发现新版本" });
     const laterButtons = within(dialog).getAllByRole("button", { name: "稍后" });
     fireEvent.click(laterButtons.at(-1)!);
-
     expect(screen.queryByRole("dialog", { name: "发现新版本" })).not.toBeInTheDocument();
-    expect(window.localStorage.getItem("ai-switch.last-update-check")).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(updateIntervalMs);
+    });
+    expect(screen.getByRole("dialog", { name: "发现新版本" })).toBeInTheDocument();
+  });
+
+  it("does not overlap checks while a request is pending", async () => {
+    vi.useFakeTimers();
+    let resolveCheck: (value: null) => void = () => undefined;
+    mocks.check.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveCheck = resolve;
+        }),
+    );
+
+    const view = renderPrompt();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(updateIntervalMs);
+    });
+    expect(mocks.check).toHaveBeenCalledTimes(1);
+
+    resolveCheck(null);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    view.unmount();
+  });
+
+  it("cleans up the hourly timer when unmounted", async () => {
+    vi.useFakeTimers();
+    mocks.check.mockResolvedValue(null);
+
+    const view = renderPrompt();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    view.unmount();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(updateIntervalMs);
+    });
+    expect(mocks.check).toHaveBeenCalledTimes(1);
   });
 });

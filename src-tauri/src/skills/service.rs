@@ -9,8 +9,9 @@ use crate::error::AppError;
 use super::frontmatter::parse_skill_metadata;
 use super::model::{
     SkillAgentInfo, SkillAgentType, SkillContent, SkillItem, SkillLayout, SkillLocation,
-    SkillScope, SkillsListResult,
+    SkillScope, SkillSource, SkillsListResult,
 };
+use super::packages::builtin_package_index;
 use super::paths::{
     content_path, resolve_skill_path, scoped_dirs, skill_storage_spec, validate_skill_id,
     SkillStorageKind,
@@ -30,6 +31,8 @@ fn list_skills_from_dir(
     dir: &Path,
     kind: SkillStorageKind,
     read_only: bool,
+    source: SkillSource,
+    target_client: SkillAgentType,
 ) -> Result<Vec<SkillItem>, AppError> {
     if !dir.is_dir() {
         return Ok(Vec::new());
@@ -50,20 +53,30 @@ fn list_skills_from_dir(
             let content = fs::read_to_string(path.join("SKILL.md")).map_err(|error| {
                 io_error("Could not read Skill content", Some(error.to_string()))
             })?;
-            let metadata = parse_skill_metadata(&content)?;
+            let metadata = parse_skill_metadata(&content)?.unwrap_or_default();
             values.insert(
                 id.clone(),
                 SkillItem {
                     id: id.clone(),
                     name: metadata
-                        .as_ref()
-                        .and_then(|value| value.name.clone())
-                        .unwrap_or(id),
+                        .display_name
+                        .clone()
+                        .or_else(|| metadata.name.clone())
+                        .unwrap_or_else(|| id.clone()),
                     scope,
                     layout: SkillLayout::SkillDirectory,
                     path: path.display().to_string(),
-                    description: metadata.and_then(|value| value.description),
+                    description: metadata.description.clone(),
                     read_only,
+                    package_id: None,
+                    package_name: None,
+                    category: metadata.category.clone(),
+                    tags: metadata.tags.clone(),
+                    language: metadata.language.clone(),
+                    source,
+                    version: None,
+                    installed_at: None,
+                    target_clients: vec![target_client],
                 },
             );
             continue;
@@ -79,20 +92,30 @@ fn list_skills_from_dir(
             let content = fs::read_to_string(&path).map_err(|error| {
                 io_error("Could not read Skill content", Some(error.to_string()))
             })?;
-            let metadata = parse_skill_metadata(&content)?;
+            let metadata = parse_skill_metadata(&content)?.unwrap_or_default();
             values.insert(
                 id.clone(),
                 SkillItem {
                     id: id.clone(),
                     name: metadata
-                        .as_ref()
-                        .and_then(|value| value.name.clone())
-                        .unwrap_or(id),
+                        .display_name
+                        .clone()
+                        .or_else(|| metadata.name.clone())
+                        .unwrap_or_else(|| id.clone()),
                     scope,
                     layout: SkillLayout::MarkdownFile,
                     path: path.display().to_string(),
-                    description: metadata.and_then(|value| value.description),
+                    description: metadata.description.clone(),
                     read_only,
+                    package_id: None,
+                    package_name: None,
+                    category: metadata.category.clone(),
+                    tags: metadata.tags.clone(),
+                    language: metadata.language.clone(),
+                    source,
+                    version: None,
+                    installed_at: None,
+                    target_clients: vec![target_client],
                 },
             );
         }
@@ -118,15 +141,32 @@ pub fn list_skills(
 ) -> Result<SkillsListResult, AppError> {
     let spec = skill_storage_spec(agent);
     let dirs = scoped_dirs(agent, scope, workspace_path)?;
+    let package_index = builtin_package_index();
     let mut skills = BTreeMap::new();
     let mut locations = Vec::new();
     for dir in dirs {
+        let source = if matches!(scope, SkillScope::Project) {
+            SkillSource::Project
+        } else {
+            spec.source_for_path(&dir)
+        };
         locations.push(SkillLocation {
             scope,
             path: dir.display().to_string(),
             exists: dir.is_dir(),
         });
-        for item in list_skills_from_dir(scope, &dir, spec.kind, spec.is_read_only_path(&dir))? {
+        for mut item in list_skills_from_dir(
+            scope,
+            &dir,
+            spec.kind,
+            spec.is_read_only_path(&dir),
+            source,
+            agent,
+        )? {
+            if let Some(package) = package_index.by_skill.get(&item.id) {
+                item.package_id = Some(package.package_id.clone());
+                item.package_name = Some(package.package_name.clone());
+            }
             skills.entry(item.id.clone()).or_insert(item);
         }
     }

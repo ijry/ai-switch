@@ -3,5 +3,6 @@
 pub(crate) mod command;
 pub(crate) mod frontmatter;
 pub(crate) mod model;
+pub(crate) mod packages;
 pub(crate) mod paths;
 pub(crate) mod service;

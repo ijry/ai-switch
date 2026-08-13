@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AI Switch",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "identifier": "io.xyito.ai-switch",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -43,7 +43,8 @@
       "icons/icon.png"
     ],
     "resources": {
-      "../dist": "web/"
+      "../dist": "web/",
+      "resources/skill-packages": "skill-packages/"
     },
     "externalBin": [
       "binaries/ai-switch-tsnet"

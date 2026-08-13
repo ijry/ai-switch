@@ -4,8 +4,8 @@ use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepo
 use crate::error::{ApiError, AppError};
 use crate::models::platform::{ApiDialect, CapabilityRule, PlatformId, PlatformOperation};
 use crate::models::route_credential::{
-    normalize_anthropic_api_key_field, ModelMapping, ANTHROPIC_API_KEY_FIELD,
-    ANTHROPIC_AUTH_TOKEN_FIELD,
+    normalize_anthropic_api_key_field, ModelMapping, RouteCredentialFailurePolicy,
+    ANTHROPIC_API_KEY_FIELD, ANTHROPIC_AUTH_TOKEN_FIELD,
 };
 use crate::models::route_pool::RouteUsageBreakdown;
 use crate::services::client_identity;
@@ -16,7 +16,8 @@ use crate::services::official_agent_identity_service::{
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::response_failure_service::{
-    detect_auto_pause_code, detect_response_failed, is_transient_response_failure,
+    detect_response_failed, is_quota_exhaustion_failure, stream_disconnected_before_completion,
+    STREAM_DISCONNECTED_FAILURE_MESSAGE,
 };
 use crate::services::route_config_service::generate_route_proxy_key;
 use crate::services::route_credential_activity::RouteCredentialActivityRegistry;
@@ -75,24 +76,11 @@ const ROUTE_PROXY_RESPONSE_BODY_LIMIT: usize = 16 * 1024;
 /// upstream returned real AI content (vs. a fake/empty 200) without bloating
 /// `usage_events`, which is never pruned.
 const ROUTE_PROXY_SUCCESS_BODY_LIMIT: usize = 2 * 1024;
-const OVERLOAD_MAX_EXTRA_RETRIES: usize = 5;
-const OVERLOAD_RETRY_DELAYS: [Duration; OVERLOAD_MAX_EXTRA_RETRIES] = [
-    Duration::from_millis(300),
-    Duration::from_secs(1),
-    Duration::from_secs(2),
-    Duration::from_secs(3),
-    Duration::from_secs(5),
-];
 
-fn overload_retry_delay(retry_count: usize) -> Duration {
-    OVERLOAD_RETRY_DELAYS
-        .get(retry_count)
-        .copied()
-        .unwrap_or_else(|| {
-            *OVERLOAD_RETRY_DELAYS
-                .last()
-                .expect("retry delays are non-empty")
-        })
+async fn wait_for_credential_retry(policy: RouteCredentialFailurePolicy) {
+    if policy.retry_interval_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(policy.retry_interval_ms.into())).await;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -160,6 +148,7 @@ pub(crate) struct BuiltUpstreamRequest {
     pub(crate) body: Vec<u8>,
     pub(crate) bridge_kind: Option<ProtocolBridgeKind>,
     pub(crate) tool_namespaces: BTreeMap<String, String>,
+    pub(crate) streaming_request: bool,
 }
 
 impl RouteProxyKeyCache {
@@ -561,7 +550,7 @@ async fn forward_request(
     let mut acquired_any = false;
     let mut attempt = 0usize;
 
-    while let Some((credential_index, overload_retry_count)) = retry_queue.pop_front() {
+    while let Some((credential_index, credential_retry_count)) = retry_queue.pop_front() {
         attempt += 1;
         let selected = &credentials[credential_index];
         let Some(_activity_lease) = state
@@ -636,6 +625,8 @@ async fn forward_request(
                     continue;
                 }
             };
+        let failure_policy =
+            RouteCredentialFailurePolicy::from_config_json(&credential.config_json);
         let upstream_request = build_upstream_request_internal(
             &credential,
             &platform,
@@ -650,6 +641,7 @@ async fn forward_request(
             body: outbound_body,
             bridge_kind,
             tool_namespaces,
+            streaming_request,
         } = match upstream_request {
             Ok(request) => request,
             Err(error) => {
@@ -725,16 +717,8 @@ async fn forward_request(
                     "{}: upstream request failed: {error}",
                     credential.display_name
                 );
-                record_route_credential_failure(
-                    &state.activity,
-                    &platform,
-                    pool,
-                    &credential.id,
-                    "transport",
-                    &error_message,
-                    None,
-                )
-                .await;
+                let should_retry_same_credential =
+                    credential_retry_count < failure_policy.retry_count as usize;
                 let metadata = route_proxy_request_metadata(
                     &platform,
                     &credential,
@@ -776,7 +760,22 @@ async fn forward_request(
                     None,
                     None,
                 );
-                retry_errors.push(error_message);
+                if should_retry_same_credential {
+                    wait_for_credential_retry(failure_policy).await;
+                    retry_queue.push_front((credential_index, credential_retry_count + 1));
+                } else {
+                    record_route_credential_failure(
+                        &state.activity,
+                        &platform,
+                        pool,
+                        &credential.id,
+                        "transport",
+                        &error_message,
+                        None,
+                    )
+                    .await;
+                    retry_errors.push(error_message);
+                }
                 continue;
             }
         };
@@ -790,16 +789,8 @@ async fn forward_request(
                     "{}: could not read upstream response: {error}",
                     credential.display_name
                 );
-                record_route_credential_failure(
-                    &state.activity,
-                    &platform,
-                    pool,
-                    &credential.id,
-                    "transport",
-                    &error_message,
-                    None,
-                )
-                .await;
+                let should_retry_same_credential =
+                    credential_retry_count < failure_policy.retry_count as usize;
                 let metadata = route_proxy_request_metadata(
                     &platform,
                     &credential,
@@ -841,7 +832,22 @@ async fn forward_request(
                     None,
                     None,
                 );
-                retry_errors.push(error_message);
+                if should_retry_same_credential {
+                    wait_for_credential_retry(failure_policy).await;
+                    retry_queue.push_front((credential_index, credential_retry_count + 1));
+                } else {
+                    record_route_credential_failure(
+                        &state.activity,
+                        &platform,
+                        pool,
+                        &credential.id,
+                        "transport",
+                        &error_message,
+                        None,
+                    )
+                    .await;
+                    retry_errors.push(error_message);
+                }
                 continue;
             }
         };
@@ -849,6 +855,14 @@ async fn forward_request(
         // in place, so the live log can show stage 3 (raw) and stage 4 (final)
         // separately. `Bytes` clone is a cheap ref-count bump.
         let raw_upstream_bytes = response_bytes.clone();
+        let upstream_content_type = upstream_headers
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok());
+        let stream_disconnected = stream_disconnected_before_completion(
+            &raw_upstream_bytes,
+            upstream_content_type,
+            streaming_request,
+        );
         if let Some(bridge_kind) = bridge_kind {
             let content_type = upstream_headers
                 .get(axum::http::header::CONTENT_TYPE)
@@ -947,22 +961,27 @@ async fn forward_request(
             false
         };
         let response_text = std::str::from_utf8(&response_bytes).ok();
-        let semantic_failure = detect_response_failed(&response_bytes);
-        // A gateway-level fixed-window quota error means this account is spent for
-        // the current window; auto-pause it so routing skips it until reset.
-        let auto_pause_code = detect_auto_pause_code(&response_bytes);
+        let semantic_failure = detect_response_failed(&response_bytes).or_else(|| {
+            stream_disconnected.then(|| {
+                crate::services::response_failure_service::SemanticResponseFailure {
+                    code: None,
+                    message: STREAM_DISCONNECTED_FAILURE_MESSAGE.to_string(),
+                }
+            })
+        });
+        let quota_failure = semantic_failure
+            .as_ref()
+            .is_some_and(is_quota_exhaustion_failure);
         let failure_kind = classify_proxy_failure(Some(status), response_text);
-        let should_retry = !matches!(failure_kind, ProxyFailureKind::None);
+        let should_retry = !status.is_success() || !matches!(failure_kind, ProxyFailureKind::None);
         let proxy_success = status.is_success()
             && !quota_exhausted
             && !should_retry
-            && auto_pause_code.is_none()
+            && !quota_failure
             && semantic_failure.is_none();
         let retry_error = if let Some(failure) = semantic_failure.as_ref() {
             Some(failure.message.clone())
-        } else if let Some(code) = auto_pause_code.as_ref() {
-            Some(format!("upstream quota exhausted ({code}); account paused"))
-        } else if quota_exhausted {
+        } else if quota_failure || quota_exhausted {
             Some("upstream quota exhausted".to_string())
         } else if should_retry {
             Some("upstream returned retryable status".to_string())
@@ -1012,23 +1031,47 @@ async fn forward_request(
         let next_index = (credential_index + 1) % credentials.len();
         let _ = RoutePoolRepository::save_cursor_index(pool, &platform, next_index as i64).await;
 
-        if let Some(code) = auto_pause_code {
-            mark_route_credential_paused(&state.activity, &platform, pool, &credential.id).await;
-            retry_errors.push(format!(
-                "{}: upstream quota exhausted ({code}); account paused",
-                credential.display_name
-            ));
-            continue;
-        }
-        if quota_exhausted {
+        if quota_failure || quota_exhausted {
+            if let Some(failure) = semantic_failure.as_ref() {
+                let _ = RouteCredentialRepository::record_semantic_failure_with_status(
+                    pool,
+                    &credential.id,
+                    Some(status.as_u16()),
+                    1,
+                    &failure.message,
+                    Some(&response_bytes),
+                )
+                .await;
+                state
+                    .activity
+                    .notify_status_change(&platform, &credential.id);
+            } else {
+                mark_route_credential_error(&state.activity, &platform, pool, &credential.id).await;
+            }
             retry_errors.push(format!(
                 "{}: upstream quota exhausted",
                 credential.display_name
             ));
             continue;
         }
-        if let Some(failure) = semantic_failure {
-            if is_transient_response_failure(&failure.message) {
+        if matches!(failure_kind, ProxyFailureKind::Permanent) {
+            mark_route_credential_revoked(&state.activity, &platform, pool, &credential.id).await;
+            let error_message = semantic_failure
+                .as_ref()
+                .map(|failure| failure.message.as_str())
+                .unwrap_or("upstream credentials are invalid");
+            retry_errors.push(format!("{}: {error_message}", credential.display_name));
+            continue;
+        }
+        if let Some(failure) = semantic_failure.as_ref() {
+            let can_retry_same_credential =
+                !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
+            if can_retry_same_credential
+                && credential_retry_count < failure_policy.retry_count as usize
+            {
+                wait_for_credential_retry(failure_policy).await;
+                retry_queue.push_front((credential_index, credential_retry_count + 1));
+            } else {
                 record_route_credential_failure(
                     &state.activity,
                     &platform,
@@ -1039,36 +1082,15 @@ async fn forward_request(
                     Some(&response_bytes),
                 )
                 .await;
-                if overload_retry_count < OVERLOAD_MAX_EXTRA_RETRIES {
-                    tokio::time::sleep(overload_retry_delay(overload_retry_count)).await;
-                    retry_queue.push_front((credential_index, overload_retry_count + 1));
-                } else {
-                    retry_errors.push(format!(
-                        "{}: overload retries exhausted",
-                        credential.display_name
-                    ));
-                }
-            } else if RouteCredentialRepository::record_semantic_failure(
-                pool,
-                &credential.id,
-                &failure.message,
-                Some(&response_bytes),
-            )
-            .await
-            .is_ok()
-            {
-                state
-                    .activity
-                    .notify_status_change(&platform, &credential.id);
+                retry_errors.push(format!("{}: {}", credential.display_name, failure.message));
             }
-            retry_errors.push(format!("{}: {}", credential.display_name, failure.message));
             continue;
         }
-        if should_retry {
+        if should_retry_same_credential_status(status) {
             let error_message = format!("upstream returned {}", status.as_u16());
-            if matches!(failure_kind, ProxyFailureKind::Permanent) {
-                mark_route_credential_revoked(&state.activity, &platform, pool, &credential.id)
-                    .await;
+            if credential_retry_count < failure_policy.retry_count as usize {
+                wait_for_credential_retry(failure_policy).await;
+                retry_queue.push_front((credential_index, credential_retry_count + 1));
             } else {
                 record_route_credential_failure(
                     &state.activity,
@@ -1080,7 +1102,22 @@ async fn forward_request(
                     Some(&response_bytes),
                 )
                 .await;
+                retry_errors.push(format!("{}: {error_message}", credential.display_name));
             }
+            continue;
+        }
+        if should_retry {
+            let error_message = format!("upstream returned {}", status.as_u16());
+            record_route_credential_failure(
+                &state.activity,
+                &platform,
+                pool,
+                &credential.id,
+                "upstream_status",
+                &error_message,
+                Some(&response_bytes),
+            )
+            .await;
             retry_errors.push(format!(
                 "{}: upstream returned {}",
                 credential.display_name,
@@ -1358,10 +1395,12 @@ fn should_retry_proxy_failure(status: StatusCode) -> bool {
         StatusCode::REQUEST_TIMEOUT
             | StatusCode::UNAUTHORIZED
             | StatusCode::FORBIDDEN
-            | StatusCode::BAD_GATEWAY
-            | StatusCode::SERVICE_UNAVAILABLE
-            | StatusCode::GATEWAY_TIMEOUT
-    )
+            | StatusCode::TOO_MANY_REQUESTS
+    ) || status.is_server_error()
+}
+
+pub(crate) fn should_retry_same_credential_status(status: StatusCode) -> bool {
+    !status.is_success() && !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
 }
 
 pub fn credential_is_retryable_now(
@@ -1416,13 +1455,13 @@ async fn mark_route_credential_revoked(
     }
 }
 
-async fn mark_route_credential_paused(
+async fn mark_route_credential_error(
     activity: &RouteCredentialActivityRegistry,
     platform: &str,
     pool: &SqlitePool,
     credential_id: &str,
 ) {
-    if RouteCredentialRepository::update_status(pool, credential_id, "paused")
+    if RouteCredentialRepository::update_status(pool, credential_id, "error")
         .await
         .is_ok()
     {
@@ -2227,12 +2266,14 @@ fn build_api_upstream_request(
     }
 
     apply_credential_user_agent(headers, config)?;
+    let streaming_request = request_body_requests_stream(&rewritten_body);
     Ok(BuiltUpstreamRequest {
         target_url,
         headers: headers.clone(),
         body: rewritten_body,
         bridge_kind,
         tool_namespaces,
+        streaming_request,
     })
 }
 
@@ -2291,6 +2332,7 @@ fn build_official_upstream_request(
         body: body.to_vec(),
         bridge_kind: None,
         tool_namespaces: BTreeMap::new(),
+        streaming_request: request_body_requests_stream(body),
     })
 }
 
@@ -2298,6 +2340,13 @@ fn is_grok_cli_chat_proxy_base_url(base_url: &str) -> bool {
     base_url
         .to_ascii_lowercase()
         .contains(GROK_CLI_CHAT_PROXY_MARKER)
+}
+
+fn request_body_requests_stream(body: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| value.get("stream").and_then(Value::as_bool))
+        .unwrap_or(false)
 }
 
 fn apply_official_grok_cli_headers(headers: &mut HeaderMap) -> Result<(), String> {
@@ -3838,6 +3887,9 @@ async fn insert_route_credential_request_event(
 mod tests {
     use super::*;
     use crate::database::{create_memory_pool, run_migrations};
+    use crate::models::route_credential::DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[derive(Debug)]
     struct CapturedChatRequest {
@@ -3980,8 +4032,134 @@ mod tests {
         (format!("http://{address}/v1"), calls)
     }
 
+    #[derive(Clone)]
+    struct StatusSequenceUpstreamState {
+        calls: Arc<AtomicUsize>,
+        failed_attempts: usize,
+        failure_status: StatusCode,
+        failure_body: &'static str,
+        success_body: &'static str,
+    }
+
+    async fn status_sequence_upstream_handler(
+        AxumState(state): AxumState<StatusSequenceUpstreamState>,
+    ) -> Response {
+        let attempt = state.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let (status, body) = if attempt <= state.failed_attempts {
+            (state.failure_status, state.failure_body)
+        } else {
+            (StatusCode::OK, state.success_body)
+        };
+        Response::builder()
+            .status(status)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .expect("status sequence response")
+    }
+
+    async fn start_status_sequence_upstream(
+        failed_attempts: usize,
+        failure_status: StatusCode,
+        failure_body: &'static str,
+        success_body: &'static str,
+    ) -> (String, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .fallback(status_sequence_upstream_handler)
+            .with_state(StatusSequenceUpstreamState {
+                calls: Arc::clone(&calls),
+                failed_attempts,
+                failure_status,
+                failure_body,
+                success_body,
+            });
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind status sequence upstream");
+        let address = listener
+            .local_addr()
+            .expect("status sequence upstream address");
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve status sequence upstream");
+        });
+        (format!("http://{address}/v1"), calls)
+    }
+
+    async fn start_flaky_body_upstream(
+        failed_attempts: usize,
+        success_body: &'static str,
+    ) -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind flaky body upstream");
+        let address = listener.local_addr().expect("flaky upstream address");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let server_calls = Arc::clone(&calls);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let attempt = server_calls.fetch_add(1, Ordering::SeqCst) + 1;
+                let body = if attempt <= failed_attempts {
+                    r#"{"choices":"#
+                } else {
+                    success_body
+                };
+                let content_length = if attempt <= failed_attempts {
+                    body.len() + 64
+                } else {
+                    body.len()
+                };
+                let mut request_buffer = [0u8; 1024];
+                let _ = socket.read(&mut request_buffer).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n{body}"
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        (format!("http://{address}/v1"), calls)
+    }
+
     async fn create_proxy_api_credential(pool: &SqlitePool, name: &str, base_url: &str) -> String {
-        create_proxy_api_credential_with_mappings(pool, name, base_url, json!([])).await
+        create_proxy_api_credential_with_config(pool, name, base_url, json!({})).await
+    }
+
+    async fn create_proxy_api_credential_with_config(
+        pool: &SqlitePool,
+        name: &str,
+        base_url: &str,
+        extra_config: Value,
+    ) -> String {
+        let mut config = json!({
+            "base_url": base_url,
+            "interface_format": "openai",
+            "model_mappings": []
+        });
+        if let (Some(config), Some(extra_config)) =
+            (config.as_object_mut(), extra_config.as_object())
+        {
+            config.extend(extra_config.clone());
+        }
+        let credential = RouteCredentialRepository::create(
+            pool,
+            "codex",
+            "api",
+            name,
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-upstream"}"#,
+            &config.to_string(),
+            "{}",
+        )
+        .await
+        .expect("create credential");
+        credential.id
     }
 
     async fn create_proxy_api_credential_with_mappings(
@@ -4539,7 +4717,7 @@ mod tests {
         use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
         use crate::database::{create_memory_pool, run_migrations};
 
-        let (upstream, calls) = start_sequence_upstream(5, r#"{"ok":true}"#).await;
+        let (upstream, calls) = start_sequence_upstream(2, r#"{"ok":true}"#).await;
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
         let credential_id = create_proxy_api_credential(&pool, "overloaded", &upstream).await;
@@ -4572,7 +4750,7 @@ mod tests {
         );
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::SeqCst),
-            OVERLOAD_MAX_EXTRA_RETRIES + 1
+            DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT as usize + 1
         );
         assert_eq!(
             RouteCredentialRepository::get(&pool, &credential_id)
@@ -4581,6 +4759,243 @@ mod tests {
                 .status,
             "ok"
         );
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn proxy_retries_transient_body_read_errors_on_same_account_before_marking_failure() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let (upstream, calls) = start_flaky_body_upstream(
+            DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT as usize,
+            r#"{"ok":true}"#,
+        )
+        .await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_proxy_api_credential(&pool, "flaky", &upstream).await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5.5","messages":[]}))
+            .send()
+            .await
+            .expect("proxy response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().await.expect("proxy body"), r#"{"ok":true}"#);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT as usize + 1
+        );
+        let credential = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("credential");
+        assert_eq!(credential.status, "ok");
+        assert_eq!(credential.transient_failure_count, 0);
+        assert!(credential.next_retry_at.is_none());
+
+        let usage_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM usage_events WHERE source_label = 'route_proxy'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("usage count");
+        assert_eq!(
+            usage_count,
+            i64::from(DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT + 1)
+        );
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn proxy_retries_retryable_http_statuses_on_the_same_account() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let (upstream, calls) = start_status_sequence_upstream(
+            DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT as usize,
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":{"message":"temporarily unavailable"}}"#,
+            r#"{"ok":true}"#,
+        )
+        .await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_proxy_api_credential(&pool, "retryable status", &upstream).await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5.5","messages":[]}))
+            .send()
+            .await
+            .expect("proxy response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().await.expect("proxy body"), r#"{"ok":true}"#);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT as usize + 1
+        );
+        let credential = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("credential");
+        assert_eq!(credential.status, "ok");
+        assert_eq!(credential.transient_failure_count, 0);
+        assert!(credential.next_retry_at.is_none());
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn proxy_retries_retryable_http_statuses_before_recording_semantic_failures() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let (upstream, calls) = start_status_sequence_upstream(
+            DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT as usize,
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"type":"response.failed","response":{"status":"failed","error":{"message":"temporarily unavailable"}}}"#,
+            r#"{"ok":true}"#,
+        )
+        .await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id =
+            create_proxy_api_credential(&pool, "semantic retryable status", &upstream).await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5.5","messages":[]}))
+            .send()
+            .await
+            .expect("proxy response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().await.expect("proxy body"), r#"{"ok":true}"#);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT as usize + 1
+        );
+        let credential = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("credential");
+        assert_eq!(credential.status, "ok");
+        assert_eq!(credential.transient_failure_count, 0);
+        assert!(credential.next_retry_at.is_none());
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn exhausted_retryable_semantic_status_records_one_transient_failure() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let (upstream, calls) = start_status_sequence_upstream(
+            DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT as usize + 1,
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"type":"response.failed","response":{"status":"failed","error":{"message":"temporarily unavailable"}}}"#,
+            r#"{"ok":true}"#,
+        )
+        .await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id =
+            create_proxy_api_credential(&pool, "semantic retry exhausted", &upstream).await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5.5","messages":[]}))
+            .send()
+            .await
+            .expect("proxy response");
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT as usize + 1
+        );
+        let credential = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("credential");
+        assert_eq!(credential.status, "ok");
+        assert_eq!(credential.transient_failure_count, 1);
+        assert_eq!(
+            credential.last_failure_kind.as_deref(),
+            Some("semantic_response_transient")
+        );
+        let streak_count: i64 = sqlx::query_scalar(
+            "SELECT semantic_failure_streak_count FROM route_credentials WHERE id = ?",
+        )
+        .bind(&credential_id)
+        .fetch_one(&pool)
+        .await
+        .expect("semantic streak");
+        assert_eq!(streak_count, 0);
 
         RouteProxyService::stop(&runtime).await.expect("stop proxy");
     }
@@ -4623,10 +5038,7 @@ mod tests {
             .await
             .expect("credential");
         assert_eq!(credential.status, "ok");
-        assert_eq!(
-            credential.transient_failure_count,
-            OVERLOAD_MAX_EXTRA_RETRIES as i64 + 1
-        );
+        assert_eq!(credential.transient_failure_count, 1);
 
         RouteProxyService::stop(&runtime).await.expect("stop proxy");
     }
@@ -4636,7 +5048,7 @@ mod tests {
         use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
         use crate::database::{create_memory_pool, run_migrations};
 
-        let (first_upstream, first_calls) = start_sequence_upstream(6, r#"{"ok":"first"}"#).await;
+        let (first_upstream, first_calls) = start_sequence_upstream(3, r#"{"ok":"first"}"#).await;
         let (second_upstream, second_calls) =
             start_sequence_upstream(0, r#"{"ok":"second"}"#).await;
         let pool = create_memory_pool().await.expect("pool");
@@ -4676,7 +5088,7 @@ mod tests {
         );
         assert_eq!(
             first_calls.load(std::sync::atomic::Ordering::SeqCst),
-            OVERLOAD_MAX_EXTRA_RETRIES + 1
+            DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT as usize + 1
         );
         assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(
@@ -4694,6 +5106,55 @@ mod tests {
             "ok"
         );
 
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn proxy_uses_account_specific_retry_count_for_overload_responses() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let (upstream, calls) = start_sequence_upstream(4, r#"{"ok":true}"#).await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_proxy_api_credential_with_config(
+            &pool,
+            "custom retries",
+            &upstream,
+            json!({
+                "failure_policy": {
+                    "retry_count": 4,
+                    "retry_interval_ms": 0,
+                    "semantic_error_threshold": 10
+                }
+            }),
+        )
+        .await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool, RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5.5","messages":[]}))
+            .send()
+            .await
+            .expect("proxy response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
         RouteProxyService::stop(&runtime).await.expect("stop proxy");
     }
 
@@ -5255,25 +5716,37 @@ mod tests {
     }
 
     #[test]
-    fn retry_policy_only_retries_credentials_that_are_known_unusable() {
+    fn retry_policy_marks_retryable_transport_and_upstream_statuses_as_transient() {
         assert!(should_retry_proxy_failure(StatusCode::UNAUTHORIZED));
         assert!(should_retry_proxy_failure(StatusCode::FORBIDDEN));
-        assert!(should_retry_proxy_failure(StatusCode::BAD_GATEWAY));
-        assert!(should_retry_proxy_failure(StatusCode::SERVICE_UNAVAILABLE));
-        assert!(!should_retry_proxy_failure(StatusCode::TOO_MANY_REQUESTS));
-        assert!(!should_retry_proxy_failure(
+        assert!(should_retry_proxy_failure(StatusCode::TOO_MANY_REQUESTS));
+        assert!(should_retry_proxy_failure(
             StatusCode::INTERNAL_SERVER_ERROR
         ));
+        assert!(should_retry_proxy_failure(StatusCode::BAD_GATEWAY));
+        assert!(should_retry_proxy_failure(StatusCode::SERVICE_UNAVAILABLE));
+        assert!(!should_retry_proxy_failure(StatusCode::BAD_REQUEST));
     }
 
     #[test]
-    fn overload_retry_delay_uses_bounded_backoff_sequence() {
-        assert_eq!(overload_retry_delay(0), Duration::from_millis(300));
-        assert_eq!(overload_retry_delay(1), Duration::from_secs(1));
-        assert_eq!(overload_retry_delay(2), Duration::from_secs(2));
-        assert_eq!(overload_retry_delay(3), Duration::from_secs(3));
-        assert_eq!(overload_retry_delay(4), Duration::from_secs(5));
-        assert_eq!(overload_retry_delay(5), Duration::from_secs(5));
+    fn same_account_retry_excludes_authentication_failures() {
+        assert!(should_retry_same_credential_status(
+            StatusCode::REQUEST_TIMEOUT
+        ));
+        assert!(should_retry_same_credential_status(
+            StatusCode::TOO_MANY_REQUESTS
+        ));
+        assert!(should_retry_same_credential_status(
+            StatusCode::INTERNAL_SERVER_ERROR
+        ));
+        assert!(should_retry_same_credential_status(StatusCode::BAD_GATEWAY));
+        assert!(should_retry_same_credential_status(
+            StatusCode::GATEWAY_TIMEOUT
+        ));
+        assert!(!should_retry_same_credential_status(
+            StatusCode::UNAUTHORIZED
+        ));
+        assert!(!should_retry_same_credential_status(StatusCode::FORBIDDEN));
     }
 
     #[test]

@@ -2712,6 +2712,8 @@ fn normalize_official_item(
         "reset_primary",
         "reset_weekly",
         "transient_failure_count",
+        "semantic_failure_streak_count",
+        "semantic_failure_streak_fingerprint",
         "next_retry_at",
         "cooldown_until",
         "last_failure_kind",

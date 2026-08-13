@@ -2,7 +2,7 @@ use crate::database::repositories::route_credential_repository::RouteCredentialR
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::error::{ApiError, AppError};
 use crate::models::platform::{ApiDialect, CapabilityRule, PlatformId, PlatformOperation};
-use crate::models::route_credential::ModelMapping;
+use crate::models::route_credential::{ModelMapping, RouteCredentialFailurePolicy};
 use crate::models::route_pool::{
     RoutePoolModelTestOutcome, RoutePoolModelTestRequest, RouteUsageBreakdown,
 };
@@ -11,7 +11,8 @@ use crate::services::http_client::{
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::response_failure_service::{
-    detect_response_failed, is_transient_response_failure,
+    detect_response_failed, is_quota_exhaustion_failure, stream_disconnected_before_completion,
+    SemanticResponseFailure, STREAM_DISCONNECTED_FAILURE_MESSAGE,
 };
 use crate::services::route_credential_activity::{
     RouteCredentialActivityLease, RouteCredentialActivityRegistry,
@@ -24,7 +25,7 @@ use crate::services::route_proxy_service::{
     normalize_api_upstream_path, select_pool_credentials, ProxyFailureKind, RouteProxyService,
     SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
 };
-use axum::http::{header, HeaderMap, HeaderName, HeaderValue};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
 use std::time::{Duration, Instant};
@@ -149,6 +150,8 @@ impl RouteModelTestService {
                 details: Some(credential.id.clone()),
                 recoverable: true,
             })?;
+        let failure_policy =
+            RouteCredentialFailurePolicy::from_config_json(&credential.config_json);
         let start = Instant::now();
 
         let parts = match build_model_test_request(
@@ -250,6 +253,7 @@ impl RouteModelTestService {
             &target_url,
             upstream_request.headers,
             upstream_request.body,
+            failure_policy,
         )
         .await;
         let duration_ms = elapsed_ms(start);
@@ -294,6 +298,9 @@ impl RouteModelTestService {
                     model_test_response_format(&platform, &parts.interface_format),
                     &response_body,
                 );
+                let error_message = semantic_failure
+                    .map(|failure| failure.message)
+                    .filter(|_| !matches!(status, 401 | 403));
 
                 let outcome = finish_outcome(
                     pool,
@@ -304,7 +311,7 @@ impl RouteModelTestService {
                     Some(status),
                     response_body,
                     response_text,
-                    semantic_failure.map(|failure| failure.message),
+                    error_message,
                     success,
                     duration_ms,
                     usage,
@@ -398,6 +405,8 @@ impl RouteModelTestService {
         let selected_index = cursor.rem_euclid(credentials.len() as i64) as usize;
         let credential = credentials[selected_index].clone();
         validate_model_test_credential(platform_id, &credential)?;
+        let failure_policy =
+            RouteCredentialFailurePolicy::from_config_json(&credential.config_json);
         let start = Instant::now();
         let parts = match build_model_test_request(
             &credential,
@@ -485,6 +494,7 @@ impl RouteModelTestService {
             &entry_url,
             headers,
             parts.request_body_json.as_bytes().to_vec(),
+            failure_policy,
         )
         .await;
         let duration_ms = elapsed_ms(start);
@@ -913,30 +923,77 @@ async fn send_model_test_request(
     target_url: &str,
     headers: HeaderMap,
     body: Vec<u8>,
+    failure_policy: RouteCredentialFailurePolicy,
 ) -> Result<(u16, bool, Vec<u8>), String> {
-    let upstream = client
-        .post(target_url)
-        .headers(map_to_reqwest_headers(&headers))
-        .body(body)
-        .send()
-        .await
-        .map_err(|err| {
-            let mut message = format!("Upstream model test request failed: {err}");
-            if err.is_connect() || err.is_timeout() {
-                message.push_str(
-                    " (check network/proxy; Windows system proxy is applied when configured)",
-                );
+    let headers = map_to_reqwest_headers(&headers);
+    let streaming_request = request_body_requests_stream(&body);
+    for attempt in 0..=failure_policy.retry_count {
+        let upstream = match client
+            .post(target_url)
+            .headers(headers.clone())
+            .body(body.clone())
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                let message = upstream_model_test_request_error_message(&error);
+                if attempt < failure_policy.retry_count {
+                    wait_for_model_test_retry(failure_policy).await;
+                    continue;
+                }
+                return Err(message);
             }
-            message
-        })?;
-    let status = upstream.status();
-    let body = upstream
-        .bytes()
-        .await
-        .map_err(|err| format!("Could not read model test response: {err}"))?
-        .to_vec();
+        };
+        let status = upstream.status();
+        let content_type = upstream
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok());
+        let content_type = content_type.map(str::to_string);
+        let body = match upstream.bytes().await {
+            Ok(body) => body.to_vec(),
+            Err(error) => {
+                if attempt < failure_policy.retry_count {
+                    wait_for_model_test_retry(failure_policy).await;
+                    continue;
+                }
+                return Err(format!("Could not read model test response: {error}"));
+            }
+        };
 
-    Ok((status.as_u16(), status.is_success(), body))
+        let status_code = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        let semantic_failure = detect_response_failed(&body).or_else(|| {
+            stream_disconnected_before_completion(&body, content_type.as_deref(), streaming_request)
+                .then(|| SemanticResponseFailure {
+                    code: None,
+                    message: STREAM_DISCONNECTED_FAILURE_MESSAGE.to_string(),
+                })
+        });
+        let definitive_quota_failure = semantic_failure
+            .as_ref()
+            .is_some_and(is_quota_exhaustion_failure);
+        if attempt < failure_policy.retry_count
+            && !definitive_quota_failure
+            && ((!status_code.is_success()
+                && !matches!(
+                    status_code,
+                    StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+                ))
+                || (semantic_failure.is_some()
+                    && !matches!(
+                        status_code,
+                        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+                    )))
+        {
+            wait_for_model_test_retry(failure_policy).await;
+            continue;
+        }
+
+        return Ok((status.as_u16(), status.is_success(), body));
+    }
+
+    Err("Upstream model test request failed after retries".to_string())
 }
 
 async fn send_proxy_model_test_request(
@@ -944,28 +1001,75 @@ async fn send_proxy_model_test_request(
     entry_url: &str,
     headers: HeaderMap,
     body: Vec<u8>,
+    failure_policy: RouteCredentialFailurePolicy,
 ) -> Result<(u16, bool, Vec<u8>), String> {
-    let response = client
-        .post(entry_url)
-        .headers(map_to_reqwest_headers(&headers))
-        .body(body)
-        .send()
-        .await
-        .map_err(|err| {
-            let mut message = format!("Route proxy model test request failed: {err}");
-            if err.is_connect() || err.is_timeout() {
-                message.push_str(" (check whether the local route proxy is running and reachable)");
+    let headers = map_to_reqwest_headers(&headers);
+    for attempt in 0..=failure_policy.retry_count {
+        let response = match client
+            .post(entry_url)
+            .headers(headers.clone())
+            .body(body.clone())
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                let message = route_proxy_model_test_request_error_message(&error);
+                if attempt < failure_policy.retry_count {
+                    wait_for_model_test_retry(failure_policy).await;
+                    continue;
+                }
+                return Err(message);
             }
-            message
-        })?;
-    let status = response.status();
-    let body = response
-        .bytes()
-        .await
-        .map_err(|err| format!("Could not read route proxy test response: {err}"))?
-        .to_vec();
+        };
+        let status = response.status();
+        let body = match response.bytes().await {
+            Ok(body) => body.to_vec(),
+            Err(error) => {
+                if attempt < failure_policy.retry_count {
+                    wait_for_model_test_retry(failure_policy).await;
+                    continue;
+                }
+                return Err(format!("Could not read route proxy test response: {error}"));
+            }
+        };
 
-    Ok((status.as_u16(), status.is_success(), body))
+        return Ok((status.as_u16(), status.is_success(), body));
+    }
+
+    Err("Route proxy model test request failed after retries".to_string())
+}
+
+fn request_body_requests_stream(body: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| value.get("stream").and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
+async fn wait_for_model_test_retry(failure_policy: RouteCredentialFailurePolicy) {
+    if failure_policy.retry_interval_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(
+            failure_policy.retry_interval_ms.into(),
+        ))
+        .await;
+    }
+}
+
+fn upstream_model_test_request_error_message(error: &reqwest::Error) -> String {
+    let mut message = format!("Upstream model test request failed: {error}");
+    if error.is_connect() || error.is_timeout() {
+        message.push_str(" (check network/proxy; Windows system proxy is applied when configured)");
+    }
+    message
+}
+
+fn route_proxy_model_test_request_error_message(error: &reqwest::Error) -> String {
+    let mut message = format!("Route proxy model test request failed: {error}");
+    if error.is_connect() || error.is_timeout() {
+        message.push_str(" (check whether the local route proxy is running and reachable)");
+    }
+    message
 }
 
 fn map_to_reqwest_headers(headers: &HeaderMap) -> reqwest::header::HeaderMap {
@@ -1137,28 +1241,34 @@ async fn finish_outcome(
             RouteCredentialRepository::update_status(pool, &credential.id, "ok").await?;
         }
     } else {
-        if let Some(failure) = detect_response_failed(response_body.as_bytes()) {
-            if is_transient_response_failure(&failure.message) {
-                RouteCredentialRepository::record_transient_failure(
-                    pool,
-                    &credential.id,
-                    "semantic_response_transient",
-                    &failure.message,
-                    Some(response_body.as_bytes()),
-                )
-                .await?;
-            } else {
-                RouteCredentialRepository::record_semantic_failure(
-                    pool,
-                    &credential.id,
-                    &failure.message,
-                    Some(response_body.as_bytes()),
-                )
-                .await?;
-            }
+        let status = response_status.and_then(|value| axum::http::StatusCode::from_u16(value).ok());
+        let quota_failure = detect_response_failed(response_body.as_bytes())
+            .is_some_and(|failure| is_quota_exhaustion_failure(&failure));
+        if quota_failure {
+            RouteCredentialRepository::update_status(pool, &credential.id, "error").await?;
+        } else if let Some(status) = status.filter(|status| !status.is_success()) {
+            let message = error_message
+                .as_deref()
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("upstream returned {}", status.as_u16()));
+            RouteCredentialRepository::record_transient_failure(
+                pool,
+                &credential.id,
+                "model_test_status",
+                &message,
+                Some(response_body.as_bytes()),
+            )
+            .await?;
+        } else if let Some(failure) = detect_response_failed(response_body.as_bytes()) {
+            RouteCredentialRepository::record_transient_failure(
+                pool,
+                &credential.id,
+                "semantic_response_transient",
+                &failure.message,
+                Some(response_body.as_bytes()),
+            )
+            .await?;
         } else {
-            let status =
-                response_status.and_then(|value| axum::http::StatusCode::from_u16(value).ok());
             let failure_kind = classify_proxy_failure(
                 status,
                 error_message.as_deref().or_else(|| {
@@ -1455,6 +1565,7 @@ mod tests {
     use super::*;
     use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
     use crate::database::{create_memory_pool, run_migrations};
+    use crate::models::route_credential::DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT;
     use crate::models::route_pool::{RoutePoolModelTestRequest, SetRoutePoolMembersInput};
     use crate::paths::AppPaths;
     use crate::services::route_pool_service::RoutePoolService;
@@ -1464,6 +1575,11 @@ mod tests {
     };
     use axum::{routing::post, Json, Router};
     use serde_json::{json, Value};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
     fn api_credential(interface_format: &str) -> SelectedCredential {
@@ -1587,6 +1703,42 @@ mod tests {
         format!("http://{addr}/v1")
     }
 
+    async fn start_flaky_body_test_server(
+        failed_attempts: usize,
+        success_body: &'static str,
+    ) -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let server_calls = Arc::clone(&calls);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let attempt = server_calls.fetch_add(1, Ordering::SeqCst) + 1;
+                let body = if attempt <= failed_attempts {
+                    r#"{"choices":"#
+                } else {
+                    success_body
+                };
+                let content_length = if attempt <= failed_attempts {
+                    body.len() + 64
+                } else {
+                    body.len()
+                };
+                let mut request_buffer = [0u8; 1024];
+                let _ = socket.read(&mut request_buffer).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n{body}"
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        (format!("http://{addr}/v1"), calls)
+    }
+
     fn unversioned_base_url(versioned_base_url: &str) -> String {
         versioned_base_url
             .strip_suffix("/v1")
@@ -1595,6 +1747,24 @@ mod tests {
     }
 
     async fn create_api_credential(pool: &SqlitePool, base_url: &str) -> String {
+        create_api_credential_with_config(pool, base_url, json!({})).await
+    }
+
+    async fn create_api_credential_with_config(
+        pool: &SqlitePool,
+        base_url: &str,
+        extra_config: Value,
+    ) -> String {
+        let mut config = json!({
+            "base_url": base_url,
+            "interface_format": "openai",
+            "model_mappings": [{"from":"gpt-5","to":"up-gpt"}]
+        });
+        if let (Some(config), Some(extra_config)) =
+            (config.as_object_mut(), extra_config.as_object())
+        {
+            config.extend(extra_config.clone());
+        }
         RouteCredentialRepository::create(
             pool,
             "codex",
@@ -1604,12 +1774,7 @@ mod tests {
             "ok",
             None,
             r#"{"api_key":"sk-test"}"#,
-            &json!({
-                "base_url": base_url,
-                "interface_format": "openai",
-                "model_mappings": [{"from":"gpt-5","to":"up-gpt"}]
-            })
-            .to_string(),
+            &config.to_string(),
             r#"{"config_toml":""}"#,
         )
         .await
@@ -2019,6 +2184,102 @@ mod tests {
             .unwrap_or_default()
             .contains("ai-switch-ok"));
         assert!(!outcome.stats.requests[0].metadata_json.contains("sk-test"));
+    }
+
+    #[tokio::test]
+    async fn test_model_retries_transient_body_read_errors_before_recording_failure() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let (base_url, calls) = start_flaky_body_test_server(
+            DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT as usize,
+            r#"{"choices":[{"message":{"content":"ai-switch-ok"}}]}"#,
+        )
+        .await;
+        let credential_id = create_api_credential(&pool, &base_url).await;
+
+        RoutePoolService::set_members(
+            &pool,
+            SetRoutePoolMembersInput {
+                platform: "codex".to_string(),
+                account_ids: vec![credential_id.clone()],
+            },
+        )
+        .await
+        .expect("members");
+
+        let outcome = RouteModelTestService::test_model(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "codex".to_string(),
+                account_id: None,
+                model: None,
+                interface_format: None,
+            },
+        )
+        .await
+        .expect("outcome");
+
+        assert!(outcome.success);
+        assert_eq!(outcome.response_status, Some(200));
+        assert_eq!(outcome.response_text.as_deref(), Some("ai-switch-ok"));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT as usize + 1
+        );
+        let credential = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("credential");
+        assert_eq!(credential.status, "ok");
+        assert_eq!(credential.transient_failure_count, 0);
+        assert!(credential.next_retry_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_model_uses_account_specific_retry_count() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let (base_url, calls) = start_flaky_body_test_server(
+            4,
+            r#"{"choices":[{"message":{"content":"ai-switch-ok"}}]}"#,
+        )
+        .await;
+        let credential_id = create_api_credential_with_config(
+            &pool,
+            &base_url,
+            json!({
+                "failure_policy": {
+                    "retry_count": 4,
+                    "retry_interval_ms": 0,
+                    "semantic_error_threshold": 10
+                }
+            }),
+        )
+        .await;
+
+        RoutePoolService::set_members(
+            &pool,
+            SetRoutePoolMembersInput {
+                platform: "codex".to_string(),
+                account_ids: vec![credential_id],
+            },
+        )
+        .await
+        .expect("members");
+
+        let outcome = RouteModelTestService::test_model(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "codex".to_string(),
+                account_id: None,
+                model: None,
+                interface_format: None,
+            },
+        )
+        .await
+        .expect("outcome");
+
+        assert!(outcome.success);
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
     }
 
     #[tokio::test]

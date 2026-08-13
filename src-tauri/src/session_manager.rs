@@ -56,6 +56,10 @@ pub fn scan_sessions(platform: Option<&str>) -> Vec<SessionMeta> {
                     continue;
                 }
 
+                if is_subagent_session(spec.id, &path) {
+                    continue;
+                }
+
                 if let Some(session) = session_from_file(spec.id, &path) {
                     sessions.push(session);
                 }
@@ -222,6 +226,41 @@ fn session_from_file(provider_id: &str, path: &Path) -> Option<SessionMeta> {
         source_path: path.to_string_lossy().to_string(),
         resume_command: resume_command(provider_id, &session_id),
     })
+}
+
+fn is_subagent_session(provider_id: &str, path: &Path) -> bool {
+    let Ok(file) = fs::File::open(path) else {
+        return false;
+    };
+    let reader = BufReader::new(file);
+
+    reader
+        .lines()
+        .take(80)
+        .flatten()
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+        .any(|value| match provider_id {
+            "codex" => codex_subagent_meta(&value),
+            "claude" => value
+                .get("isSidechain")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            _ => false,
+        })
+}
+
+fn codex_subagent_meta(value: &Value) -> bool {
+    let Some(payload) = value.get("payload") else {
+        return false;
+    };
+
+    payload
+        .get("thread_source")
+        .and_then(Value::as_str)
+        .is_some_and(|source| source.eq_ignore_ascii_case("subagent"))
+        || payload
+            .pointer("/source/subagent/thread_spawn")
+            .is_some_and(Value::is_object)
 }
 
 fn preview_messages(path: &Path, limit: usize) -> Vec<SessionMessage> {
@@ -457,5 +496,49 @@ mod tests {
             title_from_messages(&messages),
             Some("vibe page issues".to_string())
         );
+    }
+
+    #[test]
+    fn identifies_codex_subagent_session_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("subagent.jsonl");
+        fs::write(
+            &path,
+            r#"{"type":"session_meta","payload":{"thread_source":"subagent","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}}}"#,
+        )
+        .unwrap();
+
+        assert!(is_subagent_session("codex", &path));
+    }
+
+    #[test]
+    fn keeps_codex_user_session_without_subagent_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("user.jsonl");
+        fs::write(
+            &path,
+            r#"{"type":"session_meta","payload":{"thread_source":"user","source":"vscode"}}"#,
+        )
+        .unwrap();
+
+        assert!(!is_subagent_session("codex", &path));
+    }
+
+    #[test]
+    fn identifies_claude_sidechain_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sidechain.jsonl");
+        fs::write(&path, r#"{"type":"user","isSidechain":true}"#).unwrap();
+
+        assert!(is_subagent_session("claude", &path));
+    }
+
+    #[test]
+    fn keeps_unknown_provider_session_even_with_unrecognized_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        fs::write(&path, r#"{"isSidechain":true,"thread_source":"subagent"}"#).unwrap();
+
+        assert!(!is_subagent_session("gemini", &path));
     }
 }

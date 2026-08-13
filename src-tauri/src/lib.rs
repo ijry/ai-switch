@@ -56,7 +56,7 @@ use commands::route_proxy_https_commands::{
     regenerate_route_proxy_https_certificates, reimport_route_proxy_root_ca,
     uninstall_route_proxy_root_ca,
 };
-use commands::session_commands::{get_session_messages, list_sessions};
+use commands::session_commands::{get_session_messages, list_sessions, open_session_terminal};
 use commands::settings_commands::{get_settings, save_settings};
 use commands::target_commands::{
     list_config_snapshots, list_target_apps, list_target_config_statuses, rollback_config_snapshot,
@@ -87,7 +87,10 @@ use services::route_proxy_service::RouteProxyRuntimeState;
 use services::route_recovery_service::RouteRecoveryService;
 use services::tailscale_service::TailscaleRuntimeState;
 use services::web_service::{WebService, WebServiceRuntimeState};
-use skills::command::{skills_delete, skills_list, skills_list_agents, skills_read, skills_save};
+use skills::command::{
+    skills_delete, skills_install_package, skills_list, skills_list_agents, skills_list_packages,
+    skills_read, skills_read_package, skills_save,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -449,6 +452,7 @@ pub fn run() {
             open_route_proxy_https_certificate_dir,
             list_sessions,
             get_session_messages,
+            open_session_terminal,
             list_target_apps,
             list_target_config_statuses,
             list_config_snapshots,
@@ -479,7 +483,10 @@ pub fn run() {
             skills_list,
             skills_read,
             skills_save,
-            skills_delete
+            skills_delete,
+            skills_list_packages,
+            skills_read_package,
+            skills_install_package
         ])
         .run(tauri::generate_context!())
         .expect("failed to run AI Switch");

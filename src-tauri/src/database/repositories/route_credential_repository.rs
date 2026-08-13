@@ -981,6 +981,14 @@ impl RouteCredentialRepository {
         let result = sqlx::query(
             "UPDATE route_credentials
              SET display_name = ?, email = ?, status = ?, route_priority = ?,
+                 semantic_failure_streak_count = CASE
+                     WHEN ? = 'ok' THEN 0
+                     ELSE semantic_failure_streak_count
+                 END,
+                 semantic_failure_streak_fingerprint = CASE
+                     WHEN ? = 'ok' THEN NULL
+                     ELSE semantic_failure_streak_fingerprint
+                 END,
                  max_concurrency = ?, secret_payload_json = ?,
                  config_json = ?, preview_json = ?,
                  subscription_type = ?, primary_remain = ?, weekly_remain = ?,
@@ -993,6 +1001,8 @@ impl RouteCredentialRepository {
         .bind(&input.email)
         .bind(&input.status)
         .bind(input.route_priority)
+        .bind(&input.status)
+        .bind(&input.status)
         .bind(input.max_concurrency)
         .bind(&input.secret_payload_json)
         .bind(&input.config_json)
@@ -1151,6 +1161,12 @@ impl RouteCredentialRepository {
             QueryBuilder::<Sqlite>::new("UPDATE route_credentials SET status = ");
         update_query
             .push_bind(status)
+            .push(" , semantic_failure_streak_count = CASE WHEN ")
+            .push_bind(status)
+            .push(" = 'ok' THEN 0 ELSE semantic_failure_streak_count END")
+            .push(" , semantic_failure_streak_fingerprint = CASE WHEN ")
+            .push_bind(status)
+            .push(" = 'ok' THEN NULL ELSE semantic_failure_streak_fingerprint END")
             .push(", updated_at = ")
             .push_bind(&now)
             .push(" WHERE id IN (");
@@ -1184,9 +1200,20 @@ impl RouteCredentialRepository {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
             "UPDATE route_credentials
-             SET status = ?, updated_at = ?
+             SET status = ?,
+                 semantic_failure_streak_count = CASE
+                     WHEN ? = 'ok' THEN 0
+                     ELSE semantic_failure_streak_count
+                 END,
+                 semantic_failure_streak_fingerprint = CASE
+                     WHEN ? = 'ok' THEN NULL
+                     ELSE semantic_failure_streak_fingerprint
+                 END,
+                 updated_at = ?
              WHERE id = ?",
         )
+        .bind(status)
+        .bind(status)
         .bind(status)
         .bind(&now)
         .bind(id)
@@ -1321,6 +1348,7 @@ impl RouteCredentialRepository {
         sqlx::query(
             "UPDATE route_credentials
              SET transient_failure_count = ?, next_retry_at = ?, cooldown_until = ?,
+                 semantic_failure_streak_count = 0, semantic_failure_streak_fingerprint = NULL,
                  last_failure_kind = ?, last_failure_message = ?, last_failure_response_json = ?, updated_at = ?
              WHERE id = ?",
         )
@@ -1359,6 +1387,7 @@ impl RouteCredentialRepository {
         let result = sqlx::query(
             "UPDATE route_credentials
              SET transient_failure_count = 0, next_retry_at = NULL, cooldown_until = NULL,
+                 semantic_failure_streak_count = 0, semantic_failure_streak_fingerprint = NULL,
                  last_failure_kind = NULL, last_failure_message = NULL,
                  last_failure_response_json = NULL, updated_at = ?
              WHERE id = ?",
@@ -1384,22 +1413,47 @@ impl RouteCredentialRepository {
         Ok(())
     }
 
-    pub async fn record_semantic_failure(
+    pub async fn record_semantic_failure_with_status(
         pool: &SqlitePool,
         id: &str,
+        response_status: Option<u16>,
+        error_threshold: i64,
         message: &str,
         response_body: Option<&[u8]>,
     ) -> Result<(), AppError> {
         let now = Utc::now().to_rfc3339();
+        let error_threshold = error_threshold.max(1);
+        let fingerprint = semantic_failure_fingerprint(response_status, message);
         let response = truncate_failure_response(response_body);
         let result = sqlx::query(
             "UPDATE route_credentials
-             SET status = 'error', transient_failure_count = 0,
+             SET status = CASE
+                     WHEN status IN ('revoked', 'paused') THEN status
+                     WHEN CASE
+                         WHEN semantic_failure_streak_fingerprint = ?
+                             THEN MIN(semantic_failure_streak_count + 1, ?)
+                         ELSE 1
+                     END >= ? THEN 'error'
+                     ELSE status
+                 END,
+                 transient_failure_count = 0,
                  next_retry_at = NULL, cooldown_until = NULL,
+                 semantic_failure_streak_count = CASE
+                     WHEN semantic_failure_streak_fingerprint = ?
+                         THEN MIN(semantic_failure_streak_count + 1, ?)
+                     ELSE 1
+                 END,
+                 semantic_failure_streak_fingerprint = ?,
                  last_failure_kind = 'semantic_response_failed',
                  last_failure_message = ?, last_failure_response_json = ?, updated_at = ?
              WHERE id = ?",
         )
+        .bind(&fingerprint)
+        .bind(error_threshold)
+        .bind(error_threshold)
+        .bind(&fingerprint)
+        .bind(error_threshold)
+        .bind(&fingerprint)
         .bind(truncate_failure_message(message))
         .bind(&response)
         .bind(&now)
@@ -1437,6 +1491,7 @@ impl RouteCredentialRepository {
             "UPDATE route_credentials
              SET status = 'ok', transient_failure_count = 0,
                  next_retry_at = NULL, cooldown_until = NULL,
+                 semantic_failure_streak_count = 0, semantic_failure_streak_fingerprint = NULL,
                  last_failure_kind = NULL, last_failure_message = NULL,
                  last_failure_response_json = NULL,
                  updated_at = ?
@@ -1626,6 +1681,24 @@ fn truncate_failure_message(message: &str) -> String {
         .last()
         .unwrap_or(0);
     message[..end].to_string()
+}
+
+fn semantic_failure_fingerprint(response_status: Option<u16>, message: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let normalized_message = message
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    let input = format!(
+        "semantic_response_failed|{}|{normalized_message}",
+        response_status
+            .map(|status| status.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    let digest = Sha256::digest(input.as_bytes());
+    format!("sha256:{digest:x}")
 }
 
 const MAX_FAILURE_RESPONSE_CHARS: usize = 8192;
@@ -2493,6 +2566,253 @@ mod tests {
         assert!(cleared.last_failure_kind.is_none());
         assert!(cleared.last_failure_message.is_none());
         assert!(cleared.last_failure_response_json.is_none());
+    }
+
+    #[tokio::test]
+    async fn semantic_failure_requires_ten_matching_errors_before_marking_account_error() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let created = create_api_credential(&pool, "codex", "Semantic retry API").await;
+
+        for expected_count in 1..10 {
+            RouteCredentialRepository::record_semantic_failure_with_status(
+                &pool,
+                &created.id,
+                None,
+                10,
+                "Upstream rejected this request",
+                Some(br#"{"error":{"message":"Upstream rejected this request"}}"#),
+            )
+            .await
+            .unwrap();
+
+            let stored = RouteCredentialRepository::get(&pool, &created.id)
+                .await
+                .unwrap();
+            assert_eq!(stored.status, "ok");
+            let streak_count: i64 = sqlx::query_scalar(
+                "SELECT semantic_failure_streak_count FROM route_credentials WHERE id = ?",
+            )
+            .bind(&created.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(streak_count, expected_count);
+        }
+
+        RouteCredentialRepository::record_semantic_failure_with_status(
+            &pool,
+            &created.id,
+            None,
+            10,
+            "Upstream rejected this request",
+            Some(br#"{"error":{"message":"Upstream rejected this request"}}"#),
+        )
+        .await
+        .unwrap();
+
+        let stored = RouteCredentialRepository::get(&pool, &created.id)
+            .await
+            .unwrap();
+        assert_eq!(stored.status, "error");
+        let streak_count: i64 = sqlx::query_scalar(
+            "SELECT semantic_failure_streak_count FROM route_credentials WHERE id = ?",
+        )
+        .bind(&created.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(streak_count, 10);
+    }
+
+    #[tokio::test]
+    async fn semantic_failure_counter_resets_when_the_error_changes() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let created = create_api_credential(&pool, "codex", "Semantic reset API").await;
+
+        for _ in 0..9 {
+            RouteCredentialRepository::record_semantic_failure_with_status(
+                &pool,
+                &created.id,
+                None,
+                10,
+                "First upstream error",
+                None,
+            )
+            .await
+            .unwrap();
+        }
+
+        RouteCredentialRepository::record_semantic_failure_with_status(
+            &pool,
+            &created.id,
+            None,
+            10,
+            "Second upstream error",
+            None,
+        )
+        .await
+        .unwrap();
+
+        let stored = RouteCredentialRepository::get(&pool, &created.id)
+            .await
+            .unwrap();
+        assert_eq!(stored.status, "ok");
+        let streak_count: i64 = sqlx::query_scalar(
+            "SELECT semantic_failure_streak_count FROM route_credentials WHERE id = ?",
+        )
+        .bind(&created.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(streak_count, 1);
+        assert_eq!(
+            stored.last_failure_message.as_deref(),
+            Some("Second upstream error")
+        );
+    }
+
+    #[tokio::test]
+    async fn restoring_an_account_to_ok_clears_its_semantic_failure_streak() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let created = create_api_credential(&pool, "codex", "Semantic restore API").await;
+
+        for _ in 0..10 {
+            RouteCredentialRepository::record_semantic_failure_with_status(
+                &pool,
+                &created.id,
+                None,
+                10,
+                "Upstream rejected this request",
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        RouteCredentialRepository::set_statuses(&pool, &[created.id.clone()], "ok")
+            .await
+            .unwrap();
+
+        RouteCredentialRepository::record_semantic_failure_with_status(
+            &pool,
+            &created.id,
+            None,
+            10,
+            "Upstream rejected this request",
+            None,
+        )
+        .await
+        .unwrap();
+
+        let stored = RouteCredentialRepository::get(&pool, &created.id)
+            .await
+            .unwrap();
+        assert_eq!(stored.status, "ok");
+        let streak_count: i64 = sqlx::query_scalar(
+            "SELECT semantic_failure_streak_count FROM route_credentials WHERE id = ?",
+        )
+        .bind(&created.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(streak_count, 1);
+    }
+
+    #[tokio::test]
+    async fn updating_an_account_to_ok_clears_semantic_streak_without_reordering_it() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let created = create_api_credential(&pool, "codex", "Semantic update API").await;
+
+        RouteCredentialRepository::record_semantic_failure_with_status(
+            &pool,
+            &created.id,
+            None,
+            10,
+            "Upstream rejected this request",
+            None,
+        )
+        .await
+        .unwrap();
+
+        let updated = RouteCredentialRepository::update(
+            &pool,
+            &created.id,
+            &UpdateRouteCredentialInput {
+                display_name: "Updated semantic API".to_string(),
+                email: Some("updated@example.com".to_string()),
+                status: "ok".to_string(),
+                route_priority: 5,
+                max_concurrency: 3,
+                secret_payload_json: created.secret_payload_json.clone(),
+                config_json: created.config_json.clone(),
+                preview_json: created.preview_json.clone(),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(updated.display_name, "Updated semantic API");
+        assert_eq!(updated.email.as_deref(), Some("updated@example.com"));
+        assert_eq!(updated.status, "ok");
+        assert_eq!(updated.route_priority, 5);
+        assert_eq!(updated.max_concurrency, 3);
+        let streak_count: i64 = sqlx::query_scalar(
+            "SELECT semantic_failure_streak_count FROM route_credentials WHERE id = ?",
+        )
+        .bind(&created.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(streak_count, 0);
+    }
+
+    #[tokio::test]
+    async fn semantic_failure_uses_the_account_specific_error_threshold() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let created = create_api_credential(&pool, "codex", "Custom threshold API").await;
+
+        for _ in 0..2 {
+            RouteCredentialRepository::record_semantic_failure_with_status(
+                &pool,
+                &created.id,
+                Some(400),
+                3,
+                "Unsupported model",
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            RouteCredentialRepository::get(&pool, &created.id)
+                .await
+                .unwrap()
+                .status,
+            "ok"
+        );
+
+        RouteCredentialRepository::record_semantic_failure_with_status(
+            &pool,
+            &created.id,
+            Some(400),
+            3,
+            "Unsupported model",
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            RouteCredentialRepository::get(&pool, &created.id)
+                .await
+                .unwrap()
+                .status,
+            "error"
+        );
     }
 
     #[test]

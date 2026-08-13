@@ -60,8 +60,11 @@ import type {
   SkillContent,
   SkillItem,
   SkillLayout,
+  SkillPackageDetail,
+  SkillPackageInstallResult,
   SkillScope,
   SkillsListResult,
+  SkillsPackageListResult,
 } from "./types";
 
 function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -356,6 +359,10 @@ export function getSessionMessages(input: {
   });
 }
 
+export function openSessionTerminal(input: { cwd: string; command: string }): Promise<void> {
+  return invoke("open_session_terminal", { input });
+}
+
 export function createTerminalSession(
   input: CreateTerminalSessionInput,
 ): Promise<TerminalSession> {
@@ -518,4 +525,44 @@ export function skillsDelete(input: {
   workspacePath?: string | null;
 }): Promise<boolean> {
   return invoke("skills_delete", { ...input, workspacePath: input.workspacePath ?? null });
+}
+
+export function skillsListPackages(input?: {
+  agentType?: SkillAgentType;
+  scope?: SkillScope;
+  workspacePath?: string | null;
+}): Promise<SkillsPackageListResult> {
+  return invoke("skills_list_packages", {
+    agentType: input?.agentType ?? null,
+    scope: input?.scope ?? null,
+    workspacePath: input?.workspacePath ?? null,
+  });
+}
+
+export function skillsReadPackage(input: {
+  packageId: string;
+  agentType?: SkillAgentType;
+  scope?: SkillScope;
+  workspacePath?: string | null;
+}): Promise<SkillPackageDetail> {
+  return invoke("skills_read_package", {
+    packageId: input.packageId,
+    agentType: input.agentType ?? null,
+    scope: input.scope ?? null,
+    workspacePath: input.workspacePath ?? null,
+  });
+}
+
+export function skillsInstallPackage(input: {
+  packageId: string;
+  agentType?: SkillAgentType;
+  scope?: SkillScope;
+  workspacePath?: string | null;
+}): Promise<SkillPackageInstallResult> {
+  return invoke("skills_install_package", {
+    packageId: input.packageId,
+    agentType: input.agentType ?? null,
+    scope: input.scope ?? null,
+    workspacePath: input.workspacePath ?? null,
+  });
 }

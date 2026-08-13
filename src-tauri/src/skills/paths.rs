@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::model::{SkillAgentType, SkillLayout, SkillScope};
+use super::model::{SkillAgentType, SkillLayout, SkillScope, SkillSource};
 use crate::error::AppError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +163,32 @@ impl SkillStorageSpec {
             candidate == root || candidate.starts_with(root)
         })
     }
+
+    pub fn source_for_path(&self, path: &Path) -> SkillSource {
+        let candidate = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let matches_root = |root: &Path| {
+            let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+            candidate == root || candidate.starts_with(root)
+        };
+        if self.read_only_roots.iter().any(|root| {
+            matches_root(root)
+                && root.file_name().and_then(|value| value.to_str()) == Some(".system")
+        }) {
+            return SkillSource::Builtin;
+        }
+        if self.global_dirs.iter().any(|root| {
+            matches_root(root)
+                && root.file_name().and_then(|value| value.to_str()) == Some("skills")
+                && root
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|value| value.to_str())
+                    == Some(".agents")
+        }) {
+            return SkillSource::Agents;
+        }
+        SkillSource::Codex
+    }
 }
 
 pub fn validate_skill_id(id: &str) -> Result<String, AppError> {
@@ -279,5 +305,14 @@ mod tests {
         let spec = skill_storage_spec(SkillAgentType::Codex);
         let path = spec.read_only_roots[0].join("imagegen");
         assert!(spec.is_read_only_path(&path));
+    }
+
+    #[test]
+    fn codex_does_not_scan_codeg_skills() {
+        let spec = skill_storage_spec(SkillAgentType::Codex);
+        let home = home_dir();
+        let codeg_root = home.join(".codeg/skills");
+        assert!(!spec.global_dirs.contains(&codeg_root));
+        assert!(!spec.read_only_roots.contains(&codeg_root));
     }
 }

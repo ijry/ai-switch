@@ -1,8 +1,73 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sqlx::FromRow;
 
 pub const ANTHROPIC_API_KEY_FIELD: &str = "ANTHROPIC_API_KEY";
 pub const ANTHROPIC_AUTH_TOKEN_FIELD: &str = "ANTHROPIC_AUTH_TOKEN";
+pub const DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT: u32 = 2;
+pub const DEFAULT_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS: u32 = 200;
+pub const DEFAULT_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD: u32 = 10;
+pub const MAX_ROUTE_CREDENTIAL_RETRY_COUNT: u32 = 10;
+pub const MAX_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS: u32 = 60_000;
+pub const MAX_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD: u32 = 1_000;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct RouteCredentialFailurePolicy {
+    pub retry_count: u32,
+    pub retry_interval_ms: u32,
+    pub semantic_error_threshold: u32,
+}
+
+impl Default for RouteCredentialFailurePolicy {
+    fn default() -> Self {
+        Self {
+            retry_count: DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT,
+            retry_interval_ms: DEFAULT_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS,
+            semantic_error_threshold: DEFAULT_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD,
+        }
+    }
+}
+
+impl RouteCredentialFailurePolicy {
+    pub fn from_config_json(config_json: &str) -> Self {
+        serde_json::from_str::<Value>(config_json)
+            .ok()
+            .and_then(|config| Self::from_config_value(&config).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn from_config_value(config: &Value) -> Result<Self, String> {
+        let Some(raw_policy) = config.get("failure_policy") else {
+            return Ok(Self::default());
+        };
+        let policy = serde_json::from_value::<Self>(raw_policy.clone())
+            .map_err(|error| format!("failure_policy must contain integer values: {error}"))?;
+        policy.validate()?;
+        Ok(policy)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.retry_count > MAX_ROUTE_CREDENTIAL_RETRY_COUNT {
+            return Err(format!(
+                "retry_count must be between 0 and {MAX_ROUTE_CREDENTIAL_RETRY_COUNT}"
+            ));
+        }
+        if self.retry_interval_ms > MAX_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS {
+            return Err(format!(
+                "retry_interval_ms must be between 0 and {MAX_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS}"
+            ));
+        }
+        if self.semantic_error_threshold == 0
+            || self.semantic_error_threshold > MAX_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD
+        {
+            return Err(format!(
+                "semantic_error_threshold must be between 1 and {MAX_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD}"
+            ));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq)]
 pub struct RouteCredential {
@@ -214,5 +279,52 @@ pub fn normalize_anthropic_api_key_field(value: Option<&str>) -> Result<&'static
         Some(other) => Err(format!(
             "Unsupported Anthropic api_key_field: {other}. Expected {ANTHROPIC_API_KEY_FIELD} or {ANTHROPIC_AUTH_TOKEN_FIELD}"
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        RouteCredentialFailurePolicy, DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT,
+        DEFAULT_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS,
+        DEFAULT_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn failure_policy_uses_defaults_for_existing_account_configs() {
+        assert_eq!(
+            RouteCredentialFailurePolicy::from_config_json(r#"{"base_url":"https://example.com"}"#),
+            RouteCredentialFailurePolicy::default()
+        );
+    }
+
+    #[test]
+    fn failure_policy_supports_partial_account_overrides() {
+        let policy = RouteCredentialFailurePolicy::from_config_value(&json!({
+            "failure_policy": { "retry_count": 4 }
+        }))
+        .expect("policy");
+
+        assert_eq!(policy.retry_count, 4);
+        assert_eq!(
+            policy.retry_interval_ms,
+            DEFAULT_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS
+        );
+        assert_eq!(
+            policy.semantic_error_threshold,
+            DEFAULT_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD
+        );
+        assert_ne!(policy.retry_count, DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT);
+    }
+
+    #[test]
+    fn failure_policy_rejects_values_outside_safe_bounds() {
+        let error = RouteCredentialFailurePolicy::from_config_value(&json!({
+            "failure_policy": { "semantic_error_threshold": 0 }
+        }))
+        .expect_err("invalid policy");
+
+        assert!(error.contains("semantic_error_threshold"));
     }
 }

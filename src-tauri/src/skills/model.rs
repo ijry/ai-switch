@@ -80,6 +80,16 @@ pub enum SkillLayout {
     SkillDirectory,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillSource {
+    Builtin,
+    Codex,
+    Agents,
+    Project,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillLocation {
     pub scope: SkillScope,
@@ -96,6 +106,15 @@ pub struct SkillItem {
     pub path: String,
     pub description: Option<String>,
     pub read_only: bool,
+    pub package_id: Option<String>,
+    pub package_name: Option<String>,
+    pub category: Option<String>,
+    pub tags: Vec<String>,
+    pub language: Option<String>,
+    pub source: SkillSource,
+    pub version: Option<String>,
+    pub installed_at: Option<String>,
+    pub target_clients: Vec<SkillAgentType>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -117,4 +136,61 @@ pub struct SkillAgentInfo {
     pub agent_type: SkillAgentType,
     pub display_name: String,
     pub skills_capable: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillPackage {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub source: SkillSource,
+    pub version: Option<String>,
+    pub manifest_path: Option<String>,
+    pub skill_ids: Vec<String>,
+    pub skill_count: usize,
+    pub installed_skill_ids: Vec<String>,
+    pub installed_count: usize,
+    pub installed_at: Option<String>,
+    pub read_only: bool,
+    pub target_clients: Vec<SkillAgentType>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillPackageMember {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub category: Option<String>,
+    pub tags: Vec<String>,
+    pub language: Option<String>,
+    pub installed: bool,
+    pub skill: Option<SkillItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillScanWarning {
+    pub code: String,
+    pub path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillsPackageListResult {
+    pub packages: Vec<SkillPackage>,
+    pub skills: Vec<SkillItem>,
+    pub warnings: Vec<SkillScanWarning>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillPackageInstallResult {
+    pub package_id: String,
+    pub installed_skill_ids: Vec<String>,
+    pub skipped_skill_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillPackageDetail {
+    pub package: SkillPackage,
+    pub skills: Vec<SkillItem>,
+    pub members: Vec<SkillPackageMember>,
 }
