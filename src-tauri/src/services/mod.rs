@@ -1,5 +1,6 @@
 pub mod batch_service;
 pub mod client_identity;
+pub mod codex_reasoning_cache;
 pub mod config_write_service;
 pub mod cpa_export_service;
 pub mod cpa_import_service;

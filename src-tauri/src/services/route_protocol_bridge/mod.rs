@@ -471,6 +471,31 @@ mod tests {
     }
 
     #[test]
+    fn carries_reasoning_content_from_function_call_item_into_chat_assistant() {
+        let prepared = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAi,
+            "/v1/responses",
+            serde_json::to_vec(&json!({
+                "model": "mimo-v2.5-pro",
+                "input": [
+                    {"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}","reasoning_content":"Restored plan."},
+                    {"type":"function_call_output","call_id":"call_1","output":"ok"},
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":"go"}]}
+                ],
+                "tools": [{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}}]
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .expect("converted request");
+        let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
+
+        assert_eq!(converted["messages"][0]["role"], "assistant");
+        assert_eq!(converted["messages"][0]["reasoning_content"], "Restored plan.");
+    }
+
+    #[test]
     fn injects_placeholder_reasoning_for_tool_call_without_reasoning_item() {
         let prepared = prepare_request(
             PlatformId::Codex,

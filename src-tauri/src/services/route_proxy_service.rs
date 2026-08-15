@@ -25,6 +25,7 @@ use crate::services::route_model_capability::{
     advertised_model_ids, codex_reasoning_metadata, parse_model_capability,
     parse_model_capability_value, requested_model_from_body, supports_requested_model,
 };
+use crate::services::codex_reasoning_cache::CodexReasoningCache;
 use crate::services::route_protocol_bridge::{
     prepare_request as prepare_protocol_bridge_request,
     transform_response_with_tool_namespaces as transform_protocol_bridge_response,
@@ -122,6 +123,7 @@ struct ProxyAppState {
     key_cache: Arc<Mutex<RouteProxyKeyCache>>,
     activity: RouteCredentialActivityRegistry,
     live_log: RouteProxyLiveLog,
+    codex_history: CodexReasoningCache,
 }
 
 #[derive(Default)]
@@ -254,6 +256,7 @@ impl RouteProxyService {
             key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
             activity: state.activity.clone(),
             live_log: state.live_log.clone(),
+            codex_history: CodexReasoningCache::default(),
         };
         let app = Router::new()
             .fallback(any(proxy_handler))
@@ -634,6 +637,7 @@ async fn forward_request(
             upstream_query.as_deref(),
             outbound_headers.clone(),
             &body_bytes,
+            Some(&state.codex_history),
         );
         let BuiltUpstreamRequest {
             target_url,
@@ -855,6 +859,13 @@ async fn forward_request(
         // in place, so the live log can show stage 3 (raw) and stage 4 (final)
         // separately. `Bytes` clone is a cheap ref-count bump.
         let raw_upstream_bytes = response_bytes.clone();
+        // Capture the upstream's plaintext reasoning + tool calls so the next
+        // Codex turn can restore them (Responses→Chat only). See enrich above.
+        if bridge_kind == Some(ProtocolBridgeKind::ResponsesToChat) && status.is_success() {
+            state
+                .codex_history
+                .record_from_chat_response(&raw_upstream_bytes);
+        }
         let upstream_content_type = upstream_headers
             .get(axum::http::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok());
@@ -2220,7 +2231,7 @@ pub fn build_upstream_request(
     body: &[u8],
 ) -> Result<(String, HeaderMap, Vec<u8>), String> {
     let request =
-        build_upstream_request_internal(credential, platform, path, query, headers, body)?;
+        build_upstream_request_internal(credential, platform, path, query, headers, body, None)?;
     Ok((request.target_url, request.headers, request.body))
 }
 
@@ -2232,7 +2243,7 @@ pub(crate) fn build_upstream_request_with_bridge(
     headers: HeaderMap,
     body: &[u8],
 ) -> Result<BuiltUpstreamRequest, String> {
-    build_upstream_request_internal(credential, platform, path, query, headers, body)
+    build_upstream_request_internal(credential, platform, path, query, headers, body, None)
 }
 
 fn build_upstream_request_internal(
@@ -2242,6 +2253,7 @@ fn build_upstream_request_internal(
     query: Option<&str>,
     mut headers: HeaderMap,
     body: &[u8],
+    codex_history: Option<&CodexReasoningCache>,
 ) -> Result<BuiltUpstreamRequest, String> {
     let secret = parse_json_object(&credential.secret_payload_json, "secret")?;
     let config = parse_json_object(&credential.config_json, "config")?;
@@ -2256,6 +2268,7 @@ fn build_upstream_request_internal(
             body,
             &secret,
             &config,
+            codex_history,
         )
     } else {
         build_official_upstream_request(
@@ -2280,6 +2293,7 @@ fn build_api_upstream_request(
     body: &[u8],
     secret: &Value,
     config: &Value,
+    codex_history: Option<&CodexReasoningCache>,
 ) -> Result<BuiltUpstreamRequest, String> {
     let platform = PlatformId::parse(platform).map_err(format_app_error)?;
     PlatformCapabilityService::require(platform, PlatformOperation::GenericApiRouting)
@@ -2321,6 +2335,25 @@ fn build_api_upstream_request(
         && should_rewrite_custom_tools_for_api(interface_format, &upstream_path)
     {
         rewritten_body = apply_responses_custom_tool_compat(&rewritten_body);
+        // Third-party Responses gateways (Xiaomi MiMo, …) reject OpenAI-hosted
+        // tool types with `responses_feature_not_supported`; drop them so the
+        // rest of the request still goes through.
+        rewritten_body = strip_unsupported_hosted_tools(&rewritten_body);
+    }
+    // Restore the real reasoning_content (and, if the client dropped it, the
+    // whole function_call) onto tool-call turns before the Responses→Chat
+    // conversion. Chat reasoning providers (DeepSeek/MiMo) otherwise lose the
+    // model's plan across tool calls and stall. See [`CodexReasoningCache`].
+    if bridge_requires_custom_tool_compat {
+        if let Some(cache) = codex_history {
+            if let Ok(mut value) = serde_json::from_slice::<Value>(&rewritten_body) {
+                if cache.enrich_responses_request(&mut value) > 0 {
+                    if let Ok(bytes) = serde_json::to_vec(&value) {
+                        rewritten_body = bytes;
+                    }
+                }
+            }
+        }
     }
     let PreparedBridgeRequest {
         kind: bridge_kind,
@@ -3132,6 +3165,73 @@ fn responses_custom_tool_compat_enabled(config: &Value) -> bool {
         .get("responses_custom_tool_compat")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+/// Tool `type`s only OpenAI's own Responses backend can execute. Third-party
+/// Responses-compatible gateways reject them (e.g. Xiaomi MiMo returns
+/// `responses_feature_not_supported: tool type 'web_search' is not supported`),
+/// so they are stripped from the passthrough request.
+const UNSUPPORTED_HOSTED_TOOL_TYPES: &[&str] = &[
+    "web_search",
+    "web_search_preview",
+    "file_search",
+    "computer_use_preview",
+    "code_interpreter",
+    "image_generation",
+    "container_file_citation",
+];
+
+/// Remove OpenAI-hosted tools a limited Responses gateway can't run, recursing
+/// into `namespace` tool groups. Non-JSON / no-tools bodies pass through. When a
+/// pinned `tool_choice` targets a removed tool, it is relaxed to `"auto"`.
+fn strip_unsupported_hosted_tools(body: &[u8]) -> Vec<u8> {
+    let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
+        return body.to_vec();
+    };
+    let Some(object) = value.as_object_mut() else {
+        return body.to_vec();
+    };
+    let changed = match object.get_mut("tools").and_then(Value::as_array_mut) {
+        Some(tools) => filter_hosted_tools(tools),
+        None => false,
+    };
+    if !changed {
+        return body.to_vec();
+    }
+    if object
+        .get("tool_choice")
+        .is_some_and(tool_choice_targets_hosted)
+    {
+        object.insert("tool_choice".to_string(), Value::String("auto".to_string()));
+    }
+    serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec())
+}
+
+fn filter_hosted_tools(tools: &mut Vec<Value>) -> bool {
+    let before = tools.len();
+    tools.retain(|tool| !is_unsupported_hosted_tool(tool));
+    let mut changed = tools.len() != before;
+    for tool in tools.iter_mut() {
+        if tool.get("type").and_then(Value::as_str) == Some("namespace") {
+            if let Some(nested) = tool.get_mut("tools").and_then(Value::as_array_mut) {
+                changed |= filter_hosted_tools(nested);
+            }
+        }
+    }
+    changed
+}
+
+fn is_unsupported_hosted_tool(tool: &Value) -> bool {
+    tool.get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|tool_type| UNSUPPORTED_HOSTED_TOOL_TYPES.contains(&tool_type))
+}
+
+fn tool_choice_targets_hosted(tool_choice: &Value) -> bool {
+    tool_choice
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|tool_type| UNSUPPORTED_HOSTED_TOOL_TYPES.contains(&tool_type))
 }
 
 fn is_responses_path(path: &str) -> bool {
@@ -6532,6 +6632,7 @@ mod tests {
             key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
             activity: RouteCredentialActivityRegistry::default(),
             live_log: RouteProxyLiveLog::default(),
+            codex_history: CodexReasoningCache::default(),
         };
 
         let mut headers = HeaderMap::new();
@@ -6562,6 +6663,7 @@ mod tests {
             key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
             activity: RouteCredentialActivityRegistry::default(),
             live_log: RouteProxyLiveLog::default(),
+            codex_history: CodexReasoningCache::default(),
         };
 
         let error = resolve_platform(&state, &HeaderMap::new(), None)
@@ -6587,6 +6689,7 @@ mod tests {
             key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
             activity: RouteCredentialActivityRegistry::default(),
             live_log: RouteProxyLiveLog::default(),
+            codex_history: CodexReasoningCache::default(),
         };
 
         let key = "sk-invalid";
@@ -6995,6 +7098,37 @@ mod tests {
             jwt_claim_string(token, "client_id").as_deref(),
             Some("cid-from-jwt")
         );
+    }
+
+    #[test]
+    fn strip_unsupported_hosted_tools_drops_web_search_keeps_functions() {
+        let body = br#"{
+            "model":"gpt-5.5",
+            "tools":[
+                {"type":"web_search"},
+                {"type":"function","name":"exec_command","parameters":{"type":"object"}},
+                {"type":"custom","name":"apply_patch"},
+                {"type":"file_search"}
+            ],
+            "tool_choice":{"type":"web_search"},
+            "input":"hi"
+        }"#;
+        let out = strip_unsupported_hosted_tools(body);
+        let value: Value = serde_json::from_slice(&out).unwrap();
+        let tools = value["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 2);
+        assert!(tools
+            .iter()
+            .all(|tool| matches!(tool["type"].as_str(), Some("function") | Some("custom"))));
+        // A tool_choice pinned to a removed hosted tool is relaxed to auto.
+        assert_eq!(value["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn strip_unsupported_hosted_tools_noop_without_hosted_tools() {
+        let body = br#"{"tools":[{"type":"function","name":"exec_command"}],"input":"hi"}"#;
+        let out = strip_unsupported_hosted_tools(body);
+        assert_eq!(out, body.to_vec());
     }
 
     #[test]

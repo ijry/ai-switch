@@ -1340,6 +1340,15 @@ fn append_pending_reasoning(pending_reasoning: &mut Option<String>, reasoning: O
 }
 
 fn reasoning_text(item: &Value) -> Option<String> {
+    // Restored/inline plaintext reasoning (e.g. from the reasoning cache) wins:
+    // it carries the model's actual chain-of-thought for this tool-call turn.
+    for key in ["reasoning_content", "reasoning"] {
+        if let Some(text) = item.get(key).and_then(Value::as_str) {
+            if !text.trim().is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
     let summary = item
         .get("summary")
         .and_then(Value::as_array)
