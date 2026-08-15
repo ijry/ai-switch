@@ -7,6 +7,12 @@ use super::TransformedBridgeResponse;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
+/// Non-empty stand-in used when a `tool_calls` assistant message must carry
+/// `reasoning_content` (DeepSeek/MiMo protocol) but the real reasoning was lost.
+/// Kept short and neutral; DeepSeek-family models only require the field to be a
+/// non-empty string, not to match the original chain-of-thought.
+const TOOL_CALL_REASONING_PLACEHOLDER: &str = "...";
+
 pub(super) fn responses_request_to_chat(body: &[u8]) -> Result<Vec<u8>, String> {
     let value = serde_json::from_slice::<Value>(body)
         .map_err(|error| format!("Responses request JSON is invalid: {error}"))?;
@@ -152,7 +158,13 @@ fn chat_json_to_responses(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let output = build_output_items(response_id, &text, &tool_calls, true, tool_namespaces)?;
+    let mut output = build_output_items(response_id, &text, &tool_calls, true, tool_namespaces)?;
+    if let Some(reasoning) = message_reasoning_text(message) {
+        output.insert(0, reasoning_output_item(&reasoning_item_id(response_id), reasoning));
+    }
+    if output.is_empty() {
+        output.push(message_output_item(&message_item_id(response_id), "completed", ""));
+    }
     let finish_reason = choice.get("finish_reason").and_then(Value::as_str);
     let status = responses_status(finish_reason);
     let response = response_object(
@@ -221,6 +233,9 @@ fn chat_sse_to_responses(
             state.finish_reason = Some(reason.to_string());
         }
         let delta = choice.get("delta").unwrap_or(&Value::Null);
+        if let Some(reasoning) = delta_reasoning_text(delta) {
+            emit_reasoning_delta(&mut state, &mut output, &mut sequence_number, reasoning)?;
+        }
         if let Some(content) = delta.get("content").and_then(Value::as_str) {
             emit_text_delta(&mut state, &mut output, &mut sequence_number, content)?;
         }
@@ -256,8 +271,12 @@ struct ChatStreamState {
     model: String,
     created_at: i64,
     started: bool,
+    reasoning_started: bool,
+    reasoning: String,
+    reasoning_output_index: usize,
     text_started: bool,
     text: String,
+    text_output_index: usize,
     tools: BTreeMap<usize, StreamToolCall>,
     next_output_index: usize,
     finish_reason: Option<String>,
@@ -365,15 +384,72 @@ fn ensure_stream_started(
     state.started = true;
 }
 
+fn emit_reasoning_delta(
+    state: &mut ChatStreamState,
+    output: &mut String,
+    sequence_number: &mut u64,
+    delta: &str,
+) -> Result<(), String> {
+    let item_id = reasoning_item_id(state.response_id());
+    if !state.reasoning_started {
+        state.reasoning_output_index = state.next_output_index;
+        state.next_output_index += 1;
+        let output_index = state.reasoning_output_index;
+        push_sse_event(
+            output,
+            "response.output_item.added",
+            json!({
+                "type": "response.output_item.added",
+                "sequence_number": *sequence_number,
+                "output_index": output_index,
+                "item": reasoning_output_item(&item_id, "")
+            }),
+        )?;
+        *sequence_number += 1;
+        push_sse_event(
+            output,
+            "response.reasoning_summary_part.added",
+            json!({
+                "type": "response.reasoning_summary_part.added",
+                "sequence_number": *sequence_number,
+                "item_id": item_id,
+                "output_index": output_index,
+                "summary_index": 0,
+                "part": {"type": "summary_text", "text": ""}
+            }),
+        )?;
+        *sequence_number += 1;
+        state.reasoning_started = true;
+    }
+    let output_index = state.reasoning_output_index;
+    state.reasoning.push_str(delta);
+    push_sse_event(
+        output,
+        "response.reasoning_summary_text.delta",
+        json!({
+            "type": "response.reasoning_summary_text.delta",
+            "sequence_number": *sequence_number,
+            "item_id": item_id,
+            "output_index": output_index,
+            "summary_index": 0,
+            "delta": delta
+        }),
+    )?;
+    *sequence_number += 1;
+    Ok(())
+}
+
 fn emit_text_delta(
     state: &mut ChatStreamState,
     output: &mut String,
     sequence_number: &mut u64,
     delta: &str,
 ) -> Result<(), String> {
-    let output_index = 0;
     let item_id = message_item_id(state.response_id());
     if !state.text_started {
+        state.text_output_index = state.next_output_index;
+        state.next_output_index += 1;
+        let output_index = state.text_output_index;
         push_sse_event(
             output,
             "response.output_item.added",
@@ -399,8 +475,8 @@ fn emit_text_delta(
         )?;
         *sequence_number += 1;
         state.text_started = true;
-        state.next_output_index = 1;
     }
+    let output_index = state.text_output_index;
     state.text.push_str(delta);
     push_sse_event(
         output,
@@ -506,8 +582,52 @@ fn finish_stream(
     tool_namespaces: &ResponsesToolNamespaces,
 ) -> Result<(), String> {
     let mut final_output = Vec::new();
+    if state.reasoning_started {
+        let item_id = reasoning_item_id(state.response_id());
+        let output_index = state.reasoning_output_index;
+        push_sse_event(
+            output,
+            "response.reasoning_summary_text.done",
+            json!({
+                "type": "response.reasoning_summary_text.done",
+                "sequence_number": *sequence_number,
+                "item_id": item_id,
+                "output_index": output_index,
+                "summary_index": 0,
+                "text": state.reasoning
+            }),
+        )?;
+        *sequence_number += 1;
+        push_sse_event(
+            output,
+            "response.reasoning_summary_part.done",
+            json!({
+                "type": "response.reasoning_summary_part.done",
+                "sequence_number": *sequence_number,
+                "item_id": item_id,
+                "output_index": output_index,
+                "summary_index": 0,
+                "part": {"type": "summary_text", "text": state.reasoning}
+            }),
+        )?;
+        *sequence_number += 1;
+        let item = reasoning_output_item(&item_id, &state.reasoning);
+        push_sse_event(
+            output,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "sequence_number": *sequence_number,
+                "output_index": output_index,
+                "item": item
+            }),
+        )?;
+        *sequence_number += 1;
+        final_output.push(reasoning_output_item(&item_id, &state.reasoning));
+    }
     if state.text_started {
         let item_id = message_item_id(state.response_id());
+        let output_index = state.text_output_index;
         push_sse_event(
             output,
             "response.output_text.done",
@@ -515,7 +635,7 @@ fn finish_stream(
                 "type": "response.output_text.done",
                 "sequence_number": *sequence_number,
                 "item_id": item_id,
-                "output_index": 0,
+                "output_index": output_index,
                 "content_index": 0,
                 "text": state.text,
                 "logprobs": []
@@ -529,7 +649,7 @@ fn finish_stream(
                 "type": "response.content_part.done",
                 "sequence_number": *sequence_number,
                 "item_id": item_id,
-                "output_index": 0,
+                "output_index": output_index,
                 "content_index": 0,
                 "part": output_text_part(&state.text)
             }),
@@ -542,7 +662,7 @@ fn finish_stream(
             json!({
                 "type": "response.output_item.done",
                 "sequence_number": *sequence_number,
-                "output_index": 0,
+                "output_index": output_index,
                 "item": item
             }),
         )?;
@@ -590,13 +710,15 @@ fn finish_stream(
             tool_namespaces,
         ));
     }
-    final_output.sort_by_key(|item| {
-        if item.get("type").and_then(Value::as_str) == Some("message") {
-            0
-        } else {
-            1
-        }
+    final_output.sort_by_key(|item| match item.get("type").and_then(Value::as_str) {
+        Some("reasoning") => 0,
+        Some("message") => 1,
+        _ => 2,
     });
+    if final_output.is_empty() {
+        let item_id = message_item_id(state.response_id());
+        final_output.push(message_output_item(&item_id, "completed", ""));
+    }
     let finish_reason = state.finish_reason.as_deref();
     let status = responses_status(finish_reason);
     let response = response_object(
@@ -894,6 +1016,39 @@ fn message_item_id(response_id: &str) -> String {
     format!("msg_{}", sanitize_id(response_id))
 }
 
+fn reasoning_item_id(response_id: &str) -> String {
+    format!("rs_{}", sanitize_id(response_id))
+}
+
+fn reasoning_output_item(item_id: &str, text: &str) -> Value {
+    let summary = if text.is_empty() {
+        json!([])
+    } else {
+        json!([{"type": "summary_text", "text": text}])
+    };
+    json!({
+        "id": item_id,
+        "type": "reasoning",
+        "summary": summary
+    })
+}
+
+fn delta_reasoning_text(delta: &Value) -> Option<&str> {
+    delta
+        .get("reasoning_content")
+        .and_then(Value::as_str)
+        .or_else(|| delta.get("reasoning").and_then(Value::as_str))
+        .filter(|text| !text.is_empty())
+}
+
+fn message_reasoning_text(message: &Value) -> Option<&str> {
+    message
+        .get("reasoning_content")
+        .and_then(Value::as_str)
+        .or_else(|| message.get("reasoning").and_then(Value::as_str))
+        .filter(|text| !text.is_empty())
+}
+
 fn sanitize_id(value: &str) -> String {
     value
         .chars()
@@ -953,7 +1108,41 @@ fn convert_input_items(
         last_assistant_index,
         &mut pending_reasoning,
     );
+    ensure_tool_call_reasoning(&mut messages);
     Ok(messages)
+}
+
+/// MiMo/DeepSeek reject a follow-up turn with `400 The reasoning_content in the
+/// thinking mode must be passed back to the API` when an assistant message that
+/// carries `tool_calls` has no `reasoning_content`. That happens whenever the
+/// upstream reasoning was lost — client-side context compaction, a tool turn the
+/// model emitted without reasoning, or history predating reasoning round-trip.
+/// Guarantee the field is present (placeholder when the real one is gone) so the
+/// conversation keeps working instead of hard-failing.
+fn ensure_tool_call_reasoning(messages: &mut [Value]) {
+    for message in messages.iter_mut() {
+        let Some(object) = message.as_object_mut() else {
+            continue;
+        };
+        let is_assistant = object.get("role").and_then(Value::as_str) == Some("assistant");
+        let has_tool_calls = object
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|calls| !calls.is_empty());
+        if !is_assistant || !has_tool_calls {
+            continue;
+        }
+        let has_reasoning = object
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty());
+        if !has_reasoning {
+            object.insert(
+                "reasoning_content".to_string(),
+                Value::String(TOOL_CALL_REASONING_PLACEHOLDER.to_string()),
+            );
+        }
+    }
 }
 
 fn convert_input_item(

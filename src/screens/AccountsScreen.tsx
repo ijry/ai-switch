@@ -5062,6 +5062,14 @@ export function AccountsScreen({
                             协议转换
                           </span>
                         ) : null}
+                        {entry.notes && entry.notes.length > 0 ? (
+                          <span
+                            className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-600"
+                            title={entry.notes.join("\n")}
+                          >
+                            提示
+                          </span>
+                        ) : null}
                         <span className="truncate text-[11px] text-stone-500">{entry.credential_name}</span>
                         <span className="ml-auto shrink-0 text-[10px] text-stone-400">
                           {formatUsageTime(entry.created_at)} · {entry.duration_ms}ms
@@ -5071,6 +5079,15 @@ export function AccountsScreen({
                         <div className="space-y-2 bg-stone-50 px-3 pb-3 pt-1">
                           {entry.error_message ? (
                             <p className="text-[11px] text-red-600">{entry.error_message}</p>
+                          ) : null}
+                          {entry.notes && entry.notes.length > 0 ? (
+                            <ul className="space-y-0.5">
+                              {entry.notes.map((note, index) => (
+                                <li key={index} className="text-[11px] text-amber-600">
+                                  ⚠ {note}
+                                </li>
+                              ))}
+                            </ul>
                           ) : null}
                           <LiveLogStage title="原始请求" body={entry.client_request} />
                           <LiveLogStage title="发往上游" body={entry.upstream_request} />

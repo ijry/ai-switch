@@ -1298,9 +1298,12 @@ fn emit_live_log(
     upstream_response: Option<&[u8]>,
     final_response: Option<&[u8]>,
 ) {
-    let (client_request, t1) = stage_preview(client_request);
-    let (upstream_request, t2) = stage_preview(upstream_request);
+    let client_request = redact_verbose_request_fields(client_request);
+    let upstream_request = redact_verbose_request_fields(upstream_request);
+    let (client_request, t1) = stage_preview(client_request.as_deref());
+    let (upstream_request, t2) = stage_preview(upstream_request.as_deref());
     let (upstream_response, t3) = stage_preview(upstream_response);
+    let notes = diagnostic_notes(success, bridge, client_request.as_deref(), final_response);
     let (final_response, t4) = stage_preview(final_response);
     live_log.record(RouteProxyLiveLogEntry {
         id: uuid::Uuid::new_v4().to_string(),
@@ -1328,9 +1331,109 @@ fn emit_live_log(
         upstream_request,
         upstream_response,
         final_response,
+        notes,
         truncated: t1 || t2 || t3 || t4,
         created_at: Utc::now().to_rfc3339(),
     });
+}
+
+/// Derive non-error, troubleshooting-only hints from a completed proxied
+/// request. Currently flags the "agent turn ended without a tool call" and
+/// "empty upstream output" cases that make bridged clients (Codex, Claude Code)
+/// look like they stopped responding. Heuristic text scan by design — this only
+/// annotates the live log, it never drives control flow.
+fn diagnostic_notes(
+    success: bool,
+    bridge: Option<&str>,
+    client_request: Option<&str>,
+    final_response: Option<&[u8]>,
+) -> Vec<String> {
+    if !success || bridge.is_none() {
+        return Vec::new();
+    }
+    let Some(final_text) = final_response.and_then(|bytes| std::str::from_utf8(bytes).ok()) else {
+        return Vec::new();
+    };
+    let completed = final_text.contains("\"type\":\"response.completed\"")
+        || final_text.contains("\"status\":\"completed\"")
+        || final_text.contains("\"stop_reason\"");
+    if !completed {
+        return Vec::new();
+    }
+    let mut notes = Vec::new();
+    if final_text.contains("\"output\":[]") {
+        notes.push("上游返回空输出（无文本/推理/工具调用）".to_string());
+        return notes;
+    }
+    let has_tool_call = final_text.contains("\"type\":\"function_call\"")
+        || final_text.contains("\"type\":\"tool_use\"")
+        || final_text.contains("response.function_call_arguments");
+    let request_offered_tools = client_request.is_some_and(|request| request.contains("\"tools\""));
+    if request_offered_tools && !has_tool_call {
+        notes.push("上游未发起工具调用（纯文本回合，agent 可能就此停止）".to_string());
+    }
+    notes
+}
+
+/// Above this many bytes, a system-prompt-shaped field is replaced with a short
+/// `<field omitted: N chars>` marker in the live log preview.
+const VERBOSE_REQUEST_FIELD_LIMIT: usize = 200;
+
+/// The live log keeps a preview of every request stage, but agent clients ship a
+/// huge system prompt on every call — Responses `instructions`, the Chat system
+/// message it converts into, or Anthropic's `system`. That blob dwarfs the parts
+/// worth reading (messages, tools) and eats the per-stage byte budget, so strip
+/// it to a marker before storing. Non-JSON bodies (SSE, etc.) pass through
+/// untouched.
+fn redact_verbose_request_fields(body: Option<&[u8]>) -> Option<Vec<u8>> {
+    let body = body?;
+    let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
+        return Some(body.to_vec());
+    };
+    let Some(object) = value.as_object_mut() else {
+        return Some(body.to_vec());
+    };
+    let mut changed = false;
+    // Responses `instructions` and Anthropic `system` are top-level strings.
+    for key in ["instructions", "system"] {
+        if let Some(field) = object.get_mut(key) {
+            changed |= redact_long_string(field, key);
+        }
+    }
+    // Chat Completions carries the system prompt as a system/developer message.
+    if let Some(messages) = object.get_mut("messages").and_then(Value::as_array_mut) {
+        for message in messages {
+            let is_system = message
+                .get("role")
+                .and_then(Value::as_str)
+                .is_some_and(|role| matches!(role, "system" | "developer"));
+            if is_system {
+                if let Some(content) = message.get_mut("content") {
+                    changed |= redact_long_string(content, "system");
+                }
+            }
+        }
+    }
+    if !changed {
+        return Some(body.to_vec());
+    }
+    serde_json::to_vec(&value)
+        .ok()
+        .or_else(|| Some(body.to_vec()))
+}
+
+/// Replace `value` with a `<label omitted: N chars>` marker when it is a string
+/// longer than [`VERBOSE_REQUEST_FIELD_LIMIT`]. Returns whether it changed.
+fn redact_long_string(value: &mut Value, label: &str) -> bool {
+    let Some(text) = value.as_str() else {
+        return false;
+    };
+    if text.len() <= VERBOSE_REQUEST_FIELD_LIMIT {
+        return false;
+    }
+    let chars = text.chars().count();
+    *value = Value::String(format!("<{label} omitted: {chars} chars>"));
+    true
 }
 
 fn elapsed_millis(started_at: Instant) -> i64 {
@@ -3890,6 +3993,83 @@ mod tests {
     use crate::models::route_credential::DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn flags_bridged_turn_without_tool_call() {
+        let request = br#"{"model":"x","tools":[{"type":"function"}],"input":"hi"}"#;
+        let response = br#"data: {"type":"response.completed","response":{"output":[{"type":"message"}]}}"#;
+        let notes = diagnostic_notes(true, Some("codex"), Some(std::str::from_utf8(request).unwrap()), Some(response));
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("未发起工具调用"));
+    }
+
+    #[test]
+    fn flags_bridged_empty_output() {
+        let response = br#"data: {"type":"response.completed","response":{"output":[]}}"#;
+        let notes = diagnostic_notes(true, Some("codex"), Some("{\"tools\":[]}"), Some(response));
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("空输出"));
+    }
+
+    #[test]
+    fn redacts_long_instructions_but_keeps_tools_and_messages() {
+        let long = "x".repeat(VERBOSE_REQUEST_FIELD_LIMIT + 50);
+        let body = serde_json::to_vec(&json!({
+            "model": "mimo-v2.5-pro",
+            "instructions": long,
+            "tools": [{"type": "function", "name": "lookup"}],
+            "input": "hi"
+        }))
+        .unwrap();
+        let redacted = redact_verbose_request_fields(Some(&body)).expect("redacted");
+        let value: Value = serde_json::from_slice(&redacted).unwrap();
+
+        assert!(value["instructions"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("<instructions omitted:")));
+        assert_eq!(value["tools"][0]["name"], "lookup");
+        assert_eq!(value["input"], "hi");
+    }
+
+    #[test]
+    fn redacts_long_system_message_and_short_instructions_kept() {
+        let long = "y".repeat(VERBOSE_REQUEST_FIELD_LIMIT + 1);
+        let body = serde_json::to_vec(&json!({
+            "instructions": "short",
+            "messages": [
+                {"role": "system", "content": long},
+                {"role": "user", "content": "hello"}
+            ]
+        }))
+        .unwrap();
+        let redacted = redact_verbose_request_fields(Some(&body)).expect("redacted");
+        let value: Value = serde_json::from_slice(&redacted).unwrap();
+
+        assert_eq!(value["instructions"], "short");
+        assert!(value["messages"][0]["content"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("<system omitted:")));
+        assert_eq!(value["messages"][1]["content"], "hello");
+    }
+
+    #[test]
+    fn leaves_non_json_request_untouched() {
+        let body = b"data: {not json";
+        let out = redact_verbose_request_fields(Some(body)).expect("passthrough");
+        assert_eq!(out, body);
+    }
+
+    #[test]
+    fn stays_quiet_when_tool_call_present_or_not_bridged() {
+        let request = "{\"tools\":[{}]}";
+        let with_tool = br#"data: {"type":"response.completed","response":{"output":[{"type":"function_call"}]}}"#;
+        assert!(diagnostic_notes(true, Some("codex"), Some(request), Some(with_tool)).is_empty());
+        // No bridge applied -> no diagnostics.
+        let text_only = br#"data: {"type":"response.completed","response":{"output":[{"type":"message"}]}}"#;
+        assert!(diagnostic_notes(true, None, Some(request), Some(text_only)).is_empty());
+        // Request offered no tools -> a plain text answer is expected, not flagged.
+        assert!(diagnostic_notes(true, Some("codex"), Some("{\"input\":\"hi\"}"), Some(text_only)).is_empty());
+    }
 
     #[derive(Debug)]
     struct CapturedChatRequest {

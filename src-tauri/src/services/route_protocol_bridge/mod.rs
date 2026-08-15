@@ -471,6 +471,40 @@ mod tests {
     }
 
     #[test]
+    fn injects_placeholder_reasoning_for_tool_call_without_reasoning_item() {
+        let prepared = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAi,
+            "/v1/responses",
+            serde_json::to_vec(&json!({
+                "model": "mimo-v2.5-pro",
+                "input": [
+                    {"type":"function_call","call_id":"call_1","name":"lookup","arguments":{"q":"x"}},
+                    {"type":"function_call_output","call_id":"call_1","output":{"ok":true}},
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":"继续"}]}
+                ],
+                "tools": [{
+                    "type":"function",
+                    "name":"lookup",
+                    "parameters":{"type":"object","properties":{"q":{"type":"string"}}}
+                }]
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .expect("converted request");
+        let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
+
+        assert_eq!(converted["messages"][0]["role"], "assistant");
+        assert!(converted["messages"][0]["tool_calls"][0]["id"] == "call_1");
+        let reasoning = converted["messages"][0]["reasoning_content"].as_str();
+        assert!(
+            reasoning.is_some_and(|text| !text.trim().is_empty()),
+            "tool-call assistant message must carry non-empty reasoning_content for MiMo/DeepSeek"
+        );
+    }
+
+    #[test]
     fn converts_custom_tools_to_chat_functions() {
         let prepared = prepare_request(
             PlatformId::Codex,
@@ -1191,5 +1225,106 @@ mod tests {
         assert!(output.contains("event: response.function_call_arguments.delta"));
         assert!(output.contains("event: response.function_call_arguments.done"));
         assert!(output.contains("event: response.completed"));
+    }
+
+    #[test]
+    fn maps_reasoning_content_deltas_to_responses_reasoning_events() {
+        let body = concat!(
+            "data: {\"id\":\"cc-1\",\"model\":\"mimo\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":null},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"cc-1\",\"model\":\"mimo\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Let me think.\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"cc-1\",\"model\":\"mimo\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Answer.\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"cc-1\",\"model\":\"mimo\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let converted = transform_response(
+            ProtocolBridgeKind::ResponsesToChat,
+            200,
+            Some("text/event-stream"),
+            body.as_bytes(),
+        )
+        .expect("converted stream");
+        let output = String::from_utf8(converted.body).expect("utf8 stream");
+
+        assert!(output.contains("event: response.reasoning_summary_part.added"));
+        assert!(output.contains("event: response.reasoning_summary_text.delta"));
+        assert!(output.contains("\"delta\":\"Let me think.\""));
+        assert!(output.contains("event: response.reasoning_summary_text.done"));
+        assert!(output.contains("event: response.output_text.delta"));
+
+        let completed = completed_response(&output);
+        let items = completed["output"].as_array().expect("output array");
+        assert_eq!(items[0]["type"], "reasoning");
+        assert_eq!(items[0]["summary"][0]["text"], "Let me think.");
+        assert_eq!(items[1]["type"], "message");
+        assert_eq!(items[1]["content"][0]["text"], "Answer.");
+    }
+
+    #[test]
+    fn emits_reasoning_only_stream_without_empty_output() {
+        let body = concat!(
+            "data: {\"id\":\"cc-2\",\"model\":\"mimo\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Thinking only.\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"cc-2\",\"model\":\"mimo\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let converted = transform_response(
+            ProtocolBridgeKind::ResponsesToChat,
+            200,
+            Some("text/event-stream"),
+            body.as_bytes(),
+        )
+        .expect("converted stream");
+        let output = String::from_utf8(converted.body).expect("utf8 stream");
+
+        let completed = completed_response(&output);
+        let items = completed["output"].as_array().expect("output array");
+        assert!(!items.is_empty(), "reasoning-only stream must not yield empty output");
+        assert_eq!(items[0]["type"], "reasoning");
+        assert_eq!(items[0]["summary"][0]["text"], "Thinking only.");
+    }
+
+    #[test]
+    fn maps_reasoning_content_in_non_stream_response() {
+        let body = json!({
+            "id": "cc-3",
+            "model": "mimo",
+            "choices": [{
+                "message": {"role": "assistant", "reasoning_content": "Because.", "content": "Done."},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 2}
+        });
+        let converted = transform_response(
+            ProtocolBridgeKind::ResponsesToChat,
+            200,
+            Some("application/json"),
+            serde_json::to_vec(&body).unwrap().as_slice(),
+        )
+        .expect("converted json");
+        let response: Value = serde_json::from_slice(&converted.body).expect("responses json");
+
+        let items = response["output"].as_array().expect("output array");
+        assert_eq!(items[0]["type"], "reasoning");
+        assert_eq!(items[0]["summary"][0]["text"], "Because.");
+        assert_eq!(items[1]["type"], "message");
+        assert_eq!(items[1]["content"][0]["text"], "Done.");
+    }
+
+    fn completed_response(stream: &str) -> Value {
+        for block in stream.split("\n\n") {
+            let is_completed = block
+                .lines()
+                .any(|line| line.trim() == "event: response.completed");
+            if !is_completed {
+                continue;
+            }
+            let data = block
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("data:"))
+                .map(str::trim)
+                .expect("completed event data");
+            let value: Value = serde_json::from_str(data).expect("completed json");
+            return value["response"].clone();
+        }
+        panic!("no response.completed event found in stream");
     }
 }

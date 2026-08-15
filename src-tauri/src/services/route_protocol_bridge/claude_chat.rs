@@ -2,6 +2,11 @@ use super::{sse, TransformedBridgeResponse};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
+/// Non-empty stand-in for `reasoning_content` on a tool-call assistant message
+/// when the real reasoning is unavailable. See [`convert_assistant_message`];
+/// DeepSeek/MiMo require the field to be a non-empty string, not verbatim CoT.
+const TOOL_CALL_REASONING_PLACEHOLDER: &str = "...";
+
 pub(super) fn anthropic_request_to_chat(body: &[u8]) -> Result<Vec<u8>, String> {
     let value = serde_json::from_slice::<Value>(body)
         .map_err(|error| format!("Anthropic request JSON is invalid: {error}"))?;
@@ -136,6 +141,7 @@ fn convert_user_message(blocks: &[Value]) -> Result<Vec<Value>, String> {
 
 fn convert_assistant_message(blocks: &[Value]) -> Result<Vec<Value>, String> {
     let mut text = String::new();
+    let mut reasoning = String::new();
     let mut tool_calls = Vec::new();
 
     for block in blocks {
@@ -146,6 +152,12 @@ fn convert_assistant_message(blocks: &[Value]) -> Result<Vec<Value>, String> {
             Some("text") => {
                 text.push_str(object.get("text").and_then(Value::as_str).unwrap_or(""));
             }
+            Some("thinking") => {
+                reasoning.push_str(object.get("thinking").and_then(Value::as_str).unwrap_or(""));
+            }
+            // Opaque provider-signed reasoning: no plaintext to forward, but the
+            // turn still needs reasoning_content present when it carries tools.
+            Some("redacted_thinking") => {}
             Some("tool_use") => {
                 let id = required_string(object, "id", "tool_use")?;
                 let name = required_string(object, "name", "tool_use")?;
@@ -176,7 +188,18 @@ fn convert_assistant_message(blocks: &[Value]) -> Result<Vec<Value>, String> {
         message.insert("content".to_string(), Value::String(text));
     }
     if !tool_calls.is_empty() {
-        message.insert("tool_calls".to_string(), Value::Array(tool_calls));
+        message.insert("tool_calls".to_string(), Value::Array(tool_calls.clone()));
+    }
+    // DeepSeek/MiMo reject a follow-up turn whose tool-call assistant message has
+    // no reasoning_content (400). Forward the real reasoning when present, else a
+    // placeholder so the conversation survives lost/absent chain-of-thought.
+    if !reasoning.trim().is_empty() {
+        message.insert("reasoning_content".to_string(), Value::String(reasoning));
+    } else if !tool_calls.is_empty() {
+        message.insert(
+            "reasoning_content".to_string(),
+            Value::String(TOOL_CALL_REASONING_PLACEHOLDER.to_string()),
+        );
     }
     Ok(vec![Value::Object(message)])
 }
@@ -741,6 +764,50 @@ mod tests {
         assert_eq!(converted["messages"][3]["role"], "tool");
         assert_eq!(converted["max_tokens"], 64);
         assert_eq!(converted["tools"][0]["function"]["name"], "lookup");
+    }
+
+    #[test]
+    fn maps_thinking_block_to_reasoning_content() {
+        let body = json!({
+            "model": "mimo-v2.5-pro",
+            "messages": [
+                {"role":"user","content":"go"},
+                {"role":"assistant","content":[
+                    {"type":"thinking","thinking":"Need to look it up."},
+                    {"type":"tool_use","id":"toolu_1","name":"lookup","input":{"q":"x"}}
+                ]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"42"}]}
+            ]
+        });
+        let converted: Value = serde_json::from_slice(
+            &anthropic_request_to_chat(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(converted["messages"][1]["role"], "assistant");
+        assert_eq!(converted["messages"][1]["reasoning_content"], "Need to look it up.");
+        assert_eq!(converted["messages"][1]["tool_calls"][0]["id"], "toolu_1");
+        assert_eq!(converted["messages"][2]["role"], "tool");
+    }
+
+    #[test]
+    fn injects_placeholder_reasoning_for_tool_call_without_thinking() {
+        let body = json!({
+            "model": "mimo-v2.5-pro",
+            "messages": [
+                {"role":"user","content":"go"},
+                {"role":"assistant","content":[
+                    {"type":"tool_use","id":"toolu_1","name":"lookup","input":{"q":"x"}}
+                ]}
+            ]
+        });
+        let converted: Value = serde_json::from_slice(
+            &anthropic_request_to_chat(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        let reasoning = converted["messages"][1]["reasoning_content"].as_str();
+        assert!(reasoning.is_some_and(|text| !text.trim().is_empty()));
     }
 
     #[test]

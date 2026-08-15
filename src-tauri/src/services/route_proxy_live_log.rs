@@ -45,6 +45,11 @@ pub struct RouteProxyLiveLogEntry {
     pub upstream_request: Option<String>,
     pub upstream_response: Option<String>,
     pub final_response: Option<String>,
+    /// Non-error diagnostics surfaced for troubleshooting, e.g. a bridged
+    /// upstream that completed a turn without emitting any tool call. Defaulted
+    /// so older payloads/consumers stay compatible.
+    #[serde(default)]
+    pub notes: Vec<String>,
     pub truncated: bool,
     pub created_at: String,
 }
@@ -147,6 +152,7 @@ mod tests {
             upstream_request: Some("up".to_string()),
             upstream_response: Some("raw".to_string()),
             final_response: Some("final".to_string()),
+            notes: Vec::new(),
             truncated: false,
             created_at: "now".to_string(),
         }

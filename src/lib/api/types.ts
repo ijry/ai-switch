@@ -448,6 +448,7 @@ export type RouteProxyLiveLogEntry = {
   upstream_request?: string | null;
   upstream_response?: string | null;
   final_response?: string | null;
+  notes?: string[] | null;
   truncated: boolean;
   created_at: string;
 };
