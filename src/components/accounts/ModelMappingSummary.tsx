@@ -15,7 +15,7 @@ const baselineModelsByPlatform: Record<string, readonly string[]> = {
   grok: ["grok-4.5"],
 };
 
-function baselineModelsForPlatform(platform: string) {
+export function baselineModelsForPlatform(platform: string) {
   return baselineModelsByPlatform[platform.trim().toLowerCase()] ?? [];
 }
 

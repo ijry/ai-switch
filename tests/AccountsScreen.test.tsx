@@ -2510,6 +2510,56 @@ describe("AccountsScreen", () => {
     expect(await screen.findByLabelText("弹窗测试模型")).toHaveValue("gpt-4o");
   });
 
+  it("offers this account's mapped aliases plus baseline models in the single-account test dropdown", async () => {
+    renderScreen("codex", "out_of_pool");
+
+    await userEvent.click(await screen.findByLabelText("测试 API Account"));
+    await screen.findByLabelText("弹窗测试模型");
+
+    const datalist = document.getElementById("model-test-model-options");
+    expect(datalist).not.toBeNull();
+    const options = Array.from(datalist!.querySelectorAll("option")).map((option) => option.value);
+    // 本账号映射别名 gpt-5 + codex 基线模型，不含其它平台。
+    expect(options).toEqual([
+      "gpt-5",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.5",
+    ]);
+  });
+
+  it("collapses row actions into an overflow menu when the account list is narrow", async () => {
+    const globalRef = globalThis as unknown as { ResizeObserver?: unknown };
+    const original = globalRef.ResizeObserver;
+    // jsdom 下没有 ResizeObserver，注入桩即可让回调把 clientWidth(0) 判定为窄宽度并折叠。
+    class StubResizeObserver {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    globalRef.ResizeObserver = StubResizeObserver;
+    try {
+      renderScreen("codex", "out_of_pool");
+
+      const overflow = await screen.findByLabelText("更多操作 API Account");
+      expect(screen.queryByLabelText("测试 API Account")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("编辑 API Account")).not.toBeInTheDocument();
+
+      await userEvent.click(overflow);
+
+      expect(await screen.findByRole("menu", { name: "API Account 操作菜单" })).toBeInTheDocument();
+      expect(screen.getByLabelText("测试 API Account")).toBeInTheDocument();
+      expect(screen.getByLabelText("编辑 API Account")).toBeInTheDocument();
+    } finally {
+      if (original === undefined) {
+        delete globalRef.ResizeObserver;
+      } else {
+        globalRef.ResizeObserver = original;
+      }
+    }
+  });
+
   it("closes the model connectivity result panel", async () => {
     poolStateByPlatform.set("codex", ["cred-official-1"]);
     renderScreen("codex", "in_pool");

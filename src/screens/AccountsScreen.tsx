@@ -18,6 +18,7 @@ import {
   KeyRound,
   List,
   MessageSquareText,
+  MoreVertical,
   Play,
   Plus,
   RefreshCw,
@@ -40,7 +41,7 @@ import {
   type ReactNode,
 } from "react";
 import { PlatformSupportBadge } from "../components/platform/PlatformSupportBadge";
-import { expandDisplayModelMappings, ModelMappingSummary } from "../components/accounts/ModelMappingSummary";
+import { baselineModelsForPlatform, expandDisplayModelMappings, ModelMappingSummary } from "../components/accounts/ModelMappingSummary";
 import { RouteCredentialExportDialog } from "../components/accounts/RouteCredentialExportDialog";
 import { neighborsForDrop } from "../lib/accountReorder";
 import {
@@ -126,6 +127,16 @@ import {
 type PlatformKey = PlatformId;
 type CreateMode = "api" | "official";
 type AccountView = "in_pool" | "out_of_pool" | "archived" | "stats";
+type RowAction = {
+  key: string;
+  ariaLabel: string;
+  menuLabel: string;
+  title?: string;
+  disabled?: boolean;
+  onClick: () => void;
+  icon: ReactNode;
+  inlineToneClass: string;
+};
 type RoutePoolAction = "add" | "remove" | "sync";
 type RoutePoolFeedback = {
   type: "success" | "error";
@@ -1633,6 +1644,22 @@ export function AccountsScreen({
     "curl" | "curl-cmd" | "base-url" | "sk" | null
   >(null);
   const [copiedCredentialId, setCopiedCredentialId] = useState<string | null>(null);
+  const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
+  const [compactRowActions, setCompactRowActions] = useState(false);
+  const accountListResizeRef = useRef<ResizeObserver | null>(null);
+  const attachAccountList = useCallback((node: HTMLDivElement | null) => {
+    accountListResizeRef.current?.disconnect();
+    accountListResizeRef.current = null;
+    if (!node || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    // 账号列表可用宽度收窄时，把行内操作按钮折叠成三个点下拉，给内容让出空间。
+    const update = () => setCompactRowActions(node.clientWidth < 600);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    accountListResizeRef.current = observer;
+  }, []);
   const accountFilterMenuRef = useRef<HTMLDivElement | null>(null);
   const refreshMenuRef = useRef<HTMLDivElement | null>(null);
   const modelTestMenuRef = useRef<HTMLDivElement | null>(null);
@@ -1883,6 +1910,35 @@ export function AccountsScreen({
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, [modelTestMenuOpen]);
+
+  useEffect(() => {
+    if (!openActionMenuId) {
+      return;
+    }
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && !target.closest("[data-account-action-menu]")) {
+        setOpenActionMenuId(null);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpenActionMenuId(null);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [openActionMenuId]);
+
+  useEffect(() => {
+    if (!compactRowActions) {
+      setOpenActionMenuId(null);
+    }
+  }, [compactRowActions]);
 
   useEffect(() => {
     setAccountPage(1);
@@ -2257,6 +2313,46 @@ export function AccountsScreen({
       draftPoolIds.has(credential.id) &&
       credentialKindAllowed(modelTestRule, credential.kind),
   );
+  const modelTestModelOptions = useMemo(() => {
+    // 单账号：仅本账号映射别名 + 平台基线；算力池：合并所有在池账号的映射别名 + 平台基线。
+    const seen = new Map<string, string>();
+    const addAlias = (alias: string) => {
+      const trimmed = alias.trim();
+      if (!trimmed) {
+        return;
+      }
+      const key = trimmed.toLowerCase();
+      if (!seen.has(key)) {
+        seen.set(key, trimmed);
+      }
+    };
+
+    const collectFrom = (credential: RouteCredential) => {
+      for (const mapping of expandDisplayModelMappings(
+        activePlatform,
+        parseModelMappingsFromConfig(credential.config_json),
+      )) {
+        addAlias(mapping.alias);
+      }
+    };
+
+    if (modelTestAccount) {
+      collectFrom(modelTestAccount);
+    } else {
+      for (const credential of modelTestCredentials) {
+        if (credential.archived_at || !draftPoolIds.has(credential.id)) {
+          continue;
+        }
+        collectFrom(credential);
+      }
+    }
+
+    for (const baseline of baselineModelsForPlatform(activePlatform)) {
+      addAlias(baseline);
+    }
+
+    return Array.from(seen.values());
+  }, [activePlatform, draftPoolIds, modelTestAccount, modelTestCredentials]);
   const accountFilterOptions = useMemo(
     () => (accountPageData?.filter_options ?? []).map((option) => option.key),
     [accountPageData?.filter_options],
@@ -4312,6 +4408,7 @@ export function AccountsScreen({
             </p>
           )}
           <div
+            ref={attachAccountList}
             onDragOver={(event) => {
               if (!draggedAccountId) return;
               event.preventDefault();
@@ -4328,6 +4425,76 @@ export function AccountsScreen({
                   const retryLabel = credentialRetryLabel(credential);
                   const modelMappings = parseModelMappingsFromConfig(credential.config_json);
                   const baseUrlLink = credentialBaseUrlLink(credential);
+                  const isCopyingCredential =
+                    copyCredentialMutation.isPending && copyCredentialMutation.variables === credential.id;
+                  const testAllowed = credentialKindAllowed(modelTestRule, credential.kind);
+                  const rowActions: RowAction[] = [];
+                  if (credential.kind === "official" && !credential.archived_at) {
+                    rowActions.push({
+                      key: "quota",
+                      ariaLabel: `刷新 ${credential.display_name} 额度`,
+                      menuLabel: "刷新额度",
+                      title: !officialQuotaEnabled ? officialQuotaReason : `刷新 ${credential.display_name} 额度`,
+                      disabled:
+                        !officialQuotaEnabled ||
+                        quotaRefreshMutation.isPending ||
+                        quotaRefreshPlatformMutation.isPending,
+                      onClick: () => quotaRefreshMutation.mutate(credential.id),
+                      inlineToneClass: "border-violet-200 text-violet-700 hover:bg-violet-50",
+                      icon: (
+                        <RefreshCw
+                          aria-hidden="true"
+                          className={`h-3.5 w-3.5 ${refreshingQuotaId === credential.id ? "animate-spin" : ""}`}
+                        />
+                      ),
+                    });
+                  }
+                  rowActions.push({
+                    key: "copy",
+                    ariaLabel: `复制 ${credential.display_name}`,
+                    menuLabel: isCopyingCredential
+                      ? "复制中…"
+                      : copiedCredentialId === credential.id
+                        ? "已复制"
+                        : "复制账号",
+                    title: "复制账号",
+                    disabled: copyCredentialMutation.isPending,
+                    onClick: () => copyCredential(credential),
+                    inlineToneClass: "border-stone-200 text-stone-700 hover:bg-stone-50",
+                    icon:
+                      copiedCredentialId === credential.id ? (
+                        <Check aria-hidden="true" className="h-3.5 w-3.5 text-emerald-600" />
+                      ) : (
+                        <Copy aria-hidden="true" className="h-3.5 w-3.5" />
+                      ),
+                  });
+                  if (!credential.archived_at) {
+                    const isTesting = testingAccountId === credential.id && modelTestMutation.isPending;
+                    rowActions.push({
+                      key: "test",
+                      ariaLabel: `测试 ${credential.display_name}`,
+                      menuLabel: isTesting ? "测试中…" : "测试账号",
+                      title: !testAllowed ? modelTestReason : "测试账号",
+                      disabled: !testAllowed || modelTestMutation.isPending,
+                      onClick: () => openAccountTestDialog(credential),
+                      inlineToneClass: "border-emerald-200 text-emerald-700 hover:bg-emerald-50",
+                      icon: <Send aria-hidden="true" className="h-3.5 w-3.5" />,
+                    });
+                  }
+                  rowActions.push({
+                    key: "edit",
+                    ariaLabel: `编辑 ${credential.display_name}`,
+                    menuLabel: "编辑账号",
+                    title: "编辑账号",
+                    onClick: () => {
+                      updateMutation.reset();
+                      deleteMutation.reset();
+                      setEditingCredential(credential);
+                    },
+                    inlineToneClass: "border-stone-200 text-stone-700 hover:bg-stone-50",
+                    icon: <Edit3 aria-hidden="true" className="h-3.5 w-3.5" />,
+                  });
+                  const actionMenuOpen = openActionMenuId === credential.id;
                   return (
                   <div
                     aria-label={`放置在 ${credential.display_name} 前`}
@@ -4513,78 +4680,67 @@ export function AccountsScreen({
                       </p>
                     </div>
                     <div className="flex shrink-0 flex-nowrap items-center justify-end gap-1">
-                      {credential.kind === "official" && !credential.archived_at && (
-                        <button
-                          aria-label={`刷新 ${credential.display_name} 额度`}
-                          className="grid h-7 w-7 place-items-center border border-violet-200 text-violet-700 transition-colors hover:bg-violet-50 disabled:opacity-50"
-                          disabled={
-                            !officialQuotaEnabled ||
-                            quotaRefreshMutation.isPending ||
-                            quotaRefreshPlatformMutation.isPending
-                          }
-                          onClick={() => quotaRefreshMutation.mutate(credential.id)}
-                          title={!officialQuotaEnabled ? officialQuotaReason : `刷新 ${credential.display_name} 额度`}
-                          type="button"
-                        >
-                           <RefreshCw aria-hidden="true" className={`h-3.5 w-3.5 ${refreshingQuotaId === credential.id ? "animate-spin" : ""}`} />
-                           <span className="sr-only">{refreshingQuotaId === credential.id ? "刷新中" : "额度"}</span>
-                        </button>
+                      {compactRowActions ? (
+                        <div className="relative flex" data-account-action-menu>
+                          <button
+                            aria-expanded={actionMenuOpen}
+                            aria-haspopup="menu"
+                            aria-label={`更多操作 ${credential.display_name}`}
+                            className="grid h-7 w-7 place-items-center border border-stone-200 text-stone-700 transition-colors hover:bg-stone-50"
+                            onClick={() =>
+                              setOpenActionMenuId((current) =>
+                                current === credential.id ? null : credential.id,
+                              )
+                            }
+                            title="更多操作"
+                            type="button"
+                          >
+                            <MoreVertical aria-hidden="true" className="h-3.5 w-3.5" />
+                            <span className="sr-only">更多操作</span>
+                          </button>
+                          {actionMenuOpen ? (
+                            <div
+                              aria-label={`${credential.display_name} 操作菜单`}
+                              className="absolute right-0 top-full z-50 mt-1 min-w-36 rounded-lg border border-stone-200 bg-white p-1 shadow-lg"
+                              role="menu"
+                            >
+                              {rowActions.map((action) => (
+                                <button
+                                  aria-label={action.ariaLabel}
+                                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-45"
+                                  disabled={action.disabled}
+                                  key={action.key}
+                                  onClick={() => {
+                                    setOpenActionMenuId(null);
+                                    action.onClick();
+                                  }}
+                                  role="menuitem"
+                                  title={action.title}
+                                  type="button"
+                                >
+                                  <span className="grid h-4 w-4 shrink-0 place-items-center">{action.icon}</span>
+                                  {action.menuLabel}
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : (
+                        rowActions.map((action) => (
+                          <button
+                            aria-label={action.ariaLabel}
+                            className={`grid h-7 w-7 place-items-center border transition-colors disabled:opacity-50 ${action.inlineToneClass}`}
+                            disabled={action.disabled}
+                            key={action.key}
+                            onClick={action.onClick}
+                            title={action.title}
+                            type="button"
+                          >
+                            {action.icon}
+                            <span className="sr-only">{action.menuLabel}</span>
+                          </button>
+                        ))
                       )}
-                      <button
-                        aria-label={`复制 ${credential.display_name}`}
-                        className="grid h-7 w-7 place-items-center border border-stone-200 text-stone-700 transition-colors hover:bg-stone-50 disabled:opacity-50"
-                        disabled={copyCredentialMutation.isPending}
-                        onClick={() => {
-                          copyCredential(credential);
-                        }}
-                        title="复制账号"
-                        type="button"
-                      >
-                        {copiedCredentialId === credential.id ? (
-                          <Check aria-hidden="true" className="h-3.5 w-3.5 text-emerald-600" />
-                        ) : (
-                          <Copy aria-hidden="true" className="h-3.5 w-3.5" />
-                        )}
-                        <span className="sr-only">{copyCredentialMutation.isPending && copyCredentialMutation.variables === credential.id
-                          ? "复制中"
-                          : copiedCredentialId === credential.id
-                            ? "已复制"
-                            : "复制"}</span>
-                      </button>
-                      {!credential.archived_at && (
-                        <button
-                          aria-label={`测试 ${credential.display_name}`}
-                          className="grid h-7 w-7 place-items-center border border-emerald-200 text-emerald-700 transition-colors hover:bg-emerald-50 disabled:opacity-50"
-                          disabled={
-                            !credentialKindAllowed(modelTestRule, credential.kind) ||
-                            modelTestMutation.isPending
-                          }
-                          onClick={() => openAccountTestDialog(credential)}
-                          title={
-                            !credentialKindAllowed(modelTestRule, credential.kind)
-                              ? modelTestReason
-                              : "测试账号"
-                          }
-                          type="button"
-                        >
-                          <Send aria-hidden="true" className="h-3.5 w-3.5" />
-                          <span className="sr-only">{testingAccountId === credential.id && modelTestMutation.isPending ? "测试中" : "测试"}</span>
-                        </button>
-                      )}
-                      <button
-                        aria-label={`编辑 ${credential.display_name}`}
-                        className="grid h-7 w-7 place-items-center border border-stone-200 text-stone-700 transition-colors hover:bg-stone-50"
-                        onClick={() => {
-                          updateMutation.reset();
-                          deleteMutation.reset();
-                          setEditingCredential(credential);
-                        }}
-                        title="编辑账号"
-                        type="button"
-                      >
-                        <Edit3 aria-hidden="true" className="h-3.5 w-3.5" />
-                        <span className="sr-only">编辑</span>
-                      </button>
                     </div>
                   </div>
                   );
@@ -4801,6 +4957,7 @@ export function AccountsScreen({
               <input
                 aria-label="弹窗测试模型"
                 className={fieldClass}
+                list="model-test-model-options"
                 onChange={(event) =>
                   setRouteTestModelsByPlatform((current) => ({
                     ...current,
@@ -4810,6 +4967,13 @@ export function AccountsScreen({
                 placeholder={defaultRequestedModel(activePlatform)}
                 value={routeTestModel}
               />
+              {modelTestModelOptions.length > 0 ? (
+                <datalist id="model-test-model-options">
+                  {modelTestModelOptions.map((model) => (
+                    <option key={model} value={model} />
+                  ))}
+                </datalist>
+              ) : null}
             </label>
             {activePlatform === "claude" && (
               <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-[12px] font-medium text-amber-800">
