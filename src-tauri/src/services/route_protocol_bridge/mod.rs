@@ -530,6 +530,53 @@ mod tests {
     }
 
     #[test]
+    fn drops_empty_messages_and_pads_empty_tool_output_when_bridging_to_chat() {
+        let prepared = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAi,
+            "/v1/responses",
+            serde_json::to_vec(&json!({
+                "model": "v2ex-deepseek",
+                "input": [
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":""}]},
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":"go"}]},
+                    {"type":"function_call","call_id":"c1","name":"exec","arguments":"{}"},
+                    {"type":"function_call_output","call_id":"c1","output":""}
+                ]
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .expect("converted request");
+        let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
+        let messages = converted["messages"].as_array().expect("messages");
+
+        // No message may have empty/blank content unless it carries tool_calls.
+        for message in messages {
+            let has_tool_calls = message
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .is_some_and(|calls| !calls.is_empty());
+            if has_tool_calls {
+                continue;
+            }
+            let content = message.get("content");
+            let blank = match content {
+                None | Some(Value::Null) => true,
+                Some(Value::String(text)) => text.is_empty(),
+                Some(Value::Array(parts)) => parts.is_empty(),
+                _ => false,
+            };
+            assert!(!blank, "empty non-tool message survived: {message}");
+        }
+        // The empty user message was dropped; the "go" user message remains.
+        assert!(messages
+            .iter()
+            .any(|m| m.get("role").and_then(Value::as_str) == Some("user")
+                && m.get("content").and_then(Value::as_str) == Some("go")));
+    }
+
+    #[test]
     fn converts_custom_tools_to_chat_functions() {
         let prepared = prepare_request(
             PlatformId::Codex,
@@ -638,11 +685,17 @@ mod tests {
         let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
 
         let messages = converted["messages"].as_array().expect("messages");
+        // The empty-text assistant message is dropped (empty content + no
+        // tool_calls would trip a `content must not be empty` gateway 400); the
+        // surviving assistant is the tool-call turn with null content.
         let assistant = messages
             .iter()
             .find(|message| message["role"] == "assistant")
             .expect("assistant message");
-        assert_eq!(assistant["content"], "");
+        assert!(assistant
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|calls| !calls.is_empty()));
         let user = messages
             .iter()
             .find(|message| message["role"] == "user")

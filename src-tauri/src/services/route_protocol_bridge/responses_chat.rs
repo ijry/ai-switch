@@ -36,6 +36,7 @@ pub(super) fn responses_request_to_chat(body: &[u8]) -> Result<Vec<u8>, String> 
     if let Some(input) = object.get("input") {
         messages.extend(convert_input(input, &tool_namespaces)?);
     }
+    normalize_empty_message_content(&mut messages);
     result.insert("messages".to_string(), Value::Array(messages));
 
     if let Some(effort) =
@@ -1110,6 +1111,44 @@ fn convert_input_items(
     );
     ensure_tool_call_reasoning(&mut messages);
     Ok(messages)
+}
+
+/// Chat gateways (DeepSeek/MiMo relays, e.g. v2ex) reject a request with
+/// `Message content must not be empty` when any message has empty/whitespace
+/// content and no tool_calls to justify it. Codex history can produce such
+/// messages (an assistant turn that was pure reasoning, an empty text part, an
+/// empty tool output). Drop the empty conversational messages and give empty
+/// `tool` results a placeholder (they can't be dropped — they pair with a
+/// tool_call_id). Assistant messages that carry tool_calls keep their null
+/// content, which is spec-compliant.
+fn normalize_empty_message_content(messages: &mut Vec<Value>) {
+    messages.retain_mut(|message| {
+        let Some(object) = message.as_object_mut() else {
+            return true;
+        };
+        let has_tool_calls = object
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|calls| !calls.is_empty());
+        if has_tool_calls {
+            return true;
+        }
+        let content_empty = match object.get("content") {
+            None | Some(Value::Null) => true,
+            Some(Value::String(text)) => text.trim().is_empty(),
+            Some(Value::Array(parts)) => parts.is_empty(),
+            _ => false,
+        };
+        if !content_empty {
+            return true;
+        }
+        if object.get("role").and_then(Value::as_str) == Some("tool") {
+            object.insert("content".to_string(), Value::String(" ".to_string()));
+            true
+        } else {
+            false
+        }
+    });
 }
 
 /// MiMo/DeepSeek reject a follow-up turn with `400 The reasoning_content in the
