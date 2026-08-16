@@ -8,10 +8,12 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
 /// Non-empty stand-in used when a `tool_calls` assistant message must carry
-/// `reasoning_content` (DeepSeek/MiMo protocol) but the real reasoning was lost.
-/// Kept short and neutral; DeepSeek-family models only require the field to be a
-/// non-empty string, not to match the original chain-of-thought.
-const TOOL_CALL_REASONING_PLACEHOLDER: &str = "...";
+/// `reasoning_content` (DeepSeek/MiMo protocol) but the real reasoning was lost
+/// (cold cache after a restart, ambiguous call_id, a turn with no thinking).
+/// A neutral marker rather than `"..."`: reasoning models can read an ellipsis
+/// as a trailing-off/incomplete thought and bias toward short, hesitant replies.
+/// Matches cc-switch's placeholder.
+const TOOL_CALL_REASONING_PLACEHOLDER: &str = "tool call";
 const CHAT_AGENT_CONTINUATION_INSTRUCTION: &str = "Chat Completions tool-call compatibility: when tools are available and more work is needed, include the tool call in the same assistant response. If the upstream cannot combine progress text with tool_calls, omit the progress text and emit the tool call directly. Do not end the response with only a progress update, plan, or statement of the next action; use a text-only response only when the task is complete or the user explicitly requested analysis only.";
 
 pub(super) fn responses_request_to_chat(body: &[u8]) -> Result<Vec<u8>, String> {
@@ -38,6 +40,7 @@ pub(super) fn responses_request_to_chat(body: &[u8]) -> Result<Vec<u8>, String> 
         messages.extend(convert_input(input, &tool_namespaces)?);
     }
     normalize_empty_message_content(&mut messages);
+    collapse_system_messages_to_head(&mut messages);
     result.insert("messages".to_string(), Value::Array(messages));
 
     if let Some(effort) =
@@ -161,8 +164,16 @@ fn chat_json_to_responses(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let mut output = build_output_items(response_id, &text, &tool_calls, true, tool_namespaces)?;
-    if let Some(reasoning) = message_reasoning_text(message) {
+    let reasoning = message_reasoning_text(message);
+    let mut output = build_output_items(
+        response_id,
+        &text,
+        &tool_calls,
+        true,
+        tool_namespaces,
+        reasoning.as_deref(),
+    )?;
+    if let Some(reasoning) = reasoning {
         output.insert(0, reasoning_output_item(&reasoning_item_id(response_id), reasoning));
     }
     if output.is_empty() {
@@ -550,6 +561,7 @@ fn emit_tool_call_delta(
                     "",
                     "in_progress",
                     tool_namespaces,
+                    None,
                 )
             }),
         )?;
@@ -692,6 +704,7 @@ fn finish_stream(
             &tool.arguments,
             "completed",
             tool_namespaces,
+            Some(state.reasoning.as_str()),
         );
         push_sse_event(
             output,
@@ -711,6 +724,7 @@ fn finish_stream(
             &tool.arguments,
             "completed",
             tool_namespaces,
+            Some(state.reasoning.as_str()),
         ));
     }
     final_output.sort_by_key(|item| match item.get("type").and_then(Value::as_str) {
@@ -757,6 +771,7 @@ fn build_output_items(
     tool_calls: &[Value],
     completed: bool,
     tool_namespaces: &ResponsesToolNamespaces,
+    reasoning: Option<&str>,
 ) -> Result<Vec<Value>, String> {
     let mut output = Vec::new();
     if !text.is_empty() {
@@ -797,6 +812,7 @@ fn build_output_items(
                 "in_progress"
             },
             tool_namespaces,
+            reasoning,
         ));
     }
     Ok(output)
@@ -880,6 +896,7 @@ fn function_call_output_item(
     arguments: &str,
     status: &str,
     tool_namespaces: &ResponsesToolNamespaces,
+    reasoning: Option<&str>,
 ) -> Value {
     let mut item = json!({
         "id": item_id,
@@ -893,6 +910,14 @@ fn function_call_output_item(
     item["name"] = Value::String(response_name.to_string());
     if let Some(namespace) = response_tool_namespace(name, tool_namespaces) {
         item["namespace"] = Value::String(namespace.to_string());
+    }
+    // Carry the turn's reasoning on the function_call item itself so Codex echoes
+    // it back on the next request (DeepSeek/MiMo require reasoning_content on the
+    // tool-call assistant message). This makes reasoning survive the round trip
+    // via the client's own session state, independent of the in-memory cache —
+    // the mechanism cc-switch relies on. See [`reasoning_text`].
+    if let Some(reasoning) = reasoning.filter(|value| !value.trim().is_empty()) {
+        item["reasoning_content"] = Value::String(reasoning.to_string());
     }
     item
 }
@@ -1113,6 +1138,34 @@ fn convert_input_items(
     );
     ensure_tool_call_reasoning(&mut messages);
     Ok(messages)
+}
+
+/// Merge every `system`/`developer` message into a single system message at the
+/// head of the list. Codex sends the base instructions plus a separate developer
+/// block (skills/plugins), which convert to two back-to-back system messages;
+/// some strict Chat gateways behave better with one system message at the front.
+/// Mirrors cc-switch's `collapse_system_messages_to_head`.
+fn collapse_system_messages_to_head(messages: &mut Vec<Value>) {
+    let mut system_chunks: Vec<String> = Vec::new();
+    let mut rest: Vec<Value> = Vec::with_capacity(messages.len());
+    for message in messages.drain(..) {
+        let is_system = message.get("role").and_then(Value::as_str) == Some("system");
+        if is_system {
+            if let Some(text) = message.get("content").and_then(Value::as_str) {
+                if !text.trim().is_empty() {
+                    system_chunks.push(text.to_string());
+                }
+                continue;
+            }
+        }
+        rest.push(message);
+    }
+    let mut out: Vec<Value> = Vec::with_capacity(rest.len() + 1);
+    if !system_chunks.is_empty() {
+        out.push(json!({"role": "system", "content": system_chunks.join("\n\n")}));
+    }
+    out.extend(rest);
+    *messages = out;
 }
 
 /// Chat gateways (DeepSeek/MiMo relays, e.g. v2ex) reject a request with

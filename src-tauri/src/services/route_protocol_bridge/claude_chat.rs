@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 /// Non-empty stand-in for `reasoning_content` on a tool-call assistant message
 /// when the real reasoning is unavailable. See [`convert_assistant_message`];
 /// DeepSeek/MiMo require the field to be a non-empty string, not verbatim CoT.
-const TOOL_CALL_REASONING_PLACEHOLDER: &str = "...";
+/// Neutral marker (not `"..."`, which reads as a trailing-off thought).
+const TOOL_CALL_REASONING_PLACEHOLDER: &str = "tool call";
 
 pub(super) fn anthropic_request_to_chat(body: &[u8]) -> Result<Vec<u8>, String> {
     let value = serde_json::from_slice::<Value>(body)

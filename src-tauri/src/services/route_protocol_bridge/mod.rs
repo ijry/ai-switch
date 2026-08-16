@@ -598,6 +598,39 @@ mod tests {
     }
 
     #[test]
+    fn collapses_system_and_developer_messages_to_a_single_head() {
+        let prepared = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAi,
+            "/v1/responses",
+            serde_json::to_vec(&json!({
+                "model": "deepseek-chat",
+                "instructions": "BASE",
+                "input": [
+                    {"type":"message","role":"developer","content":[{"type":"input_text","text":"DEV"}]},
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}
+                ]
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .expect("converted request");
+        let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
+        let messages = converted["messages"].as_array().expect("messages");
+
+        let system_count = messages
+            .iter()
+            .filter(|m| m["role"] == "system")
+            .count();
+        assert_eq!(system_count, 1, "system messages should collapse to one");
+        assert_eq!(messages[0]["role"], "system");
+        let head = messages[0]["content"].as_str().unwrap_or_default();
+        assert!(head.contains("BASE") && head.contains("DEV"), "head: {head}");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[1]["content"], "hi");
+    }
+
+    #[test]
     fn drops_empty_messages_and_pads_empty_tool_output_when_bridging_to_chat() {
         let prepared = prepare_request(
             PlatformId::Codex,
@@ -1071,6 +1104,46 @@ mod tests {
         let output: Value = serde_json::from_slice(&converted.body).unwrap();
 
         assert_eq!(output["output"][0]["namespace"], "database");
+    }
+
+    #[test]
+    fn attaches_reasoning_content_to_function_call_item_in_responses_output() {
+        let namespaces = BTreeMap::new();
+        let upstream = json!({
+            "id": "chatcmpl-1",
+            "model": "deepseek-chat",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "reasoning_content": "Plan: list then edit.",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "exec_command", "arguments": "{\"cmd\":\"ls\"}"}
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+        let converted = transform_response_with_tool_namespaces(
+            ProtocolBridgeKind::ResponsesToChat,
+            200,
+            Some("application/json"),
+            serde_json::to_vec(&upstream).unwrap().as_slice(),
+            &namespaces,
+        )
+        .expect("converted response");
+        let output: Value = serde_json::from_slice(&converted.body).unwrap();
+
+        // The function_call item must carry reasoning_content so Codex echoes it
+        // back on the next request (DeepSeek/MiMo tool-call reasoning round trip).
+        let function_call = output["output"]
+            .as_array()
+            .expect("output")
+            .iter()
+            .find(|item| item["type"] == "function_call")
+            .expect("function_call item");
+        assert_eq!(function_call["reasoning_content"], "Plan: list then edit.");
     }
 
     #[test]
