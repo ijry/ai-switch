@@ -383,10 +383,10 @@ mod tests {
         let body: Value = serde_json::from_slice(&prepared.body).expect("chat json");
 
         assert_eq!(body["model"], "gpt-5");
-        assert_eq!(
-            body["messages"][0],
-            json!({"role":"system","content":"Be concise"})
-        );
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert!(body["messages"][0]["content"]
+            .as_str()
+            .is_some_and(|content| content.starts_with("Be concise\n\n")));
         assert_eq!(
             body["messages"][1],
             json!({"role":"user","content":"Hello"})
@@ -401,6 +401,51 @@ mod tests {
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["function"]["name"], "lookup");
         assert_eq!(body["tools"][0]["function"]["strict"], true);
+        assert!(body["messages"][0]["content"]
+            .as_str()
+            .is_some_and(|content| content
+                .to_ascii_lowercase()
+                .contains("do not end the response with only a progress update")));
+    }
+
+    #[test]
+    fn adds_chat_agent_continuation_instruction_only_when_tools_are_available() {
+        let with_tools = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAi,
+            "/v1/responses",
+            serde_json::to_vec(&json!({
+                "model": "v2ex-deepseek",
+                "instructions": "Use tools to finish the task.",
+                "input": "continue",
+                "tools": [{
+                    "type": "function",
+                    "name": "exec_command",
+                    "parameters": {"type": "object", "properties": {}}
+                }]
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .expect("converted request with tools");
+        let with_tools: Value = serde_json::from_slice(&with_tools.body).expect("chat json");
+        let system = with_tools["messages"][0]["content"]
+            .as_str()
+            .expect("system content");
+        assert!(system.contains("include the tool call in the same assistant response"));
+        assert!(system
+            .to_ascii_lowercase()
+            .contains("do not end the response with only a progress update"));
+
+        let without_tools = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAi,
+            "/v1/responses",
+            br#"{"model":"v2ex-deepseek","instructions":"Answer normally.","input":"hello"}"#,
+        )
+        .expect("converted request without tools");
+        let without_tools: Value = serde_json::from_slice(&without_tools.body).expect("chat json");
+        assert_eq!(without_tools["messages"][0]["content"], "Answer normally.");
     }
 
     #[test]
@@ -452,22 +497,31 @@ mod tests {
         .expect("converted request");
         let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
 
-        assert_eq!(converted["messages"][0]["role"], "assistant");
-        assert_eq!(converted["messages"][0]["reasoning_content"], "先查询。");
-        assert_eq!(converted["messages"][0]["tool_calls"][0]["id"], "call_1");
+        let messages = converted["messages"].as_array().expect("messages");
+        let assistant = messages
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .expect("assistant message");
+        assert_eq!(assistant["reasoning_content"], "先查询。");
+        assert_eq!(assistant["tool_calls"][0]["id"], "call_1");
+        assert_eq!(assistant["tool_calls"][0]["function"]["name"], "lookup");
+        let tool = messages
+            .iter()
+            .find(|message| message["role"] == "tool")
+            .expect("tool message");
         assert_eq!(
-            converted["messages"][0]["tool_calls"][0]["function"]["name"],
-            "lookup"
-        );
-        assert_eq!(
-            converted["messages"][1],
-            json!({
+            tool,
+            &json!({
                 "role":"tool",
                 "tool_call_id":"call_1",
                 "content":"{\"ok\":true}"
             })
         );
-        assert_eq!(converted["messages"][2]["content"], "继续");
+        let user = messages
+            .iter()
+            .find(|message| message["role"] == "user")
+            .expect("user message");
+        assert_eq!(user["content"], "继续");
     }
 
     #[test]
@@ -491,8 +545,15 @@ mod tests {
         .expect("converted request");
         let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
 
-        assert_eq!(converted["messages"][0]["role"], "assistant");
-        assert_eq!(converted["messages"][0]["reasoning_content"], "Restored plan.");
+        let assistant = converted["messages"]
+            .as_array()
+            .and_then(|messages| {
+                messages
+                    .iter()
+                    .find(|message| message["role"] == "assistant")
+            })
+            .expect("assistant message");
+        assert_eq!(assistant["reasoning_content"], "Restored plan.");
     }
 
     #[test]
@@ -520,9 +581,16 @@ mod tests {
         .expect("converted request");
         let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
 
-        assert_eq!(converted["messages"][0]["role"], "assistant");
-        assert!(converted["messages"][0]["tool_calls"][0]["id"] == "call_1");
-        let reasoning = converted["messages"][0]["reasoning_content"].as_str();
+        let assistant = converted["messages"]
+            .as_array()
+            .and_then(|messages| {
+                messages
+                    .iter()
+                    .find(|message| message["role"] == "assistant")
+            })
+            .expect("assistant message");
+        assert!(assistant["tool_calls"][0]["id"] == "call_1");
+        let reasoning = assistant["reasoning_content"].as_str();
         assert!(
             reasoning.is_some_and(|text| !text.trim().is_empty()),
             "tool-call assistant message must carry non-empty reasoning_content for MiMo/DeepSeek"

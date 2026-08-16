@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 /// Kept short and neutral; DeepSeek-family models only require the field to be a
 /// non-empty string, not to match the original chain-of-thought.
 const TOOL_CALL_REASONING_PLACEHOLDER: &str = "...";
+const CHAT_AGENT_CONTINUATION_INSTRUCTION: &str = "Chat Completions tool-call compatibility: when tools are available and more work is needed, include the tool call in the same assistant response. If the upstream cannot combine progress text with tool_calls, omit the progress text and emit the tool call directly. Do not end the response with only a progress update, plan, or statement of the next action; use a text-only response only when the task is complete or the user explicitly requested analysis only.";
 
 pub(super) fn responses_request_to_chat(body: &[u8]) -> Result<Vec<u8>, String> {
     let value = serde_json::from_slice::<Value>(body)
@@ -87,6 +88,7 @@ pub(super) fn responses_request_to_chat(body: &[u8]) -> Result<Vec<u8>, String> 
             .is_some_and(|tools| !tools.is_empty());
         if has_tools {
             result.insert("tools".to_string(), converted_tools);
+            add_agent_tool_continuation_instruction(&mut result);
         }
     }
     if let Some(tool_choice) = object.get("tool_choice") {
@@ -1580,6 +1582,42 @@ fn convert_tools(tools: &Value) -> Result<Value, String> {
         converted.push(json!({"type": "function", "function": function}));
     }
     Ok(Value::Array(converted))
+}
+
+fn add_agent_tool_continuation_instruction(result: &mut Map<String, Value>) {
+    let Some(messages) = result.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    if messages.iter().any(|message| {
+        message
+            .get("content")
+            .and_then(Value::as_str)
+            .is_some_and(|content| content.contains(CHAT_AGENT_CONTINUATION_INSTRUCTION))
+    }) {
+        return;
+    }
+    if let Some(index) = messages.iter().position(|message| {
+        message.get("role").and_then(Value::as_str) == Some("system")
+            && message.get("content").and_then(Value::as_str).is_some()
+    }) {
+        let mut text = messages[index]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if !text.trim().is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(CHAT_AGENT_CONTINUATION_INSTRUCTION);
+        messages[index]["content"] = Value::String(text);
+        return;
+    }
+    messages.insert(
+        0,
+        json!({
+            "role": "system",
+            "content": CHAT_AGENT_CONTINUATION_INSTRUCTION
+        }),
+    );
 }
 
 fn convert_tool_choice(tool_choice: &Value, has_tools: bool) -> Result<Option<Value>, String> {

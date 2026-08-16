@@ -6371,12 +6371,20 @@ mod tests {
             value.pointer("/tools/0/function/name"),
             Some(&json!("apply_patch"))
         );
+        let assistant = value["messages"]
+            .as_array()
+            .and_then(|messages| {
+                messages
+                    .iter()
+                    .find(|message| message["role"] == "assistant")
+            })
+            .expect("assistant message");
         assert_eq!(
-            value.pointer("/messages/0/tool_calls/0/function/name"),
+            assistant.pointer("/tool_calls/0/function/name"),
             Some(&json!("apply_patch"))
         );
         assert_eq!(
-            value.pointer("/messages/0/tool_calls/0/function/arguments"),
+            assistant.pointer("/tool_calls/0/function/arguments"),
             Some(&json!(r#"{"input":"*** Begin Patch"}"#))
         );
     }
