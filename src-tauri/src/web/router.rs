@@ -4,12 +4,13 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, RawPathParams, Request, State};
-use axum::http::{header, StatusCode, Uri};
+use axum::http::{header, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::app_state::AppState;
 use crate::error::ApiError;
@@ -27,6 +28,13 @@ pub struct WebServerContext {
 }
 
 pub const SENSITIVE_COMMAND_BODY_LIMIT: usize = 12 * 1024 * 1024;
+
+fn h5_cors_layer() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+}
 
 pub fn build_router(state: Arc<AppState>, token: String, static_dir: PathBuf) -> Router {
     build_router_with_sensitive_commands(state, token, static_dir, true)
@@ -77,6 +85,7 @@ pub(crate) fn build_router_with_sensitive_command_gate(
         .nest("/api", api_router)
         .fallback(static_fallback)
         .with_state(context)
+        .layer(h5_cors_layer())
 }
 
 async fn health() -> Json<Value> {
@@ -272,6 +281,54 @@ mod tests {
         );
     }
 
+    fn assert_h5_cors_origin(response: &reqwest::Response) {
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some("*")
+        );
+        assert!(response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+            .is_none());
+    }
+
+    fn assert_h5_preflight_headers(response: &reqwest::Response) {
+        assert_h5_cors_origin(response);
+        let allowed_methods = response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+            .and_then(|value| value.to_str().ok())
+            .unwrap();
+        for expected in ["GET", "POST", "OPTIONS"] {
+            assert!(
+                allowed_methods
+                    .split(',')
+                    .map(str::trim)
+                    .any(|value| value == expected),
+                "missing allowed method {expected}: {allowed_methods}"
+            );
+        }
+
+        let allowed_headers = response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_HEADERS)
+            .and_then(|value| value.to_str().ok())
+            .unwrap()
+            .to_ascii_lowercase();
+        for expected in ["authorization", "content-type"] {
+            assert!(
+                allowed_headers
+                    .split(',')
+                    .map(str::trim)
+                    .any(|value| value == expected),
+                "missing allowed header {expected}: {allowed_headers}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn api_error_response_serializes_structured_error_directly() {
         let response = api_error_response(
@@ -300,6 +357,63 @@ mod tests {
 
         assert_eq!(value["code"], "web.unauthorized");
         assert_eq!(value["recoverable"], false);
+    }
+
+    #[tokio::test]
+    async fn h5_preflight_bypasses_api_auth_and_advertises_supported_request_shape() {
+        let (address, server) = spawn_test_router(true).await;
+        let response = reqwest::Client::new()
+            .request(
+                reqwest::Method::OPTIONS,
+                format!("http://{address}/api/list_platform_capabilities"),
+            )
+            .header(header::ORIGIN, "https://h5.example.test")
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+            .header(
+                header::ACCESS_CONTROL_REQUEST_HEADERS,
+                "authorization, content-type",
+            )
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_h5_preflight_headers(&response);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn h5_origin_does_not_bypass_api_bearer_authorization() {
+        let (address, server) = spawn_test_router(true).await;
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/api/list_platform_capabilities"))
+            .header(header::ORIGIN, "https://h5.example.test")
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_h5_cors_origin(&response);
+        assert_sensitive_cache_headers(&response);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn authenticated_h5_api_request_returns_cors_origin_header() {
+        let (address, server) = spawn_test_router(true).await;
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/api/list_platform_capabilities"))
+            .bearer_auth("secret")
+            .header(header::ORIGIN, "https://h5.example.test")
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_h5_cors_origin(&response);
+        server.abort();
     }
 
     #[tokio::test]
