@@ -911,11 +911,10 @@ fn function_call_output_item(
     if let Some(namespace) = response_tool_namespace(name, tool_namespaces) {
         item["namespace"] = Value::String(namespace.to_string());
     }
-    // Carry the turn's reasoning on the function_call item itself so Codex echoes
-    // it back on the next request (DeepSeek/MiMo require reasoning_content on the
-    // tool-call assistant message). This makes reasoning survive the round trip
-    // via the client's own session state, independent of the in-memory cache —
-    // the mechanism cc-switch relies on. See [`reasoning_text`].
+    // Carry the turn's reasoning on the function_call item so a full Codex
+    // history replay preserves it. When Codex sends only previous_response_id +
+    // tool outputs, CodexReasoningCache restores the cached call group instead.
+    // DeepSeek/MiMo require this on the tool-call assistant message.
     if let Some(reasoning) = reasoning.filter(|value| !value.trim().is_empty()) {
         item["reasoning_content"] = Value::String(reasoning.to_string());
     }
@@ -1252,7 +1251,7 @@ fn convert_input_item(
         .ok_or_else(|| "Responses input items must be JSON objects".to_string())?;
     match object.get("type").and_then(Value::as_str) {
         Some("function_call") => {
-            append_pending_reasoning(pending_reasoning, reasoning_text(item));
+            append_unique_pending_reasoning(pending_reasoning, reasoning_text(item));
             pending_tool_calls.push(function_call_to_chat(object, tool_namespaces)?);
         }
         Some("function_call_output") => {
@@ -1266,7 +1265,7 @@ fn convert_input_item(
             *last_assistant_index = None;
         }
         Some("custom_tool_call") | Some("tool_search_call") => {
-            append_pending_reasoning(pending_reasoning, reasoning_text(item));
+            append_unique_pending_reasoning(pending_reasoning, reasoning_text(item));
             pending_tool_calls.push(synthetic_tool_call(object)?);
         }
         Some("custom_tool_call_output") | Some("tool_search_output") => {
@@ -1430,6 +1429,27 @@ fn append_pending_reasoning(pending_reasoning: &mut Option<String>, reasoning: O
             existing.push_str(&reasoning);
         }
         _ => *pending_reasoning = Some(reasoning),
+    }
+}
+
+fn append_unique_pending_reasoning(
+    pending_reasoning: &mut Option<String>,
+    reasoning: Option<String>,
+) {
+    let Some(reasoning) = reasoning else {
+        return;
+    };
+    let reasoning = reasoning.trim();
+    if reasoning.is_empty() {
+        return;
+    }
+    match pending_reasoning {
+        Some(existing) if existing.contains(reasoning) => {}
+        Some(existing) if !existing.is_empty() => {
+            existing.push_str("\n\n");
+            existing.push_str(reasoning);
+        }
+        _ => *pending_reasoning = Some(reasoning.to_string()),
     }
 }
 

@@ -557,6 +557,47 @@ mod tests {
     }
 
     #[test]
+    fn groups_parallel_function_calls_without_duplicating_reasoning() {
+        let prepared = prepare_request(
+            PlatformId::Codex,
+            ApiDialect::OpenAi,
+            "/v1/responses",
+            serde_json::to_vec(&json!({
+                "model": "mimo-v2.5-pro",
+                "input": [
+                    {"type":"function_call","call_id":"call_1","name":"first","arguments":"{}","reasoning_content":"Need both tools."},
+                    {"type":"function_call","call_id":"call_2","name":"second","arguments":"{}","reasoning_content":"Need both tools."},
+                    {"type":"function_call_output","call_id":"call_1","output":"one"},
+                    {"type":"function_call_output","call_id":"call_2","output":"two"}
+                ],
+                "tools": [
+                    {"type":"function","name":"first","parameters":{"type":"object","properties":{}}},
+                    {"type":"function","name":"second","parameters":{"type":"object","properties":{}}}
+                ]
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .expect("converted request");
+        let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
+        let messages = converted["messages"].as_array().expect("messages");
+        let assistant_messages = messages
+            .iter()
+            .filter(|message| message["role"] == "assistant")
+            .collect::<Vec<_>>();
+
+        assert_eq!(assistant_messages.len(), 1);
+        assert_eq!(
+            assistant_messages[0]["tool_calls"].as_array().map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            assistant_messages[0]["reasoning_content"],
+            "Need both tools."
+        );
+    }
+
+    #[test]
     fn injects_placeholder_reasoning_for_tool_call_without_reasoning_item() {
         let prepared = prepare_request(
             PlatformId::Codex,
