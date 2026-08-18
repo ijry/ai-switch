@@ -45,6 +45,10 @@ import { baselineModelsForPlatform, expandDisplayModelMappings, ModelMappingSumm
 import { RouteCredentialExportDialog } from "../components/accounts/RouteCredentialExportDialog";
 import { neighborsForDrop } from "../lib/accountReorder";
 import {
+  parseFetchedModelsFromConfig,
+  writeFetchedModelsToConfig,
+} from "../lib/accountFetchedModels";
+import {
   createBatch,
   copyRouteCredential,
   setRouteCredentialRecovery,
@@ -2248,7 +2252,7 @@ export function AccountsScreen({
     }
     setEditModelMappings(parseModelMappingsFromConfig(editingCredential.config_json));
     setEditModelMappingsError(null);
-    setEditFetchedModels([]);
+    setEditFetchedModels(parseFetchedModelsFromConfig(editingCredential.config_json));
     setEditFetchModelsError(null);
     setEditPreviewJson(parseJsonPreview(editingCredential.preview_json, editingCredential.preview_json));
   }, [editingCredential]);
@@ -2640,6 +2644,7 @@ export function AccountsScreen({
           base_url: apiBaseUrl,
           interface_format: apiInterfaceFormat,
           model_mappings_json: JSON.stringify(normalizedMappings.mappings),
+          fetched_models_json: JSON.stringify(apiFetchedModels),
           preview_json: apiPreviewJson.trim() || null,
           batch_id: batch?.id ?? null,
           responses_custom_tool_compat: apiResponsesCustomToolCompat,
@@ -2917,8 +2922,12 @@ export function AccountsScreen({
               parseJsonObject(editConfigJson.trim() || "{}"),
               editUserAgent,
             );
+      const configWithFetchedModels =
+        editingCredential.kind === "api"
+          ? writeFetchedModelsToConfig(baseConfig, editFetchedModels)
+          : baseConfig;
       const nextConfigJson = JSON.stringify(
-        writeFailurePolicyToConfig(baseConfig, failurePolicy),
+        writeFailurePolicyToConfig(configWithFetchedModels, failurePolicy),
         null,
         2,
       );

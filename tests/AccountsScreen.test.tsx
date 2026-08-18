@@ -1356,6 +1356,7 @@ describe("AccountsScreen", () => {
         base_url: "https://api.upstream.test/v1",
         interface_format: "openai-responses",
         model_mappings_json: "[{\"from\":\"gpt-5\",\"to\":\"up-gpt\"}]",
+        fetched_models_json: "[]",
         preview_json: null,
         batch_id: null,
         responses_custom_tool_compat: false,
@@ -1438,6 +1439,7 @@ describe("AccountsScreen", () => {
         expect.objectContaining({
           display_name: "Plain API",
           model_mappings_json: "[]",
+          fetched_models_json: "[]",
         }),
       ),
     );
@@ -1470,6 +1472,10 @@ describe("AccountsScreen", () => {
         expect.objectContaining({
           display_name: "Fetched API",
           model_mappings_json: "[{\"from\":\"gpt-5.5\",\"to\":\"gpt-5\"}]",
+          fetched_models_json: JSON.stringify([
+            { id: "gpt-4o", owned_by: "openai" },
+            { id: "gpt-5", owned_by: "openai" },
+          ]),
         }),
       ),
     );
@@ -1596,6 +1602,7 @@ describe("AccountsScreen", () => {
         interface_format: "anthropic",
         api_key_field: "ANTHROPIC_AUTH_TOKEN",
         model_mappings_json: "[{\"from\":\"claude-sonnet-5\",\"to\":\"provider-sonnet\",\"label\":\"Sonnet\"}]",
+        fetched_models_json: "[]",
         preview_json: null,
         batch_id: null,
         responses_custom_tool_compat: false,
@@ -1764,6 +1771,83 @@ describe("AccountsScreen", () => {
     const payload = vi.mocked(updateRouteCredential).mock.calls[0][1];
     const config = JSON.parse(payload.config_json);
     expect(config.headers["User-Agent"]).toBe("NewBot/2.0");
+  });
+
+  it("hydrates and saves the fetched model list without refetching", async () => {
+    const api = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://api.example.com/v1",
+        interface_format: "openai",
+        model_mappings: [],
+        fetched_models: [
+          { id: "gpt-4o", owned_by: "openai" },
+          { id: "gpt-5", owned_by: "openai" },
+        ],
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([api]);
+    vi.mocked(updateRouteCredential).mockResolvedValue(api);
+
+    renderScreen();
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+
+    expect(screen.getByText(/已获取 2 个模型/)).toBeInTheDocument();
+    expect(fetchRouteModels).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const config = JSON.parse(vi.mocked(updateRouteCredential).mock.calls[0][1].config_json);
+    expect(config.fetched_models).toEqual([
+      { id: "gpt-4o", owned_by: "openai" },
+      { id: "gpt-5", owned_by: "openai" },
+    ]);
+  });
+
+  it("keeps cached models when a manual refresh fails", async () => {
+    const api = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://api.example.com/v1",
+        interface_format: "openai",
+        model_mappings: [],
+        fetched_models: [{ id: "gpt-5", owned_by: "openai" }],
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([api]);
+    vi.mocked(fetchRouteModels).mockRejectedValueOnce(new Error("获取模型列表失败。"));
+
+    renderScreen();
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await userEvent.click(screen.getByRole("button", { name: "获取模型列表" }));
+
+    expect(await screen.findByText("获取模型列表失败。")).toBeInTheDocument();
+    expect(screen.getByText(/已获取 1 个模型/)).toBeInTheDocument();
+  });
+
+  it("clears cached models when the upstream connection changes", async () => {
+    const api = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://api.example.com/v1",
+        interface_format: "openai",
+        model_mappings: [],
+        fetched_models: [{ id: "gpt-5", owned_by: "openai" }],
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([api]);
+    vi.mocked(updateRouteCredential).mockResolvedValue(api);
+
+    renderScreen();
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await userEvent.clear(screen.getByLabelText("编辑 Base URL"));
+    await userEvent.type(screen.getByLabelText("编辑 Base URL"), "https://new.example.com/v1");
+
+    expect(screen.queryByText(/已获取 1 个模型/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const config = JSON.parse(vi.mocked(updateRouteCredential).mock.calls[0][1].config_json);
+    expect(config.fetched_models).toEqual([]);
   });
 
   it("edits API credential model mappings through the visual editor", async () => {
