@@ -220,6 +220,7 @@ export type CreateApiRouteCredentialInput = {
   base_url: string;
   interface_format: InterfaceFormat;
   model_mappings_json: string;
+  fetched_models_json?: string | null;
   api_key_field?: AnthropicApiKeyField | string | null;
   preview_json?: string | null;
   batch_id?: string | null;
