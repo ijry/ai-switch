@@ -52,7 +52,7 @@
 - Produces: `parse_fetched_models_json(Option<&str>) -> Result<Vec<FetchedRouteModel>, AppError>`。
 - Persists: `config_json.fetched_models` 为规范化后的 JSON 数组。
 
-- [ ] **Step 1: 写入后端失败测试**
+- [x] **Step 1: 写入后端失败测试**
 
 在 `route_credential_service.rs` 的测试模块新增两个测试。第一个要求合法列表被保存，第二个要求空 `id` 被拒绝且数据库中没有半成品账号：
 
@@ -141,7 +141,7 @@ async fn create_api_credential_rejects_invalid_fetched_models() {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run:
 
@@ -152,7 +152,7 @@ cargo test fetched_models
 
 Expected: FAIL，编译器报告 `CreateApiRouteCredentialInput` 尚无 `fetched_models_json` 字段。
 
-- [ ] **Step 3: 扩展 Rust 输入结构并补齐所有结构体构造点**
+- [x] **Step 3: 扩展 Rust 输入结构并补齐所有结构体构造点**
 
 在 `CreateApiRouteCredentialInput` 的 `model_mappings_json` 后增加：
 
@@ -174,7 +174,7 @@ model_mappings_json: "[]".into(),
 fetched_models_json: None,
 ```
 
-- [ ] **Step 4: 实现模型列表校验和规范化**
+- [x] **Step 4: 实现模型列表校验和规范化**
 
 在 `validate_model_mappings` 附近加入以下辅助函数，并在文件顶部导入 `crate::models::route_pool::FetchedRouteModel`：
 
@@ -211,7 +211,7 @@ fn parse_fetched_models_json(value: Option<&str>) -> Result<Vec<FetchedRouteMode
 }
 ```
 
-- [ ] **Step 5: 在创建服务中写入 `config_json.fetched_models`**
+- [x] **Step 5: 在创建服务中写入 `config_json.fetched_models`**
 
 在构造 `config` 前解析模型列表，并把规范化结果加入 JSON：
 
@@ -228,7 +228,7 @@ let mut config = json!({
 
 同时把现有 `copy_route_credential_appends_date_to_display_name` 的创建输入改为包含一个合法 `fetched_models_json`，继续用现有 `assert_eq!(copied.config_json, created.config_json)` 验证复制继承缓存。
 
-- [ ] **Step 6: 运行后端定向测试**
+- [x] **Step 6: 运行后端定向测试**
 
 Run:
 
@@ -241,7 +241,7 @@ cargo test deeplink_service
 
 Expected: PASS。
 
-- [ ] **Step 7: 检查 Rust 编译和格式**
+- [x] **Step 7: 检查 Rust 编译和格式**
 
 Run:
 
@@ -253,7 +253,7 @@ cargo check
 
 Expected: 两条命令均成功且无格式差异。
 
-- [ ] **Step 8: 提交后端契约**
+- [x] **Step 8: 提交后端契约**
 
 ```powershell
 git add src-tauri/src/models/route_credential.rs src-tauri/src/services/route_credential_service.rs src-tauri/src/services/deeplink_service.rs src-tauri/src/services/route_recovery_service.rs
@@ -276,7 +276,7 @@ git commit -m "feat: persist fetched models for API accounts"
 - Produces: `writeFetchedModelsToConfig(config: Record<string, unknown>, models: FetchedRouteModel[]): Record<string, unknown>`。
 - Produces: `CreateApiRouteCredentialInput.fetched_models_json?: string | null`。
 
-- [ ] **Step 1: 写入纯函数失败测试**
+- [x] **Step 1: 写入纯函数失败测试**
 
 创建 `tests/accountFetchedModels.test.ts`：
 
@@ -326,7 +326,7 @@ describe("accountFetchedModels", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run:
 
@@ -336,7 +336,7 @@ pnpm test:run -- tests/accountFetchedModels.test.ts
 
 Expected: FAIL，模块 `src/lib/accountFetchedModels.ts` 不存在。
 
-- [ ] **Step 3: 实现缓存规范化、解析和写回**
+- [x] **Step 3: 实现缓存规范化、解析和写回**
 
 创建 `src/lib/accountFetchedModels.ts`：
 
@@ -390,7 +390,7 @@ export function writeFetchedModelsToConfig(
 }
 ```
 
-- [ ] **Step 4: 同步 TypeScript 新增账号输入**
+- [x] **Step 4: 同步 TypeScript 新增账号输入**
 
 在 `CreateApiRouteCredentialInput` 的 `model_mappings_json` 后加入：
 
@@ -398,7 +398,7 @@ export function writeFetchedModelsToConfig(
 fetched_models_json?: string | null;
 ```
 
-- [ ] **Step 5: 运行纯函数测试和类型检查**
+- [x] **Step 5: 运行纯函数测试和类型检查**
 
 Run:
 
@@ -409,7 +409,7 @@ pnpm typecheck
 
 Expected: PASS。
 
-- [ ] **Step 6: 提交前端缓存边界**
+- [x] **Step 6: 提交前端缓存边界**
 
 ```powershell
 git add src/lib/accountFetchedModels.ts src/lib/api/types.ts tests/accountFetchedModels.test.ts
@@ -431,7 +431,7 @@ git commit -m "feat: add account fetched-model cache helpers"
 - Produces: 新增账号保存时的 `fetched_models_json`。
 - Produces: 编辑账号 `config_json.fetched_models` 的回填和更新行为。
 
-- [ ] **Step 1: 扩展新增账号交互测试**
+- [x] **Step 1: 扩展新增账号交互测试**
 
 修改现有 `fetches upstream models and one-click sets a model mapping`，要求保存调用同时包含模型缓存：
 
@@ -458,7 +458,7 @@ expect(createApiRouteCredential).toHaveBeenCalledWith(
 );
 ```
 
-- [ ] **Step 2: 写入编辑回填、刷新失败和失效测试**
+- [x] **Step 2: 写入编辑回填、刷新失败和失效测试**
 
 在 API 编辑测试附近新增：
 
@@ -541,7 +541,7 @@ it("clears cached models when the upstream connection changes", async () => {
 });
 ```
 
-- [ ] **Step 3: 运行账号界面测试确认失败**
+- [x] **Step 3: 运行账号界面测试确认失败**
 
 Run:
 
@@ -551,7 +551,7 @@ pnpm test:run -- tests/AccountsScreen.test.tsx
 
 Expected: FAIL；新增保存请求缺少 `fetched_models_json`，编辑弹窗显示 0 个模型。
 
-- [ ] **Step 4: 接入新增账号保存**
+- [x] **Step 4: 接入新增账号保存**
 
 在 `AccountsScreen.tsx` 导入 Task 2 的辅助函数：
 
@@ -570,7 +570,7 @@ fetched_models_json: JSON.stringify(apiFetchedModels),
 
 批量 API Key 循环复用同一个 `apiFetchedModels` 状态，因此每个新账号得到同一份列表。
 
-- [ ] **Step 5: 接入编辑回填和保存**
+- [x] **Step 5: 接入编辑回填和保存**
 
 把编辑初始化中的无条件清空：
 
@@ -600,7 +600,7 @@ const nextConfigJson = JSON.stringify(
 
 删除原先直接把 `baseConfig` 传给 `writeFailurePolicyToConfig` 的代码，确保 API 账号保存当前缓存，官方账号配置不增加该字段。
 
-- [ ] **Step 6: 核对已有失效和错误行为**
+- [x] **Step 6: 核对已有失效和错误行为**
 
 确认以下现有处理仍保留，且没有在 `editFetchModelsMutation.onMutate` 或 `onError` 中新增清空列表：
 
@@ -620,7 +620,7 @@ setEditFetchedModels([]);
 
 `editFetchModelsMutation.onSuccess` 继续用新列表覆盖状态；`onError` 只设置错误字符串，从而保留未失效的缓存。
 
-- [ ] **Step 7: 运行前端测试和类型检查**
+- [x] **Step 7: 运行前端测试和类型检查**
 
 Run:
 
@@ -631,7 +631,7 @@ pnpm typecheck
 
 Expected: PASS。
 
-- [ ] **Step 8: 运行完整相关回归检查**
+- [x] **Step 8: 运行完整相关回归检查**
 
 Run:
 
@@ -643,7 +643,7 @@ pnpm rust:test
 
 Expected: 全部成功；现有账号、深链导入、复制、路由配置和模型获取测试无回归。
 
-- [ ] **Step 9: 检查差异并提交 UI 集成**
+- [x] **Step 9: 检查差异并提交 UI 集成**
 
 Run:
 
