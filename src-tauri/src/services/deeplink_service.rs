@@ -156,6 +156,7 @@ pub fn to_create_api_input(parsed: &DeepLinkProviderImport) -> CreateApiRouteCre
         base_url: parsed.base_url.clone(),
         interface_format: parsed.interface_format.clone(),
         model_mappings_json: parsed.model_mappings_json.clone(),
+        fetched_models_json: None,
         api_key_field: None,
         preview_json: None,
         batch_id: None,

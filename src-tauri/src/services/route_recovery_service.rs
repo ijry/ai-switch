@@ -423,6 +423,7 @@ mod tests {
                 base_url: "https://api.example.com/v1".to_string(),
                 interface_format: "openai".to_string(),
                 model_mappings_json: "[]".to_string(),
+                fetched_models_json: None,
                 api_key_field: None,
                 preview_json: None,
                 batch_id: None,

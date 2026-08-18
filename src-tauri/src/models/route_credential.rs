@@ -144,6 +144,8 @@ pub struct CreateApiRouteCredentialInput {
     pub interface_format: String,
     pub model_mappings_json: String, // JSON array
     #[serde(default)]
+    pub fetched_models_json: Option<String>,
+    #[serde(default)]
     pub api_key_field: Option<String>,
     pub preview_json: Option<String>,
     pub batch_id: Option<String>,

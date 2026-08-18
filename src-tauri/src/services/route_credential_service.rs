@@ -12,6 +12,7 @@ use crate::models::route_credential::{
     RouteCredentialPage, RouteCredentialPageRequest, UpdateRouteCredentialInput,
 };
 use crate::models::route_credential_transfer::TransferPlatformChoice;
+use crate::models::route_pool::FetchedRouteModel;
 use crate::services::cpa_import_service::{parse_cpa_text, ParsedOfficialCredential};
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_credential_activity::RouteCredentialActivityRegistry;
@@ -120,6 +121,7 @@ impl RouteCredentialService {
         validate_required("base_url", &input.base_url)?;
         validate_interface_format(&input.interface_format)?;
         validate_model_mappings(&input.model_mappings_json)?;
+        let fetched_models = parse_fetched_models_json(input.fetched_models_json.as_deref())?;
         let api_key_field =
             validate_api_key_field(input.api_key_field.as_deref(), &input.interface_format)?;
 
@@ -128,6 +130,7 @@ impl RouteCredentialService {
             "base_url": input.base_url.trim(),
             "interface_format": input.interface_format,
             "model_mappings": serde_json::from_str::<serde_json::Value>(&input.model_mappings_json)?,
+            "fetched_models": fetched_models,
             "responses_custom_tool_compat": input.responses_custom_tool_compat.unwrap_or(false),
         });
         if let Some(api_key_field) = api_key_field {
@@ -711,6 +714,37 @@ fn validate_model_mappings(value: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+fn parse_fetched_models_json(value: Option<&str>) -> Result<Vec<FetchedRouteModel>, AppError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let mut models = serde_json::from_str::<Vec<FetchedRouteModel>>(value).map_err(|err| {
+        AppError::Validation {
+            code: "validation.fetched_models",
+            message: "Fetched models must be a valid JSON array".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        }
+    })?;
+    if models.iter().any(|model| model.id.trim().is_empty()) {
+        return Err(AppError::Validation {
+            code: "validation.fetched_models",
+            message: "Fetched models require a non-empty id".to_string(),
+            details: Some(value.to_string()),
+            recoverable: true,
+        });
+    }
+    for model in &mut models {
+        model.id = model.id.trim().to_string();
+        model.owned_by = model
+            .owned_by
+            .take()
+            .map(|owned_by| owned_by.trim().to_string())
+            .filter(|owned_by| !owned_by.is_empty());
+    }
+    Ok(models)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -990,6 +1024,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_api_credential_persists_fetched_models() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+
+        let created = RouteCredentialService::create_api(
+            &pool,
+            CreateApiRouteCredentialInput {
+                platform: "codex".into(),
+                display_name: "Cached models".into(),
+                api_key: "sk-test".into(),
+                base_url: "https://api.example.com/v1".into(),
+                interface_format: "openai".into(),
+                model_mappings_json: "[]".into(),
+                fetched_models_json: Some(
+                    r#"[{"id":" gpt-5 ","owned_by":" openai ","supports_1m":true}]"#.into(),
+                ),
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: None,
+                user_agent: None,
+            },
+        )
+        .await
+        .expect("create");
+
+        let config: serde_json::Value = serde_json::from_str(&created.config_json).expect("config");
+        assert_eq!(
+            config["fetched_models"],
+            serde_json::json!([{
+                "id": "gpt-5",
+                "owned_by": "openai",
+                "supports_1m": true
+            }])
+        );
+    }
+
+    #[tokio::test]
+    async fn create_api_credential_rejects_invalid_fetched_models() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+
+        let error = RouteCredentialService::create_api(
+            &pool,
+            CreateApiRouteCredentialInput {
+                platform: "codex".into(),
+                display_name: "Invalid cache".into(),
+                api_key: "sk-test".into(),
+                base_url: "https://api.example.com/v1".into(),
+                interface_format: "openai".into(),
+                model_mappings_json: "[]".into(),
+                fetched_models_json: Some(r#"[{"id":"   "}]"#.into()),
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: None,
+                user_agent: None,
+            },
+        )
+        .await
+        .expect_err("invalid cache must fail");
+
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "validation.fetched_models",
+                ..
+            }
+        ));
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM route_credentials")
+            .fetch_one(&pool)
+            .await
+            .expect("credential count");
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
     async fn copy_route_credential_appends_date_to_display_name() {
         let pool = crate::database::create_memory_pool().await.expect("pool");
         crate::database::run_migrations(&pool)
@@ -1005,6 +1120,7 @@ mod tests {
                 base_url: "https://api.example.com/v1".into(),
                 interface_format: "openai".into(),
                 model_mappings_json: "[]".into(),
+                fetched_models_json: Some(r#"[{"id":"gpt-5","owned_by":"openai"}]"#.into()),
                 api_key_field: None,
                 preview_json: None,
                 batch_id: None,
@@ -1050,6 +1166,7 @@ mod tests {
                 base_url: "https://api.example.com/v1".into(),
                 interface_format: "openai".into(),
                 model_mappings_json: "[]".into(),
+                fetched_models_json: None,
                 api_key_field: None,
                 preview_json: None,
                 batch_id: None,
@@ -1095,6 +1212,7 @@ mod tests {
                 base_url: "https://api.example.com/v1".into(),
                 interface_format: "openai".into(),
                 model_mappings_json: "[]".into(),
+                fetched_models_json: None,
                 api_key_field: None,
                 preview_json: None,
                 batch_id: None,
@@ -1134,6 +1252,7 @@ mod tests {
                 base_url: "https://api.xiaomi.example/v1".into(),
                 interface_format: "openai-responses".into(),
                 model_mappings_json: "[]".into(),
+                fetched_models_json: None,
                 api_key_field: None,
                 preview_json: None,
                 batch_id: None,
@@ -1167,6 +1286,7 @@ mod tests {
                 base_url: "https://api.example.com/v1".into(),
                 interface_format: "openai-responses".into(),
                 model_mappings_json: "[]".into(),
+                fetched_models_json: None,
                 api_key_field: None,
                 preview_json: None,
                 batch_id: None,
@@ -1200,6 +1320,7 @@ mod tests {
                 base_url: "https://api.x.ai/v1".into(),
                 interface_format: "openai".into(),
                 model_mappings_json: "[]".into(),
+                fetched_models_json: None,
                 api_key_field: None,
                 preview_json: None,
                 batch_id: None,
@@ -1233,6 +1354,7 @@ mod tests {
                 base_url: "https://api.example.com/v1".into(),
                 interface_format: "openai".into(),
                 model_mappings_json: "[]".into(),
+                fetched_models_json: None,
                 api_key_field: None,
                 preview_json: None,
                 batch_id: None,
