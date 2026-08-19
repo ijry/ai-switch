@@ -105,10 +105,12 @@ const closeRisk = () => riskDialog.value?.close();
   <div class="rp">
     <!-- Hero -->
     <section class="rp-hero">
-      <div class="rp-wrap">
-        <p class="rp-eyebrow">{{ t.eyebrow }}</p>
-        <h1 class="rp-title">{{ t.title }}</h1>
-        <p class="rp-lead">{{ t.lead }}</p>
+      <div class="rp-wrap rp-hero-inner">
+        <div class="rp-hero-text">
+          <p class="rp-eyebrow">{{ t.eyebrow }}</p>
+          <h1 class="rp-title">{{ t.title }}</h1>
+          <p class="rp-lead">{{ t.lead }}</p>
+        </div>
         <div class="rp-jump">
           <button class="rp-btn rp-btn-warn" type="button" @click="openRisk">
             <svg
@@ -206,11 +208,24 @@ const closeRisk = () => riskDialog.value?.close();
 /* ---------- hero ---------- */
 
 .rp-hero {
-  padding: 34px 0 32px;
+  padding: 30px 0 28px;
   background:
     radial-gradient(760px 300px at 8% -20%, rgba(16, 185, 129, 0.2), transparent 62%),
     radial-gradient(620px 260px at 95% 4%, rgba(245, 158, 11, 0.14), transparent 60%),
     linear-gradient(160deg, #1c1917 0%, #0c0a09 100%);
+}
+
+/* Buttons sit beside the copy rather than under it, so the hero is only as tall
+   as the text stack — the button row used to add ~56px of pure height. */
+.rp-hero-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 32px;
+}
+
+.rp-hero-text {
+  min-width: 0;
 }
 
 .rp-eyebrow {
@@ -248,8 +263,8 @@ const closeRisk = () => riskDialog.value?.close();
 .rp-jump {
   display: flex;
   flex-wrap: wrap;
+  flex-shrink: 0;
   gap: 10px;
-  margin-top: 18px;
 }
 
 .rp-btn {
@@ -468,9 +483,18 @@ const closeRisk = () => riskDialog.value?.close();
   background: var(--vp-c-brand-1);
 }
 
+@media (max-width: 860px) {
+  /* Not enough room for copy and buttons on one line — go back to stacking. */
+  .rp-hero-inner {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+  }
+}
+
 @media (max-width: 720px) {
   .rp-hero {
-    padding: 28px 0 26px;
+    padding: 26px 0 24px;
   }
 
   .rp-title {
