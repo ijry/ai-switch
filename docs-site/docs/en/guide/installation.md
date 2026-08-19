@@ -177,7 +177,7 @@ The desktop app has a built-in updater, so you don't have to watch for new versi
 
 **Automatic checks.** The app checks once after launch and hourly after that. When a new version is available it shows a prompt and you decide whether to install. The interval is fixed; there's currently no toggle or update-channel setting.
 
-**Signature verification.** Update metadata is read from `latest.json` on GitHub Releases, and every platform asset carries a minisign signature. The signature is verified against the public key built into the app before anything is installed, and installation is refused if verification fails. The release pipeline adds a second check confirming that each signature's key id matches the public key, failing the build otherwise.
+**Signature verification.** Update metadata is read from `latest.json` on GitHub Releases, and every asset on the updater path carries a minisign signature (`.exe`, `.deb`, `.AppImage`, and macOS's `.app.tar.gz` each ship a matching `.sig`; **the `.dmg` does not** — it exists for manual installation and is not part of the update path). The signature is verified against the public key built into the app before anything is installed, and installation is refused if verification fails. The release pipeline adds a second check confirming that each signature's key id matches the public key, failing the build otherwise.
 
 So the trust anchor for the update path is the public key compiled into the app — a package swapped in transit will not verify.
 
