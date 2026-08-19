@@ -245,10 +245,12 @@ describe("modelTestModels", () => {
 Run:
 
 ```powershell
-pnpm test:run -- tests/lib/modelTestModels.test.ts
+pnpm test:run tests/lib/modelTestModels.test.ts
 ```
 
 Expected: FAIL，模块 `src/lib/modelTestModels.ts` 不存在。
+
+> 单文件过滤**不要加 `--`**。本仓库的 `test:run` 是 `vitest run`，`pnpm test:run -- <path>` 不会把路径当过滤器，会跑满全部 40 个测试文件；`pnpm test:run <path>` 才真正只跑那一个文件。
 
 - [ ] **Step 3: 实现纯函数模块**
 
@@ -384,7 +386,7 @@ export function pruneModelTestModels(
 Run:
 
 ```powershell
-pnpm test:run -- tests/lib/modelTestModels.test.ts
+pnpm test:run tests/lib/modelTestModels.test.ts
 pnpm typecheck
 ```
 
@@ -581,7 +583,7 @@ import { MODEL_TEST_MODELS_STORAGE_KEY } from "../src/lib/modelTestModels";
 Run:
 
 ```powershell
-pnpm test:run -- tests/AccountsScreen.test.tsx
+pnpm test:run tests/AccountsScreen.test.tsx
 ```
 
 Expected: FAIL，六个新测试都报错——`MODEL_TEST_MODELS_STORAGE_KEY` 尚未被 `AccountsScreen` 读写，回填为空、localStorage 无写入、孤儿键未清理。
@@ -726,7 +728,7 @@ import {
 Run:
 
 ```powershell
-pnpm test:run -- tests/AccountsScreen.test.tsx
+pnpm test:run tests/AccountsScreen.test.tsx
 pnpm typecheck
 ```
 
