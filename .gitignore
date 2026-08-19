@@ -11,3 +11,5 @@ src-tauri/target-codex/
 .tauri/
 src-tauri/target-codex-test/
 .codex-run/
+docs-site/docs/.vitepress/cache/
+docs-site/docs/.vitepress/.temp/
