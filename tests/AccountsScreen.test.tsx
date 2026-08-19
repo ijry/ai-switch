@@ -34,6 +34,7 @@ import {
 } from "../src/lib/api/client";
 import { recognizeApiKeysFromImageBlob } from "../src/lib/ocr/apiKeyOcr";
 import { CODEX_MODEL_TEST_ENDPOINT_STORAGE_KEY } from "../src/lib/codexModelTestEndpoint";
+import { MODEL_TEST_MODELS_STORAGE_KEY } from "../src/lib/modelTestModels";
 import { createQueryClient } from "../src/lib/query/queryClient";
 import { AccountsScreen } from "../src/screens/AccountsScreen";
 import { fetchRouteProxyModels } from "../src/lib/routeProxyModels";
@@ -2655,49 +2656,139 @@ describe("AccountsScreen", () => {
     expect(screen.queryByLabelText("测试接口 /chat/completions")).not.toBeInTheDocument();
   });
 
-  it("keeps the optional test model separately for each agent tab", async () => {
-    const client = createQueryClient();
-    const view = render(
-      <QueryClientProvider client={client}>
-        <AccountsScreen platform="codex" />
-      </QueryClientProvider>,
+  it("hydrates the test model from localStorage for that account", async () => {
+    window.localStorage.setItem(
+      MODEL_TEST_MODELS_STORAGE_KEY,
+      JSON.stringify({
+        "cred-api-1": { model: "gpt-5.6-sol", platform: "codex" },
+      }),
     );
 
-    await selectAccountView("未入池");
+    renderScreen("codex", "out_of_pool");
+
+    await userEvent.click(await screen.findByLabelText("测试 API Account"));
+    expect(await screen.findByLabelText("弹窗测试模型")).toHaveValue("gpt-5.6-sol");
+  });
+
+  it("persists the test model only after the test starts", async () => {
+    renderScreen("codex", "out_of_pool");
+
+    await userEvent.click(await screen.findByLabelText("测试 API Account"));
+    await userEvent.type(await screen.findByLabelText("弹窗测试模型"), "  gpt-4o  ");
+    // Typing must not reach storage; only submitting does.
+    expect(window.localStorage.getItem(MODEL_TEST_MODELS_STORAGE_KEY)).toBeNull();
+
+    await userEvent.click(screen.getByLabelText("开始真实生成测试"));
+
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem(MODEL_TEST_MODELS_STORAGE_KEY) ?? "null"),
+      ).toEqual({
+        "cred-api-1": { model: "gpt-4o", platform: "codex" },
+      }),
+    );
+    // What got stored must equal what was actually sent upstream.
+    expect(routePoolTestModel).toHaveBeenCalledWith(
+      expect.objectContaining({ account_id: "cred-api-1", model: "gpt-4o" }),
+    );
+  });
+
+  it("keeps the optional test model separately for each account", async () => {
+    renderScreen("codex", "out_of_pool");
+
     await userEvent.click(await screen.findByLabelText("测试 API Account"));
     await userEvent.type(await screen.findByLabelText("弹窗测试模型"), "gpt-4o");
     await userEvent.click(screen.getByLabelText("关闭真实生成测试弹窗"));
 
+    // A different account on the same platform starts empty.
+    const officialTest = screen.getByLabelText("测试 Team Account");
+    await waitFor(() => expect(officialTest).toBeEnabled());
+    await userEvent.click(officialTest);
+    const officialInput = await screen.findByLabelText("弹窗测试模型");
+    expect(officialInput).toHaveValue("");
+    await userEvent.type(officialInput, "gpt-5.5");
+    await userEvent.click(screen.getByLabelText("关闭真实生成测试弹窗"));
+
+    // Each account still remembers its own value.
     await userEvent.click(screen.getByLabelText("测试 API Account"));
     expect(await screen.findByLabelText("弹窗测试模型")).toHaveValue("gpt-4o");
     await userEvent.click(screen.getByLabelText("关闭真实生成测试弹窗"));
 
-    view.rerender(
-      <QueryClientProvider client={client}>
-        <AccountsScreen platform="claude" />
-      </QueryClientProvider>,
-    );
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "算力池" })).toHaveAttribute("aria-pressed", "true"),
-    );
-    await selectAccountView("未入池");
-    await userEvent.click(await screen.findByLabelText("测试 API Account"));
-    const claudeInput = await screen.findByLabelText("弹窗测试模型");
-    expect(claudeInput).toHaveValue("");
-    await userEvent.type(claudeInput, "claude-opus-4-8");
-    await userEvent.click(screen.getByLabelText("关闭真实生成测试弹窗"));
+    await userEvent.click(screen.getByLabelText("测试 Team Account"));
+    expect(await screen.findByLabelText("弹窗测试模型")).toHaveValue("gpt-5.5");
+  });
 
-    view.rerender(
-      <QueryClientProvider client={client}>
-        <AccountsScreen platform="codex" />
-      </QueryClientProvider>,
+  it("keeps the pool test model separate from any account cache", async () => {
+    window.localStorage.setItem(
+      MODEL_TEST_MODELS_STORAGE_KEY,
+      JSON.stringify({
+        "cred-api-1": { model: "gpt-4o", platform: "codex" },
+        "pool:codex": { model: "gpt-5", platform: "codex" },
+      }),
     );
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "算力池" })).toHaveAttribute("aria-pressed", "true"),
-    );
-    await selectAccountView("未入池");
+    // The pool test button stays disabled while the pool has no eligible member.
+    poolStateByPlatform.set("codex", ["cred-official-1"]);
+    renderScreen("codex", "out_of_pool");
+
     await userEvent.click(await screen.findByLabelText("测试 API Account"));
     expect(await screen.findByLabelText("弹窗测试模型")).toHaveValue("gpt-4o");
+    await userEvent.click(screen.getByLabelText("关闭真实生成测试弹窗"));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("真实生成测试算力池路由")).toBeEnabled(),
+    );
+    await userEvent.click(screen.getByLabelText("真实生成测试算力池路由"));
+    expect(await screen.findByLabelText("弹窗测试模型")).toHaveValue("gpt-5");
+  });
+
+  it("drops the cached model when the field is cleared and the test starts", async () => {
+    window.localStorage.setItem(
+      MODEL_TEST_MODELS_STORAGE_KEY,
+      JSON.stringify({
+        "cred-api-1": { model: "gpt-4o", platform: "codex" },
+        "pool:codex": { model: "gpt-5", platform: "codex" },
+      }),
+    );
+
+    renderScreen("codex", "out_of_pool");
+
+    await userEvent.click(await screen.findByLabelText("测试 API Account"));
+    await userEvent.clear(await screen.findByLabelText("弹窗测试模型"));
+    await userEvent.click(screen.getByLabelText("开始真实生成测试"));
+
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem(MODEL_TEST_MODELS_STORAGE_KEY) ?? "null"),
+      ).toEqual({
+        "pool:codex": { model: "gpt-5", platform: "codex" },
+      }),
+    );
+  });
+
+  it("prunes cached models for accounts that no longer exist", async () => {
+    window.localStorage.setItem(
+      MODEL_TEST_MODELS_STORAGE_KEY,
+      JSON.stringify({
+        "cred-api-1": { model: "gpt-4o", platform: "codex" },
+        "cred-deleted": { model: "gpt-4.1", platform: "codex" },
+        "cred-claude": { model: "claude-opus-4-8", platform: "claude" },
+        "pool:codex": { model: "gpt-5", platform: "codex" },
+      }),
+    );
+
+    renderScreen("codex", "out_of_pool");
+    await screen.findByLabelText("测试 API Account");
+
+    // Only this platform's orphan is dropped; other platforms and pool keys stay.
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem(MODEL_TEST_MODELS_STORAGE_KEY) ?? "null"),
+      ).toEqual({
+        "cred-api-1": { model: "gpt-4o", platform: "codex" },
+        "cred-claude": { model: "claude-opus-4-8", platform: "claude" },
+        "pool:codex": { model: "gpt-5", platform: "codex" },
+      }),
+    );
   });
 
   it("offers this account's mapped aliases plus baseline models in the single-account test dropdown", async () => {

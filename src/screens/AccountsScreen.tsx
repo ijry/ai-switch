@@ -108,6 +108,14 @@ import {
 } from "../lib/platformCapabilities";
 import { usePlatformCapabilities } from "../lib/query/platformCapabilities";
 import {
+  loadModelTestModels,
+  type ModelTestModelMap,
+  poolModelTestKey,
+  pruneModelTestModelMap,
+  pruneModelTestModels,
+  saveModelTestModel,
+} from "../lib/modelTestModels";
+import {
   type AccountPreset,
   matchPresetByBaseUrl,
   presetsForPlatform,
@@ -1791,7 +1799,9 @@ export function AccountsScreen({
   const [editFetchModelsError, setEditFetchModelsError] = useState<string | null>(null);
   const [editPreviewJson, setEditPreviewJson] = useState("{}");
   const [lastRouteAccount, setLastRouteAccount] = useState<string | null>(null);
-  const [routeTestModelsByPlatform, setRouteTestModelsByPlatform] = useState<Partial<Record<PlatformKey, string>>>({});
+  const [modelTestModels, setModelTestModels] = useState<ModelTestModelMap>(
+    () => loadModelTestModels(),
+  );
   const [codexModelTestEndpoint, setCodexModelTestEndpoint] =
     useState<CodexModelTestEndpoint>(() => loadCodexModelTestEndpoint());
   const [modelTestDialogOpen, setModelTestDialogOpen] = useState(false);
@@ -1812,7 +1822,8 @@ export function AccountsScreen({
   const [configWriteOutcomes, setConfigWriteOutcomes] = useState<ConfigWriteOutcome[]>([]);
   const [configWriteError, setConfigWriteError] = useState<string | null>(null);
   const [routePoolFeedback, setRoutePoolFeedback] = useState<RoutePoolFeedback>(null);
-  const routeTestModel = routeTestModelsByPlatform[activePlatform] ?? "";
+  const modelTestStorageKey = modelTestAccount?.id ?? poolModelTestKey(activePlatform);
+  const routeTestModel = modelTestModels[modelTestStorageKey]?.model ?? "";
   const statsOpen = accountView === "stats";
   const accountScope: RouteCredentialPoolScope =
     accountView === "archived"
@@ -2082,6 +2093,22 @@ export function AccountsScreen({
     refetchOnMount: "always",
     refetchOnWindowFocus: true,
   });
+
+  const allCredentials = allCredentialsQuery.data;
+  useEffect(() => {
+    if (!allCredentials) {
+      return;
+    }
+    const liveIds = allCredentials.map((credential) => credential.id);
+    // The query returns only this platform's non-archived accounts, so pruning
+    // is scoped to that platform and skips pool keys.
+    pruneModelTestModels(liveIds, activePlatform);
+    // Incremental, never a wholesale reload: this effect re-runs on every
+    // window-focus refetch, and reloading from storage would wipe whatever the
+    // user is typing right now. pruneModelTestModelMap returns the same object
+    // when nothing is orphaned, so setState then bails out without a re-render.
+    setModelTestModels((current) => pruneModelTestModelMap(current, liveIds, activePlatform));
+  }, [activePlatform, allCredentials]);
 
   const routePoolQuery = useQuery({
     queryKey: ["route-pool", activePlatform, statsSince, requestPage, routeStatsPageSize],
@@ -3392,13 +3419,25 @@ export function AccountsScreen({
       return;
     }
     const accountId = modelTestAccount?.id ?? null;
+    // Persist exactly what gets sent, so the cache means "what was last tested".
+    const trimmedModel = routeTestModel.trim();
+    saveModelTestModel(modelTestStorageKey, trimmedModel, activePlatform);
+    setModelTestModels((current) => {
+      const next = { ...current };
+      if (trimmedModel) {
+        next[modelTestStorageKey] = { model: trimmedModel, platform: activePlatform };
+      } else {
+        delete next[modelTestStorageKey];
+      }
+      return next;
+    });
     setTestingAccountId(accountId);
     setModelTestOutcome(null);
     modelTestMutation.reset();
     modelTestMutation.mutate({
       platform: activePlatform,
       ...(accountId ? { account_id: accountId } : {}),
-      model: routeTestModel.trim() || null,
+      model: trimmedModel || null,
       ...(activePlatform === "codex"
         ? { interface_format: codexModelTestInterfaceFormat(codexModelTestEndpoint) }
         : {}),
@@ -5024,9 +5063,12 @@ export function AccountsScreen({
                 className={fieldClass}
                 list="model-test-model-options"
                 onChange={(event) =>
-                  setRouteTestModelsByPlatform((current) => ({
+                  setModelTestModels((current) => ({
                     ...current,
-                    [activePlatform]: event.target.value,
+                    [modelTestStorageKey]: {
+                      model: event.target.value,
+                      platform: activePlatform,
+                    },
                   }))
                 }
                 placeholder={defaultRequestedModel(activePlatform)}
