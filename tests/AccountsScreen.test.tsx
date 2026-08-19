@@ -2791,6 +2791,44 @@ describe("AccountsScreen", () => {
     );
   });
 
+  it("keeps a half-typed test model when the account list refetches", async () => {
+    window.localStorage.setItem(
+      MODEL_TEST_MODELS_STORAGE_KEY,
+      JSON.stringify({
+        "cred-api-1": { model: "gpt-4o", platform: "codex" },
+        "cred-official-1": { model: "gpt-5", platform: "codex" },
+      }),
+    );
+
+    renderScreen("codex", "out_of_pool");
+
+    await userEvent.click(await screen.findByLabelText("测试 API Account"));
+    const input = await screen.findByLabelText("弹窗测试模型");
+    await userEvent.clear(input);
+    await userEvent.type(input, "gpt-5.6-sol");
+    await waitFor(() => expect(transportTestState.statusHandler).not.toBeNull());
+
+    // Drop the other account so the refetch both changes the query reference and
+    // gives the prune a real orphan to remove. The resulting storage write is the
+    // only reliable proof that the effect re-ran against the new list.
+    vi.mocked(listRouteCredentials).mockResolvedValue([credentialsFixture[1]]);
+    act(() => {
+      transportTestState.statusHandler?.({
+        platform: "codex",
+        credential_id: "cred-official-1",
+      });
+    });
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem(MODEL_TEST_MODELS_STORAGE_KEY) ?? "null"),
+      ).toEqual({ "cred-api-1": { model: "gpt-4o", platform: "codex" } }),
+    );
+
+    // Pruning must not reload the whole map from storage: doing so would revert
+    // the box to the last-submitted "gpt-4o" and eat what the user is typing.
+    expect(screen.getByLabelText("弹窗测试模型")).toHaveValue("gpt-5.6-sol");
+  });
+
   it("offers this account's mapped aliases plus baseline models in the single-account test dropdown", async () => {
     renderScreen("codex", "out_of_pool");
 
