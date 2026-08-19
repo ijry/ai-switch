@@ -68,7 +68,7 @@ Which also means: **Apple has not scanned this package for you.** Whether to byp
 
 ### Option 1: "Open Anyway" in System Settings (recommended)
 
-This is Apple's own documented path and it works on every currently supported macOS version.
+This is the path in Apple's own documentation. It works on old and new releases alike, and since Sequoia it is the only way to allow the app.
 
 1. **Double-click AI Switch once** and let it get blocked. This step is required — without it the button does not appear.
 2. Open **System Settings → Privacy & Security** and scroll down to the Security section.
