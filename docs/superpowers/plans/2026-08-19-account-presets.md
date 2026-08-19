@@ -47,7 +47,7 @@
 - Produces: `presetsForPlatform(platform: PlatformId): AccountPreset[]`。
 - Produces: `matchPresetByBaseUrl(platform: PlatformId, baseUrl: string): AccountPreset | null`。
 
-- [ ] **Step 1: 写入失败测试**
+- [x] **Step 1: 写入失败测试**
 
 创建 `tests/accountPresets.test.ts`：
 
@@ -143,7 +143,7 @@ describe("accountPresets", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run:
 
@@ -153,7 +153,7 @@ pnpm test:run -- tests/accountPresets.test.ts
 
 Expected: FAIL，模块 `src/lib/accountPresets.ts` 不存在。
 
-- [ ] **Step 3: 实现预设数据与判定函数**
+- [x] **Step 3: 实现预设数据与判定函数**
 
 创建 `src/lib/accountPresets.ts`：
 
@@ -217,7 +217,7 @@ export function matchPresetByBaseUrl(
 
 注意 `modelMappings` 数组是模块级共享引用。UI 层套用时必须复制（Task 2 Step 4 用 `preset.modelMappings.map((mapping) => ({ ...mapping }))`），否则用户编辑映射行会改坏预设常量本身。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run:
 
@@ -226,9 +226,9 @@ pnpm test:run -- tests/accountPresets.test.ts
 pnpm typecheck
 ```
 
-Expected: PASS，10 个测试全绿。
+Expected: PASS，9 个测试全绿。
 
-- [ ] **Step 5: 提交纯函数模块**
+- [x] **Step 5: 提交纯函数模块**
 
 ```powershell
 git add src/lib/accountPresets.ts tests/accountPresets.test.ts
@@ -253,7 +253,7 @@ git commit -m "feat: add account preset data and matching helpers"
 - Consumes 现有样式常量：`fieldClass`、`labelClass`（声明于 `:3541-3544`）。
 - Produces: `PresetFields` 组件（仅本文件内使用，不导出）。
 
-- [ ] **Step 1: 写入界面失败测试**
+- [x] **Step 1: 写入界面失败测试**
 
 在 `tests/AccountsScreen.test.tsx` 中，紧跟现有 `it("fetches upstream models and one-click sets a model mapping", ...)`（`:1448-1482`）之后插入六个测试：
 
@@ -365,7 +365,7 @@ git commit -m "feat: add account preset data and matching helpers"
   });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run:
 
@@ -375,7 +375,7 @@ pnpm test:run -- tests/AccountsScreen.test.tsx
 
 Expected: FAIL，前五个测试报找不到 `创建 账号预设` 这个可访问名称；最后一个（claude 隐藏）此时会误通过，因为下拉根本还不存在。
 
-- [ ] **Step 3: 导入 Task 1 的纯函数**
+- [x] **Step 3: 导入 Task 1 的纯函数**
 
 在 `AccountsScreen.tsx` 现有的 `accountUserAgent` 导入块（`:110-115`）之前插入：
 
@@ -387,7 +387,7 @@ import {
 } from "../lib/accountPresets";
 ```
 
-- [ ] **Step 4: 新增 `PresetFields` 组件**
+- [x] **Step 4: 新增 `PresetFields` 组件**
 
 在 `function UserAgentFields({`（`:1556`）之前插入。组件只负责渲染，套用哪些字段由父级传入的 `onApply` 决定：
 
@@ -446,7 +446,7 @@ function PresetFields({
 
 选中"自定义"（`value=""`）时 `presets.find` 返回 `undefined`，函数直接 `return`，不改任何字段——与 `UserAgentFields:1579-1581` 的先例一致。
 
-- [ ] **Step 5: 在 API 表单顶部渲染下拉**
+- [x] **Step 5: 在 API 表单顶部渲染下拉**
 
 在 `{createMode === "api" && (` 分支内（`:5281-5282`）的 `<div className="mt-4 grid gap-3">` 之后、「账号名称」`<label>`（`:5283`）之前插入。必须放在这个分支内部——「批量导入」模式没有 Base URL 与模型映射字段，预设在那里无意义：
 
@@ -471,7 +471,7 @@ function PresetFields({
 
 `setApiName` 用函数式更新读当前值，避免把 `apiName` 加进依赖；`modelMappings` 必须逐项浅拷贝，否则用户编辑映射行会改坏 Task 1 的模块级常量。
 
-- [ ] **Step 6: 运行测试确认通过**
+- [x] **Step 6: 运行测试确认通过**
 
 Run:
 
@@ -482,7 +482,7 @@ pnpm typecheck
 
 Expected: PASS，六个新测试全绿且既有账号测试无回归。
 
-- [ ] **Step 7: 运行完整回归检查**
+- [x] **Step 7: 运行完整回归检查**
 
 Run:
 
@@ -493,7 +493,7 @@ pnpm rust:check
 
 Expected: 全部成功。`pnpm rust:check` 用于确认本次改动确实没牵连后端（本计划不应修改 `src-tauri/` 下任何文件）。
 
-- [ ] **Step 8: 检查差异并提交**
+- [x] **Step 8: 检查差异并提交**
 
 Run:
 
