@@ -108,6 +108,11 @@ import {
 } from "../lib/platformCapabilities";
 import { usePlatformCapabilities } from "../lib/query/platformCapabilities";
 import {
+  type AccountPreset,
+  matchPresetByBaseUrl,
+  presetsForPlatform,
+} from "../lib/accountPresets";
+import {
   matchUserAgentPreset,
   readUserAgentFromConfig,
   USER_AGENT_PRESETS,
@@ -1550,6 +1555,57 @@ function CredentialFailureTooltip({
         </pre>
       </span>
     </span>
+  );
+}
+
+function PresetFields({
+  baseUrl,
+  fieldClass,
+  idPrefix,
+  labelClass,
+  onApply,
+  platform,
+}: {
+  baseUrl: string;
+  fieldClass: string;
+  idPrefix: string;
+  labelClass: string;
+  onApply: (preset: AccountPreset) => void;
+  platform: PlatformKey;
+}) {
+  const presets = presetsForPlatform(platform);
+  if (presets.length === 0) {
+    return null;
+  }
+  const matched = matchPresetByBaseUrl(platform, baseUrl);
+  return (
+    <label className={labelClass}>
+      账号预设
+      <select
+        aria-label={`${idPrefix} 账号预设`}
+        className={fieldClass}
+        onChange={(event) => {
+          const selected = presets.find((preset) => preset.id === event.target.value);
+          if (!selected) {
+            return;
+          }
+          onApply(selected);
+        }}
+        value={matched?.id ?? ""}
+      >
+        <option value="">自定义</option>
+        {presets.map((preset) => (
+          <option key={preset.id} value={preset.id}>
+            {preset.label}
+          </option>
+        ))}
+      </select>
+      {matched ? (
+        <span className="text-[11px] font-medium text-stone-500">
+          已套用 AgentRouter 预设，通常只需填写 API Key。
+        </span>
+      ) : null}
+    </label>
   );
 }
 
@@ -5280,6 +5336,22 @@ export function AccountsScreen({
 
             {createMode === "api" && (
               <div className="mt-4 grid gap-3">
+                <PresetFields
+                  baseUrl={apiBaseUrl}
+                  fieldClass={fieldClass}
+                  idPrefix="创建"
+                  labelClass={labelClass}
+                  onApply={(preset) => {
+                    setApiBaseUrl(preset.baseUrl);
+                    setApiInterfaceFormat(preset.interfaceFormat);
+                    setApiMappings(preset.modelMappings.map((mapping) => ({ ...mapping })));
+                    setApiName((current) => (current.trim() ? current : preset.defaultName));
+                    setApiFetchedModels([]);
+                    setApiFetchModelsError(null);
+                    setApiMappingsError(null);
+                  }}
+                  platform={activePlatform}
+                />
                 <label className={labelClass}>
                   账号名称
                   <input

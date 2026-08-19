@@ -1481,6 +1481,112 @@ describe("AccountsScreen", () => {
     );
   });
 
+  it("applies the AgentRouter preset to the create form", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    // Move the interface format off "openai" first, so the assertion below
+    // proves the preset set it rather than passively matching the codex default.
+    await userEvent.selectOptions(screen.getByLabelText("接口格式"), "anthropic");
+    await userEvent.selectOptions(
+      screen.getByLabelText("创建 账号预设"),
+      "agentrouter-primary",
+    );
+
+    expect(screen.getByLabelText("Base URL")).toHaveValue("https://agentrouter.org/v1");
+    expect(screen.getByLabelText("接口格式")).toHaveValue("openai");
+    expect(screen.getByLabelText("API 账号名称")).toHaveValue("AgentRouter");
+    expect(screen.getByLabelText("请求模型 1")).toHaveValue("gpt-5.6-sol");
+    expect(screen.getByLabelText("上游模型 1")).toHaveValue("gpt-5.6-sol");
+    expect(
+      screen.getByText("已套用 AgentRouter 预设，通常只需填写 API Key。"),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps a name the user already typed when applying a preset", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "我的账号");
+    await userEvent.selectOptions(
+      screen.getByLabelText("创建 账号预设"),
+      "agentrouter-primary",
+    );
+
+    expect(screen.getByLabelText("API 账号名称")).toHaveValue("我的账号");
+    expect(screen.getByLabelText("Base URL")).toHaveValue("https://agentrouter.org/v1");
+  });
+
+  it("replaces existing model mappings when applying a preset", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    // The create form starts with zero mapping rows, so add one to overwrite.
+    await userEvent.click(screen.getByRole("button", { name: "新增映射" }));
+    await userEvent.type(screen.getByLabelText("请求模型 1"), "foo");
+    await userEvent.type(screen.getByLabelText("上游模型 1"), "bar");
+    await userEvent.selectOptions(
+      screen.getByLabelText("创建 账号预设"),
+      "agentrouter-primary",
+    );
+
+    expect(screen.getByLabelText("请求模型 1")).toHaveValue("gpt-5.6-sol");
+    expect(screen.getByLabelText("上游模型 1")).toHaveValue("gpt-5.6-sol");
+    expect(screen.queryByLabelText("请求模型 2")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the custom option after the base url changes", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.selectOptions(
+      screen.getByLabelText("创建 账号预设"),
+      "agentrouter-primary",
+    );
+    expect(screen.getByLabelText("创建 账号预设")).toHaveValue("agentrouter-primary");
+
+    await userEvent.clear(screen.getByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://other.example.com/v1");
+
+    expect(screen.getByLabelText("创建 账号预设")).toHaveValue("");
+    expect(
+      screen.queryByText("已套用 AgentRouter 预设，通常只需填写 API Key。"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("creates an AgentRouter account from a preset and an api key alone", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.selectOptions(
+      screen.getByLabelText("创建 账号预设"),
+      "agentrouter-primary",
+    );
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-agentrouter");
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() =>
+      expect(createApiRouteCredential).toHaveBeenCalledWith(
+        expect.objectContaining({
+          platform: "codex",
+          display_name: "AgentRouter",
+          api_key: "sk-agentrouter",
+          base_url: "https://agentrouter.org/v1",
+          interface_format: "openai",
+          model_mappings_json: "[{\"from\":\"gpt-5.6-sol\",\"to\":\"gpt-5.6-sol\"}]",
+        }),
+      ),
+    );
+  });
+
+  it("hides the preset select on platforms without presets", async () => {
+    renderScreen("claude");
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+
+    expect(screen.queryByLabelText("创建 账号预设")).not.toBeInTheDocument();
+  });
+
   it("rejects the placeholder upstream model mapping before saving", async () => {
     renderScreen();
 
