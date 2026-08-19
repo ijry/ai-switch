@@ -1,6 +1,6 @@
 ---
 title: 安装
-description: 从 GitHub Releases 下载 AI Switch 桌面端安装包，了解 Windows、macOS、Linux 各平台的安装方式、本地数据目录结构、内置自动更新机制以及从源码构建的入口。
+description: 从 GitHub Releases 下载 AI Switch 桌面端安装包，了解 Windows、macOS、Linux 各平台的安装方式，解决 macOS 上「已损坏」「无法验证开发者」的 Gatekeeper 拦截，以及本地数据目录结构、内置自动更新机制和从源码构建的入口。
 ---
 
 # 安装
@@ -30,7 +30,7 @@ AI Switch 桌面端从 GitHub Releases 获取，三个平台都有预构建的�
 
 当前发布的是 **aarch64（Apple Silicon）** 架构，因为 CI 的 macOS 构建跑在 Apple Silicon runner 上。Intel Mac 需要自己从源码构建。
 
-首次打开如果被 Gatekeeper 拦住，在「系统设置 → 隐私与安全性」里允许一次。
+首次打开会被 Gatekeeper 拦住，这是预期行为，处理方式见 [macOS 打不开：「已损坏」「无法验证开发者」](#macos-打不开-「已损坏」「无法验证开发者」)。
 
 ### Linux
 
@@ -49,6 +49,70 @@ chmod +x ./ai-switch_*_linux-x86_64_*.AppImage
 ```
 
 AI Switch 是 Tauri 应用，依赖系统的 WebKitGTK。发行版没预装的话需要自己补上（Debian / Ubuntu 上对应 `libwebkit2gtk-4.1-0`、`libgtk-3-0`、`librsvg2-2`，托盘图标还需要 ayatana appindicator）。`.deb` 会声明依赖，`apt` 会自动处理；用 AppImage 的话要手动确认。
+
+## macOS 打不开：「已损坏」「无法验证开发者」
+
+在 macOS 上第一次打开 AI Switch，你大概会遇到下面这类提示之一：
+
+- 「**"AI Switch" 已损坏，无法打开。你应该把它移到废纸篓。**」
+- 「**无法打开 "AI Switch"，因为无法验证开发者。**」
+- 「**Apple 无法验证 "AI Switch" 是否包含恶意软件。**」
+
+::: warning 先说清楚原因，别被「已损坏」这个词误导
+**这不是下载损坏，也不是文件出错**，重新下载没有用。
+
+原因是 AI Switch 的 macOS 包**没有经过 Apple 代码签名和公证（notarization）**。公证需要付费的 Apple Developer Program 账号，本项目目前没有配置。Gatekeeper 对未签名应用一律拦下，而「已损坏」是它在这种情况下会给出的措辞之一。
+
+这也意味着：**Apple 没有替你扫描过这个包**。是否绕过这道拦截，是你自己的信任判断，不只是一个技术步骤。要降低风险，只从 [GitHub Releases 官方页面](https://github.com/ijry/ai-switch/releases/latest)下载，别用第三方转载的包。想彻底避开这个问题，就[从源码构建](/dev/local-setup)。
+:::
+
+### 方法一：系统设置里「仍要打开」（推荐）
+
+这是 Apple 官方给出的路径，在所有还受支持的 macOS 版本上都有效。
+
+1. 先**双击一次** AI Switch，让它被拦下来。这一步必须做，否则下一步不会出现按钮。
+2. 打开**系统设置 → 隐私与安全性**，向下滚动到「安全性」区域。
+3. 会看到一行说明 AI Switch 已被阻止打开，点右边的「**仍要打开**」。
+4. 在再次弹出的警告里确认，需要时输入密码或用 Touch ID。
+
+放行一次之后，AI Switch 会被记为例外，以后正常双击即可。
+
+### 方法二：移除隔离属性
+
+如果方法一里那行提示没出现（从压缩包解压出来的 `.app` 上比较常见），可以直接去掉 macOS 给下载文件打的隔离标记：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/AI Switch.app"
+```
+
+如果 `.app` 不在「应用程序」里，把路径换成实际位置。不确定路径就先输入 `xattr -dr com.apple.quarantine`，在后面留一个空格，然后从 Finder 把 `AI Switch.app` 拖进终端窗口，路径会自动补上，再回车。
+
+::: tip 这条命令只作用于你指定的那一个路径
+`-d` 是删除属性，`-r` 是递归处理 app 包内部，`com.apple.quarantine` 就是「这个文件来自网络」的标记。它不改动任何系统级安全设置，影响范围仅限你写在命令后面的那个路径。
+
+通常不需要 `sudo`。app 在你自己的用户目录下时肯定不需要；装在 `/Applications` 里如果报权限不足，再加 `sudo` 并输入密码。
+:::
+
+### 两个别照做的老办法
+
+网上的 macOS 解锁教程大多写于几年前，其中两条在现在的系统上已经不适用：
+
+**「右键 → 打开」**：Apple 从 **macOS Sequoia（15）起移除了这个绕过途径**，Control-点按不再能覆盖 Gatekeeper，必须走系统设置。在 Sonoma（14）及更早的系统上它仍然有效。
+
+**`sudo spctl --master-disable`**：这条命令**全局关闭**整台机器的 Gatekeeper 校验，此后任何来源的任何程序都不再被检查 —— 代价远超装一个应用所需。较新的 macOS 在「隐私与安全性」里也已经不再显示它对应的「任何来源」选项（现在只有「App Store」和「App Store 和已知开发者」两项）。装 AI Switch 不需要它，请用上面两个方法。
+
+### 放行之前想自己验一遍
+
+Release 页面目前**不公布 SHA-256 校验值**，所以没法拿官方哈希来核对。能做的是这两件事：
+
+- **确认下载来源**。地址必须是 `github.com/ijry/ai-switch/releases/…`，文件名符合 `ai-switch_<版本>_darwin-aarch64_…` 的格式。
+- **`.app.tar.gz` 带 minisign 签名可验**。资产列表里 `ai-switch_<版本>_darwin-aarch64_AI-Switch.app.tar.gz` 有配套的 `.sig` 文件，公钥在仓库的 `src-tauri/tauri.conf.json` 里（`plugins.updater.pubkey`）。注意 **`.dmg` 没有 `.sig`** —— 这个签名是给自动更新用的，不覆盖 dmg 安装包。
+
+这些都替代不了 Apple 公证：公证的价值在于 Apple 扫描过内容，而签名只能证明文件出自持有该私钥的一方、传输途中没被换掉。
+
+::: info 装好之后的自动更新不会再被拦
+应用内置的 updater 走自己的签名链路（minisign 公钥编译进应用，见下面的[自动更新](#自动更新)），和 Apple 公证是两套独立机制。所以上面这套操作只在首次安装时做一次，后续更新不会再遇到。
+:::
 
 ## 数据存在哪里
 
