@@ -3,6 +3,7 @@ import type { Theme } from "vitepress";
 import { h } from "vue";
 import HomePage from "./HomePage.vue";
 import RelayPage from "./RelayPage.vue";
+import RelaySpecPage from "./RelaySpecPage.vue";
 import "./style.css";
 
 export default {
@@ -15,8 +16,9 @@ export default {
     });
   },
   enhanceApp({ app }) {
-    // relay/index.md is `layout: page` and contains only <RelayPage />, so the
-    // component has to be registered globally for the Markdown to resolve it.
+    // The relay pages are `layout: page` and their Markdown contains only the
+    // component tag, so both have to be registered globally to resolve.
     app.component("RelayPage", RelayPage);
+    app.component("RelaySpecPage", RelaySpecPage);
   },
 } satisfies Theme;

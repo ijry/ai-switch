@@ -1,27 +1,33 @@
 <script setup lang="ts">
 /* 中转站页面的唯一入口。这一页整体是自定义组件，不走 Markdown：
    docs/relay/index.md 与 docs/en/relay/index.md 都只有 frontmatter + <RelayPage />。
-   两个 locale 共用这一份文案字典，改一处必须同时改另一处。 */
-import { computed } from "vue";
-import { useData } from "vitepress";
+   两个 locale 共用这一份文案字典，改一处必须同时改另一处。
+
+   风险提示走弹窗（原生 <dialog>），对接规范在独立页面 /relay/spec.html，
+   目的都是把首屏留给卡片。 */
+import { computed, ref } from "vue";
+import { useData, withBase } from "vitepress";
 import { RELAYS } from "./relays";
 import RelayCards from "./RelayCards.vue";
-import RelaySpec from "./RelaySpec.vue";
 
 const { localeIndex } = useData();
 const isEn = computed(() => localeIndex.value === "en");
+
+// withBase only prepends base when the path starts with a slash.
+const specLink = computed(() => withBase(`${isEn.value ? "/en" : ""}/relay/spec.html`));
 
 const COPY = {
   root: {
     eyebrow: "第三方服务 · 非本项目运营",
     title: "中转站",
-    lead:
-      "这一页收录经过实测可用的第三方 AI 中转站，以及供中转站接入的一键添加协议规范。",
-    jumpStations: "看站点",
+    lead: "实测可用的第三方 AI 中转站清单。这些站点不由本项目运营，用之前先看风险提示。",
+    openRisk: "先读这一段",
     jumpSpec: "对接规范",
 
     riskTitle: "先读这一段",
     riskLead: "收录只代表某个时间点实测能用，不构成任何形式的担保或推荐承诺。",
+    riskClose: "知道了",
+    riskCloseLabel: "关闭",
     risks: [
       {
         head: "额度、倍率、邀请规则随时会变",
@@ -43,19 +49,22 @@ const COPY = {
 
     stationsTitle: "实测站点",
     stationsCount: (n: number) => `共 ${n} 个`,
+    hoverHint: "鼠标移到卡片上看须知与提示",
   },
 
   en: {
     eyebrow: "Third-party services · not operated by this project",
     title: "Relay Providers",
     lead:
-      "Hand-tested third-party AI relay providers, plus the one-click-add protocol spec that relay operators can integrate against.",
-    jumpStations: "Providers",
+      "Hand-tested third-party AI relay providers. None of them are operated by this project — read the risk notice before you use one.",
+    openRisk: "Read this first",
     jumpSpec: "Integration spec",
 
     riskTitle: "Read this first",
     riskLead:
       "Listing a provider only means it was tested working at a point in time; it is not a warranty or an endorsement.",
+    riskClose: "Got it",
+    riskCloseLabel: "Close",
     risks: [
       {
         head: "Credit, rates, and referral terms change without notice",
@@ -77,10 +86,19 @@ const COPY = {
 
     stationsTitle: "Verified providers",
     stationsCount: (n: number) => `${n} total`,
+    hoverHint: "Hover a card for notes and tips",
   },
 } as const;
 
 const t = computed(() => (isEn.value ? COPY.en : COPY.root));
+
+const riskDialog = ref<HTMLDialogElement | null>(null);
+
+// showModal gives us the focus trap, Esc handling and inert background for
+// free; the ref is only ever touched from a click handler, so SSR never sees
+// it. The dialog renders closed server-side because it has no `open` attribute.
+const openRisk = () => riskDialog.value?.showModal();
+const closeRisk = () => riskDialog.value?.close();
 </script>
 
 <template>
@@ -92,40 +110,74 @@ const t = computed(() => (isEn.value ? COPY.en : COPY.root));
         <h1 class="rp-title">{{ t.title }}</h1>
         <p class="rp-lead">{{ t.lead }}</p>
         <div class="rp-jump">
-          <a class="rp-btn rp-btn-primary" href="#stations">{{ t.jumpStations }}</a>
-          <a class="rp-btn rp-btn-ghost" href="#spec">{{ t.jumpSpec }}</a>
+          <button class="rp-btn rp-btn-warn" type="button" @click="openRisk">
+            <svg
+              class="rp-btn-icon"
+              viewBox="0 0 16 16"
+              aria-hidden="true"
+              fill="currentColor"
+            >
+              <path
+                d="M8 1.6 15 14H1L8 1.6Zm0 3.9a.75.75 0 0 0-.75.75v3a.75.75 0 0 0 1.5 0v-3A.75.75 0 0 0 8 5.5Zm0 5.2a.9.9 0 1 0 0 1.8.9.9 0 0 0 0-1.8Z"
+              />
+            </svg>
+            {{ t.openRisk }}
+          </button>
+          <a class="rp-btn rp-btn-ghost" :href="specLink">{{ t.jumpSpec }} →</a>
         </div>
       </div>
     </section>
 
-    <!-- Risk notice + cards -->
-    <section id="stations" class="rp-band">
+    <!-- Cards -->
+    <section class="rp-band">
       <div class="rp-wrap">
-        <div class="rp-risk">
-          <p class="rp-risk-title">{{ t.riskTitle }}</p>
-          <p class="rp-risk-lead">{{ t.riskLead }}</p>
-          <ul class="rp-risk-list">
-            <li v-for="r in t.risks" :key="r.head">
-              <span class="rp-risk-head">{{ r.head }}</span>
-              <span class="rp-risk-body">{{ r.body }}</span>
-            </li>
-          </ul>
-        </div>
-
         <div class="rp-section-head">
           <h2 class="rp-h2">{{ t.stationsTitle }}</h2>
           <span class="rp-count">{{ t.stationsCount(RELAYS.length) }}</span>
+          <span class="rp-hint">{{ t.hoverHint }}</span>
         </div>
         <RelayCards />
       </div>
     </section>
 
-    <!-- Integration spec -->
-    <section id="spec" class="rp-band rp-band-alt">
-      <div class="rp-wrap">
-        <RelaySpec />
+    <!-- Risk notice, opened from the hero -->
+    <dialog ref="riskDialog" class="rd" @click.self="closeRisk">
+      <div class="rd-panel">
+        <header class="rd-head">
+          <h2 class="rd-title">{{ t.riskTitle }}</h2>
+          <button
+            class="rd-x"
+            type="button"
+            :aria-label="t.riskCloseLabel"
+            @click="closeRisk"
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M4 4l8 8M12 4l-8 8"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                fill="none"
+              />
+            </svg>
+          </button>
+        </header>
+        <div class="rd-body">
+          <p class="rd-lead">{{ t.riskLead }}</p>
+          <ul class="rd-list">
+            <li v-for="r in t.risks" :key="r.head">
+              <span class="rd-item-head">{{ r.head }}</span>
+              <span class="rd-item-body">{{ r.body }}</span>
+            </li>
+          </ul>
+        </div>
+        <footer class="rd-foot">
+          <button class="rd-ok" type="button" @click="closeRisk">
+            {{ t.riskClose }}
+          </button>
+        </footer>
       </div>
-    </section>
+    </dialog>
   </div>
 </template>
 
@@ -138,7 +190,7 @@ const t = computed(() => (isEn.value ? COPY.en : COPY.root));
 
 .rp-h2 {
   margin: 0;
-  font-size: 26px;
+  font-size: 22px;
   line-height: 1.3;
   font-weight: 700;
   letter-spacing: -0.01em;
@@ -146,29 +198,24 @@ const t = computed(() => (isEn.value ? COPY.en : COPY.root));
 }
 
 .rp-band {
-  padding: 60px 0;
+  padding: 32px 0 64px;
   background: var(--as-bg);
   border-top: 1px solid var(--as-line);
-}
-
-.rp-band-alt {
-  padding-bottom: 72px;
-  background: var(--as-bg-alt);
 }
 
 /* ---------- hero ---------- */
 
 .rp-hero {
-  padding: 64px 0 68px;
+  padding: 34px 0 32px;
   background:
-    radial-gradient(820px 380px at 10% -14%, rgba(16, 185, 129, 0.2), transparent 62%),
-    radial-gradient(700px 340px at 94% 6%, rgba(245, 158, 11, 0.14), transparent 60%),
+    radial-gradient(760px 300px at 8% -20%, rgba(16, 185, 129, 0.2), transparent 62%),
+    radial-gradient(620px 260px at 95% 4%, rgba(245, 158, 11, 0.14), transparent 60%),
     linear-gradient(160deg, #1c1917 0%, #0c0a09 100%);
 }
 
 .rp-eyebrow {
-  margin: 0 0 16px;
-  font-size: 12px;
+  margin: 0 0 10px;
+  font-size: 11.5px;
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -179,8 +226,8 @@ const t = computed(() => (isEn.value ? COPY.en : COPY.root));
   margin: 0;
   border: 0;
   padding: 0;
-  font-size: 42px;
-  line-height: 1.16;
+  font-size: 34px;
+  line-height: 1.15;
   font-weight: 800;
   letter-spacing: -0.025em;
   background: linear-gradient(120deg, #ffffff 38%, #6ee7b7 76%, #fcd34d);
@@ -191,28 +238,29 @@ const t = computed(() => (isEn.value ? COPY.en : COPY.root));
 }
 
 .rp-lead {
-  margin: 20px 0 0;
-  max-width: 62ch;
-  font-size: 16px;
-  line-height: 1.75;
+  margin: 10px 0 0;
+  max-width: 64ch;
+  font-size: 14.5px;
+  line-height: 1.7;
   color: #a8a29e;
 }
 
 .rp-jump {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 28px;
+  gap: 10px;
+  margin-top: 18px;
 }
 
 .rp-btn {
   display: inline-flex;
   align-items: center;
-  height: 42px;
-  padding: 0 22px;
+  gap: 7px;
+  height: 38px;
+  padding: 0 18px;
   border: 1px solid transparent;
-  border-radius: 21px;
-  font-size: 14px;
+  border-radius: 19px;
+  font-size: 13.5px;
   font-weight: 600;
   text-decoration: none;
   transition: transform 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
@@ -222,17 +270,26 @@ const t = computed(() => (isEn.value ? COPY.en : COPY.root));
   transform: translateY(-1px);
 }
 
-.rp-btn-primary {
-  background: #10b981;
-  color: #052e21;
+.rp-btn-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 
-.rp-btn-primary:hover {
-  background: #34d399;
+.rp-btn-warn {
+  border-color: rgba(252, 211, 77, 0.42);
+  color: #fcd34d;
+  background: rgba(245, 158, 11, 0.14);
+  cursor: pointer;
+}
+
+.rp-btn-warn:hover {
+  border-color: #fcd34d;
+  background: rgba(245, 158, 11, 0.22);
 }
 
 .rp-btn-ghost {
-  border-color: rgba(250, 250, 249, 0.28);
+  border-color: rgba(250, 250, 249, 0.26);
   color: #fafaf9;
 }
 
@@ -241,69 +298,13 @@ const t = computed(() => (isEn.value ? COPY.en : COPY.root));
   background: rgba(16, 185, 129, 0.12);
 }
 
-/* ---------- risk notice ---------- */
-
-.rp-risk {
-  padding: 22px 24px;
-  border: 1px solid var(--vp-c-warning-2);
-  border-left-width: 3px;
-  border-radius: 12px;
-  background: var(--vp-c-warning-soft);
-}
-
-.rp-risk-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--as-ink);
-}
-
-.rp-risk-lead {
-  margin: 6px 0 0;
-  max-width: 84ch;
-  font-size: 14px;
-  line-height: 1.7;
-  color: var(--as-muted);
-}
-
-.rp-risk-list {
-  list-style: none;
-  margin: 16px 0 0;
-  padding: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 14px 28px;
-}
-
-.rp-risk-list li {
-  margin: 0;
-  padding-left: 14px;
-  border-left: 2px solid var(--vp-c-warning-2);
-}
-
-.rp-risk-head {
-  display: block;
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 1.6;
-  color: var(--as-ink);
-}
-
-.rp-risk-body {
-  display: block;
-  margin-top: 3px;
-  font-size: 13.5px;
-  line-height: 1.7;
-  color: var(--as-muted);
-}
-
 /* ---------- section head ---------- */
 
 .rp-section-head {
   display: flex;
   align-items: baseline;
-  gap: 12px;
-  margin-top: 44px;
+  flex-wrap: wrap;
+  gap: 6px 12px;
 }
 
 .rp-count {
@@ -315,21 +316,165 @@ const t = computed(() => (isEn.value ? COPY.en : COPY.root));
   background: var(--vp-c-brand-soft);
 }
 
+.rp-hint {
+  font-size: 12.5px;
+  color: var(--as-muted);
+}
+
+/* Pointer-only affordance, so don't advertise it where hovering is impossible.
+   The cards stay fully expandable by click either way. */
+@media (hover: none) {
+  .rp-hint {
+    display: none;
+  }
+}
+
+/* ---------- risk dialog ---------- */
+
+/* UA styles put a 2px border, 1em padding and a fit-content box on <dialog>;
+   all of it has to go before the panel inside can control the look. */
+.rd {
+  width: min(720px, calc(100vw - 32px));
+  max-height: min(82vh, 680px);
+  margin: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  overflow: visible;
+}
+
+.rd::backdrop {
+  background: rgba(12, 10, 9, 0.62);
+  backdrop-filter: blur(2px);
+}
+
+.rd-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: min(82vh, 680px);
+  border: 1px solid var(--as-line);
+  border-radius: 16px;
+  background: var(--as-panel);
+  box-shadow: 0 24px 60px rgba(12, 10, 9, 0.28);
+  overflow: hidden;
+}
+
+.rd-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--as-line);
+  background: var(--vp-c-warning-soft);
+}
+
+.rd-title {
+  margin: 0;
+  border: 0;
+  padding: 0;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--as-ink);
+}
+
+.rd-x {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: var(--as-muted);
+  cursor: pointer;
+  transition: color 0.15s, background-color 0.15s;
+}
+
+.rd-x:hover {
+  color: var(--as-ink);
+  background: var(--as-line);
+}
+
+.rd-x svg {
+  width: 16px;
+  height: 16px;
+}
+
+.rd-body {
+  padding: 18px 20px 20px;
+  overflow-y: auto;
+}
+
+.rd-lead {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--as-muted);
+}
+
+.rd-list {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.rd-list li {
+  margin: 0;
+  padding-left: 13px;
+  border-left: 2px solid var(--vp-c-warning-2);
+}
+
+.rd-item-head {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.6;
+  color: var(--as-ink);
+}
+
+.rd-item-body {
+  display: block;
+  margin-top: 3px;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--as-muted);
+}
+
+.rd-foot {
+  padding: 14px 20px;
+  border-top: 1px solid var(--as-line);
+  text-align: right;
+  background: var(--as-bg-alt);
+}
+
+.rd-ok {
+  height: 36px;
+  padding: 0 20px;
+  border-radius: 18px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--vp-c-white);
+  background: var(--vp-c-brand-2);
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.rd-ok:hover {
+  background: var(--vp-c-brand-1);
+}
+
 @media (max-width: 720px) {
   .rp-hero {
-    padding: 48px 0 52px;
-  }
-
-  .rp-band {
-    padding: 48px 0;
+    padding: 28px 0 26px;
   }
 
   .rp-title {
-    font-size: 32px;
-  }
-
-  .rp-h2 {
-    font-size: 22px;
+    font-size: 28px;
   }
 }
 
@@ -339,11 +484,11 @@ const t = computed(() => (isEn.value ? COPY.en : COPY.root));
   }
 
   .rp-title {
-    font-size: 28px;
+    font-size: 26px;
   }
 
   .rp-btn {
-    width: 100%;
+    flex: 1 1 auto;
     justify-content: center;
   }
 }

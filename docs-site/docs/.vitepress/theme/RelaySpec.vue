@@ -26,10 +26,6 @@ const EXAMPLE_CODEX =
 
 const COPY = {
   root: {
-    title: "对接规范",
-    lead:
-      "中转站可以在自己的控制台放一个「一键添加到 AI Switch」按钮，指向下面这个 scheme 链接。用户点击后 AI Switch 会被唤起，弹出确认框，确认后直接生成一个 API 账号，不需要手抄 base URL 和密钥。",
-
     anatomyTitle: "URL 结构",
     anatomyNote:
       "scheme、版本段、路径三者是固定值，写错任何一个都会被拒绝解析。所有参数值必须做 URL 百分号编码。",
@@ -159,10 +155,6 @@ const COPY = {
   },
 
   en: {
-    title: "Integration spec",
-    lead:
-      "A relay provider can put an “Add to AI Switch” button in its own console that points at the scheme URL below. Clicking it launches AI Switch, which shows a confirmation dialog and then creates an API account directly — no copying base URLs and keys by hand.",
-
     anatomyTitle: "URL anatomy",
     anatomyNote:
       "The scheme, version segment, and path are fixed values; getting any of them wrong means the link is rejected outright. Every parameter value must be percent-encoded.",
@@ -312,13 +304,8 @@ async function copy(key: string, text: string) {
 
 <template>
   <section class="rs">
-    <header class="rs-head">
-      <h2 class="rs-h2">{{ t.title }}</h2>
-      <p class="rs-lead">{{ t.lead }}</p>
-    </header>
-
     <!-- URL anatomy -->
-    <div class="rs-block">
+    <div class="rs-block rs-block-first">
       <h3 class="rs-h3">{{ t.anatomyTitle }}</h3>
       <div class="rs-anatomy">
         <div v-for="a in t.anatomy" :key="a.seg" class="rs-seg">
@@ -447,26 +434,6 @@ async function copy(key: string, text: string) {
   margin: 0;
 }
 
-.rs-head {
-  max-width: 76ch;
-}
-
-.rs-h2 {
-  margin: 0;
-  font-size: 30px;
-  line-height: 1.25;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: var(--as-ink);
-}
-
-.rs-lead {
-  margin: 14px 0 0;
-  font-size: 16px;
-  line-height: 1.75;
-  color: var(--as-muted);
-}
-
 .rs-h3 {
   margin: 0 0 10px;
   font-size: 13px;
@@ -496,6 +463,10 @@ async function copy(key: string, text: string) {
 
 .rs-block {
   margin-top: 40px;
+}
+
+.rs-block-first {
+  margin-top: 0;
 }
 
 .rs-block-flush {
@@ -817,8 +788,8 @@ async function copy(key: string, text: string) {
 }
 
 @media (max-width: 640px) {
-  .rs-h2 {
-    font-size: 25px;
+  .rs-block {
+    margin-top: 32px;
   }
 }
 </style>
