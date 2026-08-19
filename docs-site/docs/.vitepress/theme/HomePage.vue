@@ -27,7 +27,7 @@ const PLATFORM_ICONS: Record<string, string> = {
 const COPY = {
   root: {
     heroEyebrow: "开源 · MIT 许可",
-    heroTitle: "一个壳里管完所有 AI CLI",
+    heroTitle: "一个壳里统一管理所有 AI API",
     heroLead:
       "AI Switch 把 Codex、Claude Code、Gemini CLI、Grok 等命令行工具的账号、协议和算力集中到一处：本地代理统一入口，算力池自动调度，上游协议按需桥接。桌面应用与自托管 Web 服务共用同一份数据。",
     ctaPrimary: "快速开始",
@@ -145,7 +145,7 @@ const COPY = {
 
   en: {
     heroEyebrow: "Open source · MIT",
-    heroTitle: "One shell for every AI CLI",
+    heroTitle: "One shell for every AI API",
     heroLead:
       "AI Switch brings the accounts, protocols, and capacity behind Codex, Claude Code, Gemini CLI, Grok and more into one place: a single local proxy entry, automatic pool scheduling, and on-demand upstream protocol bridging. The desktop app and the self-hosted web service share the same data.",
     ctaPrimary: "Quick Start",
