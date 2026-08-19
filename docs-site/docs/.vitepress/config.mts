@@ -11,6 +11,9 @@ const HOSTNAME = "https://ijry.github.io/ai-switch/";
 const zhNav: DefaultTheme.NavItem[] = [
   { text: "指南", link: "/guide/introduction", activeMatch: "^/guide/" },
   { text: "功能", link: "/features/vibe", activeMatch: "^/features/" },
+  // Directory link: normalizeLink leaves trailing-slash paths untouched, and
+  // GitHub Pages serves /relay/ from relay/index.html.
+  { text: "中转站", link: "/relay/", activeMatch: "^/relay/" },
   { text: "部署", link: "/deploy/desktop", activeMatch: "^/deploy/" },
   { text: "开发", link: "/dev/architecture", activeMatch: "^/dev/" },
   { text: "FAQ", link: "/faq" },
@@ -84,6 +87,7 @@ const zhSidebar: DefaultTheme.Sidebar = {
 const enNav: DefaultTheme.NavItem[] = [
   { text: "Guide", link: "/en/guide/introduction", activeMatch: "^/en/guide/" },
   { text: "Features", link: "/en/features/vibe", activeMatch: "^/en/features/" },
+  { text: "Relays", link: "/en/relay/", activeMatch: "^/en/relay/" },
   { text: "Deploy", link: "/en/deploy/desktop", activeMatch: "^/en/deploy/" },
   { text: "Develop", link: "/en/dev/architecture", activeMatch: "^/en/dev/" },
   { text: "FAQ", link: "/en/faq" },

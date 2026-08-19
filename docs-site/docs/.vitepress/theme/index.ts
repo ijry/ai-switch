@@ -2,6 +2,7 @@ import DefaultTheme from "vitepress/theme";
 import type { Theme } from "vitepress";
 import { h } from "vue";
 import HomePage from "./HomePage.vue";
+import RelayCards from "./RelayCards.vue";
 import "./style.css";
 
 export default {
@@ -12,5 +13,8 @@ export default {
     return h(DefaultTheme.Layout, null, {
       "home-features-after": () => h(HomePage),
     });
+  },
+  enhanceApp({ app }) {
+    app.component("RelayCards", RelayCards);
   },
 } satisfies Theme;
