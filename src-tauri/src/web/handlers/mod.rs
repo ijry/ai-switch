@@ -712,6 +712,33 @@ pub async fn dispatch_command(
                 .map_err(to_error)?,
             )
         }
+        "route_config_write_is_stale" => {
+            let base_url = optional_string_arg(&args, "baseUrl")?;
+            let platform = optional_string_arg(&args, "platform")?.ok_or_else(|| {
+                to_error(AppError::Validation {
+                    code: "validation.route_config_platform_required",
+                    message: "Route config platform is required".to_string(),
+                    details: None,
+                    recoverable: true,
+                })
+            })?;
+            let status = RouteProxyService::status(&state.route_proxy).await;
+            match base_url
+                .filter(|value| !value.is_empty())
+                .or(status.base_url)
+            {
+                Some(resolved) => to_value(
+                    RouteConfigService::config_write_is_stale(
+                        &state.paths,
+                        &state.pool,
+                        &resolved,
+                        &platform,
+                    )
+                    .await,
+                ),
+                None => to_value(false),
+            }
+        }
         "get_web_service_config" => to_value(
             WebService::load_config(&state.paths)
                 .await

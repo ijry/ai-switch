@@ -240,6 +240,16 @@ export function writeRouteProxyConfigs(
   return invoke("write_route_proxy_configs", { baseUrl: baseUrl ?? null, platform });
 }
 
+/// Whether writing config now would change the file on disk. Config is written
+/// on demand, so model-slot and global-client-config edits sit unapplied until
+/// the user asks for a write.
+export function routeConfigWriteIsStale(
+  baseUrl: string | null | undefined,
+  platform: string,
+): Promise<boolean> {
+  return invoke("route_config_write_is_stale", { baseUrl: baseUrl ?? null, platform });
+}
+
 export function listRouteCredentials(platform: string): Promise<RouteCredential[]> {
   return invoke("list_route_credentials", { platform });
 }

@@ -196,6 +196,86 @@ impl RouteConfigService {
         Ok(outcomes)
     }
 
+    /// Whether writing config right now would change the file on disk.
+    ///
+    /// Renders through the real adapter and compares bytes, so this can never
+    /// drift from what a write actually produces — a hand-rolled "did the pool
+    /// change since last write" flag would.
+    ///
+    /// `false` when the platform has no managed proxy key yet (nothing was ever
+    /// written, so there is nothing to re-write) and on any error: a stale-config
+    /// hint must never be the thing that breaks the screen.
+    pub async fn config_write_is_stale(
+        paths: &AppPaths,
+        pool: &SqlitePool,
+        base_url: &str,
+        platform: &str,
+    ) -> bool {
+        let home = match resolve_home_dir() {
+            Ok(home) => home,
+            Err(_) => return false,
+        };
+        Self::config_write_is_stale_for_home(paths, pool, base_url, platform, &home).await
+    }
+
+    pub(crate) async fn config_write_is_stale_for_home(
+        paths: &AppPaths,
+        pool: &SqlitePool,
+        base_url: &str,
+        platform: &str,
+        home: &Path,
+    ) -> bool {
+        Self::rendered_config_differs(paths, pool, base_url, platform, home)
+            .await
+            .unwrap_or(false)
+    }
+
+    async fn rendered_config_differs(
+        paths: &AppPaths,
+        pool: &SqlitePool,
+        base_url: &str,
+        platform: &str,
+        home: &Path,
+    ) -> Result<bool, AppError> {
+        let base_url = normalize_base_url(base_url)?;
+        let platform = PlatformId::parse(platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::ConfigWrite)?;
+
+        // Never written for this platform → nothing to re-write.
+        let Some(route_proxy_key) =
+            RouteProxyKeyRepository::get_existing_platform_key(pool, platform.as_str()).await?
+        else {
+            return Ok(false);
+        };
+
+        let adapter = route_config_adapter(platform)?;
+        let path = adapter.resolve_path(home);
+        let existing = tokio::fs::read(&path).await.ok();
+        if existing.is_none() {
+            // The file we manage is gone; writing would recreate it.
+            return Ok(true);
+        }
+
+        let claude_env = Self::resolve_claude_env_plan(paths, pool, platform).await?;
+        let rendered = adapter.render(
+            &path,
+            existing.as_deref(),
+            &RouteConfigInput {
+                base_url: base_url.to_string(),
+                route_proxy_key,
+                claude_env,
+            },
+        )?;
+
+        // Compare parsed content, not bytes: `render` pretty-prints whatever it
+        // parsed, so a file the coordinator previously wrote compact would look
+        // "stale" forever on formatting alone.
+        Ok(config_content_differs(
+            existing.as_deref().unwrap_or_default(),
+            &rendered,
+        ))
+    }
+
     pub(crate) async fn write_existing_config_for_home(
         paths: &AppPaths,
         pool: &SqlitePool,
@@ -440,6 +520,19 @@ fn resolve_home_dir() -> Result<PathBuf, AppError> {
             details: None,
             recoverable: false,
         })
+}
+
+/// Whether two config payloads differ in content. JSON is compared as parsed
+/// values so formatting alone never reads as a pending change; anything else
+/// (TOML) falls back to bytes.
+fn config_content_differs(existing: &[u8], rendered: &[u8]) -> bool {
+    match (
+        serde_json::from_slice::<Value>(existing),
+        serde_json::from_slice::<Value>(rendered),
+    ) {
+        (Ok(existing), Ok(rendered)) => existing != rendered,
+        _ => existing != rendered,
+    }
 }
 
 fn normalize_base_url(base_url: &str) -> Result<&str, AppError> {
@@ -1085,6 +1178,57 @@ command = "npx"
         // Unconfigured slots stay absent rather than being invented.
         assert!(env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").is_none());
         assert!(env.get("ANTHROPIC_DEFAULT_FABLE_MODEL_NAME").is_none());
+    }
+
+    #[tokio::test]
+    async fn stale_check_reports_pending_pool_and_client_config_edits() {
+        let (_app_dir, paths, pool, runtime) = config_write_context().await;
+        let home = tempfile::tempdir().expect("home dir");
+        let base_url = "http://127.0.0.1:43111";
+        let is_stale = || {
+            RouteConfigService::config_write_is_stale_for_home(
+                &paths,
+                &pool,
+                base_url,
+                "claude",
+                home.path(),
+            )
+        };
+
+        // Never written for this platform → nothing to nudge about.
+        assert!(!is_stale().await);
+
+        seed_claude_pool_member(
+            &pool,
+            "api",
+            r#"[{"from":"claude-sonnet-5","to":"provider-sonnet"}]"#,
+        )
+        .await;
+        write_claude_config_with_pool(home.path(), &paths, &pool, &runtime).await;
+
+        // Just written → in sync.
+        assert!(!is_stale().await);
+
+        // A mapping edit alone makes the on-disk file stale: the app writes only
+        // on demand, so this is exactly the state the UI must surface.
+        seed_claude_pool_member(
+            &pool,
+            "api",
+            r#"[{"from":"claude-opus-4-8","to":"provider-opus"}]"#,
+        )
+        .await;
+        assert!(is_stale().await);
+
+        write_claude_config_with_pool(home.path(), &paths, &pool, &runtime).await;
+        assert!(!is_stale().await);
+
+        // Same for a global client-config edit, which never touches the pool.
+        let mut settings = SettingsService::load(&paths).await.expect("settings");
+        settings.claude_client_config_json = Some(r#"{"includeCoAuthoredBy":false}"#.to_string());
+        SettingsService::save(&paths, &settings)
+            .await
+            .expect("save settings");
+        assert!(is_stale().await);
     }
 
     #[tokio::test]

@@ -47,8 +47,8 @@ use commands::route_pool_commands::{
     set_route_pool_members, subscribe_route_proxy_live_log, unsubscribe_route_proxy_live_log,
 };
 use commands::route_proxy_commands::{
-    get_route_proxy_key, get_route_proxy_status, start_route_proxy, stop_route_proxy,
-    write_route_proxy_configs,
+    get_route_proxy_key, get_route_proxy_status, route_config_write_is_stale, start_route_proxy,
+    stop_route_proxy, write_route_proxy_configs,
 };
 use commands::route_proxy_https_commands::{
     delete_route_proxy_https_certificates, disable_route_proxy_https, enable_route_proxy_https,
@@ -442,6 +442,7 @@ pub fn run() {
             get_route_proxy_status,
             get_route_proxy_key,
             write_route_proxy_configs,
+            route_config_write_is_stale,
             get_route_proxy_https_status,
             enable_route_proxy_https,
             disable_route_proxy_https,

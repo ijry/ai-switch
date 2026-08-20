@@ -78,6 +78,7 @@ import {
   subscribeRouteProxyLiveLog,
   unsubscribeRouteProxyLiveLog,
   updateRouteCredential,
+  routeConfigWriteIsStale,
   writeRouteProxyConfigs,
 } from "../lib/api/client";
 import type {
@@ -2997,12 +2998,35 @@ export function AccountsScreen({
       return writeRouteProxyConfigs(routeProxyQuery.data?.base_url ?? null, activePlatform);
     },
     onMutate: () => setConfigWriteError(null),
-    onSuccess: setConfigWriteOutcomes,
+    onSuccess: (outcomes) => {
+      setConfigWriteOutcomes(outcomes);
+      void queryClient.invalidateQueries({ queryKey: ["route-config-stale"] });
+    },
     onError: (error) => setConfigWriteError(formatApiError(error, "配置写入失败。")),
   });
   // Pool-wide client behavior switches. Claude Code reads these from its own
   // settings file, which the whole pool shares, so they cannot be per-account.
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: getSettings });
+  // Config is written on demand, so mapping and client-config edits sit unapplied
+  // until the user asks for a write. The backend answers this by rendering through
+  // the real adapter and diffing against disk, so the hint cannot drift from what
+  // a write would actually produce.
+  const configWriteStaleQuery = useQuery({
+    queryKey: [
+      "route-config-stale",
+      activePlatform,
+      routeProxyQuery.data?.base_url ?? null,
+      // Any pool or account edit changes the rendered bytes, so refetch when the
+      // account list version changes rather than hand-listing every mutation.
+      allCredentialsQuery.dataUpdatedAt,
+      settingsQuery.data?.claude_client_config_json ?? null,
+    ],
+    queryFn: () =>
+      routeConfigWriteIsStale(routeProxyQuery.data?.base_url ?? null, activePlatform),
+    enabled: Boolean(routeProxyQuery.data?.running) && configWriteEnabled,
+    staleTime: 0,
+  });
+  const configWriteStale = configWriteStaleQuery.data === true;
   const saveClientConfigMutation = useMutation({
     mutationFn: async (configJson: string | null) => {
       const settings = settingsQuery.data;
@@ -3885,14 +3909,35 @@ export function AccountsScreen({
               )}
               <button
                 aria-label="写入路由配置文件"
-                className="grid h-6 w-6 place-items-center border border-stone-300 bg-white text-stone-700 transition-colors hover:bg-stone-200 disabled:opacity-50"
+                className={`relative grid h-6 w-6 place-items-center border bg-white transition-colors hover:bg-stone-200 disabled:opacity-50 ${
+                  configWriteStale
+                    ? "border-amber-400 text-amber-700"
+                    : "border-stone-300 text-stone-700"
+                }`}
                 disabled={!routeProxyQuery.data?.running || !configWriteEnabled || writeConfigsMutation.isPending}
                 onClick={() => writeConfigsMutation.mutate()}
-                title={!configWriteEnabled ? configWriteReason : undefined}
+                title={
+                  !configWriteEnabled
+                    ? configWriteReason
+                    : configWriteStale
+                      ? "配置已变更，需重新写入才会生效"
+                      : undefined
+                }
                 type="button"
               >
                 <FileCode2 aria-hidden="true" className="h-3.5 w-3.5" />
+                {configWriteStale ? (
+                  <span
+                    aria-hidden="true"
+                    className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-amber-500"
+                  />
+                ) : null}
               </button>
+              {configWriteStale ? (
+                <span className="shrink-0 text-[11px] font-semibold text-amber-700">
+                  配置已变更，需重新写入
+                </span>
+              ) : null}
               {activePlatform === "claude" ? (
                 <button
                   aria-label="编辑全局客户端配置"

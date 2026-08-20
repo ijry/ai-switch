@@ -32,6 +32,7 @@ import {
   subscribeRouteProxyLiveLog,
   unsubscribeRouteProxyLiveLog,
   updateRouteCredential,
+  routeConfigWriteIsStale,
   writeRouteProxyConfigs,
 } from "../src/lib/api/client";
 import { recognizeApiKeysFromImageBlob } from "../src/lib/ocr/apiKeyOcr";
@@ -86,6 +87,7 @@ vi.mock("../src/lib/api/client", () => ({
   subscribeRouteProxyLiveLog: vi.fn(),
   unsubscribeRouteProxyLiveLog: vi.fn(),
   updateRouteCredential: vi.fn(),
+  routeConfigWriteIsStale: vi.fn(),
   writeRouteProxyConfigs: vi.fn(),
 }));
 
@@ -303,6 +305,8 @@ describe("AccountsScreen", () => {
     vi.mocked(unsubscribeRouteProxyLiveLog).mockResolvedValue(undefined);
     vi.mocked(updateRouteCredential).mockReset();
     vi.mocked(writeRouteProxyConfigs).mockReset();
+    vi.mocked(routeConfigWriteIsStale).mockReset();
+    vi.mocked(routeConfigWriteIsStale).mockResolvedValue(false);
     vi.mocked(fetchRouteProxyModels).mockReset();
     vi.mocked(recognizeApiKeysFromImageBlob).mockReset();
 
@@ -3044,6 +3048,30 @@ describe("AccountsScreen", () => {
     expect(screen.getByText("HTTP 401 · 88 ms")).toBeInTheDocument();
     expect(screen.getByText(/bad key/)).toBeInTheDocument();
     expect(screen.getByText("Team Account")).toBeInTheDocument();
+  });
+
+  it("nudges to re-write config when pending edits would change the file", async () => {
+    // Config is only written on demand, so a mapping or global-client-config
+    // edit sits unapplied until the user writes again.
+    vi.mocked(routeConfigWriteIsStale).mockResolvedValue(true);
+    renderScreen();
+
+    await screen.findByText("本地代理：未启动");
+    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
+    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+
+    expect(await screen.findByText("配置已变更，需重新写入")).toBeInTheDocument();
+    expect(screen.getByLabelText("写入路由配置文件")).toHaveAttribute(
+      "title",
+      "配置已变更，需重新写入才会生效",
+    );
+
+    // Writing clears the nudge.
+    vi.mocked(routeConfigWriteIsStale).mockResolvedValue(false);
+    await userEvent.click(screen.getByLabelText("写入路由配置文件"));
+    await waitFor(() =>
+      expect(screen.queryByText("配置已变更，需重新写入")).not.toBeInTheDocument(),
+    );
   });
 
   it("clears route config write results after a short delay", async () => {

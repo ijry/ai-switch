@@ -77,3 +77,30 @@ pub async fn write_route_proxy_configs(
     .await
     .map_err(ApiError::from)
 }
+
+/// Whether writing config now would change the file on disk — the app only
+/// writes on demand, so model-slot and client-config edits sit unapplied until
+/// the user asks for a write.
+#[tauri::command]
+pub async fn route_config_write_is_stale(
+    state: State<'_, AppState>,
+    base_url: Option<String>,
+    platform: String,
+) -> Result<bool, ApiError> {
+    let status = RouteProxyService::status(&state.route_proxy).await;
+    let Some(resolved) = base_url
+        .and_then(|value| {
+            let trimmed = value.trim().to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        })
+        .or(status.base_url)
+    else {
+        // Proxy not running: writing is unavailable, so there is nothing to nudge about.
+        return Ok(false);
+    };
+
+    Ok(
+        RouteConfigService::config_write_is_stale(&state.paths, &state.pool, &resolved, &platform)
+            .await,
+    )
+}
