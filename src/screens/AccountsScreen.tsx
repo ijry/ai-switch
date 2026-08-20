@@ -58,6 +58,7 @@ import {
   deleteRouteCredential,
   fetchRouteModels,
   getRoutePool,
+  getSessionUsageStats,
   getRouteProxyKey,
   getRouteProxyStatus,
   importOfficialRouteCredentialsFromFiles,
@@ -259,6 +260,11 @@ const accountViewOptions: Array<{ key: AccountView; label: string }> = [
 
 const routeStatsPageSize = 20;
 const routeStatsRefreshMs = 5000;
+/**
+ * Session usage refreshes far less often than the route stats: it re-reads CLI
+ * transcripts from disk, and those totals only change when a CLI writes a turn.
+ */
+const sessionUsageRefreshMs = 60_000;
 
 type RouteStatsPeriod = (typeof routeStatsPeriods)[number]["key"];
 
@@ -398,13 +404,49 @@ function usageTokenTooltip(request: RoutePoolUsageLog) {
 }
 
 function formatUsagePrice(request: RoutePoolUsageLog) {
+  const suffix = request.price_source === "estimated" ? "(估)" : "";
   if (request.price_currency === "cny" && request.price_cny_micros != null) {
-    return `¥${(request.price_cny_micros / 1_000_000).toFixed(6)}`;
+    return `¥${(request.price_cny_micros / 1_000_000).toFixed(6)}${suffix}`;
   }
   if (request.price_currency === "usd" && request.price_usd_micros != null) {
-    return `$${(request.price_usd_micros / 1_000_000).toFixed(6)}`;
+    return `$${(request.price_usd_micros / 1_000_000).toFixed(6)}${suffix}`;
   }
   return "-";
+}
+
+/**
+ * Format a USD-micros total for a summary card.
+ *
+ * Fixed two-decimal formatting rendered any real amount under half a cent as
+ * "$0.00", which is indistinguishable from having no cost data at all. Small
+ * totals therefore get more decimals rather than being rounded away.
+ */
+function formatCostMicros(micros: number) {
+  const dollars = micros / 1_000_000;
+  if (dollars === 0) {
+    return "$0.00";
+  }
+  if (Math.abs(dollars) < 0.01) {
+    return `$${dollars.toFixed(6)}`;
+  }
+  if (Math.abs(dollars) < 1) {
+    return `$${dollars.toFixed(4)}`;
+  }
+  return `$${dollars.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+/** Compact token counts so six-figure values stay readable in a card. */
+function formatTokenCount(value: number) {
+  if (value >= 1_000_000_000) {
+    return `${(value / 1_000_000_000).toFixed(2)}B`;
+  }
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(1)}M`;
+  }
+  return value.toLocaleString();
 }
 
 function RouteRequestDetail({
@@ -2188,6 +2230,17 @@ export function AccountsScreen({
     placeholderData: keepPreviousData,
     refetchInterval: statsOpen ? routeStatsRefreshMs : false,
   });
+  // Session usage reads the CLI transcript corpus from disk, which is far more
+  // expensive than the route-pool query (a cold scan of a multi-gigabyte history
+  // takes tens of seconds; warm scans hit a per-file cache). It is therefore only
+  // fetched while the stats panel is open, and on a much slower interval.
+  const sessionUsageQuery = useQuery({
+    queryKey: ["session-usage", statsSince],
+    queryFn: () => getSessionUsageStats(statsSince),
+    enabled: statsOpen,
+    placeholderData: keepPreviousData,
+    refetchInterval: statsOpen ? sessionUsageRefreshMs : false,
+  });
   const routeProxyQuery = useQuery({
     queryKey: ["route-proxy-status"],
     queryFn: getRouteProxyStatus,
@@ -2524,6 +2577,8 @@ export function AccountsScreen({
 
   const routeStats = routePoolQuery.data?.stats;
   const costTotal = (routeStats?.cost_micros ?? 0) / 1_000_000;
+  const sessionUsage = sessionUsageQuery.data;
+  const sessionTotals = sessionUsage?.totals;
   const requestRowCount = routeStats?.request_row_count ?? (routeStats?.requests ?? []).length;
   const resolvedRequestPage = routeStats?.request_page ?? requestPage;
   const resolvedRequestPageSize = routeStats?.request_page_size ?? routeStatsPageSize;
@@ -4307,8 +4362,158 @@ export function AccountsScreen({
               </div>
               <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
                 <p className="text-[11px] font-medium text-stone-500">总费用（USD）</p>
-                <p className="mt-1 text-lg font-semibold text-stone-950">${costTotal.toFixed(2)}</p>
+                <p
+                  className="mt-1 text-lg font-semibold text-stone-950"
+                  title={`${costTotal.toFixed(6)} USD`}
+                >
+                  {formatCostMicros(routeStats?.cost_micros ?? 0)}
+                </p>
               </div>
+            </div>
+
+            <p className="text-[11px] text-stone-400">
+              上游未返回价格时，费用按本地价格表估算（明细中标注「估」）；可在 ~/.ai-switch/model-prices.json 自定义价格。
+            </p>
+
+            <div className="space-y-2 rounded-xl border border-stone-200 bg-white p-3">
+              <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+                <div>
+                  <p className="text-[13px] font-semibold text-stone-950">本机会话用量</p>
+                  <p className="text-[12px] text-stone-500">
+                    读取 Claude Code 与 Codex CLI 的本地会话记录，包含未经本应用代理的请求
+                  </p>
+                </div>
+                {sessionUsage ? (
+                  <p className="text-[11px] text-stone-400">
+                    已扫描 {sessionUsage.scanned_file_count.toLocaleString()} 个会话文件
+                  </p>
+                ) : null}
+              </div>
+
+              {sessionUsageQuery.isError ? (
+                <p className="rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-700" role="alert">
+                  {formatApiError(sessionUsageQuery.error, "读取本机会话用量失败")}
+                </p>
+              ) : !sessionUsage ? (
+                <p className="text-[12px] text-stone-500" role="status">
+                  正在读取本机会话记录…首次扫描较慢，之后会走缓存。
+                </p>
+              ) : sessionTotals && sessionTotals.request_count === 0 ? (
+                <p className="text-[12px] text-stone-500">当前筛选范围内没有本机会话记录。</p>
+              ) : (
+                <>
+                  <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                    <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
+                      <p className="text-[11px] font-medium text-stone-500">请求</p>
+                      <p className="mt-1 text-lg font-semibold text-stone-950">
+                        {(sessionTotals?.request_count ?? 0).toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
+                      <p className="text-[11px] font-medium text-stone-500">输入 Token</p>
+                      <p
+                        className="mt-1 text-lg font-semibold text-stone-950"
+                        title={(sessionTotals?.input_tokens ?? 0).toLocaleString()}
+                      >
+                        {formatTokenCount(sessionTotals?.input_tokens ?? 0)}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
+                      <p className="text-[11px] font-medium text-stone-500">输出 Token</p>
+                      <p
+                        className="mt-1 text-lg font-semibold text-stone-950"
+                        title={(sessionTotals?.output_tokens ?? 0).toLocaleString()}
+                      >
+                        {formatTokenCount(sessionTotals?.output_tokens ?? 0)}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
+                      <p className="text-[11px] font-medium text-stone-500">缓存写入</p>
+                      <p
+                        className="mt-1 text-lg font-semibold text-stone-950"
+                        title={(sessionTotals?.cache_write_tokens ?? 0).toLocaleString()}
+                      >
+                        {formatTokenCount(sessionTotals?.cache_write_tokens ?? 0)}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
+                      <p className="text-[11px] font-medium text-stone-500">缓存读取</p>
+                      <p
+                        className="mt-1 text-lg font-semibold text-stone-950"
+                        title={(sessionTotals?.cache_read_tokens ?? 0).toLocaleString()}
+                      >
+                        {formatTokenCount(sessionTotals?.cache_read_tokens ?? 0)}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
+                      <p className="text-[11px] font-medium text-stone-500">估算费用（USD）</p>
+                      <p
+                        className="mt-1 text-lg font-semibold text-stone-950"
+                        title="按本地价格表估算，非上游实际计费"
+                      >
+                        {formatCostMicros(sessionTotals?.cost_micros ?? 0)}
+                      </p>
+                    </div>
+                  </div>
+
+                  {sessionUsage.truncated ? (
+                    <p className="text-[11px] text-amber-700">
+                      会话文件数量超过扫描上限，以下数字不完整。
+                    </p>
+                  ) : null}
+                  {sessionTotals && sessionTotals.unpriced_request_count > 0 ? (
+                    <p className="text-[11px] text-stone-500">
+                      其中 {sessionTotals.unpriced_request_count.toLocaleString()} 个请求的模型没有价格数据，未计入费用；
+                      可在 ~/.ai-switch/model-prices.json 中补充价格。
+                    </p>
+                  ) : null}
+                  <p className="text-[11px] text-stone-400">
+                    费用为按本地价格表的估算值（缓存写入按输入价 1.25 倍、缓存读取按 0.1 倍计），与上游实际账单可能存在差异。
+                  </p>
+
+                  {sessionUsage.by_model.length > 0 ? (
+                    <div className="overflow-hidden rounded-xl border border-stone-200">
+                      <div className="grid grid-cols-[1.6fr_0.6fr_0.8fr_0.8fr_0.8fr] gap-2 border-b border-stone-100 bg-stone-50 px-3 py-2 text-[11px] font-medium text-stone-500">
+                        <span>模型</span>
+                        <span className="text-right">请求</span>
+                        <span className="text-right">输入</span>
+                        <span className="text-right">输出</span>
+                        <span className="text-right">费用</span>
+                      </div>
+                      <div className="divide-y divide-stone-100">
+                        {sessionUsage.by_model.slice(0, 12).map((row) => (
+                          <div
+                            className="grid grid-cols-[1.6fr_0.6fr_0.8fr_0.8fr_0.8fr] gap-2 px-3 py-2 text-[12px]"
+                            key={`${row.provider}:${row.model}`}
+                          >
+                            <span className="truncate text-stone-800" title={row.model}>
+                              <span className="text-stone-400">{row.provider}</span> {row.model}
+                            </span>
+                            <span className="text-right text-stone-600">
+                              {row.request_count.toLocaleString()}
+                            </span>
+                            <span
+                              className="text-right text-stone-600"
+                              title={row.input_tokens.toLocaleString()}
+                            >
+                              {formatTokenCount(row.input_tokens)}
+                            </span>
+                            <span
+                              className="text-right text-stone-600"
+                              title={row.output_tokens.toLocaleString()}
+                            >
+                              {formatTokenCount(row.output_tokens)}
+                            </span>
+                            <span className="text-right text-stone-800">
+                              {row.priced ? formatCostMicros(row.cost_micros) : "无价格"}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </>
+              )}
             </div>
 
             <div className="overflow-hidden rounded-xl border border-stone-200 bg-white">

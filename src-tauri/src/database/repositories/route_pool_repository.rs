@@ -341,8 +341,8 @@ impl RoutePoolRepository {
             "INSERT INTO usage_events
              (id, route_credential_id, source_label, metric_type, amount, unit,
               metadata_json, input_tokens, output_tokens, cache_tokens,
-              price_usd_micros, price_cny_micros, price_currency, created_at)
-             VALUES (?, ?, ?, 'request', 1, 'count', ?, ?, ?, ?, ?, ?, ?, ?)",
+              price_usd_micros, price_cny_micros, price_currency, price_source, created_at)
+             VALUES (?, ?, ?, 'request', 1, 'count', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(account_id)
@@ -354,6 +354,7 @@ impl RoutePoolRepository {
         .bind(usage.price_usd_micros)
         .bind(usage.price_cny_micros)
         .bind(&usage.price_currency)
+        .bind(&usage.price_source)
         .bind(&now)
         .execute(pool)
         .await
@@ -379,6 +380,9 @@ impl RoutePoolRepository {
         } else {
             ""
         };
+        // Interpolated rather than hardcoded so the CNY rate lives in exactly one
+        // place, shared with the local price estimator.
+        let cny_per_usd = crate::services::model_pricing::CNY_PER_USD;
         let summary_sql = format!(
             "SELECT
                (SELECT COUNT(DISTINCT rpm.route_credential_id)
@@ -393,7 +397,7 @@ impl RoutePoolRepository {
                  + COALESCE(SUM(CASE WHEN ue.metric_type = 'token' OR ue.unit = 'token' THEN ue.amount ELSE 0 END), 0) AS token_count,
                COALESCE(SUM(CASE
                    WHEN ue.metric_type = 'request' AND ue.price_currency = 'usd' THEN COALESCE(ue.price_usd_micros, 0)
-                   WHEN ue.metric_type = 'request' AND ue.price_currency = 'cny' THEN CAST(ROUND(COALESCE(ue.price_cny_micros, 0) / 7.1) AS INTEGER)
+                   WHEN ue.metric_type = 'request' AND ue.price_currency = 'cny' THEN CAST(ROUND(COALESCE(ue.price_cny_micros, 0) / {cny_per_usd}) AS INTEGER)
                    WHEN ue.metric_type = 'cost' AND ue.unit = 'usd_micros' THEN ue.amount
                    ELSE 0
                END), 0) AS cost_micros
@@ -419,7 +423,7 @@ impl RoutePoolRepository {
             "SELECT ue.id, ue.route_credential_id, a.display_name AS account_name,
                     ue.source_label, ue.metric_type, ue.amount, ue.unit, ue.metadata_json, ue.created_at,
                     ue.input_tokens, ue.output_tokens, ue.cache_tokens,
-                    ue.price_usd_micros, ue.price_cny_micros, ue.price_currency
+                    ue.price_usd_micros, ue.price_cny_micros, ue.price_currency, ue.price_source
              FROM usage_events ue
              INNER JOIN route_credentials a ON a.id = ue.route_credential_id
              WHERE a.platform = ? AND a.archived_at IS NULL{usage_since_clause}
@@ -466,7 +470,7 @@ impl RoutePoolRepository {
             "SELECT ue.id, ue.route_credential_id, a.display_name AS account_name,
                     ue.source_label, ue.metric_type, ue.amount, ue.unit, ue.metadata_json, ue.created_at,
                     ue.input_tokens, ue.output_tokens, ue.cache_tokens,
-                    ue.price_usd_micros, ue.price_cny_micros, ue.price_currency
+                    ue.price_usd_micros, ue.price_cny_micros, ue.price_currency, ue.price_source
              FROM usage_events ue
              INNER JOIN route_credentials a ON a.id = ue.route_credential_id
              WHERE a.platform = ? AND a.archived_at IS NULL AND ue.metric_type = 'request'{usage_since_clause}
@@ -506,6 +510,7 @@ impl RoutePoolRepository {
             price_usd_micros: row.get("price_usd_micros"),
             price_cny_micros: row.get("price_cny_micros"),
             price_currency: row.get("price_currency"),
+            price_source: row.get("price_source"),
         };
 
         Ok(RoutePoolStats {
@@ -636,6 +641,7 @@ mod tests {
             price_usd_micros: None,
             price_cny_micros: Some(7_100_000),
             price_currency: Some("cny".to_string()),
+            price_source: Some("upstream".to_string()),
         };
 
         RoutePoolRepository::insert_request_event(
@@ -662,6 +668,54 @@ mod tests {
         assert_eq!(stats.requests[0].cache_tokens, Some(80));
         assert_eq!(stats.requests[0].price_cny_micros, Some(7_100_000));
         assert_eq!(stats.requests[0].price_currency.as_deref(), Some("cny"));
+        assert_eq!(stats.requests[0].price_source.as_deref(), Some("upstream"));
+    }
+
+    #[tokio::test]
+    async fn estimated_and_upstream_prices_both_count_toward_the_total() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let account_id = create_credential(&pool, "codex", "Mixed price account").await;
+
+        for (price_usd_micros, price_source) in [
+            (Some(2_000_000_i64), "upstream"),
+            (Some(3_000_000_i64), "estimated"),
+        ] {
+            RoutePoolRepository::insert_request_event(
+                &pool,
+                &account_id,
+                "route_proxy",
+                r#"{"status":200}"#,
+                &RouteUsageBreakdown {
+                    input_tokens: Some(10),
+                    output_tokens: Some(5),
+                    cache_tokens: None,
+                    price_usd_micros,
+                    price_cny_micros: None,
+                    price_currency: Some("usd".to_string()),
+                    price_source: Some(price_source.to_string()),
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let stats = RoutePoolRepository::stats(&pool, "codex", None, 1, 20)
+            .await
+            .unwrap();
+
+        // A locally estimated amount is still an amount: the summary must not
+        // silently drop it, or the total reads as 0 for every upstream that
+        // returns tokens without a price.
+        assert_eq!(stats.cost_micros, 5_000_000);
+        assert_eq!(stats.request_count, 2);
+        let sources: Vec<_> = stats
+            .requests
+            .iter()
+            .filter_map(|request| request.price_source.as_deref())
+            .collect();
+        assert!(sources.contains(&"upstream"));
+        assert!(sources.contains(&"estimated"));
     }
 
     #[tokio::test]

@@ -42,6 +42,7 @@ import type {
   TailscaleStatus,
   SessionMessage,
   SessionMeta,
+  SessionUsageStats,
   TargetApp,
   TargetConfigStatus,
   TerminalSession,
@@ -155,6 +156,20 @@ export function setRoutePoolMembers(input: {
   account_ids: string[];
 }): Promise<RoutePoolState> {
   return invoke("set_route_pool_members", { input });
+}
+
+/**
+ * Aggregate usage from local Claude Code / Codex CLI session transcripts.
+ *
+ * `since` is an RFC 3339 timestamp; pass null for the full history.
+ */
+export function getSessionUsageStats(since?: string | null): Promise<SessionUsageStats> {
+  return invoke("get_session_usage_stats", { since: since ?? null });
+}
+
+/** Reload `~/.ai-switch/model-prices.json`, returning the entry count. */
+export function reloadModelPriceOverrides(): Promise<number> {
+  return invoke("reload_model_price_overrides");
 }
 
 export function routePoolRouteOnce(request: RoutePoolRouteRequest): Promise<RoutePoolRouteOutcome> {

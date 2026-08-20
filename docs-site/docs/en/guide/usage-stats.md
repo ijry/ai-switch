@@ -1,6 +1,6 @@
 ---
 title: Usage and Request Stats
-description: How AI Switch records per-request input/output/cache tokens and dual-currency pricing, the four time ranges and six metrics on the stats panel, and what the request list can expand to show.
+description: How AI Switch records per-request input/output/cache tokens and dual-currency pricing, how it estimates cost from a local price table when the upstream sends none, the stats panel's time ranges and metric definitions, and how local Claude Code / Codex session usage is computed.
 ---
 
 # Usage and Request Stats
@@ -16,6 +16,7 @@ All usage lands in the `usage_events` table. The table itself dates from an earl
 | `202607130004_routing_usage.sql` | Created the table: `source_label`, `metric_type`, `amount`, `unit`, `metadata_json`, `created_at` |
 | `202607130011_route_credentials.sql` | Added the `route_credential_id` column and its index |
 | `202608060002_route_usage_breakdown.sql` | Added six breakdown columns |
+| `202608200001_route_usage_price_source.sql` | Added `price_source`, separating a real upstream price from a local estimate |
 
 Those breakdown columns are the entire source of token and cost data:
 
@@ -26,6 +27,7 @@ ALTER TABLE usage_events ADD COLUMN cache_tokens INTEGER;
 ALTER TABLE usage_events ADD COLUMN price_usd_micros INTEGER;
 ALTER TABLE usage_events ADD COLUMN price_cny_micros INTEGER;
 ALTER TABLE usage_events ADD COLUMN price_currency TEXT;
+ALTER TABLE usage_events ADD COLUMN price_source TEXT;
 ```
 
 Prices are stored as integers in **micros**: 1 USD = 1,000,000 micros. That avoids floating-point accumulation error while preserving six decimal places. USD and CNY get a column each, and `price_currency` records which currency the upstream actually quoted.
@@ -58,7 +60,23 @@ Third-party gateways name their usage fields differently, so the proxy falls bac
 
 Between them these three chains cover the Responses, Chat Completions, Gemini, Anthropic, and DeepSeek-family conventions. Values may be integers or strings; negatives are discarded as invalid.
 
-**No usage means empty — nothing is estimated.** When the upstream returns no usage, the corresponding columns stay `NULL` and the UI shows `-`. AI Switch will not back-derive a token count from character length just to display a nicer-looking number.
+**No usage means empty — no token is estimated.** When the upstream returns no usage, the corresponding columns stay `NULL` and the UI shows `-`. AI Switch will not back-derive a token count from character length just to display a nicer-looking number. (**Price** is a different matter — when the upstream sends none, the amount is estimated from tokens, but always labelled as such; see [Estimating cost when the upstream sends no price](#estimating-cost-when-the-upstream-sends-no-price).)
+
+### Streaming responses are accumulated frame by frame
+
+A streaming response body is SSE text (`event: ...` / `data: {...}`), not a single JSON document, so parsing it whole always fails. In that case the parser falls back to reading each frame and merging their usage. **Claude Code and Codex both stream by default**, so this path covers the vast majority of real requests.
+
+Providers put usage in different frames, and the merge has to handle all three:
+
+| Upstream | Where usage appears |
+| --- | --- |
+| Anthropic | Split across two frames — `message_start` carries input and cache tokens (nested under `message`), `message_delta` carries output tokens |
+| OpenAI | Only in the final chunk; earlier chunks have `usage: null` |
+| Gemini | `usageMetadata` in the last frame |
+
+When merging, each field takes the **last non-empty value** rather than a sum: Anthropic and Gemini re-report cumulative totals, so summing would double them.
+
+If the stream is cut off, a partial frame is left at the end. The parser skips frames that fail to parse instead of discarding the whole body — the tokens already received are real spend and should not be lost to one broken tail.
 
 ## How upstream prices are parsed
 
@@ -72,6 +90,41 @@ Price parsing is another alias chain, and it distinguishes "already in micros" f
 There is a generic layer too: if the upstream only supplies `price` or `cost` (possibly an object carrying its own `currency` / `unit`), the currency is identified first and the value routed to the matching column. Currency matching is loose — containing `usd` or `dollar`, or equal to `$`, means USD; containing `cny`, `rmb`, or `yuan`, or equal to `¥`, means CNY.
 
 `price_currency` is determined in this order: an explicit currency field → the currency inside a generic price object → inference from whichever single column has a value. If none of the three settles it, the field stays empty.
+
+## Estimating cost when the upstream sends no price
+
+Anthropic, OpenAI, and Gemini return token counts but **no price**. If only upstream prices counted, the amount for those requests would always be zero — so when the upstream sends no price, the cost is estimated from tokens using a local price table.
+
+The `price_source` column records where an amount came from, so an estimate never masquerades as a real charge:
+
+| `price_source` | Meaning | In the UI |
+| --- | --- | --- |
+| `upstream` | The response carried an explicit price | Shown normally |
+| `estimated` | Computed locally from tokens and the price table | Amount suffixed with 「估」 |
+| `NULL` | No price at all | Shown as `-` |
+
+The precedence is unambiguous: **an upstream price always wins and is never overwritten.** Estimation only happens when both price columns are empty.
+
+### The price table and custom rates
+
+The built-in table matches by model family (`claude-opus`, `claude-sonnet`, `gpt-5`, `gemini-2.5-flash`, …) in US dollars per million tokens. Cache tokens follow Anthropic's published rules: **a cache write costs the input rate × 1.25, a cache read × 0.1**.
+
+Model IDs are normalized before matching: vendor prefixes are stripped (`anthropic/claude-opus-5-aws` → `claude-opus-5-aws`), as are context suffixes like `[1m]`. The longest matching pattern wins, so `claude-haiku-4-5` is not captured by the broader `claude`.
+
+Discounted relay rates, or a new model not yet in the built-in table, can be overridden in `~/.ai-switch/model-prices.json`:
+
+```json
+{
+  "claude-opus-5": { "input_per_mtok": 4.0, "output_per_mtok": 20.0 },
+  "claude-sonnet": { "input_per_mtok": 1.5, "output_per_mtok": 7.5 }
+}
+```
+
+A key can be a full model ID or a family (the `claude-sonnet` above matches every Sonnet). A missing file is normal and not an error; a malformed one falls back silently to the built-in table, and negative or non-finite rates are discarded rather than corrupting the totals.
+
+::: warning An unknown model stays empty, not zero
+A model absent from the price table is **not** treated as free — `price_source` stays `NULL`, the amount is excluded from the total, and the stats panel tells you separately how many requests went unpriced for this reason. That keeps "missing price data" distinguishable from "genuinely free". An estimate is still an estimate: upstreams usually report cache tokens as a single total without splitting reads from writes, and the estimator charges those at the cheaper read rate, so the result errs low.
+:::
 
 ## What the stats panel actually measures
 
@@ -143,7 +196,7 @@ Each row shows: time, account name, status code, path, model, token total, price
 
 - **The model column** renders as `requested->upstream` when the two differ, so an active model mapping is visible at a glance.
 - **The token total** is input plus output; hovering reveals input, output, and cache separately.
-- **Price** picks its symbol from `price_currency` — `¥` for CNY, `$` for USD — both to six decimal places; no price shows `-`.
+- **Price** picks its symbol from `price_currency` — `¥` for CNY, `$` for USD — both to six decimal places; locally estimated amounts are suffixed with 「估」; no price shows `-`.
 
 ### Expanding a row
 
@@ -187,6 +240,71 @@ LEFT JOIN usage_events ue
 - **There is no time range.** This is the account's full history, and it does not follow the stats panel's range selector.
 
 So for the same account, the request count on the stats panel (with "Today" selected) and the one on the account list are very likely to differ. That is not a bug; they are two different definitions.
+
+## Local session usage
+
+Everything above only sees **traffic that went through this app's proxy**. But Claude Code and Codex also record every request they make directly, in their own local session files — and the proxy never sees that spend. The "local session usage" block in the lower half of the stats panel is computed from those files, shown alongside the route stats for comparison.
+
+Directories scanned:
+
+| Client | Path | Environment override |
+| --- | --- | --- |
+| Claude Code | `~/.claude/projects/**/*.jsonl` | `CLAUDE_CONFIG_DIR` |
+| Codex CLI | `~/.codex/sessions/**/*.jsonl` | `CODEX_HOME` |
+
+This is **read-only**: AI Switch never modifies or deletes a session file.
+
+### Two formats, two counting rules
+
+The two clients account for usage completely differently, and each has one rule that — if you get it wrong — throws the numbers off badly.
+
+**Claude Code — you must deduplicate by `message.id`.** One JSON object per line; assistant messages carry `message.usage` (input, output, cache write, cache read). The catch is that resume and context compaction **re-serialize the same message into several files**, so summing lines directly double-counts.
+
+Measured against a real corpus on one machine (1186 files, 3.3 GB):
+
+| Deduplication | Rows counted | Estimated cost |
+| --- | --- | --- |
+| None | 4020 | $3,675 |
+| By `(message.id, requestId)` | 2911 | $3,160 |
+| **By `message.id`** | **2008** | **$1,908** |
+
+No deduplication overstates the total by **93%**. The composite key does not work either: about 1158 high-token rows have a `message.id` but **no** `requestId`, so a composite key misses many duplicates.
+
+Two more details: `message.model` carries vendor prefixes (`anthropic/claude-opus-5-ps-aws-dst` was observed in practice) and must be normalized before a price lookup; `<synthetic>` marks locally generated messages that were never billed and are skipped. Subagent (`isSidechain`) tokens **are** counted — that is real spend, even though the session *list* hides them.
+
+**Codex CLI — `total_token_usage` is cumulative, so only the last one counts.** The `info.total_token_usage` inside a `payload.type == "token_count"` event is the **running total for the whole session**, not the delta for that turn. One real file contained 690 such events; summing them gave 28.1 billion tokens against an actual final value of 80.5 million — an overstatement of **350×**.
+
+Summing `info.last_token_usage` (the per-turn delta) is also inaccurate — it suffers replays too; the final total is the reliable value. The model ID lives in separate `turn_context.model` records, on different lines from the usage, so it has to be tracked while scanning.
+
+Codex's `input_tokens` already includes `cached_input_tokens`, so the estimator subtracts the cached portion and charges it at the cache-read rate instead of billing it at full price; `reasoning_output_tokens` is already part of `output_tokens` and is not added again.
+
+### What the metrics measure
+
+Six cards: request count, input tokens, output tokens, cache writes, cache reads, estimated cost. Two differences from the route stats:
+
+- **Cache writes and reads are separate cards.** The route stats have a single combined "cache tokens" figure because most upstreams only report one total; session files keep the two apart, and since they are priced 12.5× apart (write ×1.25, read ×0.1), combining them would misprice the result.
+- **Cost is always an estimate.** Session files contain token counts and no amounts, so there is no `upstream` case here.
+
+Below the cards is a per-model breakdown (by cost, descending, up to 12 rows); models with no price data show "无价格".
+
+The four time ranges above are reused, filtering on each record's `timestamp`. **Records with no timestamp are only counted under "All time"** — otherwise picking a period would pull in undated rows and inflate the figure for no visible reason.
+
+### Performance and refresh rate
+
+Session files add up (3.3 GB on the machine measured), and a first scan takes **well over a hundred seconds**. Two optimizations address that:
+
+- **Each file's parse is cached by (mtime, size).** Session files are essentially append-only, so unchanged files are not re-read. A cold scan takes 115 s; a warm one **0.9 s**.
+- **A string pre-filter runs before parsing.** Only about 23% of lines carry usage, so a substring check gates the JSON parser.
+
+Even so it is far heavier than the route stats, hence: **it is only queried while the stats panel is open, and refreshes every 60 seconds** (the route stats refresh every 5). The first open shows a "reading" state; subsequent refreshes hit the cache.
+
+::: tip Do not add the two figures together
+The route stats and session usage **overlap**: a Claude Code request that went through this app's proxy is recorded by both. They are two viewpoints — the route stats show "traffic through the proxy", session usage shows "all CLI spend on this machine" — not two halves to be summed.
+:::
+
+::: warning Scan limit
+Beyond 50,000 files the scan truncates, and the panel then states explicitly that the figures are incomplete rather than presenting a truncated total as complete. Normal use is nowhere near that (1186 files on the machine measured).
+:::
 
 ## What if you want live traffic
 

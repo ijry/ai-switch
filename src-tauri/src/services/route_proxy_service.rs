@@ -1017,6 +1017,14 @@ async fn forward_request(
             Some(response_bytes.as_ref()),
         );
         let usage = extract_usage_breakdown(&response_bytes);
+        let mut usage = usage;
+        // Prefer the model the upstream itself reported (a gateway may serve a
+        // different one than was asked for), then the mapped upstream model, then
+        // whatever the client requested.
+        let priced_model = extract_response_model(&response_bytes)
+            .or_else(|| upstream_model.clone())
+            .or_else(|| requested_model.clone());
+        apply_estimated_price(&mut usage, priced_model.as_deref());
         let _ =
             insert_route_credential_request_event(pool, &credential.id, &metadata, &usage).await;
         emit_live_log(
@@ -3783,12 +3791,113 @@ fn is_hop_by_hop_header(name: &HeaderName) -> bool {
 const PRICE_MICRO_SCALE: f64 = 1_000_000.0;
 
 pub fn extract_usage_breakdown(body: &[u8]) -> RouteUsageBreakdown {
-    let value: Value = match serde_json::from_slice(body) {
-        Ok(value) => value,
-        Err(_) => return RouteUsageBreakdown::default(),
+    match serde_json::from_slice::<Value>(body) {
+        Ok(value) => usage_breakdown_from_value(&value),
+        // A streaming response body is SSE text, not a single JSON document, so
+        // whole-body parsing always fails for it. Claude Code and Codex stream by
+        // default, so without this fallback the vast majority of real requests
+        // persist NULL tokens and NULL price.
+        Err(_) => usage_breakdown_from_sse(body),
+    }
+}
+
+/// Fill in a locally estimated price when the upstream returned none.
+///
+/// Anthropic, OpenAI, and Gemini all report token counts but no price, so
+/// without this the recorded amount is always zero — the "cost is always 0"
+/// symptom. The estimate is tagged `price_source = "estimated"` so it is never
+/// confused with a real upstream charge, and an unknown model is left unpriced
+/// rather than being silently treated as free.
+pub fn apply_estimated_price(usage: &mut RouteUsageBreakdown, model: Option<&str>) {
+    use crate::services::model_pricing::{self, PriceSource, TokenUsage};
+
+    if usage.price_usd_micros.is_some() || usage.price_cny_micros.is_some() {
+        usage.price_source = Some(PriceSource::Upstream.as_str().to_string());
+        return;
+    }
+
+    let Some(model) = model else {
+        return;
     };
-    let usage = value.get("usage");
-    let usage_metadata = value.get("usageMetadata");
+    // Cache tokens are reported as a single total by most upstreams, without
+    // splitting writes from reads. Charging them at the cheaper read rate keeps
+    // the estimate a lower bound instead of inflating it.
+    let token_usage = TokenUsage {
+        input_tokens: usage.input_tokens.unwrap_or(0),
+        output_tokens: usage.output_tokens.unwrap_or(0),
+        cache_write_tokens: 0,
+        cache_read_tokens: usage.cache_tokens.unwrap_or(0),
+    };
+    if token_usage.input_tokens <= 0
+        && token_usage.output_tokens <= 0
+        && token_usage.cache_read_tokens <= 0
+    {
+        return;
+    }
+
+    if let Some(cost) = model_pricing::estimate_cost_micros(model, token_usage) {
+        usage.price_usd_micros = Some(cost);
+        usage.price_currency = Some("usd".to_string());
+        usage.price_source = Some(PriceSource::Estimated.as_str().to_string());
+    }
+}
+
+/// The model name a response reports, checked across the JSON body and, for a
+/// streaming reply, its SSE frames.
+///
+/// Used to price a request when the caller has no model in scope. The upstream's
+/// own value is also the right one to bill against, since a gateway may serve a
+/// different model than the one requested.
+pub fn extract_response_model(body: &[u8]) -> Option<String> {
+    if let Ok(value) = serde_json::from_slice::<Value>(body) {
+        return response_model_from_value(&value);
+    }
+    crate::services::route_protocol_bridge::sse::parse_sse_data_records_lossy(body)
+        .iter()
+        .find_map(response_model_from_value)
+}
+
+fn response_model_from_value(value: &Value) -> Option<String> {
+    [
+        value.get("model"),
+        value.pointer("/message/model"),
+        value.pointer("/response/model"),
+        value.pointer("/modelVersion"),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(Value::as_str)
+    .map(str::trim)
+    .filter(|model| !model.is_empty())
+    .map(str::to_string)
+}
+
+/// Merge per-frame usage from an SSE body.
+///
+/// Providers spread usage across frames differently: OpenAI reports it only in
+/// the final chunk, while Anthropic splits it between `message_start` (input and
+/// cache tokens) and `message_delta` (output tokens). Taking the last non-empty
+/// value per field — rather than summing — covers both without double counting
+/// the cumulative totals that Anthropic and Gemini resend on every frame.
+fn usage_breakdown_from_sse(body: &[u8]) -> RouteUsageBreakdown {
+    let mut merged = RouteUsageBreakdown::default();
+    for frame in crate::services::route_protocol_bridge::sse::parse_sse_data_records_lossy(body) {
+        merged.merge_from(usage_breakdown_from_value(&frame));
+    }
+    merged
+}
+
+fn usage_breakdown_from_value(value: &Value) -> RouteUsageBreakdown {
+    // Anthropic's `message_start` nests usage under `message`, and the OpenAI
+    // Responses API nests it under `response`, so accept either alongside the
+    // top-level field used by non-streaming replies.
+    let usage = value
+        .get("usage")
+        .or_else(|| value.pointer("/message/usage"))
+        .or_else(|| value.pointer("/response/usage"));
+    let usage_metadata = value
+        .get("usageMetadata")
+        .or_else(|| value.pointer("/response/usageMetadata"));
 
     let input_tokens = first_non_negative_i64(&[
         usage.and_then(|item| item.get("input_tokens")),
@@ -3817,7 +3926,7 @@ pub fn extract_usage_breakdown(body: &[u8]) -> RouteUsageBreakdown {
         ])
     });
 
-    let (price_usd_micros, price_cny_micros, price_currency) = extract_prices(&value, usage);
+    let (price_usd_micros, price_cny_micros, price_currency) = extract_prices(value, usage);
 
     RouteUsageBreakdown {
         input_tokens,
@@ -3826,6 +3935,9 @@ pub fn extract_usage_breakdown(body: &[u8]) -> RouteUsageBreakdown {
         price_usd_micros,
         price_cny_micros,
         price_currency,
+        // Set later by `apply_estimated_price`, which is the only place that can
+        // tell an upstream price from a locally computed one.
+        price_source: None,
     }
 }
 
@@ -3835,12 +3947,30 @@ pub fn extract_token_count(body: &[u8]) -> Option<i64> {
         (Some(input), Some(output)) => Some(input.saturating_add(output)),
         (Some(input), None) => Some(input),
         (None, Some(output)) => Some(output),
-        (None, None) => serde_json::from_slice::<Value>(body)
-            .ok()
-            .and_then(|value| value.pointer("/usage/total_tokens").and_then(json_i64)),
+        (None, None) => total_tokens_fallback(body),
     };
 
     total.filter(|value| *value > 0)
+}
+
+/// Last-resort total: some gateways report only `usage.total_tokens`.
+/// Checks the whole body first, then each SSE frame for streaming replies.
+fn total_tokens_fallback(body: &[u8]) -> Option<i64> {
+    if let Ok(value) = serde_json::from_slice::<Value>(body) {
+        return total_tokens_from_value(&value);
+    }
+    crate::services::route_protocol_bridge::sse::parse_sse_data_records_lossy(body)
+        .iter()
+        .rev()
+        .find_map(total_tokens_from_value)
+}
+
+fn total_tokens_from_value(value: &Value) -> Option<i64> {
+    first_non_negative_i64(&[
+        value.pointer("/usage/total_tokens"),
+        value.pointer("/message/usage/total_tokens"),
+        value.pointer("/response/usage/total_tokens"),
+    ])
 }
 
 pub fn extract_cost_micros(body: &[u8]) -> Option<i64> {
@@ -6525,6 +6655,192 @@ mod tests {
         assert_eq!(usage.price_usd_micros, None);
         assert_eq!(usage.price_cny_micros, None);
         assert_eq!(usage.price_currency, None);
+    }
+
+    #[test]
+    fn extract_usage_breakdown_merges_anthropic_streaming_frames() {
+        // Anthropic splits usage across frames: input and cache tokens arrive in
+        // `message_start` (nested under `message`), output tokens in `message_delta`.
+        let body = b"event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":120,\"output_tokens\":1,\"cache_read_input_tokens\":40,\"cache_creation_input_tokens\":10}}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\
+\n\
+event: message_delta\n\
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":88}}\n\
+\n\
+event: message_stop\n\
+data: {\"type\":\"message_stop\"}\n\n";
+
+        let usage = extract_usage_breakdown(body);
+
+        assert_eq!(usage.input_tokens, Some(120));
+        assert_eq!(usage.output_tokens, Some(88));
+        assert_eq!(usage.cache_tokens, Some(50));
+        assert_eq!(extract_token_count(body), Some(208));
+    }
+
+    #[test]
+    fn extract_usage_breakdown_reads_openai_final_streaming_chunk() {
+        // OpenAI reports usage only in the final chunk; earlier chunks carry `"usage":null`.
+        let body = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}],\"usage\":null}\n\
+\n\
+data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":64,\"completion_tokens\":12,\"prompt_tokens_details\":{\"cached_tokens\":32}}}\n\
+\n\
+data: [DONE]\n\n";
+
+        let usage = extract_usage_breakdown(body);
+
+        assert_eq!(usage.input_tokens, Some(64));
+        assert_eq!(usage.output_tokens, Some(12));
+        assert_eq!(usage.cache_tokens, Some(32));
+    }
+
+    #[test]
+    fn extract_usage_breakdown_reads_gemini_streaming_frames() {
+        let body = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}]}\n\
+\n\
+data: {\"usageMetadata\":{\"promptTokenCount\":31,\"candidatesTokenCount\":9,\"cachedContentTokenCount\":7}}\n\n";
+
+        let usage = extract_usage_breakdown(body);
+
+        assert_eq!(usage.input_tokens, Some(31));
+        assert_eq!(usage.output_tokens, Some(9));
+        assert_eq!(usage.cache_tokens, Some(7));
+    }
+
+    #[test]
+    fn extract_usage_breakdown_keeps_usage_from_truncated_stream() {
+        // A client that disconnects mid-response leaves a partial trailing frame.
+        // The usage already received must survive that unparsable tail.
+        let body = b"event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":77,\"output_tokens\":2}}}\n\
+\n\
+data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"partia";
+
+        let usage = extract_usage_breakdown(body);
+
+        assert_eq!(usage.input_tokens, Some(77));
+        assert_eq!(usage.output_tokens, Some(2));
+    }
+
+    #[test]
+    fn extract_usage_breakdown_reads_streaming_price_and_total_tokens() {
+        // Gateways that price requests themselves put the price in the tail frame.
+        let priced = extract_usage_breakdown(
+            b"data: {\"usage\":{\"input_tokens\":5,\"output_tokens\":6,\"price_cny\":7.1}}\n\n",
+        );
+        assert_eq!(priced.price_cny_micros, Some(7_100_000));
+        assert_eq!(priced.price_currency.as_deref(), Some("cny"));
+
+        // total_tokens-only shapes must still resolve through the SSE path.
+        assert_eq!(
+            extract_token_count(b"data: {\"usage\":{\"total_tokens\":404}}\n\n"),
+            Some(404)
+        );
+    }
+
+    #[test]
+    fn extract_usage_breakdown_stays_empty_for_non_sse_garbage() {
+        let usage = extract_usage_breakdown(b"<html><body>502 Bad Gateway</body></html>");
+
+        assert_eq!(usage, crate::models::route_pool::RouteUsageBreakdown::default());
+        assert_eq!(extract_token_count(b"<html>502</html>"), None);
+    }
+
+    #[test]
+    fn estimated_price_fills_in_cost_when_upstream_omits_it() {
+        // The case behind "cost is always 0": Anthropic reports tokens, no price.
+        let body = br#"{"model":"claude-opus-5","usage":{"input_tokens":1000000,"output_tokens":0}}"#;
+        let mut usage = extract_usage_breakdown(body);
+        assert_eq!(usage.price_usd_micros, None, "upstream sends no price");
+
+        apply_estimated_price(&mut usage, extract_response_model(body).as_deref());
+
+        // 1M input tokens at $5/MTok.
+        assert_eq!(usage.price_usd_micros, Some(5_000_000));
+        assert_eq!(usage.price_currency.as_deref(), Some("usd"));
+        assert_eq!(usage.price_source.as_deref(), Some("estimated"));
+    }
+
+    #[test]
+    fn upstream_price_is_never_overwritten_by_an_estimate() {
+        let mut usage = extract_usage_breakdown(
+            br#"{"model":"claude-opus-5","usage":{"input_tokens":1000000,"output_tokens":0,"cost_usd":0.25}}"#,
+        );
+
+        apply_estimated_price(&mut usage, Some("claude-opus-5"));
+
+        // The real charge stands, tagged as such rather than replaced by $5.
+        assert_eq!(usage.price_usd_micros, Some(250_000));
+        assert_eq!(usage.price_source.as_deref(), Some("upstream"));
+    }
+
+    #[test]
+    fn unknown_model_is_left_unpriced_rather_than_free() {
+        let mut usage = extract_usage_breakdown(
+            br#"{"model":"some-unreleased-model","usage":{"input_tokens":500,"output_tokens":5}}"#,
+        );
+
+        apply_estimated_price(&mut usage, Some("some-unreleased-model"));
+
+        assert_eq!(usage.price_usd_micros, None);
+        assert_eq!(usage.price_source, None, "unpriced must be distinguishable");
+    }
+
+    #[test]
+    fn zero_token_response_is_not_priced() {
+        // A failed or empty response should not gain a price row.
+        let mut usage = crate::models::route_pool::RouteUsageBreakdown::default();
+        apply_estimated_price(&mut usage, Some("claude-opus-5"));
+
+        assert_eq!(usage.price_usd_micros, None);
+        assert_eq!(usage.price_source, None);
+    }
+
+    #[test]
+    fn response_model_is_read_from_json_and_streaming_shapes() {
+        assert_eq!(
+            extract_response_model(br#"{"model":"claude-opus-5"}"#).as_deref(),
+            Some("claude-opus-5")
+        );
+        // Anthropic nests the model under `message` in `message_start`.
+        assert_eq!(
+            extract_response_model(
+                b"data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-4-8\"}}\n\n"
+            )
+            .as_deref(),
+            Some("claude-opus-4-8")
+        );
+        // Gemini reports `modelVersion`.
+        assert_eq!(
+            extract_response_model(br#"{"modelVersion":"gemini-2.5-flash"}"#).as_deref(),
+            Some("gemini-2.5-flash")
+        );
+        assert_eq!(extract_response_model(b"<html>502</html>"), None);
+    }
+
+    #[test]
+    fn streaming_anthropic_response_is_priced_end_to_end() {
+        // The full regression: a streaming Anthropic reply used to persist NULL
+        // tokens and NULL cost. It must now yield both.
+        let body = b"event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-5\",\"usage\":{\"input_tokens\":1000000,\"output_tokens\":1,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n\
+\n\
+event: message_delta\n\
+data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":1000000}}\n\
+\n\
+data: [DONE]\n\n";
+
+        let mut usage = extract_usage_breakdown(body);
+        apply_estimated_price(&mut usage, extract_response_model(body).as_deref());
+
+        assert_eq!(usage.input_tokens, Some(1_000_000));
+        assert_eq!(usage.output_tokens, Some(1_000_000));
+        // $5 input + $25 output.
+        assert_eq!(usage.price_usd_micros, Some(30_000_000));
+        assert_eq!(usage.price_source.as_deref(), Some("estimated"));
     }
 
     #[test]

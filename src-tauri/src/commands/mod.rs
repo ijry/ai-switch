@@ -10,4 +10,5 @@ pub mod session_commands;
 pub mod settings_commands;
 pub mod target_commands;
 pub mod terminal_commands;
+pub mod usage_stats_commands;
 pub mod web_service_commands;

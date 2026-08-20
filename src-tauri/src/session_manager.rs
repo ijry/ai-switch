@@ -30,11 +30,17 @@ pub struct SessionMessage {
 }
 
 #[derive(Debug, Clone)]
-struct ProviderSpec {
-    id: &'static str,
-    roots: Vec<PathBuf>,
-    extensions: &'static [&'static str],
+pub(crate) struct ProviderSpec {
+    pub(crate) id: &'static str,
+    pub(crate) roots: Vec<PathBuf>,
+    pub(crate) extensions: &'static [&'static str],
 }
+
+/// File cap for the session *list*. Listing only needs enough recent sessions to
+/// populate the picker, so a bound keeps a huge history from stalling the UI.
+/// Usage statistics pass a much higher cap because a truncated scan would
+/// under-report real spend.
+const SESSION_LIST_FILE_LIMIT: usize = 1_000;
 
 pub fn scan_sessions(platform: Option<&str>) -> Vec<SessionMeta> {
     let platform = platform.map(str::to_lowercase);
@@ -48,7 +54,13 @@ pub fn scan_sessions(platform: Option<&str>) -> Vec<SessionMeta> {
 
         for root in spec.roots.iter().filter(|root| root.exists()) {
             let mut files = Vec::new();
-            collect_session_files(root, spec.extensions, 6, &mut files);
+            collect_session_files(
+                root,
+                spec.extensions,
+                6,
+                SESSION_LIST_FILE_LIMIT,
+                &mut files,
+            );
 
             for path in files {
                 let key = path.to_string_lossy().to_string();
@@ -99,7 +111,7 @@ pub fn load_messages(_provider_id: &str, source_path: &str) -> Result<Vec<Sessio
     Ok(messages)
 }
 
-fn provider_specs() -> Vec<ProviderSpec> {
+pub(crate) fn provider_specs() -> Vec<ProviderSpec> {
     let Some(base_dirs) = BaseDirs::new() else {
         return Vec::new();
     };
@@ -157,8 +169,16 @@ fn provider_specs() -> Vec<ProviderSpec> {
     ]
 }
 
-fn collect_session_files(dir: &Path, extensions: &[&str], depth: usize, files: &mut Vec<PathBuf>) {
-    if depth == 0 || files.len() >= 1_000 {
+/// Recursively collect session files under `dir`, stopping at `depth` levels or
+/// once `limit` files have been gathered.
+pub(crate) fn collect_session_files(
+    dir: &Path,
+    extensions: &[&str],
+    depth: usize,
+    limit: usize,
+    files: &mut Vec<PathBuf>,
+) {
+    if depth == 0 || files.len() >= limit {
         return;
     }
 
@@ -169,7 +189,7 @@ fn collect_session_files(dir: &Path, extensions: &[&str], depth: usize, files: &
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_session_files(&path, extensions, depth - 1, files);
+            collect_session_files(&path, extensions, depth - 1, limit, files);
             continue;
         }
 

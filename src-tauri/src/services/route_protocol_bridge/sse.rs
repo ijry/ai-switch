@@ -1,8 +1,11 @@
 use serde_json::{json, Value};
 
-pub(super) fn parse_sse_data_records(body: &[u8]) -> Result<Vec<Value>, String> {
+/// Split an SSE body into the raw `data:` payloads of each frame, skipping
+/// empty frames and the `[DONE]` sentinel. Shared by the strict and lossy
+/// record parsers below so frame splitting lives in exactly one place.
+fn sse_data_payloads(body: &[u8]) -> Vec<String> {
     let text = String::from_utf8_lossy(body).replace("\r\n", "\n");
-    let mut records = Vec::new();
+    let mut payloads = Vec::new();
     for block in text.split("\n\n") {
         let data = block
             .lines()
@@ -12,12 +15,33 @@ pub(super) fn parse_sse_data_records(body: &[u8]) -> Result<Vec<Value>, String> 
         if data.is_empty() || data == "[DONE]" {
             continue;
         }
-        records.push(
-            serde_json::from_str::<Value>(&data)
-                .map_err(|error| format!("SSE data is invalid JSON: {error}"))?,
-        );
+        payloads.push(data);
     }
-    Ok(records)
+    payloads
+}
+
+pub(super) fn parse_sse_data_records(body: &[u8]) -> Result<Vec<Value>, String> {
+    sse_data_payloads(body)
+        .into_iter()
+        .map(|data| {
+            serde_json::from_str::<Value>(&data)
+                .map_err(|error| format!("SSE data is invalid JSON: {error}"))
+        })
+        .collect()
+}
+
+/// Like [`parse_sse_data_records`], but silently drops frames that are not
+/// valid JSON instead of failing the whole body.
+///
+/// Usage accounting must survive a truncated or interleaved stream: a client
+/// that disconnects mid-response leaves a partial final frame, and losing the
+/// earlier frames to that one bad tail would discard the token counts we
+/// already received.
+pub(crate) fn parse_sse_data_records_lossy(body: &[u8]) -> Vec<Value> {
+    sse_data_payloads(body)
+        .into_iter()
+        .filter_map(|data| serde_json::from_str::<Value>(&data).ok())
+        .collect()
 }
 
 pub(super) fn responses_events_from_completed_response(

@@ -11,6 +11,41 @@ pub struct RouteUsageBreakdown {
     pub price_usd_micros: Option<i64>,
     pub price_cny_micros: Option<i64>,
     pub price_currency: Option<String>,
+    /// `"upstream"` when the response carried an explicit price, `"estimated"`
+    /// when it was computed locally from token counts, `None` when unpriced.
+    pub price_source: Option<String>,
+}
+
+impl RouteUsageBreakdown {
+    /// Overlay any field `other` reports onto `self`, keeping the existing value
+    /// where `other` is empty.
+    ///
+    /// Used to fold the frames of a streaming response into one breakdown.
+    /// Later frames win because providers that repeat usage do so cumulatively
+    /// (Anthropic, Gemini); summing instead would multiply those totals.
+    pub fn merge_from(&mut self, other: Self) {
+        if other.input_tokens.is_some() {
+            self.input_tokens = other.input_tokens;
+        }
+        if other.output_tokens.is_some() {
+            self.output_tokens = other.output_tokens;
+        }
+        if other.cache_tokens.is_some() {
+            self.cache_tokens = other.cache_tokens;
+        }
+        if other.price_usd_micros.is_some() {
+            self.price_usd_micros = other.price_usd_micros;
+        }
+        if other.price_cny_micros.is_some() {
+            self.price_cny_micros = other.price_cny_micros;
+        }
+        if other.price_currency.is_some() {
+            self.price_currency = other.price_currency;
+        }
+        if other.price_source.is_some() {
+            self.price_source = other.price_source;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -30,6 +65,8 @@ pub struct RoutePoolUsageLog {
     pub price_usd_micros: Option<i64>,
     pub price_cny_micros: Option<i64>,
     pub price_currency: Option<String>,
+    /// `"upstream"`, `"estimated"`, or `None` — see [`RouteUsageBreakdown`].
+    pub price_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

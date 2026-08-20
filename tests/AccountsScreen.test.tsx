@@ -13,6 +13,7 @@ import {
   getRoutePool,
   getRouteProxyKey,
   getRouteProxyStatus,
+  getSessionUsageStats,
   getSettings,
   importOfficialRouteCredentialsFromFiles,
   importOfficialRouteCredentialsFromText,
@@ -68,6 +69,7 @@ vi.mock("../src/lib/api/client", () => ({
   getRoutePool: vi.fn(),
   getRouteProxyKey: vi.fn(),
   getRouteProxyStatus: vi.fn(),
+  getSessionUsageStats: vi.fn(),
   importOfficialRouteCredentialsFromFiles: vi.fn(),
   importOfficialRouteCredentialsFromText: vi.fn(),
   listPlatformCapabilities: vi.fn(),
@@ -268,6 +270,24 @@ describe("AccountsScreen", () => {
     vi.mocked(getRoutePool).mockReset();
     vi.mocked(getRouteProxyKey).mockReset();
     vi.mocked(getRouteProxyStatus).mockReset();
+    vi.mocked(getSessionUsageStats).mockReset();
+    // Default to an empty scan so tests that don't exercise session usage still
+    // resolve the query instead of leaving it pending.
+    vi.mocked(getSessionUsageStats).mockResolvedValue({
+      totals: {
+        request_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
+        cost_micros: 0,
+        unpriced_request_count: 0,
+      },
+      by_provider: [],
+      by_model: [],
+      scanned_file_count: 0,
+      truncated: false,
+    });
     vi.mocked(importOfficialRouteCredentialsFromFiles).mockReset();
     vi.mocked(importOfficialRouteCredentialsFromText).mockReset();
     vi.mocked(listPlatformCapabilities).mockReset();
@@ -2474,6 +2494,106 @@ describe("AccountsScreen", () => {
     await userEvent.click(screen.getByRole("button", { name: "累计" }));
 
     await waitFor(() => expect(getRoutePool).toHaveBeenLastCalledWith("codex", null, 1, 20));
+  });
+
+  it("renders local session usage alongside route statistics", async () => {
+    vi.mocked(getRoutePool).mockResolvedValue({
+      platform: "codex",
+      account_ids: [],
+      stats: statsFixture(),
+    });
+    vi.mocked(getSessionUsageStats).mockResolvedValue({
+      totals: {
+        request_count: 11254,
+        input_tokens: 5_584_802_591,
+        output_tokens: 129_897_022,
+        cache_write_tokens: 318_626_507,
+        cache_read_tokens: 19_115_772_272,
+        cost_micros: 16_248_905_925,
+        unpriced_request_count: 3,
+      },
+      by_provider: [],
+      by_model: [
+        {
+          provider: "codex",
+          model: "gpt-5.6-sol",
+          priced: true,
+          request_count: 152,
+          input_tokens: 1_000_000,
+          output_tokens: 2_000,
+          cache_write_tokens: 0,
+          cache_read_tokens: 0,
+          cost_micros: 3_357_030_000,
+          unpriced_request_count: 0,
+        },
+        {
+          provider: "codex",
+          model: "unknown",
+          priced: false,
+          request_count: 3,
+          input_tokens: 500,
+          output_tokens: 10,
+          cache_write_tokens: 0,
+          cache_read_tokens: 0,
+          cost_micros: 0,
+          unpriced_request_count: 3,
+        },
+      ],
+      scanned_file_count: 1186,
+      truncated: false,
+    });
+
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "统计" }));
+
+    expect(await screen.findByText("本机会话用量")).toBeInTheDocument();
+    expect(screen.getByText("已扫描 1,186 个会话文件")).toBeInTheDocument();
+    expect(screen.getByText("11,254")).toBeInTheDocument();
+    // Large token counts are abbreviated, with the exact figure in the tooltip.
+    expect(screen.getByText("5.58B")).toBeInTheDocument();
+    expect(screen.getByTitle("5,584,802,591")).toBeInTheDocument();
+    expect(screen.getByText("$16,248.91")).toBeInTheDocument();
+    // Models with no rate are called out rather than silently counted as free.
+    expect(
+      screen.getByText(/其中 3 个请求的模型没有价格数据/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("无价格")).toBeInTheDocument();
+    expect(screen.getByText(/gpt-5\.6-sol/)).toBeInTheDocument();
+
+    await waitFor(() => expect(getSessionUsageStats).toHaveBeenCalled());
+  });
+
+  it("shows sub-cent route costs instead of rounding them to $0.00", async () => {
+    // A real amount below half a cent used to render as "$0.00", which is
+    // indistinguishable from having no cost data at all.
+    vi.mocked(getRoutePool).mockResolvedValue({
+      platform: "codex",
+      account_ids: [],
+      stats: statsFixture({ request_count: 1, cost_micros: 4_200 }),
+    });
+    vi.mocked(getSessionUsageStats).mockResolvedValue({
+      totals: {
+        request_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
+        cost_micros: 0,
+        unpriced_request_count: 0,
+      },
+      by_provider: [],
+      by_model: [],
+      scanned_file_count: 0,
+      truncated: false,
+    });
+
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "统计" }));
+
+    expect(await screen.findByText("$0.004200")).toBeInTheDocument();
+    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   });
 
   it("auto refreshes route statistics only while the panel is open", async () => {

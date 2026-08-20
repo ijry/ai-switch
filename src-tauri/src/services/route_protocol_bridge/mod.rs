@@ -6,7 +6,7 @@ mod responses_chat;
 mod responses_claude;
 mod responses_gemini;
 mod responses_responses;
-mod sse;
+pub(crate) mod sse;
 
 use crate::models::platform::{ApiDialect, PlatformId};
 use std::collections::BTreeMap;

@@ -22,7 +22,8 @@ use crate::services::route_credential_activity::{
 use crate::services::route_protocol_bridge::transform_response as transform_protocol_bridge_response;
 use crate::services::route_proxy_service::{
     build_target_url, build_upstream_request_with_bridge, classify_proxy_failure,
-    credential_indexes_by_priority, extract_usage_breakdown,
+    credential_indexes_by_priority, apply_estimated_price, extract_response_model,
+    extract_usage_breakdown,
     maybe_persist_official_quota_from_response, maybe_refresh_official_credential,
     normalize_api_upstream_path, select_pool_credentials, ProxyFailureKind, RouteProxyService,
     SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
@@ -294,6 +295,13 @@ impl RouteModelTestService {
                 let semantic_failure = detect_response_failed(&body);
                 let success = transport_success && semantic_failure.is_none();
                 let usage = extract_usage_breakdown(&body);
+                let mut usage = usage;
+                // Price from the model the upstream reported, falling back to the
+                // one requested, so a connectivity test records the same cost
+                // basis as a real proxied request.
+                let priced_model = extract_response_model(&body)
+                    .or_else(|| requested_model.clone());
+                apply_estimated_price(&mut usage, priced_model.as_deref());
                 let response_body =
                     sanitize_for_storage(&credential, &truncate_response_body(&body));
                 let response_text = extract_model_test_response_text(

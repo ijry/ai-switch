@@ -406,6 +406,11 @@ export type RoutePoolUsageLog = {
   price_usd_micros?: number | null;
   price_cny_micros?: number | null;
   price_currency?: "usd" | "cny" | null;
+  /**
+   * `upstream` when the response carried a real price, `estimated` when it was
+   * computed locally from tokens, null when the request has no price at all.
+   */
+  price_source?: "upstream" | "estimated" | null;
 };
 
 export type RoutePoolStats = {
@@ -427,6 +432,44 @@ export type RoutePoolState = {
   platform: string;
   account_ids: string[];
   stats: RoutePoolStats;
+};
+
+/** Aggregated token counts and estimated cost for one grouping. */
+export type SessionUsageTotals = {
+  request_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_write_tokens: number;
+  cache_read_tokens: number;
+  /** Estimated cost in USD micros (1 USD = 1_000_000). */
+  cost_micros: number;
+  /**
+   * Requests whose model has no known rate and therefore contribute no cost.
+   * Non-zero means the total is a lower bound, not a complete figure.
+   */
+  unpriced_request_count: number;
+};
+
+/**
+ * One provider or model row. The Rust side flattens `SessionUsageTotals` into
+ * this object, so the totals fields appear inline rather than nested.
+ */
+export type SessionUsageRow = SessionUsageTotals & {
+  /** `claude` or `codex`. */
+  provider: string;
+  /** Empty string on provider rollup rows. */
+  model: string;
+  priced: boolean;
+};
+
+/** Usage aggregated from local Claude Code and Codex CLI session transcripts. */
+export type SessionUsageStats = {
+  totals: SessionUsageTotals;
+  by_provider: SessionUsageRow[];
+  by_model: SessionUsageRow[];
+  scanned_file_count: number;
+  /** True when the file cap was hit, so the totals are incomplete. */
+  truncated: boolean;
 };
 
 export type RouteProxyLiveLogEntry = {
