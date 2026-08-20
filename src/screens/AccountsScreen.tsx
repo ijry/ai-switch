@@ -25,6 +25,7 @@ import {
   ScanText,
   ScrollText,
   Send,
+  SlidersHorizontal,
   Square,
   Trash2,
   Wand2,
@@ -67,7 +68,9 @@ import {
   refreshRouteCredentialQuota,
   refreshRouteCredentialsQuota,
   restoreRouteCredentials,
+  getSettings,
   routePoolTestModel,
+  saveSettings,
   setRouteCredentialStatuses,
   setRoutePoolMembers,
   startRouteProxy,
@@ -1886,6 +1889,9 @@ export function AccountsScreen({
   const [modelTestOutcome, setModelTestOutcome] = useState<RoutePoolModelTestOutcome | null>(null);
   const [configWriteOutcomes, setConfigWriteOutcomes] = useState<ConfigWriteOutcome[]>([]);
   const [configWriteError, setConfigWriteError] = useState<string | null>(null);
+  const [clientConfigOpen, setClientConfigOpen] = useState(false);
+  const [clientConfigDraft, setClientConfigDraft] = useState("");
+  const [clientConfigError, setClientConfigError] = useState<string | null>(null);
   const [routePoolFeedback, setRoutePoolFeedback] = useState<RoutePoolFeedback>(null);
   const modelTestStorageKey = modelTestAccount?.id ?? poolModelTestKey(activePlatform);
   const routeTestModel = modelTestModels[modelTestStorageKey]?.model ?? "";
@@ -2994,6 +3000,51 @@ export function AccountsScreen({
     onSuccess: setConfigWriteOutcomes,
     onError: (error) => setConfigWriteError(formatApiError(error, "配置写入失败。")),
   });
+  // Pool-wide client behavior switches. Claude Code reads these from its own
+  // settings file, which the whole pool shares, so they cannot be per-account.
+  const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: getSettings });
+  const saveClientConfigMutation = useMutation({
+    mutationFn: async (configJson: string | null) => {
+      const settings = settingsQuery.data;
+      if (!settings) {
+        throw new Error("设置尚未加载完成。");
+      }
+      return saveSettings({ ...settings, claude_client_config_json: configJson });
+    },
+    onSuccess: (settings) => {
+      queryClient.setQueryData(["settings"], settings);
+      setClientConfigOpen(false);
+    },
+    onError: (error) => setClientConfigError(formatApiError(error, "保存全局配置失败。")),
+  });
+  const openClientConfigDialog = () => {
+    setClientConfigDraft(settingsQuery.data?.claude_client_config_json ?? "");
+    setClientConfigError(null);
+    setClientConfigOpen(true);
+  };
+  const submitClientConfig = () => {
+    const trimmed = clientConfigDraft.trim();
+    if (!trimmed) {
+      setClientConfigError(null);
+      saveClientConfigMutation.mutate(null);
+      return;
+    }
+    // Validate here rather than at write time: a malformed value is ignored by
+    // the writer, which would look like the setting silently doing nothing.
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      setClientConfigError("不是合法的 JSON。");
+      return;
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      setClientConfigError("需要一个 JSON 对象，例如 {\"includeCoAuthoredBy\": false}。");
+      return;
+    }
+    setClientConfigError(null);
+    saveClientConfigMutation.mutate(trimmed);
+  };
   const updateMutation = useMutation({
     mutationFn: async () => {
       if (!editingCredential) {
@@ -3842,6 +3893,18 @@ export function AccountsScreen({
               >
                 <FileCode2 aria-hidden="true" className="h-3.5 w-3.5" />
               </button>
+              {activePlatform === "claude" ? (
+                <button
+                  aria-label="编辑全局客户端配置"
+                  className="grid h-6 w-6 place-items-center border border-stone-300 bg-white text-stone-700 transition-colors hover:bg-stone-200 disabled:opacity-50"
+                  disabled={!settingsQuery.data}
+                  onClick={openClientConfigDialog}
+                  title="全局客户端配置（整池共用，写入配置时合并进 settings.json）"
+                  type="button"
+                >
+                  <SlidersHorizontal aria-hidden="true" className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
               <div className="relative flex shrink-0" ref={modelTestMenuRef}>
                 <button
                   aria-label="真实生成测试算力池路由"
@@ -5066,6 +5129,73 @@ export function AccountsScreen({
         </footer>
 
         </div>
+
+      {clientConfigOpen && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">
+          <div
+            aria-label="全局客户端配置弹窗"
+            className="w-full max-w-lg rounded-2xl border border-stone-200 bg-white p-4 shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
+                  {platformLabels[activePlatform]}
+                </p>
+                <h3 className="mt-0.5 text-lg font-semibold text-stone-950">全局客户端配置</h3>
+                <p className="mt-1 text-[12px] leading-5 text-stone-500">
+                  Claude Code 的行为开关（includeCoAuthoredBy、permissions 等）由它自己读取 settings.json，
+                  整个算力池共用一份，所以只能全局配置、不能按账号区分。写入配置时合并进 settings.json 根级。
+                </p>
+              </div>
+              <button
+                aria-label="关闭全局客户端配置弹窗"
+                className="rounded-xl border border-stone-200 p-1.5 text-stone-500 transition-colors hover:bg-stone-50"
+                onClick={() => setClientConfigOpen(false)}
+                type="button"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <label className="mt-4 grid gap-1.5">
+              <span className="text-[12px] font-semibold text-stone-600">配置片段（JSON 对象）</span>
+              <textarea
+                aria-label="全局客户端配置 JSON"
+                className="min-h-40 rounded-xl border border-stone-200 bg-white px-3 py-2 font-mono text-[12px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                onChange={(event) => setClientConfigDraft(event.target.value)}
+                placeholder={'{\n  "includeCoAuthoredBy": false\n}'}
+                spellCheck={false}
+                value={clientConfigDraft}
+              />
+            </label>
+            <p className="mt-1.5 text-[11px] leading-5 text-stone-500">
+              这里配置的键会覆盖 settings.json 中同名的手改值；从这里删掉某个键，下次写入会把它从
+              settings.json 中移除。未在此出现过的键不会被改动。留空表示不管理任何键。
+            </p>
+            {clientConfigError ? (
+              <p className="mt-2 text-[12px] font-semibold text-red-700">{clientConfigError}</p>
+            ) : null}
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:bg-stone-50"
+                onClick={() => setClientConfigOpen(false)}
+                type="button"
+              >
+                取消
+              </button>
+              <button
+                className="rounded-xl border border-blue-700 bg-blue-600 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+                disabled={saveClientConfigMutation.isPending}
+                onClick={submitClientConfig}
+                type="button"
+              >
+                {saveClientConfigMutation.isPending ? "保存中..." : "保存"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {modelTestDialogOpen && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">

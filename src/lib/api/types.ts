@@ -656,6 +656,12 @@ export type AppSettings = {
   secret_storage: string;
   data_dir: string;
   ccswitch_deeplink_compat_enabled: boolean;
+  /**
+   * Pool-wide Claude Code client behavior switches as a JSON object string.
+   * Claude Code reads these from its own settings file, which the whole pool
+   * shares, so unlike model mappings they cannot be per-account.
+   */
+  claude_client_config_json?: string | null;
 };
 
 export type AppSettingsView = AppSettings & {

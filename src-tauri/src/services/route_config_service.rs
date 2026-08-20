@@ -20,7 +20,9 @@ use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_model_capability::{
     codex_model_catalog_payload, parse_model_capability,
 };
+use crate::services::settings_service::SettingsService;
 use directories::BaseDirs;
+use serde_json::{Map, Value};
 use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -75,7 +77,7 @@ impl RouteConfigService {
         if platform == PlatformId::Codex {
             Self::write_codex_model_catalog(pool, home).await?;
         }
-        let claude_env = Self::resolve_claude_env_plan(pool, platform).await?;
+        let claude_env = Self::resolve_claude_env_plan(paths, pool, platform).await?;
         let request = ConfigWriteRequest {
             adapter,
             home: home.to_path_buf(),
@@ -169,7 +171,7 @@ impl RouteConfigService {
             }
             // Per-iteration: a claude request must not inherit another
             // platform's pool state.
-            let claude_env = Self::resolve_claude_env_plan(pool, parsed).await?;
+            let claude_env = Self::resolve_claude_env_plan(paths, pool, parsed).await?;
             requests.push(ConfigWriteRequest {
                 adapter,
                 home: home.to_path_buf(),
@@ -206,7 +208,7 @@ impl RouteConfigService {
         let base_url = normalize_base_url(base_url)?;
         let platform = PlatformId::parse(platform)?;
         PlatformCapabilityService::require(platform, PlatformOperation::ConfigWrite)?;
-        let claude_env = Self::resolve_claude_env_plan(pool, platform).await?;
+        let claude_env = Self::resolve_claude_env_plan(paths, pool, platform).await?;
         let request = ConfigWriteRequest {
             adapter: route_config_adapter(platform)?,
             home: home.to_path_buf(),
@@ -328,8 +330,19 @@ impl RouteConfigService {
     }
 
     /// Builds the Claude-only env plan for a config write. Non-Claude platforms
+    /// Parses the pool-wide client config, ignoring anything that is not a JSON
+    /// object. A malformed value must not block a config write: the user would be
+    /// locked out of writing any config until they fixed unrelated JSON.
+    fn parse_claude_client_config(raw: Option<&str>) -> Option<Map<String, Value>> {
+        let raw = raw.map(str::trim).filter(|value| !value.is_empty())?;
+        let parsed = serde_json::from_str::<Value>(raw).ok()?;
+        let object = parsed.as_object()?;
+        (!object.is_empty()).then(|| object.clone())
+    }
+
     /// get an empty plan, which clears every managed key.
     async fn resolve_claude_env_plan(
+        paths: &AppPaths,
         pool: &SqlitePool,
         platform: PlatformId,
     ) -> Result<ClaudeEnvPlan, AppError> {
@@ -338,9 +351,13 @@ impl RouteConfigService {
         }
 
         let account_mappings = Self::claude_pool_mappings(pool).await?;
+        let settings = SettingsService::load(paths).await?;
         Ok(ClaudeEnvPlan {
             subagent_model: Self::resolve_subagent_model(&account_mappings),
             slots: Self::resolve_claude_slot_writes(&account_mappings),
+            client_config: Self::parse_claude_client_config(
+                settings.claude_client_config_json.as_deref(),
+            ),
         })
     }
 
@@ -1068,6 +1085,27 @@ command = "npx"
         // Unconfigured slots stay absent rather than being invented.
         assert!(env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").is_none());
         assert!(env.get("ANTHROPIC_DEFAULT_FABLE_MODEL_NAME").is_none());
+    }
+
+    #[test]
+    fn malformed_client_config_is_ignored_rather_than_blocking_the_write() {
+        // A bad value must not lock the user out of writing any config at all.
+        for raw in [
+            Some("not json"),
+            Some("[1,2,3]"),
+            Some("\"a string\""),
+            Some("{}"),
+            Some("   "),
+            None,
+        ] {
+            assert_eq!(RouteConfigService::parse_claude_client_config(raw), None);
+        }
+
+        let parsed = RouteConfigService::parse_claude_client_config(Some(
+            r#"{"includeCoAuthoredBy":false}"#,
+        ))
+        .expect("object");
+        assert_eq!(parsed["includeCoAuthoredBy"], Value::Bool(false));
     }
 
     #[tokio::test]

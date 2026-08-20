@@ -59,6 +59,7 @@ mod tests {
             secret_storage: "keyring".to_string(),
             data_dir: paths.data_dir.display().to_string(),
             ccswitch_deeplink_compat_enabled: false,
+            claude_client_config_json: Some(r#"{"includeCoAuthoredBy":false}"#.to_string()),
         };
 
         SettingsService::save(&paths, &settings)
@@ -69,5 +70,9 @@ mod tests {
         assert_eq!(loaded.language, "en");
         assert_eq!(loaded.theme, "dark");
         assert!(loaded.copy_import_sources);
+        assert_eq!(
+            loaded.claude_client_config_json.as_deref(),
+            Some(r#"{"includeCoAuthoredBy":false}"#)
+        );
     }
 }

@@ -10,6 +10,13 @@ pub struct AppSettings {
     pub data_dir: String,
     #[serde(default)]
     pub ccswitch_deeplink_compat_enabled: bool,
+    /// Pool-wide Claude Code client behavior switches (`includeCoAuthoredBy`,
+    /// `permissions`, …), as a JSON object string. These are read by Claude Code
+    /// from its own settings file, which the whole pool shares — so unlike model
+    /// mappings they cannot be per-account. Merged into the settings file's root
+    /// on every config write.
+    #[serde(default)]
+    pub claude_client_config_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -22,6 +29,7 @@ pub struct AppSettingsView {
     pub data_dir: String,
     pub ccswitch_deeplink_compat_enabled: bool,
     pub ccswitch_deeplink_compat_supported: bool,
+    pub claude_client_config_json: Option<String>,
 }
 
 impl AppSettingsView {
@@ -35,6 +43,7 @@ impl AppSettingsView {
             data_dir: settings.data_dir,
             ccswitch_deeplink_compat_enabled: settings.ccswitch_deeplink_compat_enabled,
             ccswitch_deeplink_compat_supported: supported,
+            claude_client_config_json: settings.claude_client_config_json,
         }
     }
 }
@@ -49,6 +58,7 @@ impl AppSettings {
             secret_storage: "keyring".to_string(),
             data_dir,
             ccswitch_deeplink_compat_enabled: false,
+            claude_client_config_json: None,
         }
     }
 }

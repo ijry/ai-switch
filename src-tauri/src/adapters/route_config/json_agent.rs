@@ -104,6 +104,21 @@ impl TargetAdapter for JsonAgentAdapter {
         let root = config
             .as_object_mut()
             .ok_or_else(|| invalid_existing_config(path, "JSON", "root value must be an object"))?;
+
+        // Read the previously-managed key list before we rewrite aiSwitch, so a
+        // key dropped from the global config can be removed from the file.
+        let previously_managed = root
+            .get("aiSwitch")
+            .and_then(|value| value.get("managedClientKeys"))
+            .and_then(Value::as_array)
+            .map(|keys| {
+                keys.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
         let ai_switch = object_entry(root, "aiSwitch", path)?;
         let route_proxy = object_entry(ai_switch, "routeProxy", path)?;
         route_proxy.insert("enabled".to_string(), Value::Bool(true));
@@ -151,6 +166,37 @@ impl TargetAdapter for JsonAgentAdapter {
                     env,
                     slot.name_env_key,
                     write.and_then(|w| w.display_name.as_deref()),
+                );
+            }
+        }
+
+        // Pool-wide client behavior switches, merged into the file's root. These
+        // cannot be per-account: Claude Code reads them from its own settings
+        // file, which the whole pool shares. The global config is authoritative,
+        // and `managedClientKeys` records what we wrote so a key dropped from the
+        // global config is removed rather than left orphaned — we never remove a
+        // key we did not put there.
+        if self.writes_claude_model_env {
+            let managed = input.claude_env.client_config.clone().unwrap_or_default();
+
+            for key in &previously_managed {
+                if !managed.contains_key(key) {
+                    root.remove(key);
+                }
+            }
+            for (key, value) in &managed {
+                root.insert(key.clone(), value.clone());
+            }
+
+            let ai_switch = object_entry(root, "aiSwitch", path)?;
+            if managed.is_empty() {
+                ai_switch.remove("managedClientKeys");
+            } else {
+                let mut keys = managed.keys().cloned().collect::<Vec<_>>();
+                keys.sort();
+                ai_switch.insert(
+                    "managedClientKeys".to_string(),
+                    Value::Array(keys.into_iter().map(Value::String).collect()),
                 );
             }
         }

@@ -41,4 +41,5 @@ export const settingsFixture: AppSettings = {
   secret_storage: "keyring",
   data_dir: "C:/Users/example/.ai-switch",
   ccswitch_deeplink_compat_enabled: false,
+  claude_client_config_json: null,
 };

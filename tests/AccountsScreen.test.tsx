@@ -13,6 +13,7 @@ import {
   getRoutePool,
   getRouteProxyKey,
   getRouteProxyStatus,
+  getSettings,
   importOfficialRouteCredentialsFromFiles,
   importOfficialRouteCredentialsFromText,
   listPlatformCapabilities,
@@ -22,6 +23,7 @@ import {
   refreshRouteCredentialsQuota,
   restoreRouteCredentials,
   routePoolTestModel,
+  saveSettings,
   setRouteCredentialRecovery,
   setRouteCredentialStatuses,
   setRoutePoolMembers,
@@ -36,6 +38,7 @@ import { recognizeApiKeysFromImageBlob } from "../src/lib/ocr/apiKeyOcr";
 import { CODEX_MODEL_TEST_ENDPOINT_STORAGE_KEY } from "../src/lib/codexModelTestEndpoint";
 import { MODEL_TEST_MODELS_STORAGE_KEY } from "../src/lib/modelTestModels";
 import { createQueryClient } from "../src/lib/query/queryClient";
+import { settingsFixture } from "../src/test/fixtures";
 import { AccountsScreen } from "../src/screens/AccountsScreen";
 import { fetchRouteProxyModels } from "../src/lib/routeProxyModels";
 import type {
@@ -73,6 +76,8 @@ vi.mock("../src/lib/api/client", () => ({
   refreshRouteCredentialsQuota: vi.fn(),
   restoreRouteCredentials: vi.fn(),
   routePoolTestModel: vi.fn(),
+  getSettings: vi.fn(),
+  saveSettings: vi.fn(),
   setRouteCredentialRecovery: vi.fn(),
   setRouteCredentialStatuses: vi.fn(),
   setRoutePoolMembers: vi.fn(),
@@ -377,6 +382,8 @@ describe("AccountsScreen", () => {
       updated_at: "2026-07-13T00:00:00Z",
     });
     vi.mocked(listRouteCredentials).mockResolvedValue(credentialsFixture);
+    vi.mocked(getSettings).mockResolvedValue(settingsFixture);
+    vi.mocked(saveSettings).mockImplementation(async (settings) => settings);
     vi.mocked(archiveRouteCredentials).mockResolvedValue(undefined);
     vi.mocked(refreshRouteCredentialsQuota).mockResolvedValue([]);
     vi.mocked(restoreRouteCredentials).mockResolvedValue(undefined);
@@ -2826,6 +2833,61 @@ describe("AccountsScreen", () => {
         "pool:codex": { model: "gpt-5", platform: "codex" },
       }),
     );
+  });
+
+  it("saves the pool-wide client config and rejects non-objects", async () => {
+    renderScreen("claude", "in_pool");
+
+    await userEvent.click(await screen.findByLabelText("编辑全局客户端配置"));
+    const input = await screen.findByLabelText("全局客户端配置 JSON");
+
+    // A JSON array parses but is not a settings object — reject before saving,
+    // because the writer silently ignores a malformed value.
+    fireEvent.change(input, { target: { value: "[1,2]" } });
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    expect(await screen.findByText(/需要一个 JSON 对象/)).toBeInTheDocument();
+    expect(vi.mocked(saveSettings)).not.toHaveBeenCalled();
+
+    fireEvent.change(input, { target: { value: '{"includeCoAuthoredBy": false}' } });
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(saveSettings)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          claude_client_config_json: '{"includeCoAuthoredBy": false}',
+        }),
+      ),
+    );
+  });
+
+  it("clears the pool-wide client config when emptied", async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      ...settingsFixture,
+      claude_client_config_json: '{"includeCoAuthoredBy":false}',
+    });
+    renderScreen("claude", "in_pool");
+
+    await userEvent.click(await screen.findByLabelText("编辑全局客户端配置"));
+    const input = await screen.findByLabelText("全局客户端配置 JSON");
+    expect(input).toHaveValue('{"includeCoAuthoredBy":false}');
+
+    await userEvent.clear(input);
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    // null, not "" — the writer treats absent and empty the same, but null is
+    // the honest representation of "manage nothing".
+    await waitFor(() =>
+      expect(vi.mocked(saveSettings)).toHaveBeenCalledWith(
+        expect.objectContaining({ claude_client_config_json: null }),
+      ),
+    );
+  });
+
+  it("offers the global client config for Claude only", async () => {
+    renderScreen("codex", "in_pool");
+
+    await screen.findByLabelText("写入路由配置文件");
+    expect(screen.queryByLabelText("编辑全局客户端配置")).not.toBeInTheDocument();
   });
 
   it("prunes cached models for accounts that no longer exist", async () => {

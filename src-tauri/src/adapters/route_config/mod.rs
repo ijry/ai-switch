@@ -10,6 +10,7 @@ use crate::{
 use codex::CodexAdapter;
 use json_agent::JsonAgentAdapter;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -34,6 +35,11 @@ pub struct ClaudeEnvPlan {
     /// One entry per `CLAUDE_MODEL_SLOTS` slot, in that order. An empty vec (or
     /// a defaulted entry) clears the slot's keys.
     pub slots: Vec<ClaudeSlotWrite>,
+    /// Pool-wide client behavior switches merged into the settings file's root.
+    /// Authoritative: a key here overwrites a hand-edited value, and dropping a
+    /// key from here removes it from the file (tracked via `aiSwitch.managedKeys`
+    /// so we only ever remove keys we put there).
+    pub client_config: Option<Map<String, Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -303,6 +309,7 @@ api_key = "legacy-key"
             claude_env: ClaudeEnvPlan {
                 subagent_model: Some("claude-subagent".to_string()),
                 slots: Vec::new(),
+                client_config: None,
             },
             ..input()
         };
@@ -331,12 +338,107 @@ api_key = "legacy-key"
     }
 
     #[test]
+    fn claude_render_merges_and_removes_pool_wide_client_config() {
+        let registry = TargetAdapterRegistry::new();
+        let adapter = registry.for_platform(PlatformId::Claude).unwrap();
+        // The user hand-set includeCoAuthoredBy and owns hooks.
+        let existing = br#"{
+  "includeCoAuthoredBy": true,
+  "hooks": {"PreToolUse": []},
+  "env": {"EXISTING_FLAG": "1"}
+}"#;
+
+        let plan = |pairs: &[(&str, Value)]| RouteConfigInput {
+            claude_env: ClaudeEnvPlan {
+                client_config: (!pairs.is_empty()).then(|| {
+                    pairs
+                        .iter()
+                        .map(|(key, value)| ((*key).to_string(), value.clone()))
+                        .collect()
+                }),
+                ..ClaudeEnvPlan::default()
+            },
+            ..input()
+        };
+
+        let rendered = adapter
+            .render(
+                Path::new("settings.json"),
+                Some(existing),
+                &plan(&[
+                    ("includeCoAuthoredBy", Value::Bool(false)),
+                    ("cleanupPeriodDays", Value::from(30)),
+                ]),
+            )
+            .unwrap();
+        let json: Value = serde_json::from_slice(&rendered).unwrap();
+
+        // Global config is authoritative: it overwrites the hand-set value.
+        assert_eq!(json["includeCoAuthoredBy"], false);
+        assert_eq!(json["cleanupPeriodDays"], 30);
+        // Keys we never managed are untouched.
+        assert_eq!(json["hooks"]["PreToolUse"], Value::Array(vec![]));
+        assert_eq!(json["env"]["EXISTING_FLAG"], "1");
+        assert_eq!(
+            json["aiSwitch"]["managedClientKeys"],
+            serde_json::json!(["cleanupPeriodDays", "includeCoAuthoredBy"])
+        );
+
+        // Dropping a key from the global config removes it from the file, while
+        // the still-configured key stays.
+        let narrowed = adapter
+            .render(
+                Path::new("settings.json"),
+                Some(&rendered),
+                &plan(&[("includeCoAuthoredBy", Value::Bool(false))]),
+            )
+            .unwrap();
+        let json: Value = serde_json::from_slice(&narrowed).unwrap();
+
+        assert!(json.get("cleanupPeriodDays").is_none());
+        assert_eq!(json["includeCoAuthoredBy"], false);
+        assert_eq!(json["hooks"]["PreToolUse"], Value::Array(vec![]));
+        assert_eq!(
+            json["aiSwitch"]["managedClientKeys"],
+            serde_json::json!(["includeCoAuthoredBy"])
+        );
+
+        // Clearing the global config entirely removes every key we managed and
+        // drops the bookkeeping — but never touches `hooks`, which we never wrote.
+        let cleared = adapter
+            .render(Path::new("settings.json"), Some(&narrowed), &plan(&[]))
+            .unwrap();
+        let json: Value = serde_json::from_slice(&cleared).unwrap();
+
+        assert!(json.get("includeCoAuthoredBy").is_none());
+        assert!(json["aiSwitch"].get("managedClientKeys").is_none());
+        assert_eq!(json["hooks"]["PreToolUse"], Value::Array(vec![]));
+    }
+
+    #[test]
+    fn client_config_never_removes_a_key_it_did_not_write() {
+        let registry = TargetAdapterRegistry::new();
+        let adapter = registry.for_platform(PlatformId::Claude).unwrap();
+        // The user set includeCoAuthoredBy by hand; we have never managed it, so
+        // there is no managedClientKeys record for it.
+        let existing = br#"{"includeCoAuthoredBy": true}"#;
+
+        let cleared = adapter
+            .render(Path::new("settings.json"), Some(existing), &input())
+            .unwrap();
+        let json: Value = serde_json::from_slice(&cleared).unwrap();
+
+        assert_eq!(json["includeCoAuthoredBy"], true);
+    }
+
+    #[test]
     fn grok_render_never_writes_the_subagent_env_key() {
         let registry = TargetAdapterRegistry::new();
         let with_alias = RouteConfigInput {
             claude_env: ClaudeEnvPlan {
                 subagent_model: Some("claude-subagent".to_string()),
                 slots: Vec::new(),
+                client_config: None,
             },
             ..input()
         };
