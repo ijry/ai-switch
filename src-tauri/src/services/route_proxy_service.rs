@@ -4,8 +4,8 @@ use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepo
 use crate::error::{ApiError, AppError};
 use crate::models::platform::{ApiDialect, CapabilityRule, PlatformId, PlatformOperation};
 use crate::models::route_credential::{
-    normalize_anthropic_api_key_field, ModelMapping, RouteCredentialFailurePolicy,
-    ANTHROPIC_API_KEY_FIELD, ANTHROPIC_AUTH_TOKEN_FIELD,
+    is_synthetic_route_alias, normalize_anthropic_api_key_field, ModelMapping,
+    RouteCredentialFailurePolicy, ANTHROPIC_API_KEY_FIELD, ANTHROPIC_AUTH_TOKEN_FIELD,
 };
 use crate::models::route_pool::RouteUsageBreakdown;
 use crate::services::client_identity;
@@ -1889,7 +1889,17 @@ fn filter_credentials_for_model(
     };
 
     credentials.retain(|credential| {
-        let capability = parse_model_capability(&credential.config_json);
+        let mut capability = parse_model_capability(&credential.config_json);
+        if credential.kind == "official" {
+            // build_official_upstream_request never applies model mappings, so a
+            // synthetic alias would reach the vendor verbatim and 404. Ignoring
+            // those entries here keeps official accounts on exactly their
+            // pre-feature semantics (an alias-only config collapses to the
+            // baseline-only wildcard).
+            capability
+                .mappings
+                .retain(|mapping| !is_synthetic_route_alias(&mapping.from));
+        }
         supports_requested_model(platform, &capability, Some(requested_model))
     });
     credentials
@@ -7477,6 +7487,56 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["wildcard", "sol", "fallback"]
         );
+    }
+
+    #[test]
+    fn official_credentials_are_not_selected_for_synthetic_aliases() {
+        // Official upstreams get the body unrewritten, so a synthetic alias
+        // would reach the vendor verbatim and 404.
+        let mut official = api_credential_with_config(
+            "official",
+            r#"{"model_mappings":[{"from":"claude-subagent","to":"provider-haiku"}]}"#,
+        );
+        official.kind = "official".to_string();
+        official.platform = "claude".to_string();
+        let api = api_credential_with_config(
+            "api",
+            r#"{"model_mappings":[{"from":"claude-subagent","to":"provider-haiku"}]}"#,
+        );
+
+        let selected =
+            filter_credentials_for_model("claude", vec![official, api], Some("claude-subagent"));
+
+        assert_eq!(
+            selected
+                .iter()
+                .map(|item| item.display_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["api"]
+        );
+    }
+
+    #[test]
+    fn official_credentials_with_a_fallback_keep_baseline_only_semantics() {
+        let mut official = api_credential_with_config(
+            "official",
+            r#"{"model_mappings":[{"from":"*","to":"catch-all"}]}"#,
+        );
+        official.kind = "official".to_string();
+        official.platform = "claude".to_string();
+
+        // Stripping its only (synthetic) mapping collapses it to the
+        // baseline-only wildcard — exactly its pre-feature behavior.
+        let unmatched = filter_credentials_for_model(
+            "claude",
+            vec![official.clone()],
+            Some("deepseek-v4-flash-0731"),
+        );
+        assert!(unmatched.is_empty());
+
+        let baseline =
+            filter_credentials_for_model("claude", vec![official], Some("claude-sonnet-5"));
+        assert_eq!(baseline.len(), 1);
     }
 
     #[tokio::test]
