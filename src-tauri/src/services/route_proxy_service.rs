@@ -9,6 +9,7 @@ use crate::models::route_credential::{
 };
 use crate::models::route_pool::RouteUsageBreakdown;
 use crate::services::client_identity;
+use crate::services::codex_reasoning_cache::CodexReasoningCache;
 use crate::services::http_client::build_outbound_http_client;
 use crate::services::official_agent_identity_service::{
     is_official_agent_identity_credential, resolve_agent_identity_headers,
@@ -23,9 +24,9 @@ use crate::services::route_config_service::generate_route_proxy_key;
 use crate::services::route_credential_activity::RouteCredentialActivityRegistry;
 use crate::services::route_model_capability::{
     advertised_model_ids, codex_reasoning_metadata, parse_model_capability,
-    parse_model_capability_value, requested_model_from_body, supports_requested_model,
+    parse_model_capability_value, requested_model_from_body, resolve_mapping_target,
+    supports_requested_model,
 };
-use crate::services::codex_reasoning_cache::CodexReasoningCache;
 use crate::services::route_protocol_bridge::{
     prepare_request as prepare_protocol_bridge_request,
     transform_response_with_tool_namespaces as transform_protocol_bridge_response,
@@ -1975,11 +1976,8 @@ fn rewrite_model_value(value: &mut Value, mappings: &[ModelMapping]) {
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned)
             {
-                if let Some(mapping) = mappings
-                    .iter()
-                    .find(|mapping| model_mapping_matches(&mapping.from, &model))
-                {
-                    object.insert("model".to_string(), Value::String(mapping.to.clone()));
+                if let Some(target) = resolve_mapping_target(mappings, &model) {
+                    object.insert("model".to_string(), Value::String(target.to_string()));
                 }
             }
             for child in object.values_mut() {
@@ -1993,49 +1991,6 @@ fn rewrite_model_value(value: &mut Value, mappings: &[ModelMapping]) {
         }
         _ => {}
     }
-}
-
-fn model_mapping_matches(mapping_from: &str, requested_model: &str) -> bool {
-    let mapping_from = mapping_from.trim();
-    let requested_model = requested_model.trim();
-    if mapping_from == requested_model {
-        return true;
-    }
-
-    match (
-        claude_route_lookup_model(mapping_from),
-        claude_route_lookup_model(requested_model),
-    ) {
-        (Some(left), Some(right)) => left == right,
-        _ => false,
-    }
-}
-
-fn claude_route_lookup_model(model: &str) -> Option<&str> {
-    let stripped = strip_one_m_suffix_for_route_lookup(model);
-    if is_claude_route_model(stripped) {
-        Some(stripped)
-    } else {
-        None
-    }
-}
-
-fn strip_one_m_suffix_for_route_lookup(model: &str) -> &str {
-    const ONE_M_CONTEXT_MARKER: &str = "[1m]";
-    let trimmed = model.trim();
-    let marker = ONE_M_CONTEXT_MARKER.as_bytes();
-    let bytes = trimmed.as_bytes();
-    if bytes.len() >= marker.len()
-        && bytes[bytes.len() - marker.len()..].eq_ignore_ascii_case(marker)
-    {
-        return trimmed[..trimmed.len() - marker.len()].trim_end();
-    }
-    trimmed
-}
-
-fn is_claude_route_model(model: &str) -> bool {
-    let lower = model.to_ascii_lowercase();
-    lower.starts_with("claude-") || lower.starts_with("anthropic/claude-")
 }
 
 /// Max remote images inlined per request, and max bytes per image.
@@ -4097,8 +4052,14 @@ mod tests {
     #[test]
     fn flags_bridged_turn_without_tool_call() {
         let request = br#"{"model":"x","tools":[{"type":"function"}],"input":"hi"}"#;
-        let response = br#"data: {"type":"response.completed","response":{"output":[{"type":"message"}]}}"#;
-        let notes = diagnostic_notes(true, Some("codex"), Some(std::str::from_utf8(request).unwrap()), Some(response));
+        let response =
+            br#"data: {"type":"response.completed","response":{"output":[{"type":"message"}]}}"#;
+        let notes = diagnostic_notes(
+            true,
+            Some("codex"),
+            Some(std::str::from_utf8(request).unwrap()),
+            Some(response),
+        );
         assert_eq!(notes.len(), 1);
         assert!(notes[0].contains("未发起工具调用"));
     }
@@ -4165,10 +4126,17 @@ mod tests {
         let with_tool = br#"data: {"type":"response.completed","response":{"output":[{"type":"function_call"}]}}"#;
         assert!(diagnostic_notes(true, Some("codex"), Some(request), Some(with_tool)).is_empty());
         // No bridge applied -> no diagnostics.
-        let text_only = br#"data: {"type":"response.completed","response":{"output":[{"type":"message"}]}}"#;
+        let text_only =
+            br#"data: {"type":"response.completed","response":{"output":[{"type":"message"}]}}"#;
         assert!(diagnostic_notes(true, None, Some(request), Some(text_only)).is_empty());
         // Request offered no tools -> a plain text answer is expected, not flagged.
-        assert!(diagnostic_notes(true, Some("codex"), Some("{\"input\":\"hi\"}"), Some(text_only)).is_empty());
+        assert!(diagnostic_notes(
+            true,
+            Some("codex"),
+            Some("{\"input\":\"hi\"}"),
+            Some(text_only)
+        )
+        .is_empty());
     }
 
     #[derive(Debug)]
@@ -6148,6 +6116,58 @@ mod tests {
     }
 
     #[test]
+    fn apply_model_mappings_uses_fallback_only_when_no_specific_entry_matches() {
+        // Fallback sits FIRST on purpose: a single-pass `.find()` would let it
+        // swallow the specific claude-sonnet-5 entry that follows.
+        let mapped = apply_model_mappings(
+            br#"{"model":"claude-sonnet-5","nested":{"model":"claude-opus-4-8"}}"#,
+            &[
+                ModelMapping {
+                    from: "*".to_string(),
+                    to: "fallback-upstream".to_string(),
+                    label: None,
+                    supports_1m: None,
+                },
+                ModelMapping {
+                    from: "claude-sonnet-5".to_string(),
+                    to: "sonnet-upstream".to_string(),
+                    label: None,
+                    supports_1m: None,
+                },
+            ],
+        );
+        let value: Value = serde_json::from_slice(&mapped).expect("json");
+
+        assert_eq!(
+            value.pointer("/model").and_then(Value::as_str),
+            Some("sonnet-upstream")
+        );
+        assert_eq!(
+            value.pointer("/nested/model").and_then(Value::as_str),
+            Some("fallback-upstream")
+        );
+    }
+
+    #[test]
+    fn apply_model_mappings_rewrites_the_subagent_alias() {
+        let mapped = apply_model_mappings(
+            br#"{"model":"claude-subagent"}"#,
+            &[ModelMapping {
+                from: "claude-subagent".to_string(),
+                to: "provider-haiku".to_string(),
+                label: None,
+                supports_1m: None,
+            }],
+        );
+        let value: Value = serde_json::from_slice(&mapped).expect("json");
+
+        assert_eq!(
+            value.pointer("/model").and_then(Value::as_str),
+            Some("provider-haiku")
+        );
+    }
+
+    #[test]
     fn build_upstream_request_ignores_placeholder_model_mapping() {
         let mut credential = api_credential("placeholder", "openai");
         credential.config_json = serde_json::json!({
@@ -7417,6 +7437,48 @@ mod tests {
         assert!(selected.is_empty());
     }
 
+    #[test]
+    fn filter_credentials_for_model_keeps_fallback_accounts_for_unmatched_models() {
+        let wildcard = api_credential_with_config("wildcard", r#"{"model_mappings":[]}"#);
+        let sol = api_credential_with_config(
+            "sol",
+            r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"sol-upstream"}]}"#,
+        );
+        let fallback = api_credential_with_config(
+            "fallback",
+            r#"{"model_mappings":[{"from":"*","to":"catch-all-upstream"}]}"#,
+        );
+
+        // An unknown model used to empty the candidate list and hard-fail the
+        // whole request with route_pool.model_unmatched.
+        let selected = filter_credentials_for_model(
+            "codex",
+            vec![wildcard.clone(), sol.clone(), fallback.clone()],
+            Some("deepseek-v4-flash-0731"),
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .map(|item| item.display_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["fallback"]
+        );
+
+        // A baseline model still keeps every eligible account.
+        let selected = filter_credentials_for_model(
+            "codex",
+            vec![wildcard, sol, fallback],
+            Some("gpt-5.6-sol"),
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .map(|item| item.display_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["wildcard", "sol", "fallback"]
+        );
+    }
+
     #[tokio::test]
     async fn model_unmatched_error_uses_stable_error_code() {
         let response = json_error(
@@ -7526,6 +7588,36 @@ mod tests {
             .filter_map(|item| item.get("id").and_then(Value::as_str))
             .collect::<Vec<_>>();
         assert_eq!(models, vec!["gpt-5.5", "gpt-5", "gpt-4.1"]);
+    }
+
+    #[test]
+    fn models_list_excludes_the_fallback_sentinel() {
+        let mut credential = api_credential("claude-fallback", "anthropic");
+        credential.platform = "claude".to_string();
+        credential.config_json = serde_json::json!({
+            "base_url": "https://api.example.com",
+            "interface_format": "anthropic",
+            "model_mappings": [
+                {"from":"claude-sonnet-5","to":"provider-sonnet"},
+                {"from":"*","to":"catch-all-upstream"}
+            ]
+        })
+        .to_string();
+
+        let payload = build_models_list_payload("claude", &[credential]);
+        let models = payload
+            .get("data")
+            .and_then(Value::as_array)
+            .expect("models data")
+            .iter()
+            .filter_map(|item| item.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        // "*" is a routing sentinel, not a model id — it must never be advertised.
+        assert!(!models.contains(&"*"), "models={models:?}");
+        assert!(models.contains(&"claude-sonnet-5"), "models={models:?}");
+        // A fallback account accepts anything, so it advertises the baseline.
+        assert!(models.contains(&"claude-haiku-4-5"), "models={models:?}");
     }
 
     #[test]
