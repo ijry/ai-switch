@@ -32,6 +32,8 @@ pub struct RouteConfigInput {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClaudeEnvPlan {
     pub subagent_model: Option<String>,
+    /// Model for requests that don't land on one of the four `/model` roles.
+    pub fallback_model: Option<String>,
     /// One entry per `CLAUDE_MODEL_SLOTS` slot, in that order. An empty vec (or
     /// a defaulted entry) clears the slot's keys.
     pub slots: Vec<ClaudeSlotWrite>,
@@ -308,6 +310,7 @@ api_key = "legacy-key"
         let with_alias = RouteConfigInput {
             claude_env: ClaudeEnvPlan {
                 subagent_model: Some("claude-subagent".to_string()),
+                fallback_model: None,
                 slots: Vec::new(),
                 client_config: None,
             },
@@ -437,6 +440,7 @@ api_key = "legacy-key"
         let with_alias = RouteConfigInput {
             claude_env: ClaudeEnvPlan {
                 subagent_model: Some("claude-subagent".to_string()),
+                fallback_model: None,
                 slots: Vec::new(),
                 client_config: None,
             },

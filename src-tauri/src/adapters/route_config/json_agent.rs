@@ -54,6 +54,10 @@ impl JsonAgentAdapter {
 /// Env key pinning the model for Claude Code's spawned subagents.
 pub(super) const CLAUDE_SUBAGENT_MODEL_ENV_KEY: &str = "CLAUDE_CODE_SUBAGENT_MODEL";
 
+/// Env key for requests that don't land on one of the four `/model` roles —
+/// including Claude Code's own background subtasks.
+pub(super) const CLAUDE_FALLBACK_MODEL_ENV_KEY: &str = "ANTHROPIC_MODEL";
+
 fn set_or_remove(env: &mut Map<String, Value>, key: &str, value: Option<&str>) {
     match value.map(str::trim).filter(|value| !value.is_empty()) {
         Some(value) => {
@@ -153,6 +157,11 @@ impl TargetAdapter for JsonAgentAdapter {
                 env,
                 CLAUDE_SUBAGENT_MODEL_ENV_KEY,
                 input.claude_env.subagent_model.as_deref(),
+            );
+            set_or_remove(
+                env,
+                CLAUDE_FALLBACK_MODEL_ENV_KEY,
+                input.claude_env.fallback_model.as_deref(),
             );
 
             for (index, slot) in CLAUDE_MODEL_SLOTS.iter().enumerate() {

@@ -9,7 +9,7 @@ use crate::models::config_snapshot::ConfigWriteOutcome;
 use crate::models::platform::{PlatformId, PlatformOperation};
 use crate::models::route_credential::{
     ClaudeSlotWrite, ModelMapping, RouteCredentialPoolScope, CLAUDE_MODEL_SLOTS,
-    CLAUDE_ONE_M_SUFFIX, CLAUDE_SUBAGENT_MODEL_ALIAS,
+    CLAUDE_ONE_M_SUFFIX, CLAUDE_SUBAGENT_MODEL_ALIAS, FALLBACK_MODEL_ALIAS,
 };
 use crate::models::route_credential_transfer::RouteCredentialSelectionContext;
 use crate::paths::AppPaths;
@@ -233,8 +233,9 @@ impl RouteConfigService {
             })
     }
 
-    /// Resolves what to write for each `/model` slot, given every in-pool API
-    /// account's mappings. Pure so the merge rules are testable without a DB.
+    /// Resolves one alias's write across the pool. Shared by the four `/model`
+    /// slots, the subagent alias, and the fallback alias so all of them obey the
+    /// same 1M and display-name rules.
     ///
     /// Always the generic alias, never an account's upstream model name: one
     /// settings file serves the whole pool, so the proxy does the per-account
@@ -242,53 +243,55 @@ impl RouteConfigService {
     ///
     /// Merge rules, both deliberately conservative because the client contract
     /// is one value while our data is per-account:
-    /// - **1M is unanimous (AND).** Every account configuring the slot must
+    /// - **1M is unanimous (AND).** Every account configuring the alias must
     ///   support it, else the suffix is omitted. Declaring it otherwise would
     ///   route a 1M-sized prompt to an account that cannot serve it.
     /// - **Display name needs consensus.** Accounts that set a non-empty label
     ///   must all agree; a disagreement omits the key rather than picking a
     ///   winner. Accounts leaving it blank abstain instead of vetoing.
+    fn resolve_alias_write(account_mappings: &[Vec<ModelMapping>], alias: &str) -> ClaudeSlotWrite {
+        let configured = account_mappings
+            .iter()
+            .filter_map(|mappings| {
+                mappings
+                    .iter()
+                    .find(|mapping| mapping.from.trim() == alias && !mapping.to.trim().is_empty())
+            })
+            .collect::<Vec<_>>();
+
+        if configured.is_empty() {
+            return ClaudeSlotWrite::default();
+        }
+
+        let all_support_one_m = configured
+            .iter()
+            .all(|mapping| mapping.supports_1m == Some(true));
+        let model = if all_support_one_m {
+            format!("{alias}{CLAUDE_ONE_M_SUFFIX}")
+        } else {
+            alias.to_string()
+        };
+
+        let mut labels = configured
+            .iter()
+            .filter_map(|mapping| mapping.label.as_deref().map(str::trim))
+            .filter(|label| !label.is_empty());
+        let first = labels.next();
+        let display_name = match first {
+            Some(label) if labels.all(|other| other == label) => Some(label.to_string()),
+            _ => None,
+        };
+
+        ClaudeSlotWrite {
+            model: Some(model),
+            display_name,
+        }
+    }
+
     fn resolve_claude_slot_writes(account_mappings: &[Vec<ModelMapping>]) -> Vec<ClaudeSlotWrite> {
         CLAUDE_MODEL_SLOTS
             .iter()
-            .map(|slot| {
-                let configured = account_mappings
-                    .iter()
-                    .filter_map(|mappings| {
-                        mappings.iter().find(|mapping| {
-                            mapping.from.trim() == slot.alias && !mapping.to.trim().is_empty()
-                        })
-                    })
-                    .collect::<Vec<_>>();
-
-                if configured.is_empty() {
-                    return ClaudeSlotWrite::default();
-                }
-
-                let all_support_one_m = configured
-                    .iter()
-                    .all(|mapping| mapping.supports_1m == Some(true));
-                let model = if all_support_one_m {
-                    format!("{}{}", slot.alias, CLAUDE_ONE_M_SUFFIX)
-                } else {
-                    slot.alias.to_string()
-                };
-
-                let mut labels = configured
-                    .iter()
-                    .filter_map(|mapping| mapping.label.as_deref().map(str::trim))
-                    .filter(|label| !label.is_empty());
-                let first = labels.next();
-                let display_name = match first {
-                    Some(label) if labels.all(|other| other == label) => Some(label.to_string()),
-                    _ => None,
-                };
-
-                ClaudeSlotWrite {
-                    model: Some(model),
-                    display_name,
-                }
-            })
+            .map(|slot| Self::resolve_alias_write(account_mappings, slot.alias))
             .collect()
     }
 
@@ -317,19 +320,6 @@ impl RouteConfigService {
             .collect())
     }
 
-    /// Resolves the alias to write into the agent's subagent-model env key, or
-    /// `None` when no enabled in-pool account configures one (which clears it).
-    fn resolve_subagent_model(account_mappings: &[Vec<ModelMapping>]) -> Option<String> {
-        let configured = account_mappings.iter().any(|mappings| {
-            mappings.iter().any(|mapping| {
-                mapping.from.trim() == CLAUDE_SUBAGENT_MODEL_ALIAS && !mapping.to.trim().is_empty()
-            })
-        });
-
-        configured.then(|| CLAUDE_SUBAGENT_MODEL_ALIAS.to_string())
-    }
-
-    /// Builds the Claude-only env plan for a config write. Non-Claude platforms
     /// Parses the pool-wide client config, ignoring anything that is not a JSON
     /// object. A malformed value must not block a config write: the user would be
     /// locked out of writing any config until they fixed unrelated JSON.
@@ -340,6 +330,7 @@ impl RouteConfigService {
         (!object.is_empty()).then(|| object.clone())
     }
 
+    /// Builds the Claude-only env plan for a config write. Non-Claude platforms
     /// get an empty plan, which clears every managed key.
     async fn resolve_claude_env_plan(
         paths: &AppPaths,
@@ -353,7 +344,16 @@ impl RouteConfigService {
         let account_mappings = Self::claude_pool_mappings(pool).await?;
         let settings = SettingsService::load(paths).await?;
         Ok(ClaudeEnvPlan {
-            subagent_model: Self::resolve_subagent_model(&account_mappings),
+            subagent_model: Self::resolve_alias_write(
+                &account_mappings,
+                CLAUDE_SUBAGENT_MODEL_ALIAS,
+            )
+            .model,
+            // Requests that fall outside the four `/model` roles. The client key
+            // wants a concrete model, so write the fallback alias the proxy
+            // already rewrites per account.
+            fallback_model: Self::resolve_alias_write(&account_mappings, FALLBACK_MODEL_ALIAS)
+                .model,
             slots: Self::resolve_claude_slot_writes(&account_mappings),
             client_config: Self::parse_claude_client_config(
                 settings.claude_client_config_json.as_deref(),
@@ -1085,6 +1085,50 @@ command = "npx"
         // Unconfigured slots stay absent rather than being invented.
         assert!(env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").is_none());
         assert!(env.get("ANTHROPIC_DEFAULT_FABLE_MODEL_NAME").is_none());
+    }
+
+    #[tokio::test]
+    async fn write_claude_config_covers_every_managed_model_key() {
+        let (_app_dir, paths, pool, runtime) = config_write_context().await;
+        let home = tempfile::tempdir().expect("home dir");
+        // Every role configured, all 1M, one shared display name — the fully
+        // populated shape a single-account pool produces.
+        let mappings = CLAUDE_MODEL_SLOTS
+            .iter()
+            .map(|slot| slot.alias)
+            .chain([CLAUDE_SUBAGENT_MODEL_ALIAS, FALLBACK_MODEL_ALIAS])
+            .map(|alias| {
+                format!(
+                    r#"{{"from":"{alias}","to":"claude-opus-5","label":"claude-opus-5","supports_1m":true}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        seed_claude_pool_member(&pool, "api", &format!("[{mappings}]")).await;
+
+        let json = write_claude_config_with_pool(home.path(), &paths, &pool, &runtime).await;
+        let env = json["env"].as_object().expect("env object");
+
+        for slot in CLAUDE_MODEL_SLOTS {
+            assert_eq!(env[slot.model_env_key], format!("{}[1M]", slot.alias));
+            assert_eq!(env[slot.name_env_key], "claude-opus-5");
+        }
+        // The subagent and the catch-all are aliases too, so they carry [1M] the
+        // same way and get rewritten per account by the proxy.
+        assert_eq!(env["CLAUDE_CODE_SUBAGENT_MODEL"], "claude-subagent[1M]");
+        assert_eq!(env["ANTHROPIC_MODEL"], "*[1M]");
+
+        // Ten managed model keys in total: 4 slots x (model + display name),
+        // plus the subagent and the catch-all.
+        let managed = env
+            .keys()
+            .filter(|key| {
+                key.starts_with("ANTHROPIC_DEFAULT_")
+                    || key.as_str() == "ANTHROPIC_MODEL"
+                    || key.as_str() == "CLAUDE_CODE_SUBAGENT_MODEL"
+            })
+            .count();
+        assert_eq!(managed, 10);
     }
 
     #[test]

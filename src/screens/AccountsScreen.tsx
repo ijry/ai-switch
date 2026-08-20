@@ -578,7 +578,7 @@ const claudeRoleTemplates = [
     value: template.value,
     label: template.label,
     editableLabel: false,
-    supportsOneM: false,
+    supportsOneM: true,
     hint: template.hint as string | null,
   })),
 ];

@@ -1745,10 +1745,11 @@ describe("AccountsScreen", () => {
     expect(screen.getByLabelText("请求模型 5")).toHaveValue("claude-subagent");
     expect(screen.getByLabelText("请求模型 6")).toHaveValue("*");
 
-    // Neither declares 1M support, but the menu roles still do.
+    // Neither has an editable display name, but both can declare 1M — that
+    // suffix is what makes Claude Code request the 1M context window.
     expect(screen.getByLabelText("声明支持 1M 4")).toBeInTheDocument();
-    expect(screen.queryByLabelText("声明支持 1M 5")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("声明支持 1M 6")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("声明支持 1M 5")).toBeInTheDocument();
+    expect(screen.getByLabelText("声明支持 1M 6")).toBeInTheDocument();
   });
 
   it("saves the Claude subagent and fallback mappings", async () => {
@@ -1763,6 +1764,9 @@ describe("AccountsScreen", () => {
     await userEvent.selectOptions(screen.getByLabelText("接口格式"), "anthropic");
     await userEvent.type(screen.getByLabelText("上游模型 5"), "provider-haiku");
     await userEvent.type(screen.getByLabelText("上游模型 6"), "provider-sonnet");
+    // The subagent and catch-all are aliases like any other role, so they can
+    // declare 1M too — that suffix is what makes Claude Code request 1M.
+    await userEvent.click(screen.getByLabelText("声明支持 1M 5"));
     await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
 
     await waitFor(() =>
@@ -1770,7 +1774,7 @@ describe("AccountsScreen", () => {
         expect.objectContaining({
           // Appended after Haiku, and with no label key on either row.
           model_mappings_json:
-            "[{\"from\":\"claude-subagent\",\"to\":\"provider-haiku\"},{\"from\":\"*\",\"to\":\"provider-sonnet\"}]",
+            "[{\"from\":\"claude-subagent\",\"to\":\"provider-haiku\",\"supports_1m\":true},{\"from\":\"*\",\"to\":\"provider-sonnet\"}]",
         }),
       ),
     );
