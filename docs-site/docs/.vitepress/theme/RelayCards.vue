@@ -55,11 +55,18 @@ const copyFor = (r: (typeof RELAYS)[number]): RelayCopy => (isEn.value ? r.en : 
 //   deep — the 700/800-level colour. Accent text in light mode (>=5.4:1 on
 //          white, whereas the tint would be ~2.5:1) and the solid button
 //          background in both modes (>=5.4:1 against white button text).
+// Eight entries so a sixth or seventh provider still gets a distinct colour
+// rather than repeating the first. Measured worst case across all eight:
+// deep-on-white 5.47, tint-on-dark-panel 5.86, white-on-deep 5.47 — all AA.
 const PALETTE = [
   { tint: "52, 211, 153", deep: "4, 120, 87" }, // emerald
   { tint: "167, 139, 250", deep: "109, 40, 217" }, // violet
   { tint: "251, 191, 36", deep: "146, 64, 14" }, // amber
   { tint: "56, 189, 248", deep: "3, 105, 161" }, // sky
+  { tint: "251, 113, 133", deep: "159, 18, 57" }, // rose
+  { tint: "45, 212, 191", deep: "15, 118, 110" }, // teal
+  { tint: "129, 140, 248", deep: "67, 56, 202" }, // indigo
+  { tint: "232, 121, 249", deep: "134, 25, 143" }, // fuchsia
 ];
 const accent = (i: number) => PALETTE[i % PALETTE.length];
 
@@ -171,7 +178,7 @@ const fmtDate = (iso: string) =>
               <span class="rl-fact-k">{{ t.signupLabel }}</span>
               <span class="rl-fact-v">{{ copyFor(r).signup }}</span>
             </div>
-            <div class="rl-fact">
+            <div class="rl-fact" v-if="copyFor(r).invite">
               <span class="rl-fact-k">{{ t.inviteLabel }}</span>
               <span class="rl-fact-v rl-fact-v-sm">{{ copyFor(r).invite }}</span>
             </div>
@@ -192,13 +199,20 @@ const fmtDate = (iso: string) =>
                    block that too would just duplicate it. -->
               <p class="rl-over-title">{{ copyFor(r).name }}</p>
 
-              <p class="rl-block-head">{{ t.notesLabel }}</p>
-              <ul class="rl-list">
-                <li v-for="n in copyFor(r).notes" :key="n">{{ n }}</li>
-              </ul>
+              <template v-if="copyFor(r).notes?.length">
+                <p class="rl-block-head">{{ t.notesLabel }}</p>
+                <ul class="rl-list">
+                  <li v-for="n in copyFor(r).notes" :key="n">{{ n }}</li>
+                </ul>
+              </template>
 
               <template v-if="copyFor(r).tips?.length">
-                <p class="rl-block-head rl-block-head-tips">{{ t.tipsLabel }}</p>
+                <p
+                  class="rl-block-head"
+                  :class="{ 'rl-block-head-tips': copyFor(r).notes?.length }"
+                >
+                  {{ t.tipsLabel }}
+                </p>
                 <ul class="rl-list">
                   <li v-for="tip in copyFor(r).tips" :key="tip">{{ tip }}</li>
                 </ul>

@@ -26,10 +26,11 @@ export type RelayCopy = {
   rate: string;
   /** 注册即得额度 */
   signup: string;
-  /** 邀请规则 */
-  invite: string;
-  /** 须知，逐条列出 */
-  notes: string[];
+  /** 邀请规则。有的站点只说了注册奖励、没说邀请人得多少，这种就留空不显示，
+      不要自己脑补一个数字。 */
+  invite?: string;
+  /** 须知，逐条列出。没有就留空，卡片会跳过这一块。 */
+  notes?: string[];
   /** 使用提示（可选），比 notes 更偏操作细节 */
   tips?: string[];
 };
@@ -109,6 +110,116 @@ export const RELAYS: Relay[] = [
       signup: "$50 credit on signup",
       invite:
         "Per invited user: the new user gets $20 in credit and the referrer gets $40.",
+      notes: [
+        "No chat group to join — usable immediately after signup",
+        "Sign up with a GitHub account",
+        "Claude Code only",
+      ],
+    },
+  },
+  {
+    id: "justwoker",
+    aff: "https://api.justwoker.icu/sign-up?aff=HaTk",
+    host: "api.justwoker.icu",
+    models: ["opus 4.8", "opus 5"],
+    verifiedAt: "2026-08-20",
+    root: {
+      name: "justwoker",
+      tested: "用注册满一年以上的 GitHub 账号注册通过。",
+      rate: "0.65x 倍率",
+      signup: "通过邀请链接注册即得 $70 额度",
+      notes: ["有 opus-4.8 和 opus-5", "可以签到"],
+    },
+    en: {
+      name: "justwoker",
+      tested: "Signed up successfully with a GitHub account at least one year old.",
+      rate: "0.65x rate",
+      signup: "$70 credit on signup via referral link",
+      notes: ["Serves opus-4.8 and opus-5", "Has a daily check-in"],
+    },
+  },
+  {
+    id: "zynk",
+    aff: "https://gy.leyanshi.me/sign-up?aff=AIrL",
+    host: "gy.leyanshi.me",
+    models: ["gpt-5.6-terra", "gpt-5.6-sol"],
+    verifiedAt: "2026-08-20",
+    root: {
+      name: "zynk 公益站",
+      tested: "用 QQ 邮箱注册通过。",
+      rate: "2x 倍率",
+      signup: "注册即得 $2 额度",
+      invite: "每邀请一位新用户：新用户获得 $2 额度，邀请人获得 $120 额度。",
+      notes: [
+        "还有其他国产模型",
+        "公益额度时不时才开放，开放时在 QQ 群里通知，所以最好加群 —— 不加也能用，看你自己",
+      ],
+      tips: ["签到额度随机，波动很大：实测给过 14，也有人拿到一百多，完全看运气。"],
+    },
+    en: {
+      name: "zynk (public-benefit relay)",
+      tested: "Signed up successfully with a QQ Mail address.",
+      rate: "2x rate",
+      signup: "$2 credit on signup",
+      invite:
+        "Per invited user: the new user gets $2 in credit and the referrer gets $120.",
+      notes: [
+        "Also serves several Chinese models",
+        "Free credit only opens up from time to time, announced in the QQ group — joining is recommended but not required",
+      ],
+      tips: [
+        "Check-in credit is random and varies widely: 14 in our test, others report over a hundred. Pure luck.",
+      ],
+    },
+  },
+  {
+    id: "kapibala",
+    aff: "https://kapibala.asia/sign-up?aff=YHUv",
+    host: "kapibala.asia",
+    models: ["opus 4.8", "opus 5"],
+    verifiedAt: "2026-08-20",
+    root: {
+      name: "卡皮巴拉",
+      tested: "用邮箱注册通过（QQ 邮箱可以）。",
+      rate: "1x 倍率",
+      signup: "注册即得 $2 额度",
+      invite: "每邀请一位新用户获得 $5 额度。",
+      tips: ["每天签到大约 $0.5。"],
+    },
+    en: {
+      name: "Kapibala",
+      tested: "Signed up successfully with an email address (QQ Mail works).",
+      rate: "1x rate",
+      signup: "$2 credit on signup",
+      invite: "$5 in credit per invited user.",
+      tips: ["The daily check-in grants around $0.5."],
+    },
+  },
+  {
+    id: "tabitoken",
+    aff: "https://tabitoken.com/sign-up?aff=FrJQ",
+    host: "tabitoken.com",
+    models: ["opus 4.8", "opus 5"],
+    verifiedAt: "2026-08-20",
+    root: {
+      name: "tabitoken 公益站",
+      tested: "用 GitHub 账号注册通过。",
+      rate: "1x 倍率",
+      signup: "注册即得 $20 额度",
+      invite: "每邀请一位新用户：新用户获得 $20 额度，邀请人获得 $20 额度。",
+      notes: [
+        "不需要加群，注册完就能用",
+        "使用 GitHub 账号注册",
+        "只支持 Claude Code",
+      ],
+    },
+    en: {
+      name: "tabitoken (public-benefit relay)",
+      tested: "Signed up successfully with a GitHub account.",
+      rate: "1x rate",
+      signup: "$20 credit on signup",
+      invite:
+        "Per invited user: the new user gets $20 in credit and the referrer gets $20.",
       notes: [
         "No chat group to join — usable immediately after signup",
         "Sign up with a GitHub account",
