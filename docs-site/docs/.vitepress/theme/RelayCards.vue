@@ -1,12 +1,13 @@
 <script setup lang="ts">
 /* 中转站卡片。默认只显示身份信息 + 关键数字 + 入口按钮，须知与使用提示做成一层
-   覆盖层：悬停时卡片主体变成强调色底、白字，卡片高度一点都不变（覆盖层是
-   absolute，不占布局）。
+   覆盖层：悬停时卡片变成强调色底、白字，卡片高度一点都不变（覆盖层是
+   absolute，完全不参与高度计算）。卡片高度由默认视图决定，须知比卡片长就在
+   覆盖层内部滚动 —— 不为最长的那条须知预留空白。
    覆盖层只盖住主体，不盖页脚 —— 页脚里的注册按钮如果被盖住，鼠标一移上来就
    被覆盖层挡住，那个按钮就永远点不到了。页脚的邀请参数披露也因此始终可见。
    卡片配色不写在 relays.ts 里 —— 数据文件只管事实，配色按顺序从下面这份调色板取，
    新增站点会自动拿到下一个色。 */
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useData } from "vitepress";
 import { RELAYS, type RelayCopy } from "./relays";
 
@@ -72,6 +73,52 @@ function toggle(id: string) {
   open.value = next;
 }
 
+// --- scroll-edge fades -----------------------------------------------------
+// The overlay clips its content, so a scrolled card would otherwise appear to
+// start mid-sentence. These set --rl-fade-t / --rl-fade-b to 1 only when content
+// really is hidden past that edge; the mask in the CSS does the rest. Done from
+// JS because CSS cannot query scroll position.
+const scrollers = ref<HTMLElement[]>([]);
+const registerScroller = (el: unknown) => {
+  if (el instanceof HTMLElement && !scrollers.value.includes(el)) {
+    scrollers.value.push(el);
+  }
+};
+
+function syncFades(el: HTMLElement) {
+  // 1px of slack: fractional layout means scrollTop rarely hits the exact
+  // maximum, and a permanently-on bottom fade would look like a bug.
+  const atTop = el.scrollTop <= 1;
+  const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+  el.style.setProperty("--rl-fade-t", atTop ? "0" : "1");
+  el.style.setProperty("--rl-fade-b", atBottom ? "0" : "1");
+}
+
+const syncAll = () => scrollers.value.forEach(syncFades);
+const onScroll = (e: Event) => syncFades(e.currentTarget as HTMLElement);
+
+let ro: ResizeObserver | undefined;
+
+onMounted(() => {
+  scrollers.value.forEach((el) => el.addEventListener("scroll", onScroll, { passive: true }));
+  // Reflow changes what overflows: viewport resizes, and web fonts landing after
+  // first paint. Observe the scroller *and* its content wrapper — the box and
+  // what's inside it can each change without the other.
+  if (typeof ResizeObserver !== "undefined") {
+    ro = new ResizeObserver(syncAll);
+    scrollers.value.forEach((el) => {
+      ro!.observe(el);
+      if (el.firstElementChild) ro!.observe(el.firstElementChild);
+    });
+  }
+  syncAll();
+});
+
+onBeforeUnmount(() => {
+  scrollers.value.forEach((el) => el.removeEventListener("scroll", onScroll));
+  ro?.disconnect();
+});
+
 // Evaluated on the server at build time and again in the browser at page-load,
 // so the two can disagree once a card crosses the three-month line. The warning
 // is therefore rendered inside <ClientOnly> — it must reflect *now*, not the
@@ -103,8 +150,8 @@ const fmtDate = (iso: string) =>
       :class="{ 'is-open': isOpen(r.id) }"
       :style="{ '--rl-a': accent(i).tint, '--rl-d': accent(i).deep }"
     >
-      <!-- Default view. Sits under the overlay; both share .rl-body's box so the
-           card height is set by whichever is taller and never changes on hover. -->
+      <!-- Default view. Sets the card height on its own; the overlay is absolute
+           and so never changes it. -->
       <div class="rl-body">
         <div class="rl-default">
           <header class="rl-head">
@@ -132,31 +179,36 @@ const fmtDate = (iso: string) =>
         </div>
 
         <!-- Overlay. Always in the DOM (so its text is indexable and reachable by
-             screen readers); revealed by opacity, which costs no layout. -->
+             screen readers); revealed by opacity, which costs no layout. Content
+             longer than the card scrolls inside .rl-over-scroll. -->
         <div :id="`rl-fold-${r.id}`" class="rl-over">
-          <div class="rl-over-scroll">
-            <!-- The overlay hides the identity block, so it repeats the name —
-                 otherwise you lose track of which provider you're reading. The
-                 toggle below already reads "notes and tips", so titling this
-                 block that too would just duplicate it. -->
-            <p class="rl-over-title">{{ copyFor(r).name }}</p>
+          <div class="rl-over-scroll" :ref="registerScroller">
+            <!-- Single wrapper so a ResizeObserver on it sees the content grow;
+                 observing the scroller alone would only catch its box changing. -->
+            <div class="rl-over-inner">
+              <!-- The overlay hides the identity block, so it repeats the name —
+                   otherwise you lose track of which provider you're reading. The
+                   toggle below already reads "notes and tips", so titling this
+                   block that too would just duplicate it. -->
+              <p class="rl-over-title">{{ copyFor(r).name }}</p>
 
-            <p class="rl-block-head">{{ t.notesLabel }}</p>
-            <ul class="rl-list">
-              <li v-for="n in copyFor(r).notes" :key="n">{{ n }}</li>
-            </ul>
-
-            <template v-if="copyFor(r).tips?.length">
-              <p class="rl-block-head rl-block-head-tips">{{ t.tipsLabel }}</p>
+              <p class="rl-block-head">{{ t.notesLabel }}</p>
               <ul class="rl-list">
-                <li v-for="tip in copyFor(r).tips" :key="tip">{{ tip }}</li>
+                <li v-for="n in copyFor(r).notes" :key="n">{{ n }}</li>
               </ul>
-            </template>
 
-            <p class="rl-tested">
-              <span class="rl-block-head">{{ t.testedLabel }}</span>
-              {{ copyFor(r).tested }}
-            </p>
+              <template v-if="copyFor(r).tips?.length">
+                <p class="rl-block-head rl-block-head-tips">{{ t.tipsLabel }}</p>
+                <ul class="rl-list">
+                  <li v-for="tip in copyFor(r).tips" :key="tip">{{ tip }}</li>
+                </ul>
+              </template>
+
+              <p class="rl-tested">
+                <span class="rl-block-head">{{ t.testedLabel }}</span>
+                {{ copyFor(r).tested }}
+              </p>
+            </div>
           </div>
         </div>
       </div>
@@ -380,26 +432,24 @@ const fmtDate = (iso: string) =>
   transition: transform 0.22s ease;
 }
 
-/* Both children share one grid cell, so the row is as tall as the taller of the
-   two and the card height is identical whether the overlay is up or not. The
-   overlay stays in flow (rather than absolute) precisely so it contributes to
-   that height — otherwise long notes would clip or need an inner scrollbar. */
+/* The card is sized by .rl-default alone — the overlay is absolutely positioned so
+   it contributes no height at all. That keeps the card as short as its default
+   view (no dead space reserved for the longest notes) while still never changing
+   height on hover, since an absolute box can't push anything. Notes longer than
+   the card scroll inside the overlay. */
 .rl-body {
   position: relative;
-  display: grid;
-}
-
-.rl-default,
-.rl-over {
-  grid-area: 1 / 1;
+  min-height: 0;
 }
 
 .rl-over {
+  position: absolute;
+  inset: 0;
+  display: flex;
   /* Kept in the DOM and merely transparent, so the text is indexable and
      reachable by assistive tech even while invisible. `visibility` is what
      actually takes it out of the tab order and off the hit-testing surface —
      opacity alone would leave an invisible layer swallowing clicks. */
-  position: relative;
   z-index: 1;
   opacity: 0;
   visibility: hidden;
@@ -427,6 +477,45 @@ const fmtDate = (iso: string) =>
 
 .rl-over-scroll {
   position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* Room for the scrollbar so the text doesn't sit under it, and a thin styled
+     bar — the default one is opaque and heavy against the accent fill. */
+  padding-right: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.45) transparent;
+  overscroll-behavior: contain;
+  /* Fade the cut edges so a scrolled card doesn't look like it simply starts
+     mid-sentence. A mask is used rather than a gradient overlay because it dims
+     whatever is behind it — one rule works for all four accent fills.
+     The two 12px stops are driven by JS: --rl-fade-t/-b go to 1 only when there
+     really is content past that edge, so a card that fits shows no fade at all. */
+  mask-image: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, calc(1 - var(--rl-fade-t, 0))) 0,
+    #000 12px,
+    #000 calc(100% - 12px),
+    rgba(0, 0, 0, calc(1 - var(--rl-fade-b, 0))) 100%
+  );
+}
+
+/* WebKit needs its own pseudo-elements; scrollbar-color above only covers Firefox. */
+.rl-over-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.rl-over-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.rl-over-scroll::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.rl-over-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.62);
 }
 
 .rl-over-title {
