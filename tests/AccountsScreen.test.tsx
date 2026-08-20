@@ -1718,6 +1718,69 @@ describe("AccountsScreen", () => {
     );
   });
 
+  it("shows the Claude subagent and fallback rows after the menu roles", async () => {
+    renderScreen("claude");
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+
+    // The four /model-menu roles keep positions 1-4.
+    expect(screen.getByLabelText("显示名称 1")).toHaveValue("Sonnet");
+    expect(screen.getByLabelText("显示名称 4")).toHaveValue("Haiku");
+
+    // The two new roles have no editable display name.
+    expect(screen.getByLabelText("显示名称 5")).toBeDisabled();
+    expect(screen.getByLabelText("显示名称 6")).toBeDisabled();
+    expect(screen.getByLabelText("显示名称 5")).toHaveAttribute(
+      "placeholder",
+      "不显示在 /model 菜单",
+    );
+    expect(screen.getByLabelText("请求模型 5")).toHaveValue("claude-subagent");
+    expect(screen.getByLabelText("请求模型 6")).toHaveValue("*");
+
+    // Neither declares 1M support, but the menu roles still do.
+    expect(screen.getByLabelText("声明支持 1M 4")).toBeInTheDocument();
+    expect(screen.queryByLabelText("声明支持 1M 5")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("声明支持 1M 6")).not.toBeInTheDocument();
+  });
+
+  it("saves the Claude subagent and fallback mappings", async () => {
+    renderScreen("claude");
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Claude API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-claude");
+    await userEvent.clear(screen.getByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://api.anthropic.test");
+    await userEvent.selectOptions(screen.getByLabelText("接口格式"), "anthropic");
+    await userEvent.type(screen.getByLabelText("上游模型 5"), "provider-haiku");
+    await userEvent.type(screen.getByLabelText("上游模型 6"), "provider-sonnet");
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() =>
+      expect(createApiRouteCredential).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // Appended after Haiku, and with no label key on either row.
+          model_mappings_json:
+            "[{\"from\":\"claude-subagent\",\"to\":\"provider-haiku\"},{\"from\":\"*\",\"to\":\"provider-sonnet\"}]",
+        }),
+      ),
+    );
+  });
+
+  it("counts only configured mappings in the editor hint", async () => {
+    renderScreen("claude");
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.type(screen.getByLabelText("上游模型 1"), "provider-sonnet");
+
+    // Touching one row pushes every synthesized row into state; the hint must
+    // still report the one row that will actually be persisted.
+    expect(await screen.findByText(/共 1 条/)).toBeInTheDocument();
+  });
+
   it("saves the selected Claude API key field and uses it when fetching models", async () => {
     renderScreen("claude");
 

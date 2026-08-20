@@ -534,6 +534,10 @@ const anthropicApiKeyFields: Array<{ value: AnthropicApiKeyField; label: string;
   },
 ];
 
+const CLAUDE_SUBAGENT_ALIAS = "claude-subagent";
+const CLAUDE_FALLBACK_ALIAS = "*";
+
+// The four roles Claude Code shows in its /model menu.
 const claudeModelTemplates = [
   { value: "claude-sonnet-5", label: "Sonnet", keywords: ["sonnet"] },
   { value: "claude-opus-4-8", label: "Opus", keywords: ["opus"] },
@@ -541,11 +545,48 @@ const claudeModelTemplates = [
   { value: "claude-haiku-4-5", label: "Haiku", keywords: ["haiku", "flash", "mini", "lite"] },
 ] as const;
 
+// Appended after the menu roles so the existing rows keep their positions (the
+// row aria-labels are 1-indexed by position). Neither has an editable display
+// name: Subagent never appears in the /model menu, and the fallback is a routing
+// rule rather than a model. Neither takes the 1M flag — the proxy writes a plain
+// alias, so a [1m] variant would only produce a phantom advertised model id.
+const claudeExtraRoleTemplates = [
+  {
+    value: CLAUDE_SUBAGENT_ALIAS,
+    label: "Subagent",
+    hint: "不显示在 /model 菜单",
+  },
+  {
+    value: CLAUDE_FALLBACK_ALIAS,
+    label: "默认兜底模型",
+    hint: "未匹配的模型走这里",
+  },
+] as const;
+
+const claudeRoleTemplates = [
+  ...claudeModelTemplates.map((template) => ({
+    value: template.value,
+    label: template.label,
+    editableLabel: true,
+    supportsOneM: true,
+    hint: null as string | null,
+  })),
+  ...claudeExtraRoleTemplates.map((template) => ({
+    value: template.value,
+    label: template.label,
+    editableLabel: false,
+    supportsOneM: false,
+    hint: template.hint as string | null,
+  })),
+];
+
 const claudeModelSources = [
   ...claudeModelTemplates.map((template) => ({
     value: template.value,
     label: `${template.label}（默认角色）`,
   })),
+  { value: CLAUDE_SUBAGENT_ALIAS, label: "Subagent（子代理角色）" },
+  { value: CLAUDE_FALLBACK_ALIAS, label: "其他所有模型（兜底）" },
   { value: "claude-opus", label: "Claude Opus（旧版）" },
   { value: "claude-sonnet", label: "Claude Sonnet（旧版）" },
   { value: "claude-haiku", label: "Claude Haiku（旧版）" },
@@ -693,7 +734,7 @@ function defaultRequestedModel(platform: PlatformKey, interfaceFormat?: Interfac
 }
 
 function isClaudeTemplateSource(value: string) {
-  return claudeModelTemplates.some((template) => template.value === value.trim());
+  return claudeRoleTemplates.some((template) => template.value === value.trim());
 }
 
 function modelIdList(models: FetchedRouteModel[]) {
@@ -1170,21 +1211,26 @@ function ModelMappingsEditor({
   value,
 }: ModelMappingsEditorProps) {
   const isClaude = platform === "claude";
-  const templateValues = new Set<string>(claudeModelTemplates.map((template) => template.value));
+  const templateValues = new Set<string>(claudeRoleTemplates.map((template) => template.value));
   const rows = isClaude
     ? [
-        ...claudeModelTemplates.map((template) => {
+        ...claudeRoleTemplates.map((template) => {
           const existing = value.find((mapping) => mapping.from.trim() === template.value);
           return {
             from: template.value,
             to: existing?.to ?? "",
-            label: existing?.label ?? template.label,
+            label: template.editableLabel ? existing?.label ?? template.label : null,
             supports_1m: existing?.supports_1m ?? false,
           };
         }),
         ...value.filter((mapping) => !templateValues.has(mapping.from.trim())),
       ]
     : value;
+  // `value` holds every synthesized row once any of them is touched, so counting
+  // it would claim "共 6 条" for a single configured role.
+  const configuredCount = rows.filter(
+    (mapping) => mapping.from.trim() && mapping.to.trim(),
+  ).length;
   const modelListId = `${platform}-${label}-fetched-models`.replace(/[^a-zA-Z0-9_-]/g, "-");
   const sourceOptions =
     isClaude
@@ -1261,15 +1307,18 @@ function ModelMappingsEditor({
       <p className="text-[11px] font-medium leading-5 text-stone-500">
         留空表示不改写模型；获取列表只用于辅助选择，只有保存账号时才写入映射。
         {isClaude ? " 勾选 1M 会声明该 Claude 角色支持 1M 上下文。" : ""}
+        {isClaude
+          ? " 配置 Subagent 后需要重新写入客户端配置才会生效；默认兜底模型让未匹配的请求也能落到该账号。"
+          : ""}
         {fetchedModels.length > 0 ? ` 已获取 ${fetchedModels.length} 个模型。` : ""}
       </p>
-      {value.length === 0 ? (
+      {configuredCount === 0 ? (
         <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold leading-5 text-amber-900">
           如果上游只支持有限模型，建议先获取模型列表并配置模型映射；配置后算力池只会把该账号匹配到映射别名。
         </p>
       ) : (
         <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] font-medium leading-5 text-blue-900">
-          当前账号仅按已配置的本地模型别名参与匹配，共 {value.length} 条。
+          当前账号仅按已配置的本地模型别名参与匹配，共 {configuredCount} 条。
         </p>
       )}
       {fetchError ? <p className="text-[12px] font-semibold text-red-700">{fetchError}</p> : null}
@@ -1291,6 +1340,13 @@ function ModelMappingsEditor({
         ) : (
           rows.map((mapping, index) => {
             const isTemplateRow = isClaude && isClaudeTemplateSource(mapping.from);
+            const roleTemplate = isClaude
+              ? claudeRoleTemplates.find((template) => template.value === mapping.from.trim())
+              : undefined;
+            // Only the /model-menu roles get a display name and a 1M flag; the
+            // Subagent and fallback rows get neither.
+            const editableLabel = !isTemplateRow || roleTemplate?.editableLabel !== false;
+            const supportsOneM = !isTemplateRow || roleTemplate?.supportsOneM !== false;
             return (
               <div
                 className={`grid gap-2 sm:items-center ${
@@ -1304,10 +1360,11 @@ function ModelMappingsEditor({
                   <>
                     <input
                       aria-label={`显示名称 ${index + 1}`}
-                      className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                      className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:bg-stone-100 disabled:text-stone-500"
+                      disabled={!editableLabel}
                       onChange={(event) => updateRow(index, { label: event.target.value })}
-                      placeholder="Sonnet"
-                      value={mapping.label ?? ""}
+                      placeholder={editableLabel ? "Sonnet" : roleTemplate?.hint ?? ""}
+                      value={editableLabel ? mapping.label ?? "" : ""}
                     />
                     <select
                       aria-label={`请求模型 ${index + 1}`}
@@ -1344,16 +1401,24 @@ function ModelMappingsEditor({
                   value={mapping.to}
                 />
                 {isClaude ? (
-                  <label className="inline-flex h-9 items-center justify-center gap-1.5 rounded-xl border border-stone-200 bg-white px-2.5 text-[12px] font-semibold text-stone-600">
-                    <input
-                      aria-label={`声明支持 1M ${index + 1}`}
-                      checked={mapping.supports_1m === true}
-                      className="h-3.5 w-3.5 accent-blue-600"
-                      onChange={(event) => updateRow(index, { supports_1m: event.target.checked })}
-                      type="checkbox"
-                    />
-                    1M
-                  </label>
+                  supportsOneM ? (
+                    <label className="inline-flex h-9 items-center justify-center gap-1.5 rounded-xl border border-stone-200 bg-white px-2.5 text-[12px] font-semibold text-stone-600">
+                      <input
+                        aria-label={`声明支持 1M ${index + 1}`}
+                        checked={mapping.supports_1m === true}
+                        className="h-3.5 w-3.5 accent-blue-600"
+                        onChange={(event) =>
+                          updateRow(index, { supports_1m: event.target.checked })
+                        }
+                        type="checkbox"
+                      />
+                      1M
+                    </label>
+                  ) : (
+                    // Unlabelled spacer: an aria-labelled checkbox here would
+                    // imply these roles can declare 1M support.
+                    <span className="hidden h-9 sm:block" />
+                  )
                 ) : null}
                 <button
                   aria-label={`删除模型映射 ${index + 1}`}
@@ -2405,7 +2470,8 @@ export function AccountsScreen({
     const seen = new Map<string, string>();
     const addAlias = (alias: string) => {
       const trimmed = alias.trim();
-      if (!trimmed) {
+      // "*" is a routing sentinel, not a model name — probing it is meaningless.
+      if (!trimmed || trimmed === CLAUDE_FALLBACK_ALIAS) {
         return;
       }
       const key = trimmed.toLowerCase();
