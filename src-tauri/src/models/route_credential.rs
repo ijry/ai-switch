@@ -273,6 +273,29 @@ pub struct ModelMapping {
     pub supports_1m: Option<bool>,
 }
 
+/// Catch-all `from` alias: the account accepts any requested model and rewrites
+/// it to this entry's `to` when no specific mapping matched. Not a model id, so
+/// it is never advertised. Deliberately not a `claude-` prefix, which keeps it
+/// out of the `[1m]` normalization paths and lets every platform reuse it.
+pub const FALLBACK_MODEL_ALIAS: &str = "*";
+
+/// Generic alias written into Claude Code's `CLAUDE_CODE_SUBAGENT_MODEL`. It is
+/// a real routable alias — the pool rewrites it per account — so unlike the
+/// fallback it *is* advertised.
+pub const CLAUDE_SUBAGENT_MODEL_ALIAS: &str = "claude-subagent";
+
+pub fn is_fallback_mapping(mapping: &ModelMapping) -> bool {
+    mapping.from.trim() == FALLBACK_MODEL_ALIAS
+}
+
+/// Aliases this app invents rather than receives from a vendor. Official
+/// credentials must never be routed one: their bodies are forwarded without
+/// model rewriting, so the fake name would reach the vendor verbatim.
+pub fn is_synthetic_route_alias(model: &str) -> bool {
+    let model = model.trim();
+    model == FALLBACK_MODEL_ALIAS || model == CLAUDE_SUBAGENT_MODEL_ALIAS
+}
+
 pub fn normalize_anthropic_api_key_field(value: Option<&str>) -> Result<&'static str, String> {
     match value.map(str::trim).filter(|item| !item.is_empty()) {
         None => Ok(ANTHROPIC_API_KEY_FIELD),

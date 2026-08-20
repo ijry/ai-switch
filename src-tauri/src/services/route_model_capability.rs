@@ -1,4 +1,4 @@
-use crate::models::route_credential::ModelMapping;
+use crate::models::route_credential::{is_fallback_mapping, ModelMapping};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
@@ -174,10 +174,26 @@ pub(crate) fn supports_requested_model(
             .any(|model| model.eq_ignore_ascii_case(requested_model));
     }
 
-    capability
-        .mappings
+    capability.mappings.iter().any(|mapping| {
+        is_fallback_mapping(mapping) || model_mapping_matches(&mapping.from, requested_model)
+    })
+}
+
+/// Picks the upstream model for a request: the first *specific* match wins, and
+/// the fallback entry is consulted only when nothing specific matched. Two
+/// passes rather than one `.find()` so the fallback loses regardless of where it
+/// sits in the array — a hand-edited config can put it first.
+pub(crate) fn resolve_mapping_target<'a>(
+    mappings: &'a [ModelMapping],
+    requested_model: &str,
+) -> Option<&'a str> {
+    mappings
         .iter()
-        .any(|mapping| model_mapping_matches(&mapping.from, requested_model))
+        .find(|mapping| {
+            !is_fallback_mapping(mapping) && model_mapping_matches(&mapping.from, requested_model)
+        })
+        .or_else(|| mappings.iter().find(|mapping| is_fallback_mapping(mapping)))
+        .map(|mapping| mapping.to.as_str())
 }
 
 pub(crate) fn advertised_model_ids(
@@ -197,10 +213,11 @@ fn advertised_model_catalog_entries(
     let mut models = Vec::new();
     let mut seen = HashSet::new();
 
-    if capabilities
-        .iter()
-        .any(|capability| capability.mappings.is_empty())
-    {
+    // A fallback-carrying account accepts any model, so it advertises the
+    // platform baseline exactly like an empty-mapping wildcard does.
+    if capabilities.iter().any(|capability| {
+        capability.mappings.is_empty() || capability.mappings.iter().any(is_fallback_mapping)
+    }) {
         for model in default_client_models(platform) {
             push_unique_model(&mut models, &mut seen, model, model);
         }
@@ -208,6 +225,11 @@ fn advertised_model_catalog_entries(
 
     for capability in capabilities {
         for mapping in &capability.mappings {
+            // The catch-all sentinel is not a model id — advertising it would put
+            // "*" in front of users. Its baseline contribution is handled above.
+            if is_fallback_mapping(mapping) {
+                continue;
+            }
             let from = mapping.from.trim();
             let to = mapping.to.trim();
             let description = if from.eq_ignore_ascii_case(to) {
@@ -322,7 +344,8 @@ fn is_claude_route_model(model: &str) -> bool {
 mod tests {
     use super::{
         advertised_model_ids, codex_model_catalog_payload, codex_reasoning_profile,
-        parse_model_capability, requested_model_from_body, supports_requested_model,
+        parse_model_capability, requested_model_from_body, resolve_mapping_target,
+        supports_requested_model,
     };
 
     #[test]
@@ -441,6 +464,133 @@ mod tests {
         assert_eq!(
             advertised_model_ids("claude", &[capability]),
             vec!["claude-sonnet-5", "claude-sonnet-5[1m]"]
+        );
+    }
+
+    #[test]
+    fn fallback_mapping_makes_any_model_supported() {
+        let capability = parse_model_capability(
+            r#"{"model_mappings":[{"from":"claude-sonnet-5","to":"x"},{"from":"*","to":"y"}]}"#,
+        );
+
+        assert!(supports_requested_model(
+            "claude",
+            &capability,
+            Some("claude-opus-4-8")
+        ));
+        assert!(supports_requested_model(
+            "claude",
+            &capability,
+            Some("anything-at-all")
+        ));
+        assert!(supports_requested_model(
+            "claude",
+            &capability,
+            Some("claude-sonnet-5")
+        ));
+        assert!(supports_requested_model("claude", &capability, None));
+    }
+
+    #[test]
+    fn fallback_mapping_is_never_advertised_but_contributes_baseline() {
+        let capability = parse_model_capability(
+            r#"{"model_mappings":[{"from":"claude-sonnet-5","to":"x"},{"from":"*","to":"y"}]}"#,
+        );
+        let advertised = advertised_model_ids("claude", &[capability]);
+
+        // A fallback account genuinely accepts anything, so it advertises the
+        // platform baseline just like an empty-mapping wildcard would.
+        assert_eq!(
+            advertised,
+            vec![
+                "claude-sonnet-5",
+                "claude-opus-4-8",
+                "claude-fable-5",
+                "claude-haiku-4-5"
+            ]
+        );
+        assert!(!advertised.iter().any(|model| model == "*"));
+    }
+
+    #[test]
+    fn fallback_only_capability_advertises_baseline_and_matches_everything() {
+        let capability = parse_model_capability(r#"{"model_mappings":[{"from":"*","to":"y"}]}"#);
+
+        assert_eq!(
+            advertised_model_ids("codex", &[capability.clone()]),
+            vec!["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
+        );
+        assert!(supports_requested_model(
+            "codex",
+            &capability,
+            Some("deepseek")
+        ));
+    }
+
+    #[test]
+    fn resolve_mapping_target_prefers_specific_entries_regardless_of_order() {
+        // Fallback deliberately sits FIRST: a single-pass `.find()` would let it
+        // swallow every request, which is the bug this ordering guards against.
+        let capability = parse_model_capability(
+            r#"{"model_mappings":[{"from":"*","to":"fallback-upstream"},{"from":"claude-sonnet-5","to":"sonnet-upstream","supports_1m":true}]}"#,
+        );
+        let mappings = &capability.mappings;
+
+        assert_eq!(
+            resolve_mapping_target(mappings, "claude-sonnet-5"),
+            Some("sonnet-upstream")
+        );
+        assert_eq!(
+            resolve_mapping_target(mappings, "claude-haiku-4-5"),
+            Some("fallback-upstream")
+        );
+        assert_eq!(
+            resolve_mapping_target(mappings, "claude-sonnet-5[1m]"),
+            Some("sonnet-upstream")
+        );
+    }
+
+    #[test]
+    fn resolve_mapping_target_returns_none_without_a_fallback() {
+        let capability = parse_model_capability(
+            r#"{"model_mappings":[{"from":"claude-sonnet-5","to":"sonnet-upstream"}]}"#,
+        );
+
+        assert_eq!(
+            resolve_mapping_target(&capability.mappings, "claude-haiku-4-5"),
+            None
+        );
+    }
+
+    #[test]
+    fn sentinels_are_not_placeholder_models() {
+        // `is_placeholder_model` must keep ignoring the route sentinels: filtering
+        // them here would silently delete both features at parse time.
+        let capability = parse_model_capability(
+            r#"{"model_mappings":[{"from":"*","to":"y"},{"from":"claude-subagent","to":"z"}]}"#,
+        );
+
+        assert_eq!(capability.mappings.len(), 2);
+    }
+
+    #[test]
+    fn subagent_alias_is_advertised_and_matched_without_special_casing() {
+        let capability = parse_model_capability(
+            r#"{"model_mappings":[{"from":"claude-subagent","to":"provider-haiku"}]}"#,
+        );
+
+        assert_eq!(
+            advertised_model_ids("claude", &[capability.clone()]),
+            vec!["claude-subagent"]
+        );
+        assert!(supports_requested_model(
+            "claude",
+            &capability,
+            Some("claude-subagent")
+        ));
+        assert_eq!(
+            resolve_mapping_target(&capability.mappings, "claude-subagent"),
+            Some("provider-haiku")
         );
     }
 }
