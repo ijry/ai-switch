@@ -284,6 +284,53 @@ pub const FALLBACK_MODEL_ALIAS: &str = "*";
 /// fallback it *is* advertised.
 pub const CLAUDE_SUBAGENT_MODEL_ALIAS: &str = "claude-subagent";
 
+/// The four model slots Claude Code exposes in its `/model` menu. Each pins the
+/// generic alias the client should request; the proxy then rewrites that alias
+/// per account. Writing them makes the client→proxy contract explicit instead of
+/// relying on Claude Code's built-in defaults happening to match our mapping
+/// keys — a client-side version bump would otherwise strand every account.
+pub const CLAUDE_MODEL_SLOTS: &[ClaudeModelSlot] = &[
+    ClaudeModelSlot {
+        alias: "claude-sonnet-5",
+        model_env_key: "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        name_env_key: "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+    },
+    ClaudeModelSlot {
+        alias: "claude-opus-4-8",
+        model_env_key: "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        name_env_key: "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+    },
+    ClaudeModelSlot {
+        alias: "claude-fable-5",
+        model_env_key: "ANTHROPIC_DEFAULT_FABLE_MODEL",
+        name_env_key: "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+    },
+    ClaudeModelSlot {
+        alias: "claude-haiku-4-5",
+        model_env_key: "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        name_env_key: "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+    },
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClaudeModelSlot {
+    pub alias: &'static str,
+    pub model_env_key: &'static str,
+    pub name_env_key: &'static str,
+}
+
+/// Suffix Claude Code appends to a model value to request the 1M context window.
+pub const CLAUDE_ONE_M_SUFFIX: &str = "[1M]";
+
+/// What to write for one `/model` slot. `None` for either field clears that key.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClaudeSlotWrite {
+    /// Alias plus the `[1M]` suffix when every pool account supports it.
+    pub model: Option<String>,
+    /// Display name shown in the `/model` menu, when the pool agrees on one.
+    pub display_name: Option<String>,
+}
+
 pub fn is_fallback_mapping(mapping: &ModelMapping) -> bool {
     mapping.from.trim() == FALLBACK_MODEL_ALIAS
 }

@@ -2,7 +2,10 @@ use super::{
     existing_text, generated_invalid, invalid_existing_config, RouteConfigInput, TargetAdapter,
     TargetInspection,
 };
-use crate::{error::AppError, models::platform::PlatformId};
+use crate::{
+    error::AppError,
+    models::{platform::PlatformId, route_credential::CLAUDE_MODEL_SLOTS},
+};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
@@ -11,9 +14,9 @@ pub(super) struct JsonAgentAdapter {
     platform: PlatformId,
     config_dir: &'static str,
     platform_base_url_keys: &'static [&'static str],
-    /// Env key that pins the model for agent-spawned subagents. Claude-only —
-    /// gemini and grok have no equivalent, so they must never receive it.
-    subagent_env_key: Option<&'static str>,
+    /// Whether this agent honors Claude Code's model-slot env keys. Claude-only —
+    /// gemini and grok have no equivalent, so they must never receive them.
+    writes_claude_model_env: bool,
 }
 
 impl JsonAgentAdapter {
@@ -23,7 +26,7 @@ impl JsonAgentAdapter {
             platform: PlatformId::Claude,
             config_dir: ".claude",
             platform_base_url_keys: &["ANTHROPIC_BASE_URL"],
-            subagent_env_key: Some("CLAUDE_CODE_SUBAGENT_MODEL"),
+            writes_claude_model_env: true,
         }
     }
 
@@ -33,7 +36,7 @@ impl JsonAgentAdapter {
             platform: PlatformId::Gemini,
             config_dir: ".gemini",
             platform_base_url_keys: &["GEMINI_API_BASE_URL", "GOOGLE_GEMINI_BASE_URL"],
-            subagent_env_key: None,
+            writes_claude_model_env: false,
         }
     }
 
@@ -43,7 +46,21 @@ impl JsonAgentAdapter {
             platform: PlatformId::Grok,
             config_dir: ".grok",
             platform_base_url_keys: &["XAI_API_BASE_URL", "GROK_API_BASE_URL"],
-            subagent_env_key: None,
+            writes_claude_model_env: false,
+        }
+    }
+}
+
+/// Env key pinning the model for Claude Code's spawned subagents.
+pub(super) const CLAUDE_SUBAGENT_MODEL_ENV_KEY: &str = "CLAUDE_CODE_SUBAGENT_MODEL";
+
+fn set_or_remove(env: &mut Map<String, Value>, key: &str, value: Option<&str>) {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => {
+            env.insert(key.to_string(), Value::String(value.to_string()));
+        }
+        None => {
+            env.remove(key);
         }
     }
 }
@@ -113,21 +130,28 @@ impl TargetAdapter for JsonAgentAdapter {
             Value::String(input.route_proxy_key.clone()),
         );
 
-        // Mirror-inverse: write the alias when the pool provides one, remove it
-        // otherwise, so a stale value never hardens into an explicit setting.
-        if let Some(key) = self.subagent_env_key {
-            match input
-                .subagent_model
-                .as_deref()
-                .map(str::trim)
-                .filter(|alias| !alias.is_empty())
-            {
-                Some(alias) => {
-                    env.insert(key.to_string(), Value::String(alias.to_string()));
-                }
-                None => {
-                    env.remove(key);
-                }
+        // Mirror-inverse on every managed key: write what the pool resolves,
+        // remove what it doesn't, so a stale value never hardens into an
+        // explicit setting. Claude-only — gemini/grok have no model slots.
+        if self.writes_claude_model_env {
+            set_or_remove(
+                env,
+                CLAUDE_SUBAGENT_MODEL_ENV_KEY,
+                input.claude_env.subagent_model.as_deref(),
+            );
+
+            for (index, slot) in CLAUDE_MODEL_SLOTS.iter().enumerate() {
+                let write = input.claude_env.slots.get(index);
+                set_or_remove(
+                    env,
+                    slot.model_env_key,
+                    write.and_then(|w| w.model.as_deref()),
+                );
+                set_or_remove(
+                    env,
+                    slot.name_env_key,
+                    write.and_then(|w| w.display_name.as_deref()),
+                );
             }
         }
 
@@ -199,12 +223,9 @@ mod tests {
     }
 
     #[test]
-    fn subagent_env_key_is_claude_only() {
-        assert_eq!(
-            JsonAgentAdapter::claude().subagent_env_key,
-            Some("CLAUDE_CODE_SUBAGENT_MODEL")
-        );
-        assert_eq!(JsonAgentAdapter::gemini().subagent_env_key, None);
-        assert_eq!(JsonAgentAdapter::grok().subagent_env_key, None);
+    fn claude_model_env_is_claude_only() {
+        assert!(JsonAgentAdapter::claude().writes_claude_model_env);
+        assert!(!JsonAgentAdapter::gemini().writes_claude_model_env);
+        assert!(!JsonAgentAdapter::grok().writes_claude_model_env);
     }
 }

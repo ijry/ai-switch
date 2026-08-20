@@ -3,7 +3,10 @@ mod json_agent;
 
 pub(crate) use codex::codex_model_catalog_path;
 
-use crate::{error::AppError, models::platform::PlatformId};
+use crate::{
+    error::AppError,
+    models::{platform::PlatformId, route_credential::ClaudeSlotWrite},
+};
 use codex::CodexAdapter;
 use json_agent::JsonAgentAdapter;
 use serde::{Deserialize, Serialize};
@@ -18,11 +21,19 @@ pub(super) const INVALID_EXISTING_CONFIG_CODE: &str = "validation.route_config_e
 pub struct RouteConfigInput {
     pub base_url: String,
     pub route_proxy_key: String,
-    /// Generic alias written into the agent's subagent-model env key, or `None`
-    /// to clear it. Deliberately an alias rather than an upstream model name:
-    /// one settings file serves the whole pool, so each account must translate
-    /// it through its own mapping.
+    /// Claude-only model env plan. Every field is a generic alias rather than an
+    /// account's upstream model name: one settings file serves the whole pool,
+    /// so the proxy does the per-account translation. An empty plan clears every
+    /// managed key.
+    pub claude_env: ClaudeEnvPlan,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClaudeEnvPlan {
     pub subagent_model: Option<String>,
+    /// One entry per `CLAUDE_MODEL_SLOTS` slot, in that order. An empty vec (or
+    /// a defaulted entry) clears the slot's keys.
+    pub slots: Vec<ClaudeSlotWrite>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -149,7 +160,7 @@ mod tests {
         RouteConfigInput {
             base_url: BASE_URL.to_string(),
             route_proxy_key: ROUTE_PROXY_KEY.to_string(),
-            subagent_model: None,
+            claude_env: ClaudeEnvPlan::default(),
         }
     }
 
@@ -289,7 +300,10 @@ api_key = "legacy-key"
 }"#;
 
         let with_alias = RouteConfigInput {
-            subagent_model: Some("claude-subagent".to_string()),
+            claude_env: ClaudeEnvPlan {
+                subagent_model: Some("claude-subagent".to_string()),
+                slots: Vec::new(),
+            },
             ..input()
         };
         let rendered = adapter
@@ -320,7 +334,10 @@ api_key = "legacy-key"
     fn grok_render_never_writes_the_subagent_env_key() {
         let registry = TargetAdapterRegistry::new();
         let with_alias = RouteConfigInput {
-            subagent_model: Some("claude-subagent".to_string()),
+            claude_env: ClaudeEnvPlan {
+                subagent_model: Some("claude-subagent".to_string()),
+                slots: Vec::new(),
+            },
             ..input()
         };
 

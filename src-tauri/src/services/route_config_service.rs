@@ -1,5 +1,5 @@
 use crate::adapters::route_config::{
-    codex_model_catalog_path, RouteConfigInput, TargetAdapter, TargetAdapterRegistry,
+    codex_model_catalog_path, ClaudeEnvPlan, RouteConfigInput, TargetAdapter, TargetAdapterRegistry,
 };
 use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
@@ -7,7 +7,10 @@ use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepo
 use crate::error::AppError;
 use crate::models::config_snapshot::ConfigWriteOutcome;
 use crate::models::platform::{PlatformId, PlatformOperation};
-use crate::models::route_credential::{RouteCredentialPoolScope, CLAUDE_SUBAGENT_MODEL_ALIAS};
+use crate::models::route_credential::{
+    ClaudeSlotWrite, ModelMapping, RouteCredentialPoolScope, CLAUDE_MODEL_SLOTS,
+    CLAUDE_ONE_M_SUFFIX, CLAUDE_SUBAGENT_MODEL_ALIAS,
+};
 use crate::models::route_credential_transfer::RouteCredentialSelectionContext;
 use crate::paths::AppPaths;
 use crate::services::config_write_service::{
@@ -72,14 +75,14 @@ impl RouteConfigService {
         if platform == PlatformId::Codex {
             Self::write_codex_model_catalog(pool, home).await?;
         }
-        let subagent_model = Self::resolve_subagent_model(pool, platform).await?;
+        let claude_env = Self::resolve_claude_env_plan(pool, platform).await?;
         let request = ConfigWriteRequest {
             adapter,
             home: home.to_path_buf(),
             input: RouteConfigInput {
                 base_url: base_url.to_string(),
                 route_proxy_key: route_proxy_key.clone(),
-                subagent_model,
+                claude_env,
             },
         };
         match ConfigWriteCoordinator::write_group(paths, pool, runtime, vec![request]).await {
@@ -166,14 +169,14 @@ impl RouteConfigService {
             }
             // Per-iteration: a claude request must not inherit another
             // platform's pool state.
-            let subagent_model = Self::resolve_subagent_model(pool, parsed).await?;
+            let claude_env = Self::resolve_claude_env_plan(pool, parsed).await?;
             requests.push(ConfigWriteRequest {
                 adapter,
                 home: home.to_path_buf(),
                 input: RouteConfigInput {
                     base_url: base_url.to_string(),
                     route_proxy_key,
-                    subagent_model,
+                    claude_env,
                 },
             });
         }
@@ -203,14 +206,14 @@ impl RouteConfigService {
         let base_url = normalize_base_url(base_url)?;
         let platform = PlatformId::parse(platform)?;
         PlatformCapabilityService::require(platform, PlatformOperation::ConfigWrite)?;
-        let subagent_model = Self::resolve_subagent_model(pool, platform).await?;
+        let claude_env = Self::resolve_claude_env_plan(pool, platform).await?;
         let request = ConfigWriteRequest {
             adapter: route_config_adapter(platform)?,
             home: home.to_path_buf(),
             input: RouteConfigInput {
                 base_url: base_url.to_string(),
                 route_proxy_key: route_proxy_key.to_string(),
-                subagent_model,
+                claude_env,
             },
         };
         if platform == PlatformId::Codex {
@@ -228,23 +231,72 @@ impl RouteConfigService {
             })
     }
 
-    /// Resolves the alias to write into the agent's subagent-model env key, or
-    /// `None` when no enabled in-pool account configures one (which clears it).
+    /// Resolves what to write for each `/model` slot, given every in-pool API
+    /// account's mappings. Pure so the merge rules are testable without a DB.
     ///
     /// Always the generic alias, never an account's upstream model name: one
-    /// settings file serves the whole pool, so the proxy must do the per-account
-    /// translation. Official credentials are excluded — their bodies are
-    /// forwarded without model rewriting, so an alias would reach the vendor
-    /// verbatim and 404. Like the Codex catalog, this does not filter on
-    /// `status`, so a cooling account still counts.
-    async fn resolve_subagent_model(
-        pool: &SqlitePool,
-        platform: PlatformId,
-    ) -> Result<Option<String>, AppError> {
-        if platform != PlatformId::Claude {
-            return Ok(None);
-        }
+    /// settings file serves the whole pool, so the proxy does the per-account
+    /// translation.
+    ///
+    /// Merge rules, both deliberately conservative because the client contract
+    /// is one value while our data is per-account:
+    /// - **1M is unanimous (AND).** Every account configuring the slot must
+    ///   support it, else the suffix is omitted. Declaring it otherwise would
+    ///   route a 1M-sized prompt to an account that cannot serve it.
+    /// - **Display name needs consensus.** Accounts that set a non-empty label
+    ///   must all agree; a disagreement omits the key rather than picking a
+    ///   winner. Accounts leaving it blank abstain instead of vetoing.
+    fn resolve_claude_slot_writes(account_mappings: &[Vec<ModelMapping>]) -> Vec<ClaudeSlotWrite> {
+        CLAUDE_MODEL_SLOTS
+            .iter()
+            .map(|slot| {
+                let configured = account_mappings
+                    .iter()
+                    .filter_map(|mappings| {
+                        mappings.iter().find(|mapping| {
+                            mapping.from.trim() == slot.alias && !mapping.to.trim().is_empty()
+                        })
+                    })
+                    .collect::<Vec<_>>();
 
+                if configured.is_empty() {
+                    return ClaudeSlotWrite::default();
+                }
+
+                let all_support_one_m = configured
+                    .iter()
+                    .all(|mapping| mapping.supports_1m == Some(true));
+                let model = if all_support_one_m {
+                    format!("{}{}", slot.alias, CLAUDE_ONE_M_SUFFIX)
+                } else {
+                    slot.alias.to_string()
+                };
+
+                let mut labels = configured
+                    .iter()
+                    .filter_map(|mapping| mapping.label.as_deref().map(str::trim))
+                    .filter(|label| !label.is_empty());
+                let first = labels.next();
+                let display_name = match first {
+                    Some(label) if labels.all(|other| other == label) => Some(label.to_string()),
+                    _ => None,
+                };
+
+                ClaudeSlotWrite {
+                    model: Some(model),
+                    display_name,
+                }
+            })
+            .collect()
+    }
+
+    /// Loads every enabled in-pool Claude API credential's mappings.
+    ///
+    /// Official credentials are excluded — their bodies are forwarded without
+    /// model rewriting, so an alias would reach the vendor verbatim and 404.
+    /// Like the Codex catalog, this does not filter on `status`, so a cooling
+    /// account still counts.
+    async fn claude_pool_mappings(pool: &SqlitePool) -> Result<Vec<Vec<ModelMapping>>, AppError> {
         let ids = RoutePoolRepository::list_member_ids(pool, PlatformId::Claude.as_str()).await?;
         let credentials = RouteCredentialRepository::list_by_ids(
             pool,
@@ -256,20 +308,40 @@ impl RouteConfigService {
         )
         .await?;
 
-        let configured = credentials
+        Ok(credentials
             .iter()
             .filter(|credential| credential.kind == "api")
-            .any(|credential| {
-                parse_model_capability(&credential.config_json)
-                    .mappings
-                    .iter()
-                    .any(|mapping| {
-                        mapping.from.trim() == CLAUDE_SUBAGENT_MODEL_ALIAS
-                            && !mapping.to.trim().is_empty()
-                    })
-            });
+            .map(|credential| parse_model_capability(&credential.config_json).mappings)
+            .collect())
+    }
 
-        Ok(configured.then(|| CLAUDE_SUBAGENT_MODEL_ALIAS.to_string()))
+    /// Resolves the alias to write into the agent's subagent-model env key, or
+    /// `None` when no enabled in-pool account configures one (which clears it).
+    fn resolve_subagent_model(account_mappings: &[Vec<ModelMapping>]) -> Option<String> {
+        let configured = account_mappings.iter().any(|mappings| {
+            mappings.iter().any(|mapping| {
+                mapping.from.trim() == CLAUDE_SUBAGENT_MODEL_ALIAS && !mapping.to.trim().is_empty()
+            })
+        });
+
+        configured.then(|| CLAUDE_SUBAGENT_MODEL_ALIAS.to_string())
+    }
+
+    /// Builds the Claude-only env plan for a config write. Non-Claude platforms
+    /// get an empty plan, which clears every managed key.
+    async fn resolve_claude_env_plan(
+        pool: &SqlitePool,
+        platform: PlatformId,
+    ) -> Result<ClaudeEnvPlan, AppError> {
+        if platform != PlatformId::Claude {
+            return Ok(ClaudeEnvPlan::default());
+        }
+
+        let account_mappings = Self::claude_pool_mappings(pool).await?;
+        Ok(ClaudeEnvPlan {
+            subagent_model: Self::resolve_subagent_model(&account_mappings),
+            slots: Self::resolve_claude_slot_writes(&account_mappings),
+        })
     }
 
     async fn write_codex_model_catalog(pool: &SqlitePool, home: &Path) -> Result<(), AppError> {
@@ -849,6 +921,153 @@ command = "npx"
         let json = write_claude_config_with_pool(home.path(), &paths, &pool, &runtime).await;
 
         assert!(json["env"].get("CLAUDE_CODE_SUBAGENT_MODEL").is_none());
+    }
+
+    fn slot_mapping(alias: &str, to: &str, label: Option<&str>, one_m: bool) -> ModelMapping {
+        ModelMapping {
+            from: alias.to_string(),
+            to: to.to_string(),
+            label: label.map(str::to_string),
+            supports_1m: one_m.then_some(true),
+        }
+    }
+
+    fn sonnet_write(mappings: &[Vec<ModelMapping>]) -> ClaudeSlotWrite {
+        RouteConfigService::resolve_claude_slot_writes(mappings)
+            .into_iter()
+            .next()
+            .expect("sonnet slot")
+    }
+
+    #[test]
+    fn unconfigured_slots_are_cleared() {
+        let writes = RouteConfigService::resolve_claude_slot_writes(&[vec![slot_mapping(
+            "claude-sonnet-5",
+            "provider-sonnet",
+            None,
+            false,
+        )]]);
+
+        assert_eq!(writes.len(), CLAUDE_MODEL_SLOTS.len());
+        assert_eq!(writes[0].model.as_deref(), Some("claude-sonnet-5"));
+        // Opus/Fable/Haiku unconfigured → cleared, not defaulted to something.
+        assert_eq!(writes[1], ClaudeSlotWrite::default());
+        assert_eq!(writes[3], ClaudeSlotWrite::default());
+    }
+
+    #[test]
+    fn slot_model_is_the_generic_alias_never_the_upstream_name() {
+        let write = sonnet_write(&[vec![slot_mapping(
+            "claude-sonnet-5",
+            "deepseek-v3-0324",
+            None,
+            false,
+        )]]);
+
+        assert_eq!(write.model.as_deref(), Some("claude-sonnet-5"));
+    }
+
+    #[test]
+    fn one_m_is_declared_only_when_every_account_supports_it() {
+        let all = sonnet_write(&[
+            vec![slot_mapping("claude-sonnet-5", "a", None, true)],
+            vec![slot_mapping("claude-sonnet-5", "b", None, true)],
+        ]);
+        assert_eq!(all.model.as_deref(), Some("claude-sonnet-5[1M]"));
+
+        // AND, not OR: declaring 1M here would route a 1M-sized prompt to the
+        // account that cannot serve it.
+        let mixed = sonnet_write(&[
+            vec![slot_mapping("claude-sonnet-5", "a", None, true)],
+            vec![slot_mapping("claude-sonnet-5", "b", None, false)],
+        ]);
+        assert_eq!(mixed.model.as_deref(), Some("claude-sonnet-5"));
+    }
+
+    #[test]
+    fn one_m_ignores_accounts_that_do_not_configure_the_slot() {
+        // The second account configures only Haiku, so it must not veto Sonnet's 1M.
+        let write = sonnet_write(&[
+            vec![slot_mapping("claude-sonnet-5", "a", None, true)],
+            vec![slot_mapping("claude-haiku-4-5", "b", None, false)],
+        ]);
+
+        assert_eq!(write.model.as_deref(), Some("claude-sonnet-5[1M]"));
+    }
+
+    #[test]
+    fn display_name_needs_pool_consensus() {
+        let agreed = sonnet_write(&[
+            vec![slot_mapping(
+                "claude-sonnet-5",
+                "a",
+                Some("DeepSeek V3"),
+                false,
+            )],
+            vec![slot_mapping(
+                "claude-sonnet-5",
+                "b",
+                Some("DeepSeek V3"),
+                false,
+            )],
+        ]);
+        assert_eq!(agreed.display_name.as_deref(), Some("DeepSeek V3"));
+
+        // Disagreement omits the key rather than silently picking a winner.
+        let conflicting = sonnet_write(&[
+            vec![slot_mapping(
+                "claude-sonnet-5",
+                "a",
+                Some("DeepSeek V3"),
+                false,
+            )],
+            vec![slot_mapping("claude-sonnet-5", "b", Some("Kimi K2"), false)],
+        ]);
+        assert_eq!(conflicting.display_name, None);
+    }
+
+    #[test]
+    fn blank_display_names_abstain_instead_of_vetoing() {
+        let write = sonnet_write(&[
+            vec![slot_mapping(
+                "claude-sonnet-5",
+                "a",
+                Some("DeepSeek V3"),
+                false,
+            )],
+            vec![slot_mapping("claude-sonnet-5", "b", None, false)],
+            vec![slot_mapping("claude-sonnet-5", "c", Some("  "), false)],
+        ]);
+
+        assert_eq!(write.display_name.as_deref(), Some("DeepSeek V3"));
+    }
+
+    #[tokio::test]
+    async fn write_claude_config_pins_model_slots_and_display_names() {
+        let (_app_dir, paths, pool, runtime) = config_write_context().await;
+        let home = tempfile::tempdir().expect("home dir");
+        seed_claude_pool_member(
+            &pool,
+            "api",
+            r#"[{"from":"claude-sonnet-5","to":"deepseek-v3","label":"DeepSeek V3","supports_1m":true},
+                {"from":"claude-haiku-4-5","to":"provider-haiku","label":"Haiku Fast"}]"#,
+        )
+        .await;
+
+        let json = write_claude_config_with_pool(home.path(), &paths, &pool, &runtime).await;
+        let env = &json["env"];
+
+        // Generic aliases pin the client contract; the upstream name never leaks.
+        assert_eq!(env["ANTHROPIC_DEFAULT_SONNET_MODEL"], "claude-sonnet-5[1M]");
+        assert_eq!(env["ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"], "DeepSeek V3");
+        assert_ne!(env["ANTHROPIC_DEFAULT_SONNET_MODEL"], "deepseek-v3");
+
+        assert_eq!(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "claude-haiku-4-5");
+        assert_eq!(env["ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME"], "Haiku Fast");
+
+        // Unconfigured slots stay absent rather than being invented.
+        assert!(env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").is_none());
+        assert!(env.get("ANTHROPIC_DEFAULT_FABLE_MODEL_NAME").is_none());
     }
 
     #[tokio::test]

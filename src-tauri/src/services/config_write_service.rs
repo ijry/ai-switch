@@ -1,4 +1,6 @@
-use crate::adapters::route_config::{RouteConfigInput, TargetAdapter, TargetAdapterRegistry};
+use crate::adapters::route_config::{
+    ClaudeEnvPlan, RouteConfigInput, TargetAdapter, TargetAdapterRegistry,
+};
 use crate::config_writer::{hash_bytes, ConfigWriter, FileState};
 use crate::database::repositories::config_snapshot_repository::ConfigSnapshotRepository;
 use crate::database::repositories::target_repository::TargetRepository;
@@ -1026,7 +1028,7 @@ mod tests {
                 input: RouteConfigInput {
                     base_url: BASE_URL.to_string(),
                     route_proxy_key: ROUTE_PROXY_KEY.to_string(),
-                    subagent_model: None,
+                    claude_env: ClaudeEnvPlan::default(),
                 },
             }
         }
@@ -1045,7 +1047,7 @@ mod tests {
                 input: RouteConfigInput {
                     base_url: BASE_URL.to_string(),
                     route_proxy_key: ROUTE_PROXY_KEY.to_string(),
-                    subagent_model: None,
+                    claude_env: ClaudeEnvPlan::default(),
                 },
             }
         }

@@ -86,7 +86,7 @@ async fn rollback_config_snapshot_for_home_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::route_config::{RouteConfigInput, TargetAdapterRegistry};
+    use crate::adapters::route_config::{ClaudeEnvPlan, RouteConfigInput, TargetAdapterRegistry};
     use crate::database::{create_memory_pool, run_migrations};
     use crate::models::platform::PlatformId;
     use crate::paths::AppPaths;
@@ -122,7 +122,7 @@ mod tests {
                 input: RouteConfigInput {
                     base_url: "http://127.0.0.1:43111".to_string(),
                     route_proxy_key: "sk-ai-switch-test".to_string(),
-                    subagent_model: None,
+                    claude_env: ClaudeEnvPlan::default(),
                 },
             },
         )
