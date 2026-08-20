@@ -623,6 +623,27 @@ mod tests {
     }
 
     #[test]
+    fn rejects_claude_subagent_and_fallback_mappings_with_the_existing_code() {
+        // Intentional lossy-export refusal, not a bug: the aiswitch:// link
+        // format has fixed haiku/sonnet/opus query keys with no room for these,
+        // and claude-fable-5 (a shipped role) is already refused the same way.
+        // Do NOT "fix" this by widening the role table — inventing new query
+        // keys makes links other tools silently mis-import.
+        let empty_headers = json!({});
+
+        for from in ["claude-subagent", "*"] {
+            let mappings = vec![ModelMapping {
+                from: from.into(),
+                to: "provider-model".into(),
+                label: None,
+                supports_1m: None,
+            }];
+            let input = build_input("claude", "anthropic", &mappings, &empty_headers);
+            assert_safe_build_error(&input, "deeplink_export.claude_models_unsupported");
+        }
+    }
+
+    #[test]
     fn parses_claude_provider_with_role_models() {
         let url = "ccswitch://v1/import?resource=provider&app=claude&name=DeepLink%20Claude&endpoint=https%3A%2F%2Fapi.example.com%2Fv1&apiKey=sk-test-claude&sonnetModel=claude-sonnet-4&homepage=https%3A%2F%2Fexample.com&notes=demo";
         let parsed = parse_deeplink_url(url).expect("parse");

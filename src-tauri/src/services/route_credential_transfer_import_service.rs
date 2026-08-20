@@ -530,6 +530,59 @@ mod tests {
     }
 
     #[test]
+    fn sentinel_mappings_survive_a_cpa_round_trip() {
+        // Encoding the fallback/subagent features as ordinary mapping entries
+        // (rather than a new ModelMapping field) is what makes this pass: a new
+        // struct field would be invisible to model_mapping_signature and get
+        // silently dropped here, with no error.
+        let item = object(json!({
+            "api-key": "fixture-key-material",
+            "base-url": endpoint(),
+            "models": [
+                {"name": "provider-sonnet", "alias": "claude-sonnet-5", "display-name": "Sonnet"},
+                {"name": "provider-haiku", "alias": "claude-subagent"},
+                {"name": "catch-all-upstream", "alias": "*"}
+            ],
+            "x-ai-switch": {
+                "format": TRANSFER_FORMAT,
+                "schema_version": 1,
+                "platform": "claude",
+                "kind": "api",
+                "cpa_section": "claude-api-key",
+                "interface_format": "anthropic",
+                "model_mappings": [
+                    {"from": "claude-sonnet-5", "to": "provider-sonnet", "label": "Sonnet"},
+                    {"from": "claude-subagent", "to": "provider-haiku"},
+                    {"from": "*", "to": "catch-all-upstream"}
+                ]
+            }
+        }));
+
+        let normalized = classify_ok(0, &item, &[]);
+        let config: Value = serde_json::from_str(&normalized.config_json).expect("config");
+        let mappings = config
+            .get("model_mappings")
+            .and_then(Value::as_array)
+            .expect("model mappings");
+
+        assert_eq!(mappings.len(), 3);
+        assert_eq!(
+            mappings
+                .iter()
+                .filter_map(|mapping| mapping.get("from").and_then(Value::as_str))
+                .collect::<Vec<_>>(),
+            vec!["claude-sonnet-5", "claude-subagent", "*"]
+        );
+        assert_eq!(
+            mappings
+                .iter()
+                .filter_map(|mapping| mapping.get("to").and_then(Value::as_str))
+                .collect::<Vec<_>>(),
+            vec!["provider-sonnet", "provider-haiku", "catch-all-upstream"]
+        );
+    }
+
+    #[test]
     fn model_metadata_must_match_the_projected_cpa_models() {
         let mut item = api_item("codex-api-key", "codex", "openai-responses");
         item.insert(
