@@ -211,7 +211,10 @@ const fmtDate = (iso: string) =>
   margin: 20px 0 0;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  align-items: start;
+  /* No `align-items: start` — the default `stretch` makes every card in a row as
+     tall as the tallest one, so a provider with fewer notes doesn't leave a short
+     card next to a long one. .rl-foot's `margin-top: auto` then pins the signup
+     button to the bottom of whichever card got stretched. */
   gap: 18px;
 }
 
