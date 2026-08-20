@@ -18,6 +18,11 @@ pub(super) const INVALID_EXISTING_CONFIG_CODE: &str = "validation.route_config_e
 pub struct RouteConfigInput {
     pub base_url: String,
     pub route_proxy_key: String,
+    /// Generic alias written into the agent's subagent-model env key, or `None`
+    /// to clear it. Deliberately an alias rather than an upstream model name:
+    /// one settings file serves the whole pool, so each account must translate
+    /// it through its own mapping.
+    pub subagent_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -144,6 +149,7 @@ mod tests {
         RouteConfigInput {
             base_url: BASE_URL.to_string(),
             route_proxy_key: ROUTE_PROXY_KEY.to_string(),
+            subagent_model: None,
         }
     }
 
@@ -269,6 +275,67 @@ api_key = "legacy-key"
         );
         assert_eq!(json["aiSwitch"]["routeProxy"]["baseUrl"], BASE_URL);
         assert_eq!(json["aiSwitch"]["routeProxy"]["platform"], "claude");
+    }
+
+    #[test]
+    fn claude_render_writes_and_clears_the_subagent_env_key() {
+        let registry = TargetAdapterRegistry::new();
+        let adapter = registry.for_platform(PlatformId::Claude).unwrap();
+        let existing = br#"{
+  "includeCoAuthoredBy": false,
+  "env": {
+    "EXISTING_FLAG": "1"
+  }
+}"#;
+
+        let with_alias = RouteConfigInput {
+            subagent_model: Some("claude-subagent".to_string()),
+            ..input()
+        };
+        let rendered = adapter
+            .render(Path::new("settings.json"), Some(existing), &with_alias)
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&rendered).unwrap();
+
+        // A generic alias, never an account's upstream model name: one settings
+        // file serves the whole pool.
+        assert_eq!(json["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "claude-subagent");
+        assert_eq!(json["env"]["EXISTING_FLAG"], "1");
+        assert_eq!(json["includeCoAuthoredBy"], false);
+
+        // Mirror-inverse: rendering the same file with no alias removes the key
+        // and leaves everything else alone.
+        let cleared = adapter
+            .render(Path::new("settings.json"), Some(&rendered), &input())
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&cleared).unwrap();
+
+        assert!(json["env"].get("CLAUDE_CODE_SUBAGENT_MODEL").is_none());
+        assert_eq!(json["env"]["EXISTING_FLAG"], "1");
+        assert_eq!(json["includeCoAuthoredBy"], false);
+        assert_eq!(json["aiSwitch"]["routeProxy"]["platform"], "claude");
+    }
+
+    #[test]
+    fn grok_render_never_writes_the_subagent_env_key() {
+        let registry = TargetAdapterRegistry::new();
+        let with_alias = RouteConfigInput {
+            subagent_model: Some("claude-subagent".to_string()),
+            ..input()
+        };
+
+        for platform in [PlatformId::Grok, PlatformId::Gemini] {
+            let adapter = registry.for_platform(platform).unwrap();
+            let rendered = adapter
+                .render(Path::new("settings.json"), None, &with_alias)
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&rendered).unwrap();
+
+            assert!(
+                json["env"].get("CLAUDE_CODE_SUBAGENT_MODEL").is_none(),
+                "platform={platform:?}"
+            );
+        }
     }
 
     #[test]

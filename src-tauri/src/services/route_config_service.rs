@@ -7,7 +7,7 @@ use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepo
 use crate::error::AppError;
 use crate::models::config_snapshot::ConfigWriteOutcome;
 use crate::models::platform::{PlatformId, PlatformOperation};
-use crate::models::route_credential::RouteCredentialPoolScope;
+use crate::models::route_credential::{RouteCredentialPoolScope, CLAUDE_SUBAGENT_MODEL_ALIAS};
 use crate::models::route_credential_transfer::RouteCredentialSelectionContext;
 use crate::paths::AppPaths;
 use crate::services::config_write_service::{
@@ -72,12 +72,14 @@ impl RouteConfigService {
         if platform == PlatformId::Codex {
             Self::write_codex_model_catalog(pool, home).await?;
         }
+        let subagent_model = Self::resolve_subagent_model(pool, platform).await?;
         let request = ConfigWriteRequest {
             adapter,
             home: home.to_path_buf(),
             input: RouteConfigInput {
                 base_url: base_url.to_string(),
                 route_proxy_key: route_proxy_key.clone(),
+                subagent_model,
             },
         };
         match ConfigWriteCoordinator::write_group(paths, pool, runtime, vec![request]).await {
@@ -162,12 +164,16 @@ impl RouteConfigService {
             if parsed == PlatformId::Codex {
                 Self::write_codex_model_catalog(pool, home).await?;
             }
+            // Per-iteration: a claude request must not inherit another
+            // platform's pool state.
+            let subagent_model = Self::resolve_subagent_model(pool, parsed).await?;
             requests.push(ConfigWriteRequest {
                 adapter,
                 home: home.to_path_buf(),
                 input: RouteConfigInput {
                     base_url: base_url.to_string(),
                     route_proxy_key,
+                    subagent_model,
                 },
             });
         }
@@ -197,12 +203,14 @@ impl RouteConfigService {
         let base_url = normalize_base_url(base_url)?;
         let platform = PlatformId::parse(platform)?;
         PlatformCapabilityService::require(platform, PlatformOperation::ConfigWrite)?;
+        let subagent_model = Self::resolve_subagent_model(pool, platform).await?;
         let request = ConfigWriteRequest {
             adapter: route_config_adapter(platform)?,
             home: home.to_path_buf(),
             input: RouteConfigInput {
                 base_url: base_url.to_string(),
                 route_proxy_key: route_proxy_key.to_string(),
+                subagent_model,
             },
         };
         if platform == PlatformId::Codex {
@@ -218,6 +226,50 @@ impl RouteConfigService {
                 details: None,
                 recoverable: false,
             })
+    }
+
+    /// Resolves the alias to write into the agent's subagent-model env key, or
+    /// `None` when no enabled in-pool account configures one (which clears it).
+    ///
+    /// Always the generic alias, never an account's upstream model name: one
+    /// settings file serves the whole pool, so the proxy must do the per-account
+    /// translation. Official credentials are excluded — their bodies are
+    /// forwarded without model rewriting, so an alias would reach the vendor
+    /// verbatim and 404. Like the Codex catalog, this does not filter on
+    /// `status`, so a cooling account still counts.
+    async fn resolve_subagent_model(
+        pool: &SqlitePool,
+        platform: PlatformId,
+    ) -> Result<Option<String>, AppError> {
+        if platform != PlatformId::Claude {
+            return Ok(None);
+        }
+
+        let ids = RoutePoolRepository::list_member_ids(pool, PlatformId::Claude.as_str()).await?;
+        let credentials = RouteCredentialRepository::list_by_ids(
+            pool,
+            &ids,
+            &RouteCredentialSelectionContext {
+                platform: PlatformId::Claude.as_str().to_string(),
+                pool_scope: RouteCredentialPoolScope::InPool,
+            },
+        )
+        .await?;
+
+        let configured = credentials
+            .iter()
+            .filter(|credential| credential.kind == "api")
+            .any(|credential| {
+                parse_model_capability(&credential.config_json)
+                    .mappings
+                    .iter()
+                    .any(|mapping| {
+                        mapping.from.trim() == CLAUDE_SUBAGENT_MODEL_ALIAS
+                            && !mapping.to.trim().is_empty()
+                    })
+            });
+
+        Ok(configured.then(|| CLAUDE_SUBAGENT_MODEL_ALIAS.to_string()))
     }
 
     async fn write_codex_model_catalog(pool: &SqlitePool, home: &Path) -> Result<(), AppError> {
@@ -660,6 +712,143 @@ command = "npx"
             "https://127.0.0.1:43111"
         );
         assert_eq!(json["aiSwitch"]["routeProxy"]["platform"], "claude");
+    }
+
+    async fn seed_claude_pool_member(pool: &SqlitePool, kind: &str, mappings_json: &str) {
+        use crate::models::route_credential::CreateApiRouteCredentialInput;
+        use crate::models::route_pool::SetRoutePoolMembersInput;
+        use crate::services::route_credential_service::RouteCredentialService;
+        use crate::services::route_pool_service::RoutePoolService;
+
+        let credential = RouteCredentialService::create_api(
+            pool,
+            CreateApiRouteCredentialInput {
+                platform: "claude".to_string(),
+                display_name: "Claude Account".to_string(),
+                api_key: "sk-test".to_string(),
+                base_url: "https://api.example.com".to_string(),
+                interface_format: "anthropic".to_string(),
+                model_mappings_json: mappings_json.to_string(),
+                fetched_models_json: None,
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: None,
+                user_agent: None,
+            },
+        )
+        .await
+        .expect("create claude credential");
+
+        if kind != "api" {
+            sqlx::query("UPDATE route_credentials SET kind = ? WHERE id = ?")
+                .bind(kind)
+                .bind(&credential.id)
+                .execute(pool)
+                .await
+                .expect("set kind");
+        }
+
+        RoutePoolService::set_members(
+            pool,
+            SetRoutePoolMembersInput {
+                platform: "claude".to_string(),
+                account_ids: vec![credential.id],
+            },
+        )
+        .await
+        .expect("set pool members");
+    }
+
+    async fn write_claude_config_with_pool(
+        home: &Path,
+        paths: &AppPaths,
+        pool: &SqlitePool,
+        runtime: &ConfigWriteRuntimeState,
+    ) -> serde_json::Value {
+        RouteConfigService::write_configs_for_home(
+            paths,
+            pool,
+            runtime,
+            "http://127.0.0.1:43111",
+            "claude",
+            home,
+        )
+        .await
+        .expect("write claude config");
+
+        let written = tokio::fs::read_to_string(home.join(".claude/settings.json"))
+            .await
+            .expect("read settings");
+        serde_json::from_str(&written).expect("valid json")
+    }
+
+    #[tokio::test]
+    async fn subagent_alias_is_written_only_when_a_pool_account_configures_it() {
+        let (_app_dir, paths, pool, runtime) = config_write_context().await;
+        let home = tempfile::tempdir().expect("home dir");
+
+        // No account configures a subagent mapping yet.
+        let json = write_claude_config_with_pool(home.path(), &paths, &pool, &runtime).await;
+        assert!(json["env"].get("CLAUDE_CODE_SUBAGENT_MODEL").is_none());
+
+        seed_claude_pool_member(
+            &pool,
+            "api",
+            r#"[{"from":"claude-subagent","to":"provider-haiku"}]"#,
+        )
+        .await;
+
+        let json = write_claude_config_with_pool(home.path(), &paths, &pool, &runtime).await;
+        // The generic alias, NOT the account's upstream model: one settings file
+        // serves the whole pool, so the proxy does the per-account translation.
+        assert_eq!(json["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "claude-subagent");
+        assert_ne!(json["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "provider-haiku");
+    }
+
+    #[tokio::test]
+    async fn subagent_alias_is_cleared_when_no_account_configures_it() {
+        let (_app_dir, paths, pool, runtime) = config_write_context().await;
+        let home = tempfile::tempdir().expect("home dir");
+        seed_claude_pool_member(
+            &pool,
+            "api",
+            r#"[{"from":"claude-sonnet-5","to":"provider-sonnet","label":"Sonnet"}]"#,
+        )
+        .await;
+
+        let claude_dir = home.path().join(".claude");
+        tokio::fs::create_dir_all(&claude_dir).await.expect("mkdir");
+        tokio::fs::write(
+            claude_dir.join("settings.json"),
+            r#"{"env":{"CLAUDE_CODE_SUBAGENT_MODEL":"stale-alias","EXISTING_FLAG":"1"}}"#,
+        )
+        .await
+        .expect("seed stale settings");
+
+        let json = write_claude_config_with_pool(home.path(), &paths, &pool, &runtime).await;
+
+        // Mirror-inverse: a stale value must never harden into an explicit setting.
+        assert!(json["env"].get("CLAUDE_CODE_SUBAGENT_MODEL").is_none());
+        assert_eq!(json["env"]["EXISTING_FLAG"], "1");
+    }
+
+    #[tokio::test]
+    async fn subagent_alias_ignores_official_accounts() {
+        let (_app_dir, paths, pool, runtime) = config_write_context().await;
+        let home = tempfile::tempdir().expect("home dir");
+        // Official credentials forward bodies without model rewriting, so an
+        // alias would reach the vendor verbatim and 404.
+        seed_claude_pool_member(
+            &pool,
+            "official",
+            r#"[{"from":"claude-subagent","to":"provider-haiku"}]"#,
+        )
+        .await;
+
+        let json = write_claude_config_with_pool(home.path(), &paths, &pool, &runtime).await;
+
+        assert!(json["env"].get("CLAUDE_CODE_SUBAGENT_MODEL").is_none());
     }
 
     #[tokio::test]
