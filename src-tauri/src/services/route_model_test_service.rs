@@ -2,7 +2,9 @@ use crate::database::repositories::route_credential_repository::RouteCredentialR
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::error::{ApiError, AppError};
 use crate::models::platform::{ApiDialect, CapabilityRule, PlatformId, PlatformOperation};
-use crate::models::route_credential::{ModelMapping, RouteCredentialFailurePolicy};
+use crate::models::route_credential::{
+    is_fallback_mapping, ModelMapping, RouteCredentialFailurePolicy,
+};
 use crate::models::route_pool::{
     RoutePoolModelTestOutcome, RoutePoolModelTestRequest, RouteUsageBreakdown,
 };
@@ -756,6 +758,9 @@ fn remove_placeholder_model_mappings(mappings: Vec<ModelMapping>) -> Vec<ModelMa
         .collect()
 }
 
+/// Mirrors `route_model_capability::is_placeholder_model`. Intentionally does
+/// NOT cover the route sentinels (`*`, `claude-subagent`): filtering those here
+/// would silently delete the fallback and subagent features at parse time.
 fn is_placeholder_model(value: &str) -> bool {
     let value = value.trim();
     value.is_empty() || value == "upstream-model"
@@ -836,8 +841,11 @@ fn request_model(
         return model.to_string();
     }
 
+    // Skip the catch-all sentinel: it is not a model name, so probing it would
+    // send a meaningless request and display "*" as the tested model.
     mappings
-        .first()
+        .iter()
+        .find(|mapping| !is_fallback_mapping(mapping))
         .map(|mapping| mapping.from.trim())
         .filter(|model| !model.is_empty())
         .map(str::to_string)
@@ -859,7 +867,8 @@ fn gemini_path_model(mappings: &[ModelMapping], requested_model: Option<&str>) -
     }
 
     mappings
-        .first()
+        .iter()
+        .find(|mapping| !is_fallback_mapping(mapping))
         .map(|mapping| mapping.to.trim())
         .filter(|model| !model.is_empty())
         .unwrap_or("gemini-2.5-flash")
@@ -2900,6 +2909,73 @@ mod tests {
         assert_eq!(
             sanitize_for_storage(&credential, "request failed for key sk-test"),
             "request failed for key [redacted]"
+        );
+    }
+
+    fn mapping(from: &str, to: &str) -> ModelMapping {
+        ModelMapping {
+            from: from.to_string(),
+            to: to.to_string(),
+            label: None,
+            supports_1m: None,
+        }
+    }
+
+    #[test]
+    fn request_model_skips_the_fallback_sentinel_when_no_model_is_requested() {
+        // "*" is not a model name; probing it would send a meaningless request.
+        let mappings = vec![mapping("*", "catch-all"), mapping("claude-sonnet-5", "x")];
+
+        assert_eq!(
+            request_model("claude", "anthropic", &mappings, None),
+            "claude-sonnet-5"
+        );
+    }
+
+    #[test]
+    fn request_model_falls_back_to_the_platform_default_when_only_a_fallback_is_configured() {
+        let mappings = vec![mapping("*", "catch-all")];
+
+        assert_eq!(
+            request_model("claude", "anthropic", &mappings, None),
+            "claude-sonnet-4-20250514"
+        );
+    }
+
+    #[test]
+    fn request_model_keeps_the_subagent_alias_as_a_probe_default() {
+        // Unlike "*", the subagent alias is routable and rewrites to a real model.
+        let mappings = vec![mapping("claude-subagent", "provider-haiku")];
+
+        assert_eq!(
+            request_model("claude", "anthropic", &mappings, None),
+            "claude-subagent"
+        );
+    }
+
+    #[test]
+    fn gemini_path_model_skips_the_fallback_sentinel() {
+        let mappings = vec![
+            mapping("*", "catch-all"),
+            mapping("gemini-2.5-flash", "provider-flash"),
+        ];
+
+        assert_eq!(gemini_path_model(&mappings, None), "provider-flash");
+    }
+
+    #[test]
+    fn placeholder_filter_keeps_the_route_sentinels() {
+        // `is_placeholder_model` is duplicated in this file; if a refactor ever
+        // teaches it about "*" or "claude-subagent", both features die silently.
+        let kept = remove_placeholder_model_mappings(vec![
+            mapping("*", "catch-all"),
+            mapping("claude-subagent", "provider-haiku"),
+            mapping("upstream-model", "dropped"),
+        ]);
+
+        assert_eq!(
+            kept.iter().map(|m| m.from.as_str()).collect::<Vec<_>>(),
+            vec!["*", "claude-subagent"]
         );
     }
 }
