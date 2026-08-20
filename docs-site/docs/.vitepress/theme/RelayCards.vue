@@ -1,6 +1,9 @@
 <script setup lang="ts">
-/* 中转站卡片。默认只显示身份信息 + 关键数字 + 入口按钮，须知与使用提示折叠起来，
-   指针设备上悬停展开，触屏和键盘用卡片里的按钮展开。
+/* 中转站卡片。默认只显示身份信息 + 关键数字 + 入口按钮，须知与使用提示做成一层
+   覆盖层：悬停时卡片主体变成强调色底、白字，卡片高度一点都不变（覆盖层是
+   absolute，不占布局）。
+   覆盖层只盖住主体，不盖页脚 —— 页脚里的注册按钮如果被盖住，鼠标一移上来就
+   被覆盖层挡住，那个按钮就永远点不到了。页脚的邀请参数披露也因此始终可见。
    卡片配色不写在 relays.ts 里 —— 数据文件只管事实，配色按顺序从下面这份调色板取，
    新增站点会自动拿到下一个色。 */
 import { computed, ref } from "vue";
@@ -100,31 +103,66 @@ const fmtDate = (iso: string) =>
       :class="{ 'is-open': isOpen(r.id) }"
       :style="{ '--rl-a': accent(i).tint, '--rl-d': accent(i).deep }"
     >
-      <header class="rl-head">
-        <div class="rl-title-row">
-          <h3 class="rl-name">{{ copyFor(r).name }}</h3>
-          <span class="rl-rate">{{ copyFor(r).rate }}</span>
-        </div>
-        <p class="rl-host">{{ r.host }}</p>
-      </header>
+      <!-- Default view. Sits under the overlay; both share .rl-body's box so the
+           card height is set by whichever is taller and never changes on hover. -->
+      <div class="rl-body">
+        <div class="rl-default">
+          <header class="rl-head">
+            <div class="rl-title-row">
+              <h3 class="rl-name">{{ copyFor(r).name }}</h3>
+              <span class="rl-rate">{{ copyFor(r).rate }}</span>
+            </div>
+            <p class="rl-host">{{ r.host }}</p>
+          </header>
 
-      <ul class="rl-models" :aria-label="t.modelsLabel">
-        <li v-for="m in r.models" :key="m" class="rl-model">{{ m }}</li>
-      </ul>
+          <ul class="rl-models" :aria-label="t.modelsLabel">
+            <li v-for="m in r.models" :key="m" class="rl-model">{{ m }}</li>
+          </ul>
 
-      <div class="rl-facts">
-        <div class="rl-fact">
-          <span class="rl-fact-k">{{ t.signupLabel }}</span>
-          <span class="rl-fact-v">{{ copyFor(r).signup }}</span>
+          <div class="rl-facts">
+            <div class="rl-fact">
+              <span class="rl-fact-k">{{ t.signupLabel }}</span>
+              <span class="rl-fact-v">{{ copyFor(r).signup }}</span>
+            </div>
+            <div class="rl-fact">
+              <span class="rl-fact-k">{{ t.inviteLabel }}</span>
+              <span class="rl-fact-v rl-fact-v-sm">{{ copyFor(r).invite }}</span>
+            </div>
+          </div>
         </div>
-        <div class="rl-fact">
-          <span class="rl-fact-k">{{ t.inviteLabel }}</span>
-          <span class="rl-fact-v rl-fact-v-sm">{{ copyFor(r).invite }}</span>
+
+        <!-- Overlay. Always in the DOM (so its text is indexable and reachable by
+             screen readers); revealed by opacity, which costs no layout. -->
+        <div :id="`rl-fold-${r.id}`" class="rl-over">
+          <div class="rl-over-scroll">
+            <!-- The overlay hides the identity block, so it repeats the name —
+                 otherwise you lose track of which provider you're reading. The
+                 toggle below already reads "notes and tips", so titling this
+                 block that too would just duplicate it. -->
+            <p class="rl-over-title">{{ copyFor(r).name }}</p>
+
+            <p class="rl-block-head">{{ t.notesLabel }}</p>
+            <ul class="rl-list">
+              <li v-for="n in copyFor(r).notes" :key="n">{{ n }}</li>
+            </ul>
+
+            <template v-if="copyFor(r).tips?.length">
+              <p class="rl-block-head rl-block-head-tips">{{ t.tipsLabel }}</p>
+              <ul class="rl-list">
+                <li v-for="tip in copyFor(r).tips" :key="tip">{{ tip }}</li>
+              </ul>
+            </template>
+
+            <p class="rl-tested">
+              <span class="rl-block-head">{{ t.testedLabel }}</span>
+              {{ copyFor(r).tested }}
+            </p>
+          </div>
         </div>
       </div>
 
-      <!-- The label stays constant: on a pointer device hover alone can expand
-           the fold without touching `open`, so a "collapse" label would
+      <!-- The label stays constant: on a pointer device hover alone can raise the
+           overlay without touching `open`, so a "collapse" label would
            contradict the screen. The chevron carries the state instead. -->
       <button
         class="rl-toggle"
@@ -145,28 +183,6 @@ const fmtDate = (iso: string) =>
           />
         </svg>
       </button>
-
-      <!-- Collapsed by default; grid-template-rows animates 0fr -> 1fr. -->
-      <div :id="`rl-fold-${r.id}`" class="rl-fold">
-        <div class="rl-fold-inner">
-          <p class="rl-block-head">{{ t.notesLabel }}</p>
-          <ul class="rl-list">
-            <li v-for="n in copyFor(r).notes" :key="n">{{ n }}</li>
-          </ul>
-
-          <template v-if="copyFor(r).tips?.length">
-            <p class="rl-block-head rl-block-head-tips">{{ t.tipsLabel }}</p>
-            <ul class="rl-list">
-              <li v-for="tip in copyFor(r).tips" :key="tip">{{ tip }}</li>
-            </ul>
-          </template>
-
-          <p class="rl-tested">
-            <span class="rl-block-head">{{ t.testedLabel }}</span>
-            {{ copyFor(r).tested }}
-          </p>
-        </div>
-      </div>
 
       <footer class="rl-foot">
         <a
@@ -208,6 +224,7 @@ const fmtDate = (iso: string) =>
   --rl-btn-bg: var(--rl-d);
   --rl-btn-fg: #ffffff;
 
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -338,7 +355,11 @@ const fmtDate = (iso: string) =>
 
 /* ---------- disclosure ---------- */
 
+/* ---------- notes overlay ---------- */
+
 .rl-toggle {
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -347,6 +368,7 @@ const fmtDate = (iso: string) =>
   font-weight: 600;
   color: rgb(var(--rl-fg));
   cursor: pointer;
+  transition: color 0.22s ease;
 }
 
 .rl-chev {
@@ -355,38 +377,104 @@ const fmtDate = (iso: string) =>
   transition: transform 0.22s ease;
 }
 
-.rl-fold {
+/* Both children share one grid cell, so the row is as tall as the taller of the
+   two and the card height is identical whether the overlay is up or not. The
+   overlay stays in flow (rather than absolute) precisely so it contributes to
+   that height — otherwise long notes would clip or need an inner scrollbar. */
+.rl-body {
+  position: relative;
   display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 0.26s ease;
 }
 
-.rl-fold-inner {
-  overflow: hidden;
-  min-height: 0;
+.rl-default,
+.rl-over {
+  grid-area: 1 / 1;
 }
 
-.rl-card.is-open .rl-fold {
-  grid-template-rows: 1fr;
+.rl-over {
+  /* Kept in the DOM and merely transparent, so the text is indexable and
+     reachable by assistive tech even while invisible. `visibility` is what
+     actually takes it out of the tab order and off the hit-testing surface —
+     opacity alone would leave an invisible layer swallowing clicks. */
+  position: relative;
+  z-index: 1;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.22s ease, visibility 0.22s;
+}
+
+/* The whole card floods with the accent colour, edge to edge — the fill is a
+   ::after on the card itself rather than a box inside it, so it covers the
+   padding too. Everything that must stay readable (the overlay text, the
+   toggle, the footer) is lifted above it with z-index. */
+.rl-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 13px;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.22s ease, visibility 0.22s;
+  /* Darkening gradient only, never lightening: white text sits on this, and the
+     lightest end is the contrast floor (5.48:1 on the weakest palette entry). */
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 0.22)),
+    rgb(var(--rl-d));
+}
+
+.rl-over-scroll {
+  position: relative;
+}
+
+.rl-over-title {
+  margin: 0 0 10px;
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #ffffff;
+}
+
+.rl-card.is-open::after,
+.rl-card.is-open .rl-over {
+  opacity: 1;
+  visibility: visible;
 }
 
 .rl-card.is-open .rl-chev {
   transform: rotate(180deg);
 }
 
-/* Hover-to-reveal is a pointer-only affordance. On touch the button is the
-   only way in, so the hover rule must not apply there — a sticky :hover would
-   leave the card stuck open with the button reading "collapse". */
+/* Hover-to-reveal is a pointer-only affordance. On touch the button is the only
+   way in, so the hover rule must not apply there — a sticky :hover would leave
+   the overlay stuck up. */
 @media (hover: hover) and (pointer: fine) {
-  .rl-card:hover .rl-fold,
-  .rl-card:focus-within .rl-fold {
-    grid-template-rows: 1fr;
+  .rl-card:hover::after,
+  .rl-card:focus-within::after,
+  .rl-card:hover .rl-over,
+  .rl-card:focus-within .rl-over {
+    opacity: 1;
+    visibility: visible;
   }
 
   .rl-card:hover .rl-chev,
   .rl-card:focus-within .rl-chev {
     transform: rotate(180deg);
   }
+}
+
+/* Inside the overlay everything is white on the accent fill. */
+.rl-over .rl-block-head {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.rl-over .rl-list,
+.rl-over .rl-tested {
+  /* 0.92 over the weakest fill is 4.90:1 — clears AA for body text. */
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.rl-over .rl-list li::marker {
+  color: rgba(255, 255, 255, 0.55);
 }
 
 .rl-block-head {
@@ -436,9 +524,12 @@ const fmtDate = (iso: string) =>
 /* ---------- footer ---------- */
 
 .rl-foot {
+  position: relative;
+  z-index: 1;
   margin-top: auto;
   padding-top: 14px;
   border-top: 1px solid var(--as-line);
+  transition: border-color 0.22s ease;
 }
 
 .rl-btn {
@@ -452,7 +543,7 @@ const fmtDate = (iso: string) =>
   text-decoration: none;
   color: var(--rl-btn-fg);
   background: rgb(var(--rl-btn-bg));
-  transition: filter 0.2s;
+  transition: filter 0.2s, background-color 0.22s ease, color 0.22s ease;
 }
 
 .rl-btn:hover {
@@ -463,6 +554,7 @@ const fmtDate = (iso: string) =>
   margin: 9px 0 0;
   font-size: 12px;
   color: var(--as-muted);
+  transition: color 0.22s ease;
 }
 
 .rl-stale {
@@ -475,6 +567,45 @@ const fmtDate = (iso: string) =>
   background: var(--vp-c-warning-soft);
 }
 
+/* ---------- flooded state ----------
+   Once the card floods, everything sitting on the fill has to switch to white.
+   The CTA inverts to a white pill: its normal background is the very colour now
+   behind it, so leaving it would make the button disappear. White-on-deep for
+   the pill text is the same >=5.48:1 pairing, just reversed. */
+.rl-card.is-open .rl-toggle,
+.rl-card.is-open .rl-meta {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.rl-card.is-open .rl-foot {
+  border-top-color: rgba(255, 255, 255, 0.22);
+}
+
+.rl-card.is-open .rl-btn {
+  color: rgb(var(--rl-d));
+  background: #ffffff;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .rl-card:hover .rl-toggle,
+  .rl-card:focus-within .rl-toggle,
+  .rl-card:hover .rl-meta,
+  .rl-card:focus-within .rl-meta {
+    color: rgba(255, 255, 255, 0.88);
+  }
+
+  .rl-card:hover .rl-foot,
+  .rl-card:focus-within .rl-foot {
+    border-top-color: rgba(255, 255, 255, 0.22);
+  }
+
+  .rl-card:hover .rl-btn,
+  .rl-card:focus-within .rl-btn {
+    color: rgb(var(--rl-d));
+    background: #ffffff;
+  }
+}
+
 @media (max-width: 640px) {
   .rl-grid {
     grid-template-columns: 1fr;
@@ -484,7 +615,7 @@ const fmtDate = (iso: string) =>
 @media (prefers-reduced-motion: reduce) {
   .rl-card,
   .rl-chev,
-  .rl-fold {
+  .rl-over {
     transition: none;
   }
 
