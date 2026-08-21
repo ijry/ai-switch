@@ -279,7 +279,11 @@ pub fn scan_session_usage(window: TimeWindow) -> SessionUsageStats {
     let roots = claude_roots()
         .into_iter()
         .map(|root| (root, Provider::Claude))
-        .chain(codex_roots().into_iter().map(|root| (root, Provider::Codex)));
+        .chain(
+            codex_roots()
+                .into_iter()
+                .map(|root| (root, Provider::Codex)),
+        );
 
     for (root, provider) in roots {
         if !root.exists() {
@@ -663,7 +667,10 @@ mod tests {
 
         let stats = aggregate_claude(&path);
 
-        assert_eq!(stats.totals.request_count, 2, "duplicate id must be dropped");
+        assert_eq!(
+            stats.totals.request_count, 2,
+            "duplicate id must be dropped"
+        );
         assert_eq!(stats.totals.input_tokens, 1_000_000);
         assert_eq!(stats.totals.output_tokens, 1_000_000);
         // 1M input at $5 + 1M output at $25.
@@ -797,7 +804,10 @@ mod tests {
 
         let stats = aggregate(
             &[(&path, Provider::Claude)],
-            TimeWindow { start_ms: Some(cutoff), end_ms: None },
+            TimeWindow {
+                start_ms: Some(cutoff),
+                end_ms: None,
+            },
         );
 
         assert_eq!(stats.totals.request_count, 1);
@@ -958,7 +968,10 @@ mod real_corpus {
             "estimated cost     : ${:.2}",
             cold.totals.cost_micros as f64 / 1_000_000.0
         );
-        println!("unpriced requests  : {}", cold.totals.unpriced_request_count);
+        println!(
+            "unpriced requests  : {}",
+            cold.totals.unpriced_request_count
+        );
         println!("cold scan          : {:.2}s", cold_elapsed.as_secs_f64());
         println!("warm scan          : {:.2}s", warm_elapsed.as_secs_f64());
         for row in cold.by_provider.iter() {

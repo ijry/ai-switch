@@ -21,12 +21,11 @@ use crate::services::route_credential_activity::{
 };
 use crate::services::route_protocol_bridge::transform_response as transform_protocol_bridge_response;
 use crate::services::route_proxy_service::{
-    build_target_url, build_upstream_request_with_bridge, classify_proxy_failure,
-    credential_indexes_by_priority, apply_estimated_price, extract_response_model,
-    extract_usage_breakdown,
-    maybe_persist_official_quota_from_response, maybe_refresh_official_credential,
-    normalize_api_upstream_path, select_pool_credentials, ProxyFailureKind, RouteProxyService,
-    SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
+    apply_estimated_price, build_target_url, build_upstream_request_with_bridge,
+    classify_proxy_failure, credential_indexes_by_priority, extract_response_model,
+    extract_usage_breakdown, maybe_persist_official_quota_from_response,
+    maybe_refresh_official_credential, normalize_api_upstream_path, select_pool_credentials,
+    ProxyFailureKind, RouteProxyService, SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
 };
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use serde_json::{json, Value};
@@ -299,8 +298,8 @@ impl RouteModelTestService {
                 // Price from the model the upstream reported, falling back to the
                 // one requested, so a connectivity test records the same cost
                 // basis as a real proxied request.
-                let priced_model = extract_response_model(&body)
-                    .or_else(|| requested_model.clone());
+                let priced_model =
+                    extract_response_model(&body).or_else(|| requested_model.clone());
                 apply_estimated_price(&mut usage, priced_model.as_deref());
                 let response_body =
                     sanitize_for_storage(&credential, &truncate_response_body(&body));

@@ -174,10 +174,17 @@ fn chat_json_to_responses(
         reasoning.as_deref(),
     )?;
     if let Some(reasoning) = reasoning {
-        output.insert(0, reasoning_output_item(&reasoning_item_id(response_id), reasoning));
+        output.insert(
+            0,
+            reasoning_output_item(&reasoning_item_id(response_id), reasoning),
+        );
     }
     if output.is_empty() {
-        output.push(message_output_item(&message_item_id(response_id), "completed", ""));
+        output.push(message_output_item(
+            &message_item_id(response_id),
+            "completed",
+            "",
+        ));
     }
     let finish_reason = choice.get("finish_reason").and_then(Value::as_str);
     let status = responses_status(finish_reason);

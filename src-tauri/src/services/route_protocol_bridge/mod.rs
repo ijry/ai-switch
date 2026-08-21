@@ -659,14 +659,14 @@ mod tests {
         let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
         let messages = converted["messages"].as_array().expect("messages");
 
-        let system_count = messages
-            .iter()
-            .filter(|m| m["role"] == "system")
-            .count();
+        let system_count = messages.iter().filter(|m| m["role"] == "system").count();
         assert_eq!(system_count, 1, "system messages should collapse to one");
         assert_eq!(messages[0]["role"], "system");
         let head = messages[0]["content"].as_str().unwrap_or_default();
-        assert!(head.contains("BASE") && head.contains("DEV"), "head: {head}");
+        assert!(
+            head.contains("BASE") && head.contains("DEV"),
+            "head: {head}"
+        );
         assert_eq!(messages[1]["role"], "user");
         assert_eq!(messages[1]["content"], "hi");
     }
@@ -1537,7 +1537,10 @@ mod tests {
 
         let completed = completed_response(&output);
         let items = completed["output"].as_array().expect("output array");
-        assert!(!items.is_empty(), "reasoning-only stream must not yield empty output");
+        assert!(
+            !items.is_empty(),
+            "reasoning-only stream must not yield empty output"
+        );
         assert_eq!(items[0]["type"], "reasoning");
         assert_eq!(items[0]["summary"][0]["text"], "Thinking only.");
     }

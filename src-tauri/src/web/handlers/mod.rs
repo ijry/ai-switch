@@ -7,13 +7,11 @@ use crate::app_state::AppState;
 use crate::commands::batch_commands::{CreateAccountRequest, UpdateAccountRequest};
 use crate::core::sessions::{get_session_messages_core, list_sessions_core};
 use crate::core::settings::{get_settings_core, save_settings_core};
-use crate::core::usage_stats::{
-    get_session_usage_stats_core, reload_model_price_overrides_core,
-};
 use crate::core::terminals::{
     create_terminal_session_core, kill_terminal_session_core, list_terminal_sessions_core,
     resize_terminal_core, write_terminal_input_core,
 };
+use crate::core::usage_stats::{get_session_usage_stats_core, reload_model_price_overrides_core};
 use crate::database::repositories::config_snapshot_repository::ConfigSnapshotRepository;
 use crate::error::{ApiError, AppError};
 use crate::models::batch::NewBatch;

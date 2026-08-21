@@ -786,7 +786,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(converted["messages"][1]["role"], "assistant");
-        assert_eq!(converted["messages"][1]["reasoning_content"], "Need to look it up.");
+        assert_eq!(
+            converted["messages"][1]["reasoning_content"],
+            "Need to look it up."
+        );
         assert_eq!(converted["messages"][1]["tool_calls"][0]["id"], "toolu_1");
         assert_eq!(converted["messages"][2]["role"], "tool");
     }

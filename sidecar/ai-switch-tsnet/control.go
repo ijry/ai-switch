@@ -16,17 +16,17 @@ import (
 )
 
 type Status struct {
-	State         string   `json:"state"`
-	DeviceName    *string  `json:"deviceName"`
-	TailnetIP     *string  `json:"tailnetIp"`
-	MagicDNSName  *string  `json:"magicDnsName"`
-	LoginURL      *string  `json:"loginUrl"`
-	AccessURLs    []string `json:"accessUrls"`
-	Serving       bool     `json:"serving"`
-	Public        bool     `json:"public"`
-	ExposureMode  string   `json:"exposureMode"`
-	PublicPort    uint16   `json:"publicPort"`
-	Message       *string  `json:"message"`
+	State        string   `json:"state"`
+	DeviceName   *string  `json:"deviceName"`
+	TailnetIP    *string  `json:"tailnetIp"`
+	MagicDNSName *string  `json:"magicDnsName"`
+	LoginURL     *string  `json:"loginUrl"`
+	AccessURLs   []string `json:"accessUrls"`
+	Serving      bool     `json:"serving"`
+	Public       bool     `json:"public"`
+	ExposureMode string   `json:"exposureMode"`
+	PublicPort   uint16   `json:"publicPort"`
+	Message      *string  `json:"message"`
 }
 
 type LoginResponse struct {

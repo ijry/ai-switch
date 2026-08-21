@@ -67,71 +67,119 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
     // Anthropic
     (
         "claude-haiku",
-        ModelRate { input_per_mtok: 1.0, output_per_mtok: 5.0 },
+        ModelRate {
+            input_per_mtok: 1.0,
+            output_per_mtok: 5.0,
+        },
     ),
     (
         "claude-sonnet",
-        ModelRate { input_per_mtok: 3.0, output_per_mtok: 15.0 },
+        ModelRate {
+            input_per_mtok: 3.0,
+            output_per_mtok: 15.0,
+        },
     ),
     (
         "claude-fable",
-        ModelRate { input_per_mtok: 10.0, output_per_mtok: 50.0 },
+        ModelRate {
+            input_per_mtok: 10.0,
+            output_per_mtok: 50.0,
+        },
     ),
     (
         "claude-mythos",
-        ModelRate { input_per_mtok: 10.0, output_per_mtok: 50.0 },
+        ModelRate {
+            input_per_mtok: 10.0,
+            output_per_mtok: 50.0,
+        },
     ),
     (
         "claude-opus",
-        ModelRate { input_per_mtok: 5.0, output_per_mtok: 25.0 },
+        ModelRate {
+            input_per_mtok: 5.0,
+            output_per_mtok: 25.0,
+        },
     ),
     // Legacy Anthropic ids ordered "3-5-haiku" before "3-opus" etc.
     (
         "haiku",
-        ModelRate { input_per_mtok: 1.0, output_per_mtok: 5.0 },
+        ModelRate {
+            input_per_mtok: 1.0,
+            output_per_mtok: 5.0,
+        },
     ),
     (
         "sonnet",
-        ModelRate { input_per_mtok: 3.0, output_per_mtok: 15.0 },
+        ModelRate {
+            input_per_mtok: 3.0,
+            output_per_mtok: 15.0,
+        },
     ),
     (
         "opus",
-        ModelRate { input_per_mtok: 5.0, output_per_mtok: 25.0 },
+        ModelRate {
+            input_per_mtok: 5.0,
+            output_per_mtok: 25.0,
+        },
     ),
     // OpenAI / Codex
     (
         "gpt-5",
-        ModelRate { input_per_mtok: 1.25, output_per_mtok: 10.0 },
+        ModelRate {
+            input_per_mtok: 1.25,
+            output_per_mtok: 10.0,
+        },
     ),
     (
         "gpt-4o-mini",
-        ModelRate { input_per_mtok: 0.15, output_per_mtok: 0.6 },
+        ModelRate {
+            input_per_mtok: 0.15,
+            output_per_mtok: 0.6,
+        },
     ),
     (
         "gpt-4o",
-        ModelRate { input_per_mtok: 2.5, output_per_mtok: 10.0 },
+        ModelRate {
+            input_per_mtok: 2.5,
+            output_per_mtok: 10.0,
+        },
     ),
     (
         "o4-mini",
-        ModelRate { input_per_mtok: 1.1, output_per_mtok: 4.4 },
+        ModelRate {
+            input_per_mtok: 1.1,
+            output_per_mtok: 4.4,
+        },
     ),
     // Google
     (
         "gemini-2.5-pro",
-        ModelRate { input_per_mtok: 1.25, output_per_mtok: 10.0 },
+        ModelRate {
+            input_per_mtok: 1.25,
+            output_per_mtok: 10.0,
+        },
     ),
     (
         "gemini-2.5-flash",
-        ModelRate { input_per_mtok: 0.3, output_per_mtok: 2.5 },
+        ModelRate {
+            input_per_mtok: 0.3,
+            output_per_mtok: 2.5,
+        },
     ),
     (
         "gemini",
-        ModelRate { input_per_mtok: 0.3, output_per_mtok: 2.5 },
+        ModelRate {
+            input_per_mtok: 0.3,
+            output_per_mtok: 2.5,
+        },
     ),
     // xAI
     (
         "grok",
-        ModelRate { input_per_mtok: 3.0, output_per_mtok: 15.0 },
+        ModelRate {
+            input_per_mtok: 3.0,
+            output_per_mtok: 15.0,
+        },
     ),
 ];
 
@@ -330,21 +378,36 @@ mod tests {
             assert_eq!(rate.input_per_mtok, 5.0, "input rate for {model}");
             assert_eq!(rate.output_per_mtok, 25.0, "output rate for {model}");
         }
-        assert_eq!(rate_for_model("gpt-5.6-sol").map(|r| r.input_per_mtok), Some(1.25));
+        assert_eq!(
+            rate_for_model("gpt-5.6-sol").map(|r| r.input_per_mtok),
+            Some(1.25)
+        );
     }
 
     #[test]
     fn haiku_matches_before_generic_families() {
         // Ordering matters: a substring table must not let a broader pattern win.
-        assert_eq!(rate_for_model("claude-haiku-4-5").map(|r| r.output_per_mtok), Some(5.0));
-        assert_eq!(rate_for_model("claude-3-5-haiku").map(|r| r.output_per_mtok), Some(5.0));
-        assert_eq!(rate_for_model("gpt-4o-mini").map(|r| r.input_per_mtok), Some(0.15));
+        assert_eq!(
+            rate_for_model("claude-haiku-4-5").map(|r| r.output_per_mtok),
+            Some(5.0)
+        );
+        assert_eq!(
+            rate_for_model("claude-3-5-haiku").map(|r| r.output_per_mtok),
+            Some(5.0)
+        );
+        assert_eq!(
+            rate_for_model("gpt-4o-mini").map(|r| r.input_per_mtok),
+            Some(0.15)
+        );
     }
 
     #[test]
     fn unknown_model_has_no_rate() {
         assert_eq!(rate_for_model("some-unreleased-model"), None);
-        assert_eq!(estimate_cost_micros("some-unreleased-model", TokenUsage::default()), None);
+        assert_eq!(
+            estimate_cost_micros("some-unreleased-model", TokenUsage::default()),
+            None
+        );
     }
 
     #[test]
@@ -368,7 +431,11 @@ mod tests {
     fn estimate_ignores_negative_counts() {
         let cost = estimate_cost_micros(
             "claude-opus-5",
-            TokenUsage { input_tokens: -5, output_tokens: 1_000_000, ..TokenUsage::default() },
+            TokenUsage {
+                input_tokens: -5,
+                output_tokens: 1_000_000,
+                ..TokenUsage::default()
+            },
         );
 
         assert_eq!(cost, Some(25_000_000));
@@ -394,20 +461,30 @@ mod tests {
         .expect("overrides parse");
 
         assert_eq!(table.len(), 1, "the negative rate must be dropped");
-        assert_eq!(lookup_in(&table, "claude-opus-5").map(|r| r.input_per_mtok), Some(1.0));
+        assert_eq!(
+            lookup_in(&table, "claude-opus-5").map(|r| r.input_per_mtok),
+            Some(1.0)
+        );
         assert_eq!(lookup_in(&table, "bogus-negative"), None);
         // A model the override does not mention falls through to the static table.
         assert_eq!(lookup_in(&table, "claude-haiku-4-5"), None);
-        assert_eq!(static_rate_for_key("claude-haiku-4-5").map(|r| r.input_per_mtok), Some(1.0));
+        assert_eq!(
+            static_rate_for_key("claude-haiku-4-5").map(|r| r.input_per_mtok),
+            Some(1.0)
+        );
     }
 
     #[test]
     fn override_can_be_keyed_by_model_family() {
-        let table = parse_overrides(r#"{"claude-opus": {"input_per_mtok": 4.0, "output_per_mtok": 20.0}}"#)
-            .expect("overrides parse");
+        let table =
+            parse_overrides(r#"{"claude-opus": {"input_per_mtok": 4.0, "output_per_mtok": 20.0}}"#)
+                .expect("overrides parse");
 
         // A discounted-gateway rate keyed by family applies to every Opus id.
-        assert_eq!(lookup_in(&table, "claude-opus-5-aws").map(|r| r.input_per_mtok), Some(4.0));
+        assert_eq!(
+            lookup_in(&table, "claude-opus-5-aws").map(|r| r.input_per_mtok),
+            Some(4.0)
+        );
     }
 
     #[test]
@@ -415,6 +492,9 @@ mod tests {
         assert!(parse_overrides("not json at all").is_err());
         assert!(load_overrides_from_str("not json at all").is_err());
         // The static table remains usable after a failed load.
-        assert_eq!(static_rate_for_key("claude-opus-5").map(|r| r.input_per_mtok), Some(5.0));
+        assert_eq!(
+            static_rate_for_key("claude-opus-5").map(|r| r.input_per_mtok),
+            Some(5.0)
+        );
     }
 }

@@ -375,4 +375,3 @@ func TestPublicStatusDoesNotMiscompareListenPort(t *testing.T) {
 		t.Fatalf("status triggered extra listen calls: before=%d after=%d", listenCountBefore, node.listenCount)
 	}
 }
-
