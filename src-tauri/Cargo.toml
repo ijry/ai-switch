@@ -47,7 +47,8 @@ axum = { version = "0.7", features = ["ws"] }
 axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 tower-http = { version = "0.6", features = ["cors"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "system-proxy", "cookies"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "system-proxy", "cookies", "stream"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 async-trait = "0.1"
 portable-pty = "0.8"
 rcgen = { version = "0.13", features = ["x509-parser"] }

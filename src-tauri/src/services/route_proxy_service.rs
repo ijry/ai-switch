@@ -10,7 +10,9 @@ use crate::models::route_credential::{
 use crate::models::route_pool::RouteUsageBreakdown;
 use crate::services::client_identity;
 use crate::services::codex_reasoning_cache::CodexReasoningCache;
-use crate::services::http_client::build_outbound_http_client;
+use crate::services::http_client::{
+    build_outbound_http_client, build_outbound_http_client_with_timeouts, OutboundTimeouts,
+};
 use crate::services::official_agent_identity_service::{
     is_official_agent_identity_credential, resolve_agent_identity_headers,
     CODEX_AGENT_IDENTITY_BASE_URL,
@@ -21,7 +23,9 @@ use crate::services::response_failure_service::{
     STREAM_DISCONNECTED_FAILURE_MESSAGE,
 };
 use crate::services::route_config_service::generate_route_proxy_key;
-use crate::services::route_credential_activity::RouteCredentialActivityRegistry;
+use crate::services::route_credential_activity::{
+    RouteCredentialActivityLease, RouteCredentialActivityRegistry,
+};
 use crate::services::route_model_capability::{
     advertised_model_ids, codex_reasoning_metadata, parse_model_capability,
     parse_model_capability_value, requested_model_from_body, resolve_mapping_target,
@@ -33,8 +37,9 @@ use crate::services::route_protocol_bridge::{
     PreparedBridgeRequest, ProtocolBridgeKind,
 };
 use crate::services::route_proxy_live_log::{
-    stage_preview, RouteProxyLiveLog, RouteProxyLiveLogEntry,
+    stage_preview, RouteProxyLiveLog, RouteProxyLiveLogEntry, LIVE_LOG_STAGE_LIMIT,
 };
+use crate::services::route_proxy_stream::StreamObserver;
 use axum::body::Body;
 use axum::extract::State as AxumState;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
@@ -56,6 +61,19 @@ use tokio::task::JoinHandle;
 const BIND_HOST: &str = "127.0.0.1";
 const DEFAULT_ROUTE_PROXY_PORT: u16 = 19527;
 const ROUTE_PROXY_KEY_CACHE_TTL: Duration = Duration::from_secs(30);
+/// Upstream connect-phase ceiling. If the handshake does not complete there is
+/// nothing to wait for — fail the attempt so the retry queue moves on.
+const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// Maximum gap between upstream reads, reset after each successful read.
+///
+/// Deliberately not a total deadline. A buffered response is only complete once
+/// the whole body has arrived, and a streamed one stays open for as long as the
+/// upstream keeps generating, so on either path a long answer legitimately takes
+/// minutes and a total budget would kill valid generations. What this catches is
+/// bytes stopping altogether — an upstream that accepted the connection and then
+/// went silent. Without it such a stall never returns an error, so the failover
+/// loop never runs and the CLI hangs forever.
+const UPSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(180);
 /// Public xAI Grok CLI OAuth client ID (CLIProxyAPI / Grok CLI).
 const XAI_OAUTH_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
 // Keep in sync with CLIProxyAPI xai_executor (cli-chat-proxy identity headers).
@@ -83,6 +101,37 @@ async fn wait_for_credential_retry(policy: RouteCredentialFailurePolicy) {
     if policy.retry_interval_ms > 0 {
         tokio::time::sleep(Duration::from_millis(policy.retry_interval_ms.into())).await;
     }
+}
+
+/// Describe an upstream transport failure, naming the deadline that fired.
+///
+/// reqwest renders a timeout as a bare "operation timed out", which reads the
+/// same as any other transport error in the request log. Since a stalled
+/// upstream and a refused one call for different fixes, spell out which limit
+/// was hit and what it was set to.
+fn describe_upstream_transport_error(
+    display_name: &str,
+    context: &str,
+    error: &reqwest::Error,
+    timeouts: OutboundTimeouts,
+) -> String {
+    let mut message = format!("{display_name}: {context}: {error}");
+    if error.is_timeout() {
+        if let Some(read) = timeouts.read {
+            message.push_str(&format!(
+                " (no data from upstream for {}s; treated as a stalled connection and retried/failed over)",
+                read.as_secs()
+            ));
+        }
+    } else if error.is_connect() {
+        if let Some(connect) = timeouts.connect {
+            message.push_str(&format!(
+                " (could not connect within {}s; check network/proxy reachability)",
+                connect.as_secs()
+            ));
+        }
+    }
+    message
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -125,6 +174,20 @@ struct ProxyAppState {
     activity: RouteCredentialActivityRegistry,
     live_log: RouteProxyLiveLog,
     codex_history: CodexReasoningCache,
+    /// Deadlines for upstream requests. A field rather than a constant read at
+    /// the call site so tests can drive a stalled upstream in milliseconds
+    /// instead of waiting out the production ceiling.
+    upstream_timeouts: OutboundTimeouts,
+}
+
+impl ProxyAppState {
+    fn default_upstream_timeouts() -> OutboundTimeouts {
+        OutboundTimeouts {
+            connect: Some(UPSTREAM_CONNECT_TIMEOUT),
+            read: Some(UPSTREAM_READ_TIMEOUT),
+            ..OutboundTimeouts::default()
+        }
+    }
 }
 
 #[derive(Default)]
@@ -228,6 +291,33 @@ impl RouteProxyService {
         pool: SqlitePool,
         transport: RouteProxyTransport,
     ) -> Result<RouteProxyStatus, AppError> {
+        Self::start_with_upstream_timeouts(
+            state,
+            pool,
+            transport,
+            ProxyAppState::default_upstream_timeouts(),
+        )
+        .await
+    }
+
+    /// Same as [`RouteProxyService::start`] but with explicit upstream deadlines,
+    /// so a test can exercise the stall path without a multi-minute wait.
+    #[cfg(test)]
+    pub(crate) async fn start_with_test_upstream_timeouts(
+        state: &RouteProxyRuntimeState,
+        pool: SqlitePool,
+        transport: RouteProxyTransport,
+        upstream_timeouts: OutboundTimeouts,
+    ) -> Result<RouteProxyStatus, AppError> {
+        Self::start_with_upstream_timeouts(state, pool, transport, upstream_timeouts).await
+    }
+
+    async fn start_with_upstream_timeouts(
+        state: &RouteProxyRuntimeState,
+        pool: SqlitePool,
+        transport: RouteProxyTransport,
+        upstream_timeouts: OutboundTimeouts,
+    ) -> Result<RouteProxyStatus, AppError> {
         let mut inner = state.inner.lock().await;
         if inner.running {
             return Ok(RouteProxyStatus {
@@ -258,6 +348,7 @@ impl RouteProxyService {
             activity: state.activity.clone(),
             live_log: state.live_log.clone(),
             codex_history: CodexReasoningCache::default(),
+            upstream_timeouts,
         };
         let app = Router::new()
             .fallback(any(proxy_handler))
@@ -533,7 +624,7 @@ async fn forward_request(
 
     let custom_tool_names = collect_custom_tool_names(&body_bytes);
     let upstream_query = strip_route_proxy_auth_query(query.as_deref());
-    let client = build_outbound_http_client(None)?;
+    let client = build_outbound_http_client_with_timeouts(state.upstream_timeouts)?;
     // Fallback for upstreams that fetch remote image URLs and reject non-image
     // Content-Types (e.g. OSS objects served as text/plain): when a routed
     // credential opts in, inline remote images as base64 data URLs up front.
@@ -557,7 +648,7 @@ async fn forward_request(
     while let Some((credential_index, credential_retry_count)) = retry_queue.pop_front() {
         attempt += 1;
         let selected = &credentials[credential_index];
-        let Some(_activity_lease) = state
+        let Some(activity_lease) = state
             .activity
             .try_acquire(&platform, &selected.id, selected.max_concurrency)
             .await
@@ -718,9 +809,11 @@ async fn forward_request(
         let upstream = match upstream {
             Ok(response) => response,
             Err(error) => {
-                let error_message = format!(
-                    "{}: upstream request failed: {error}",
-                    credential.display_name
+                let error_message = describe_upstream_transport_error(
+                    &credential.display_name,
+                    "upstream request failed",
+                    &error,
+                    state.upstream_timeouts,
                 );
                 let should_retry_same_credential =
                     credential_retry_count < failure_policy.retry_count as usize;
@@ -787,12 +880,177 @@ async fn forward_request(
         let status =
             StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
         let mut upstream_headers = upstream.headers().clone();
+
+        // Stream the response through instead of buffering it, when nothing
+        // downstream needs the complete body.
+        //
+        // The gate is deliberately narrow. Buffering is what makes the retry
+        // loop able to switch accounts on a failure that only shows up late in
+        // the body, so it stays the default; streaming is opt-in per request
+        // and only where every buffered-path consumer has an incremental
+        // equivalent. See `route_proxy_stream` for those.
+        if should_stream_upstream_response(
+            bridge_kind,
+            streaming_request,
+            status,
+            &custom_tool_names,
+            &credential,
+        ) {
+            let mut stream = Box::pin(upstream.bytes_stream());
+            // Wait for the first chunk while still inside the retry loop: until
+            // a byte reaches the client this attempt can still be abandoned for
+            // the next account, which is the whole reason to prime rather than
+            // return immediately.
+            let first_chunk = match futures_util::StreamExt::next(&mut stream).await {
+                Some(Ok(chunk)) => chunk,
+                Some(Err(error)) => {
+                    let error_message = describe_upstream_transport_error(
+                        &credential.display_name,
+                        "could not read upstream response",
+                        &error,
+                        state.upstream_timeouts,
+                    );
+                    handle_stream_prime_failure(
+                        &state,
+                        pool,
+                        &platform,
+                        &credential,
+                        &error_message,
+                        StreamPrimeContext {
+                            attempt,
+                            path: &path,
+                            target_url: &target_url,
+                            status,
+                            trace_id: trace_id.as_deref(),
+                            request_start,
+                            requested_model: requested_model.as_deref(),
+                            upstream_model: upstream_model.as_deref(),
+                            bridge_name: bridge_name.as_deref(),
+                            client_request: &body_bytes,
+                            upstream_request: &upstream_request_bytes,
+                        },
+                        credential_retry_count < failure_policy.retry_count as usize,
+                        failure_policy,
+                        &mut retry_queue,
+                        credential_index,
+                        credential_retry_count,
+                        &mut retry_errors,
+                    )
+                    .await;
+                    continue;
+                }
+                None => {
+                    let error_message = format!(
+                        "{}: upstream closed the stream before sending any data",
+                        credential.display_name
+                    );
+                    handle_stream_prime_failure(
+                        &state,
+                        pool,
+                        &platform,
+                        &credential,
+                        &error_message,
+                        StreamPrimeContext {
+                            attempt,
+                            path: &path,
+                            target_url: &target_url,
+                            status,
+                            trace_id: trace_id.as_deref(),
+                            request_start,
+                            requested_model: requested_model.as_deref(),
+                            upstream_model: upstream_model.as_deref(),
+                            bridge_name: bridge_name.as_deref(),
+                            client_request: &body_bytes,
+                            upstream_request: &upstream_request_bytes,
+                        },
+                        credential_retry_count < failure_policy.retry_count as usize,
+                        failure_policy,
+                        &mut retry_queue,
+                        credential_index,
+                        credential_retry_count,
+                        &mut retry_errors,
+                    )
+                    .await;
+                    continue;
+                }
+            };
+
+            // A gateway that reports failure in a 200 body usually does it in
+            // the opening frame. Catch that here, where failover still works.
+            if let Some(failure) = detect_response_failed(&first_chunk) {
+                let error_message = format!("{}: {}", credential.display_name, failure.message);
+                handle_stream_prime_failure(
+                    &state,
+                    pool,
+                    &platform,
+                    &credential,
+                    &error_message,
+                    StreamPrimeContext {
+                        attempt,
+                        path: &path,
+                        target_url: &target_url,
+                        status,
+                        trace_id: trace_id.as_deref(),
+                        request_start,
+                        requested_model: requested_model.as_deref(),
+                        upstream_model: upstream_model.as_deref(),
+                        bridge_name: bridge_name.as_deref(),
+                        client_request: &body_bytes,
+                        upstream_request: &upstream_request_bytes,
+                    },
+                    !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+                        && credential_retry_count < failure_policy.retry_count as usize,
+                    failure_policy,
+                    &mut retry_queue,
+                    credential_index,
+                    credential_retry_count,
+                    &mut retry_errors,
+                )
+                .await;
+                continue;
+            }
+
+            let next_index = (credential_index + 1) % credentials.len();
+            let _ =
+                RoutePoolRepository::save_cursor_index(pool, &platform, next_index as i64).await;
+
+            // Health, usage and the request log are all settled by the
+            // completion handle when the stream ends — success here only means
+            // "the first chunk looked fine", not that the response is whole.
+            let completion = StreamCompletion {
+                state: state.clone(),
+                credential: credential.clone(),
+                platform: platform.clone(),
+                attempt,
+                path: path.clone(),
+                target_url: target_url.clone(),
+                status,
+                trace_id: trace_id.clone(),
+                request_start,
+                requested_model: requested_model.clone(),
+                upstream_model: upstream_model.clone(),
+                bridge_name: bridge_name.clone(),
+                client_request: body_bytes.clone(),
+                upstream_request: upstream_request_bytes.clone(),
+                observer: StreamObserver::new(LIVE_LOG_STAGE_LIMIT, streaming_request),
+                // Held until the stream ends so the account's concurrency slot
+                // is not handed out while this response is still in flight.
+                _activity_lease: activity_lease,
+            };
+
+            let body = Body::from_stream(observed_upstream_stream(first_chunk, stream, completion));
+            upstream_headers.remove(axum::http::header::CONTENT_LENGTH);
+            return proxy_upstream_stream_response(status, upstream_headers, body);
+        }
+
         let mut response_bytes = match upstream.bytes().await {
             Ok(bytes) => bytes,
             Err(error) => {
-                let error_message = format!(
-                    "{}: could not read upstream response: {error}",
-                    credential.display_name
+                let error_message = describe_upstream_transport_error(
+                    &credential.display_name,
+                    "could not read upstream response",
+                    &error,
+                    state.upstream_timeouts,
                 );
                 let should_retry_same_credential =
                     credential_retry_count < failure_policy.retry_count as usize;
@@ -1485,6 +1743,354 @@ fn proxy_upstream_response(
     response
         .body(Body::from(response_bytes))
         .map_err(|error| format!("Could not build proxy response: {error}"))
+}
+
+/// Build the client response around a streaming body.
+///
+/// Same header handling as [`proxy_upstream_response`] — `is_hop_by_hop_header`
+/// already drops `content-length` and `transfer-encoding`, so hyper is free to
+/// frame the response as chunked.
+fn proxy_upstream_stream_response(
+    status: StatusCode,
+    upstream_headers: HeaderMap,
+    body: Body,
+) -> Result<Response, String> {
+    let mut response = Response::builder().status(status);
+    if let Some(header_map) = response.headers_mut() {
+        for (name, value) in upstream_headers.iter() {
+            if is_hop_by_hop_header(name) {
+                continue;
+            }
+            header_map.append(name.clone(), value.clone());
+        }
+    }
+    response
+        .body(body)
+        .map_err(|error| format!("Could not build proxy response: {error}"))
+}
+
+/// Whether this response can be streamed to the client rather than buffered.
+///
+/// Every condition here exists because some consumer of the buffered path needs
+/// the complete body:
+///
+/// - a protocol bridge rewrites the body wholesale, and five of the seven do it
+///   by aggregating the entire stream before re-emitting it;
+/// - a non-streaming reply has no frames to inspect incrementally, and nothing
+///   to gain — the client waits for one JSON document either way;
+/// - a non-2xx body decides retry classification, which must happen before
+///   anything reaches the client;
+/// - custom tool restoration rewrites frames on the way out;
+/// - official credentials parse the body for subscription/quota signals.
+fn should_stream_upstream_response(
+    bridge_kind: Option<ProtocolBridgeKind>,
+    streaming_request: bool,
+    status: StatusCode,
+    custom_tool_names: &std::collections::HashSet<String>,
+    credential: &SelectedCredential,
+) -> bool {
+    bridge_kind.is_none()
+        && streaming_request
+        && status.is_success()
+        && custom_tool_names.is_empty()
+        && credential.kind != "official"
+}
+
+/// The per-request values a streamed response still has to report once it ends.
+struct StreamPrimeContext<'a> {
+    attempt: usize,
+    path: &'a str,
+    target_url: &'a str,
+    status: StatusCode,
+    trace_id: Option<&'a str>,
+    request_start: Instant,
+    requested_model: Option<&'a str>,
+    upstream_model: Option<&'a str>,
+    bridge_name: Option<&'a str>,
+    client_request: &'a [u8],
+    upstream_request: &'a [u8],
+}
+
+/// Record a failure that happened before any byte reached the client.
+///
+/// Mirrors the buffered path's transport-failure arm: log the attempt, then
+/// either queue the same account again or record the failure and let the caller
+/// fall through to the next candidate.
+#[allow(clippy::too_many_arguments)]
+async fn handle_stream_prime_failure(
+    state: &ProxyAppState,
+    pool: &SqlitePool,
+    platform: &str,
+    credential: &SelectedCredential,
+    error_message: &str,
+    context: StreamPrimeContext<'_>,
+    retry_same_credential: bool,
+    failure_policy: RouteCredentialFailurePolicy,
+    retry_queue: &mut VecDeque<(usize, usize)>,
+    credential_index: usize,
+    credential_retry_count: usize,
+    retry_errors: &mut Vec<String>,
+) {
+    let metadata = route_proxy_request_metadata(
+        platform,
+        credential,
+        context.path,
+        Some(context.target_url),
+        Some(context.status.as_u16()),
+        false,
+        context.trace_id,
+        context.request_start,
+        Some(error_message),
+        context.requested_model,
+        context.upstream_model,
+        None,
+    );
+    let _ = insert_route_credential_request_event(
+        pool,
+        &credential.id,
+        &metadata,
+        &RouteUsageBreakdown::default(),
+    )
+    .await;
+    emit_live_log(
+        &state.live_log,
+        platform,
+        credential,
+        context.attempt,
+        context.path,
+        Some(context.target_url),
+        Some(context.status.as_u16()),
+        false,
+        context.trace_id,
+        context.request_start,
+        Some(error_message),
+        context.requested_model,
+        context.upstream_model,
+        context.bridge_name,
+        Some(context.client_request),
+        Some(context.upstream_request),
+        None,
+        None,
+    );
+    if retry_same_credential {
+        wait_for_credential_retry(failure_policy).await;
+        retry_queue.push_front((credential_index, credential_retry_count + 1));
+    } else {
+        record_route_credential_failure(
+            &state.activity,
+            platform,
+            pool,
+            &credential.id,
+            "transport",
+            error_message,
+            None,
+        )
+        .await;
+        retry_errors.push(error_message.to_string());
+    }
+}
+
+/// Everything needed to close the books on a streamed response.
+///
+/// Carries the request's identity plus the observer accumulating what passed
+/// through, and settles usage, the request log and account health when the
+/// stream ends.
+struct StreamCompletion {
+    state: ProxyAppState,
+    credential: SelectedCredential,
+    platform: String,
+    attempt: usize,
+    path: String,
+    target_url: String,
+    status: StatusCode,
+    trace_id: Option<String>,
+    request_start: Instant,
+    requested_model: Option<String>,
+    upstream_model: Option<String>,
+    bridge_name: Option<String>,
+    client_request: axum::body::Bytes,
+    upstream_request: Vec<u8>,
+    observer: StreamObserver,
+    _activity_lease: RouteCredentialActivityLease,
+}
+
+impl StreamCompletion {
+    /// Persist usage, log the request, and update account health.
+    ///
+    /// Runs whether the stream ended on its own or the client hung up, so a
+    /// half-read response is still accounted for rather than silently dropped.
+    async fn finish(self) {
+        let StreamCompletion {
+            state,
+            credential,
+            platform,
+            attempt,
+            path,
+            target_url,
+            status,
+            trace_id,
+            request_start,
+            requested_model,
+            upstream_model,
+            bridge_name,
+            client_request,
+            upstream_request,
+            observer,
+            _activity_lease,
+        } = self;
+
+        let preview = observer.preview().to_vec();
+        let outcome = observer.finish();
+        let truncated = outcome.disconnected_before_completion;
+        let error_message = truncated.then(|| STREAM_DISCONNECTED_FAILURE_MESSAGE.to_string());
+
+        let mut usage = outcome.usage;
+        let priced_model = outcome
+            .response_model
+            .or_else(|| upstream_model.clone())
+            .or_else(|| requested_model.clone());
+        apply_estimated_price(&mut usage, priced_model.as_deref());
+
+        let metadata = route_proxy_request_metadata(
+            &platform,
+            &credential,
+            &path,
+            Some(&target_url),
+            Some(status.as_u16()),
+            !truncated,
+            trace_id.as_deref(),
+            request_start,
+            error_message.as_deref(),
+            requested_model.as_deref(),
+            upstream_model.as_deref(),
+            Some(&preview),
+        );
+        let _ =
+            insert_route_credential_request_event(&state.pool, &credential.id, &metadata, &usage)
+                .await;
+        emit_live_log(
+            &state.live_log,
+            &platform,
+            &credential,
+            attempt,
+            &path,
+            Some(&target_url),
+            Some(status.as_u16()),
+            !truncated,
+            trace_id.as_deref(),
+            request_start,
+            error_message.as_deref(),
+            requested_model.as_deref(),
+            upstream_model.as_deref(),
+            bridge_name.as_deref(),
+            Some(&client_request),
+            Some(&upstream_request),
+            Some(&preview),
+            Some(&preview),
+        );
+
+        if truncated {
+            // The bytes are already with the client, so this cannot become a
+            // retry. Recording it still matters: the account's backoff and
+            // health state are what stop the pool from picking a chronically
+            // truncating upstream first next time.
+            record_route_credential_failure(
+                &state.activity,
+                &platform,
+                &state.pool,
+                &credential.id,
+                "semantic_response_transient",
+                STREAM_DISCONNECTED_FAILURE_MESSAGE,
+                Some(&preview),
+            )
+            .await;
+            return;
+        }
+
+        if RouteCredentialRepository::clear_transient_failure(&state.pool, &credential.id)
+            .await
+            .is_ok()
+        {
+            state
+                .activity
+                .notify_status_change(&platform, &credential.id);
+        }
+    }
+}
+
+/// Wrap the upstream stream so every chunk is observed on its way to the client.
+///
+/// The completion handle is moved into the stream, so it is dropped — and the
+/// books closed — when the stream ends or the client disconnects.
+fn observed_upstream_stream(
+    first_chunk: axum::body::Bytes,
+    rest: impl futures_util::Stream<Item = reqwest::Result<axum::body::Bytes>> + Send + 'static,
+    completion: StreamCompletion,
+) -> impl futures_util::Stream<Item = Result<axum::body::Bytes, std::io::Error>> + Send + 'static {
+    let replayed = futures_util::StreamExt::chain(
+        futures_util::stream::once(async move { Ok(first_chunk) }),
+        rest,
+    );
+    let guard = StreamCompletionGuard {
+        completion: Some(completion),
+    };
+    futures_util::stream::unfold(
+        (Box::pin(replayed), guard),
+        |(mut stream, mut guard)| async move {
+            match futures_util::StreamExt::next(&mut stream).await {
+                Some(Ok(chunk)) => {
+                    if let Some(completion) = guard.completion.as_mut() {
+                        completion.observer.observe(&chunk);
+                    }
+                    Some((Ok(chunk), (stream, guard)))
+                }
+                Some(Err(error)) => {
+                    // Upstream died mid-body. The client already has the earlier
+                    // bytes, so this can only end the stream — but the partial
+                    // response still gets accounted for.
+                    if let Some(completion) = guard.completion.take() {
+                        completion.finish().await;
+                    }
+                    Some((
+                        Err(std::io::Error::other(format!(
+                            "upstream stream failed: {error}"
+                        ))),
+                        (stream, guard),
+                    ))
+                }
+                None => {
+                    if let Some(completion) = guard.completion.take() {
+                        completion.finish().await;
+                    }
+                    None
+                }
+            }
+        },
+    )
+}
+
+/// Ensures a streamed response is always accounted for.
+///
+/// The stream is dropped without being polled to completion whenever the client
+/// hangs up early, which would otherwise lose the request from usage stats and
+/// leave the account's last-failure state stale. `Drop` cannot await, so the
+/// remaining work is handed to a task.
+struct StreamCompletionGuard {
+    completion: Option<StreamCompletion>,
+}
+
+impl Drop for StreamCompletionGuard {
+    fn drop(&mut self) {
+        let Some(completion) = self.completion.take() else {
+            return;
+        };
+        // Only reachable when the stream never finished, i.e. the client went
+        // away. Spawning needs a runtime; during shutdown there is none, and
+        // dropping the handle is the right outcome then.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move { completion.finish().await });
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3857,7 +4463,7 @@ pub fn extract_response_model(body: &[u8]) -> Option<String> {
         .find_map(response_model_from_value)
 }
 
-fn response_model_from_value(value: &Value) -> Option<String> {
+pub(crate) fn response_model_from_value(value: &Value) -> Option<String> {
     [
         value.get("model"),
         value.pointer("/message/model"),
@@ -3887,7 +4493,7 @@ fn usage_breakdown_from_sse(body: &[u8]) -> RouteUsageBreakdown {
     merged
 }
 
-fn usage_breakdown_from_value(value: &Value) -> RouteUsageBreakdown {
+pub(crate) fn usage_breakdown_from_value(value: &Value) -> RouteUsageBreakdown {
     // Anthropic's `message_start` nests usage under `message`, and the OpenAI
     // Responses API nests it under `response`, so accept either alongside the
     // top-level field used by non-streaming replies.
@@ -4338,6 +4944,87 @@ mod tests {
             .expect("upstream response")
     }
 
+    /// An SSE upstream that emits chunks on demand, with a deliberate split
+    /// inside one frame.
+    ///
+    /// The single-`Body::from` fixtures above hand the whole payload over at
+    /// once, so they never exercise a chunk boundary. Real upstreams split
+    /// wherever the network does, including mid-frame, which is exactly what the
+    /// framer has to survive.
+    ///
+    /// `gap` is awaited after the first chunk, so a test can prove the client
+    /// received the opening bytes before the upstream finished.
+    async fn start_chunked_sse_upstream(
+        chunks: Vec<&'static str>,
+        gap: Duration,
+    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let handler_calls = Arc::clone(&calls);
+        let app = Router::new().fallback(move || {
+            let chunks = chunks.clone();
+            let calls = Arc::clone(&handler_calls);
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let stream = futures_util::stream::unfold(
+                    chunks.into_iter().enumerate(),
+                    move |mut iter| async move {
+                        let (index, chunk) = iter.next()?;
+                        if index > 0 {
+                            tokio::time::sleep(gap).await;
+                        }
+                        Some((
+                            Ok::<_, std::io::Error>(axum::body::Bytes::from_static(
+                                chunk.as_bytes(),
+                            )),
+                            iter,
+                        ))
+                    },
+                );
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header(axum::http::header::CONTENT_TYPE, "text/event-stream")
+                    .body(Body::from_stream(stream))
+                    .expect("chunked sse response")
+            }
+        });
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind chunked sse upstream");
+        let address = listener.local_addr().expect("chunked sse address");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve chunked sse");
+        });
+        (format!("http://{address}/v1"), calls)
+    }
+
+    /// An upstream that returns 200 with SSE headers and then closes without
+    /// sending a single byte of body.
+    async fn start_empty_stream_upstream() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let handler_calls = Arc::clone(&calls);
+        let app = Router::new().fallback(move || {
+            let calls = Arc::clone(&handler_calls);
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header(axum::http::header::CONTENT_TYPE, "text/event-stream")
+                    .body(Body::empty())
+                    .expect("empty stream response")
+            }
+        });
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind empty stream upstream");
+        let address = listener.local_addr().expect("empty stream address");
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve empty stream");
+        });
+        (format!("http://{address}/v1"), calls)
+    }
+
     async fn start_recording_chat_upstream() -> (
         String,
         tokio::sync::mpsc::UnboundedReceiver<CapturedChatRequest>,
@@ -4368,6 +5055,36 @@ mod tests {
             axum::serve(listener, app).await.expect("serve upstream");
         });
         format!("http://{address}/v1")
+    }
+
+    /// An upstream that accepts the connection and then goes silent forever.
+    ///
+    /// This is the failure the proxy could not see before it had deadlines: no
+    /// RST, no EOF, no status line — just a live socket with nothing on it. It
+    /// holds every accepted stream so the peer never observes a close, and
+    /// returns the number of connections it has swallowed.
+    async fn start_stalled_upstream() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind stalled upstream");
+        let address = listener.local_addr().expect("stalled upstream address");
+        let accepted = Arc::clone(&connections);
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _)) => {
+                        accepted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        // Never read or write; keep the socket open so the
+                        // client waits on bytes that will never come.
+                        held.push(stream);
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        (format!("http://{address}/v1"), connections)
     }
 
     #[derive(Clone)]
@@ -5098,6 +5815,514 @@ mod tests {
         assert_eq!(healthy_request.price_currency.as_deref(), Some("cny"));
 
         RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn upstream_timeout_fails_over_to_next_pool_account() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let (stalled_upstream, stalled_connections) = start_stalled_upstream().await;
+        let healthy_upstream = start_fixed_upstream(StatusCode::OK, r#"{"ok":true}"#).await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        // retry_count 0 keeps the assertion about failover (not same-account
+        // retries) unambiguous; the retry budget is covered by its own test.
+        let stalled_id = create_proxy_api_credential_with_config(
+            &pool,
+            "stalled",
+            &stalled_upstream,
+            json!({"failure_policy": {"retry_count": 0}}),
+        )
+        .await;
+        let healthy_id = create_proxy_api_credential(&pool, "healthy", &healthy_upstream).await;
+        RoutePoolRepository::replace_members(
+            &pool,
+            "codex",
+            &[stalled_id.clone(), healthy_id.clone()],
+        )
+        .await
+        .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start_with_test_upstream_timeouts(
+            &runtime,
+            pool.clone(),
+            RouteProxyTransport::Http,
+            OutboundTimeouts {
+                connect: Some(Duration::from_millis(500)),
+                read: Some(Duration::from_millis(300)),
+                ..OutboundTimeouts::default()
+            },
+        )
+        .await
+        .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5.5","messages":[]}))
+            .send()
+            .await
+            .expect("proxy response");
+
+        // Without a read deadline this request never returns at all.
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(response.text().await.expect("body"), r#"{"ok":true}"#);
+        assert_eq!(
+            stalled_connections.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+
+        let stalled = RouteCredentialRepository::get(&pool, &stalled_id)
+            .await
+            .expect("stalled account");
+        assert_eq!(stalled.transient_failure_count, 1);
+        assert_eq!(stalled.last_failure_kind.as_deref(), Some("transport"));
+        assert!(stalled.next_retry_at.is_some());
+        assert!(stalled
+            .last_failure_message
+            .as_deref()
+            .is_some_and(|message| message.contains("stalled connection")));
+        assert_eq!(
+            RouteCredentialRepository::get(&pool, &healthy_id)
+                .await
+                .expect("healthy account")
+                .status,
+            "ok"
+        );
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn upstream_timeout_exhausts_same_account_retries_before_failing_over() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let (stalled_upstream, stalled_connections) = start_stalled_upstream().await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let stalled_id = create_proxy_api_credential_with_config(
+            &pool,
+            "stalled",
+            &stalled_upstream,
+            json!({"failure_policy": {"retry_count": 2, "retry_interval_ms": 0}}),
+        )
+        .await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&stalled_id))
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start_with_test_upstream_timeouts(
+            &runtime,
+            pool.clone(),
+            RouteProxyTransport::Http,
+            OutboundTimeouts {
+                connect: Some(Duration::from_millis(500)),
+                read: Some(Duration::from_millis(200)),
+                ..OutboundTimeouts::default()
+            },
+        )
+        .await
+        .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5.5","messages":[]}))
+            .send()
+            .await
+            .expect("proxy response");
+
+        // Only candidate in the pool, so the request ends in an error rather
+        // than hanging — but not before the retry budget is spent.
+        assert_ne!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            stalled_connections.load(std::sync::atomic::Ordering::SeqCst),
+            DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT as usize + 1
+        );
+        assert_eq!(
+            RouteCredentialRepository::get(&pool, &stalled_id)
+                .await
+                .expect("stalled account")
+                .transient_failure_count,
+            1
+        );
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    /// The payload for the streaming tests, split so that chunk 2 ends in the
+    /// middle of a JSON payload and chunk 3 completes it.
+    const CHUNKED_SSE_PARTS: [&str; 4] = [
+        "data: {\"id\":\"chatcmpl-1\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+        "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}],\"usage\":{\"prompt_to",
+        "kens\":11,\"completion_tokens\":4}}\n\n",
+        "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+    ];
+
+    /// The core promise of streaming: the client sees the opening bytes while the
+    /// upstream is still generating.
+    ///
+    /// The upstream pauses between chunks, so if the proxy were buffering, the
+    /// first byte could not arrive before the whole generation finished.
+    #[tokio::test]
+    async fn streams_first_bytes_to_the_client_before_the_upstream_finishes() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let gap = Duration::from_millis(250);
+        let (upstream, _calls) = start_chunked_sse_upstream(CHUNKED_SSE_PARTS.to_vec(), gap).await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_proxy_api_credential(&pool, "streaming", &upstream).await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+
+        let started = Instant::now();
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5.5","messages":[],"stream":true}))
+            .send()
+            .await
+            .expect("proxy response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let mut stream = Box::pin(response.bytes_stream());
+        let first = futures_util::StreamExt::next(&mut stream)
+            .await
+            .expect("first chunk")
+            .expect("first chunk bytes");
+        let first_byte_at = started.elapsed();
+        assert!(!first.is_empty());
+
+        // Three gaps remain after the first chunk, so a buffering proxy could not
+        // have answered before 3 * gap.
+        let total_upstream_time = gap * (CHUNKED_SSE_PARTS.len() as u32 - 1);
+        assert!(
+            first_byte_at < total_upstream_time,
+            "first byte took {first_byte_at:?}, which is not sooner than the \
+             upstream's own {total_upstream_time:?} — the response was buffered"
+        );
+
+        let mut body = first.to_vec();
+        while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+            body.extend_from_slice(&chunk.expect("chunk bytes"));
+        }
+        assert_eq!(body, CHUNKED_SSE_PARTS.concat().as_bytes());
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    /// Usage has to survive the switch to streaming, including when the frame
+    /// carrying it was split across chunks.
+    #[tokio::test]
+    async fn streamed_response_still_records_usage_and_clears_failures() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let (upstream, _calls) =
+            start_chunked_sse_upstream(CHUNKED_SSE_PARTS.to_vec(), Duration::from_millis(0)).await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_proxy_api_credential(&pool, "streaming", &upstream).await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5.5","messages":[],"stream":true}))
+            .send()
+            .await
+            .expect("proxy response");
+        assert_eq!(response.status(), StatusCode::OK);
+        // Drain fully so the completion hook runs.
+        let _ = response.bytes().await.expect("proxy body");
+
+        let request = wait_for_single_request_event(&pool).await;
+        assert_eq!(request.input_tokens, Some(11));
+        assert_eq!(request.output_tokens, Some(4));
+        assert_eq!(
+            RouteCredentialRepository::get(&pool, &credential_id)
+                .await
+                .expect("credential")
+                .status,
+            "ok"
+        );
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    /// A stream that carried data but never terminated is still charged against
+    /// the account, even though the bytes are already gone and cannot be retried.
+    #[tokio::test]
+    async fn truncated_stream_is_recorded_without_retrying() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        // Data frames, but no `finish_reason`, no `[DONE]`, no `message_stop`.
+        let (upstream, calls) = start_chunked_sse_upstream(
+            vec![
+                "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+            ],
+            Duration::from_millis(0),
+        )
+        .await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_proxy_api_credential(&pool, "truncating", &upstream).await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5.5","messages":[],"stream":true}))
+            .send()
+            .await
+            .expect("proxy response");
+        // The client keeps its 200 and its bytes: they were already delivered.
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = response.bytes().await.expect("proxy body");
+
+        // Exactly one upstream call — a truncated stream must not be retried.
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let credential = wait_for_transient_failure(&pool, &credential_id).await;
+        assert!(
+            credential
+                .last_failure_message
+                .as_deref()
+                .is_some_and(|message| message.contains("stream disconnected")),
+            "expected a stream-disconnect failure, got {:?}",
+            credential.last_failure_message
+        );
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    /// A stream that dies before its first byte has touched nothing on the
+    /// client, so it must still fail over to the next account.
+    #[tokio::test]
+    async fn stream_failing_before_first_byte_fails_over_to_next_account() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let (empty_upstream, empty_calls) = start_empty_stream_upstream().await;
+        let (healthy_upstream, healthy_calls) =
+            start_chunked_sse_upstream(CHUNKED_SSE_PARTS.to_vec(), Duration::from_millis(0)).await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        // retry_count 0 so the empty upstream is abandoned immediately rather
+        // than retried on the same account.
+        let empty_id = create_proxy_api_credential_with_config(
+            &pool,
+            "empty",
+            &empty_upstream,
+            json!({"failure_policy": {"retry_count": 0}}),
+        )
+        .await;
+        let healthy_id = create_proxy_api_credential(&pool, "healthy", &healthy_upstream).await;
+        RoutePoolRepository::replace_members(
+            &pool,
+            "codex",
+            &[empty_id.clone(), healthy_id.clone()],
+        )
+        .await
+        .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5.5","messages":[],"stream":true}))
+            .send()
+            .await
+            .expect("proxy response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.bytes().await.expect("proxy body");
+        assert_eq!(body, CHUNKED_SSE_PARTS.concat().as_bytes());
+
+        assert_eq!(empty_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(healthy_calls.load(Ordering::SeqCst), 1);
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    /// The buffered path stays in charge whenever a bridge has to rewrite the
+    /// body: the gate must not stream a request that needs conversion.
+    #[tokio::test]
+    async fn bridged_streaming_request_still_uses_the_buffered_path() {
+        let claude_to_chat = should_stream_upstream_response(
+            Some(ProtocolBridgeKind::ClaudeToChat),
+            true,
+            StatusCode::OK,
+            &std::collections::HashSet::new(),
+            &streaming_gate_credential("api"),
+        );
+        assert!(!claude_to_chat, "a bridged response must stay buffered");
+
+        let passthrough = should_stream_upstream_response(
+            None,
+            true,
+            StatusCode::OK,
+            &std::collections::HashSet::new(),
+            &streaming_gate_credential("api"),
+        );
+        assert!(passthrough, "an unbridged streaming 2xx should stream");
+    }
+
+    /// Each remaining gate condition, so a future change cannot quietly widen
+    /// the streaming path past what has an incremental equivalent.
+    #[tokio::test]
+    async fn streaming_gate_rejects_every_case_needing_the_whole_body() {
+        let empty = std::collections::HashSet::new();
+        let api = streaming_gate_credential("api");
+
+        assert!(
+            !should_stream_upstream_response(None, false, StatusCode::OK, &empty, &api),
+            "a non-streaming reply has nothing to stream"
+        );
+        assert!(
+            !should_stream_upstream_response(
+                None,
+                true,
+                StatusCode::TOO_MANY_REQUESTS,
+                &empty,
+                &api
+            ),
+            "a non-2xx body decides retry classification and must be buffered"
+        );
+        assert!(
+            !should_stream_upstream_response(
+                None,
+                true,
+                StatusCode::OK,
+                &std::collections::HashSet::from(["my_tool".to_string()]),
+                &api
+            ),
+            "custom tool restoration rewrites frames on the way out"
+        );
+        assert!(
+            !should_stream_upstream_response(
+                None,
+                true,
+                StatusCode::OK,
+                &empty,
+                &streaming_gate_credential("official")
+            ),
+            "official credentials parse the body for quota signals"
+        );
+    }
+
+    fn streaming_gate_credential(kind: &str) -> SelectedCredential {
+        SelectedCredential {
+            id: "credential".to_string(),
+            platform: "codex".to_string(),
+            kind: kind.to_string(),
+            display_name: "Credential".to_string(),
+            status: "ok".to_string(),
+            route_priority: 3,
+            max_concurrency: 1,
+            secret_payload_json: r#"{"api_key":"sk-upstream"}"#.to_string(),
+            config_json: "{}".to_string(),
+        }
+    }
+
+    /// A streamed response is booked by the completion hook once the stream
+    /// ends, which can land just after the client's last chunk. Poll rather than
+    /// assume the row is already there.
+    async fn wait_for_single_request_event(
+        pool: &SqlitePool,
+    ) -> crate::models::route_pool::RoutePoolUsageLog {
+        for _ in 0..100 {
+            let stats = RoutePoolRepository::stats(pool, "codex", None, 1, 20)
+                .await
+                .expect("usage stats");
+            if let Some(request) = stats.requests.into_iter().next() {
+                return request;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("no route_proxy request event was recorded");
+    }
+
+    async fn wait_for_transient_failure(
+        pool: &SqlitePool,
+        credential_id: &str,
+    ) -> crate::models::route_credential::RouteCredential {
+        for _ in 0..100 {
+            let credential = RouteCredentialRepository::get(pool, credential_id)
+                .await
+                .expect("credential");
+            if credential.transient_failure_count > 0 {
+                return credential;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("credential never recorded a transient failure");
     }
 
     #[tokio::test]
@@ -6745,14 +7970,18 @@ data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"partia";
     fn extract_usage_breakdown_stays_empty_for_non_sse_garbage() {
         let usage = extract_usage_breakdown(b"<html><body>502 Bad Gateway</body></html>");
 
-        assert_eq!(usage, crate::models::route_pool::RouteUsageBreakdown::default());
+        assert_eq!(
+            usage,
+            crate::models::route_pool::RouteUsageBreakdown::default()
+        );
         assert_eq!(extract_token_count(b"<html>502</html>"), None);
     }
 
     #[test]
     fn estimated_price_fills_in_cost_when_upstream_omits_it() {
         // The case behind "cost is always 0": Anthropic reports tokens, no price.
-        let body = br#"{"model":"claude-opus-5","usage":{"input_tokens":1000000,"output_tokens":0}}"#;
+        let body =
+            br#"{"model":"claude-opus-5","usage":{"input_tokens":1000000,"output_tokens":0}}"#;
         let mut usage = extract_usage_breakdown(body);
         assert_eq!(usage.price_usd_micros, None, "upstream sends no price");
 
@@ -6987,6 +8216,7 @@ data: [DONE]\n\n";
             activity: RouteCredentialActivityRegistry::default(),
             live_log: RouteProxyLiveLog::default(),
             codex_history: CodexReasoningCache::default(),
+            upstream_timeouts: ProxyAppState::default_upstream_timeouts(),
         };
 
         let mut headers = HeaderMap::new();
@@ -7018,6 +8248,7 @@ data: [DONE]\n\n";
             activity: RouteCredentialActivityRegistry::default(),
             live_log: RouteProxyLiveLog::default(),
             codex_history: CodexReasoningCache::default(),
+            upstream_timeouts: ProxyAppState::default_upstream_timeouts(),
         };
 
         let error = resolve_platform(&state, &HeaderMap::new(), None)
@@ -7044,6 +8275,7 @@ data: [DONE]\n\n";
             activity: RouteCredentialActivityRegistry::default(),
             live_log: RouteProxyLiveLog::default(),
             codex_history: CodexReasoningCache::default(),
+            upstream_timeouts: ProxyAppState::default_upstream_timeouts(),
         };
 
         let key = "sk-invalid";

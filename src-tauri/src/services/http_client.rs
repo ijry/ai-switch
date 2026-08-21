@@ -36,6 +36,33 @@ impl CookieStore for ChatGptCloudflareCookieStore {
     }
 }
 
+/// Deadlines applied to an outbound HTTP client.
+///
+/// Split into three because they answer different questions. A total deadline
+/// bounds the whole exchange, which is wrong for LLM traffic: a long answer is
+/// slow by nature, not stuck. `read` bounds the gap *between* reads and resets
+/// after each successful one, so it fires on a genuinely stalled connection
+/// without punishing a long generation.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OutboundTimeouts {
+    /// Total budget, from connect until the response body is fully read.
+    /// Leave unset for streaming or long-generation traffic.
+    pub total: Option<Duration>,
+    /// Connect phase only.
+    pub connect: Option<Duration>,
+    /// Maximum gap between reads, reset after each successful read.
+    pub read: Option<Duration>,
+}
+
+impl OutboundTimeouts {
+    fn total_only(total: Option<Duration>) -> Self {
+        Self {
+            total,
+            ..Self::default()
+        }
+    }
+}
+
 /// Build an outbound HTTP client that respects local proxy settings.
 ///
 /// On Windows, many users configure Clash/V2Ray via WinINET
@@ -46,15 +73,35 @@ pub fn build_outbound_http_client(timeout: Option<Duration>) -> Result<Client, S
     build_outbound_http_client_with_root_certificate(timeout, None)
 }
 
+/// Like [`build_outbound_http_client`], but takes the full set of deadlines.
+pub fn build_outbound_http_client_with_timeouts(
+    timeouts: OutboundTimeouts,
+) -> Result<Client, String> {
+    build_outbound_http_client_inner(timeouts, None)
+}
+
 pub fn build_outbound_http_client_with_root_certificate(
     timeout: Option<Duration>,
+    root_certificate_pem: Option<&[u8]>,
+) -> Result<Client, String> {
+    build_outbound_http_client_inner(OutboundTimeouts::total_only(timeout), root_certificate_pem)
+}
+
+fn build_outbound_http_client_inner(
+    timeouts: OutboundTimeouts,
     root_certificate_pem: Option<&[u8]>,
 ) -> Result<Client, String> {
     let mut builder = Client::builder()
         .use_rustls_tls()
         .cookie_provider(chatgpt_cloudflare_cookie_store());
-    if let Some(timeout) = timeout {
+    if let Some(timeout) = timeouts.total {
         builder = builder.timeout(timeout);
+    }
+    if let Some(connect_timeout) = timeouts.connect {
+        builder = builder.connect_timeout(connect_timeout);
+    }
+    if let Some(read_timeout) = timeouts.read {
+        builder = builder.read_timeout(read_timeout);
     }
 
     if let Some(root_certificate_pem) = root_certificate_pem {

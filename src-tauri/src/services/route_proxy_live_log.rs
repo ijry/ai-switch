@@ -20,7 +20,7 @@ pub const ROUTE_PROXY_LIVE_LOG_EVENT: &str = "route-proxy-live-log";
 /// Newest N entries kept in memory (per whole proxy, not per platform).
 const LIVE_LOG_CAPACITY: usize = 100;
 /// Max bytes retained per stage before truncation.
-const LIVE_LOG_STAGE_LIMIT: usize = 64 * 1024;
+pub(crate) const LIVE_LOG_STAGE_LIMIT: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteProxyLiveLogEntry {

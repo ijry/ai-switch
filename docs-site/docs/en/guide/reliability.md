@@ -125,6 +125,59 @@ The point of the fingerprint is to distinguish "the same illness recurring" from
 An account's failure policy has a `semantic_error_threshold` field (default 10, accepts 1–1000), and creating or updating an account validates its range and persists it. But in the current code, **neither the forwarding path nor the model-test path reads that value**: the only place using the streak mechanism is the quota-exhaustion channel, which hardcodes the threshold to 1. All other semantic failures go through the transient backoff described below and never touch the streak counter. So the field is presently only stored — it does not affect behaviour.
 :::
 
+## Outbound timeouts: turning a stalled upstream into a failure
+
+Every classification above assumes the upstream eventually **produces** something — a status code or an error. But there is a third way for it to behave: **stalling**. The TCP connection is established, and then not a single byte arrives. No error, no close.
+
+With no deadline, forwarding never receives an `Err` in that case, so same-account retry, failover and backoff all fail to happen and the client hangs indefinitely. Outbound requests therefore carry two ceilings:
+
+| Ceiling | Value | What it bounds |
+| --- | --- | --- |
+| Connect timeout | 20 seconds | The TCP/TLS handshake. If it cannot connect, there is nothing to wait for |
+| Read timeout | 180 seconds | The maximum gap between successful reads, **reset after each read** |
+
+When one fires it becomes an ordinary transport-layer transient failure: logged as `transport`, then same-account retry or failover according to `failure_policy`, then the 30/120/600-second backoff ladder. The failure message names which ceiling fired and how it was configured, so a stall is distinguishable from a refused connection.
+
+::: tip Why there is no total deadline
+A legitimately long answer can take minutes either way: buffered forwarding waits for the whole body to arrive, and streaming passthrough waits for the upstream to finish talking. A total "connect until fully read" deadline would kill valid generations.
+
+A read-gap timeout has no such problem: as long as the upstream is still emitting bytes (SSE deltas, keepalives), the clock keeps resetting. It bounds "the bytes stopped", not "how long this took".
+:::
+
+## Streaming passthrough and truncation
+
+By default the proxy **buffers the whole response body** before returning it. That is what lets the retry loop switch accounts while the client has still received nothing — including for failures that only surface once the entire body has been read.
+
+The cost is no TTFT: the client waits for the upstream to finish before seeing a first token. So when nothing downstream needs the complete body, the proxy switches to **streaming passthrough** instead. Five conditions must all hold:
+
+| Condition | Why |
+| --- | --- |
+| No protocol bridge | A bridge rewrites the body wholesale, and five of the seven do it by aggregating the entire stream before re-emitting it |
+| The client asked for a stream | A non-streaming reply is one JSON document: no frames to inspect incrementally, and nothing to gain |
+| The status is 2xx | A non-2xx body decides retry classification, which must happen before anything reaches the client |
+| No custom tools | Custom tool restoration rewrites frames on the way out |
+| Not an official account | Official accounts parse the body for subscription/quota signals |
+
+In practice that means the two most common paths — **Claude straight to an Anthropic upstream, and Codex straight to a Responses upstream** — stream, while everything else keeps the buffered path.
+
+### Failover still works before the first chunk
+
+The streaming path does not hand the response over as soon as the headers arrive. It first **waits for the first data chunk inside the retry loop**, and only then gives the response to the client. So these three cases still switch accounts, exactly as on the buffered path:
+
+- the connection dies or times out before the first chunk;
+- the upstream returns 200 and then closes without sending any body;
+- the first chunk is itself a failure envelope (gateways commonly put the error in the opening frame).
+
+### After the first chunk, truncation is recorded but not retried
+
+Once bytes are with the client they cannot be recalled, so a failure exposed after that point can no longer trigger failover. Account health is still charged, though: if the stream ends having sent data frames but never a terminal event (`response.completed` / `[DONE]` / `message_stop` / `finish_reason: stop` / `finishReason: STOP`), it is recorded as a `semantic_response_transient` failure and enters the backoff ladder.
+
+The terminal markers are byte-identical to the buffered path's `stream_disconnected_before_completion`, so the two paths never reach different verdicts. Only the disposition differs: the buffered path can retry, the streaming path can only record — and recording is what makes the next selection avoid a chronically truncating upstream.
+
+::: tip Usage is not lost to streaming
+Tokens and cost are settled when the stream ends, including when the client disconnects early — a half-delivered response still counts toward the stats rather than vanishing.
+:::
+
 ## The exact backoff and cooldown rules
 
 Handling a transient failure is a very short piece of code, worth reading as written:
@@ -182,7 +235,7 @@ The actual ranges: 24–36 seconds on the 1st failure, 96–144 seconds on the 2
 | --- | --- |
 | `refresh` | Refreshing an official credential's access token failed (and was judged transient) |
 | `request_build` | Building the upstream request failed (bridging, auth assembly, and so on) |
-| `transport` | The request could not be sent (connection, DNS, TLS, timeout) |
+| `transport` | The request could not be sent, or the upstream stalled (connection, DNS, TLS, 20s connect timeout, 180s read timeout) |
 | `response_read` | The request went out but the response body could not be read to completion |
 | `response_transform` | The upstream responded but the bridge's reverse conversion failed |
 | `upstream_status` | The upstream returned a retryable non-2xx status |
