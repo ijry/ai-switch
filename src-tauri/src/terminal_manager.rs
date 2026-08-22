@@ -324,6 +324,25 @@ impl TerminalManager {
         }
     }
 
+    /// Kills every live terminal child. Intended for app shutdown, where no
+    /// caller is left to report errors to.
+    ///
+    /// Only the direct PTY child is killed. A shell that launched an agent CLI
+    /// has grandchildren this cannot reach; ending those too would need a
+    /// Windows Job Object. They live outside the install directory, so unlike
+    /// the Tailscale sidecar they do not block the updater.
+    pub fn kill_all(&self) {
+        let mut sessions = match self.sessions.lock() {
+            Ok(guard) => guard,
+            // Shutdown cleanup must still happen if some other thread panicked
+            // while holding this lock.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        for (_, mut process) in sessions.drain() {
+            let _ = process.killer.kill();
+        }
+    }
+
     pub fn list_sessions(&self) -> Vec<TerminalSession> {
         self.sessions
             .lock()
@@ -435,6 +454,29 @@ mod tests {
     fn list_sessions_starts_empty() {
         let manager = TerminalManager::default();
         assert!(manager.list_sessions().is_empty());
+    }
+
+    #[test]
+    fn kill_all_on_an_idle_manager_is_a_no_op() {
+        let manager = TerminalManager::default();
+        manager.kill_all();
+        assert!(manager.list_sessions().is_empty());
+    }
+
+    #[test]
+    fn kill_all_still_runs_after_a_thread_poisoned_the_session_lock() {
+        let manager = TerminalManager::default();
+        let poisoner = manager.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.sessions.lock().unwrap();
+            panic!("poison the session lock");
+        })
+        .join();
+
+        // Shutdown cleanup runs after arbitrary threads may have died, so a
+        // poisoned lock must not stop it. `lock().unwrap()` here would panic and
+        // leave every terminal child alive.
+        manager.kill_all();
     }
 
     #[test]
