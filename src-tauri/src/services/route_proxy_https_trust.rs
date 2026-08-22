@@ -5,9 +5,18 @@ use async_trait::async_trait;
 use sha1::{Digest, Sha1};
 use std::env;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const ROOT_COMMON_NAME: &str = "AI Switch Route Proxy Root CA";
 const NSS_NICKNAME: &str = "AI Switch Route Proxy Root CA";
+/// Reading a trust store never waits on a person, so a command that takes this
+/// long is wedged rather than busy.
+const TRUST_INSPECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// Changing trust settings can legitimately block on an authorization prompt —
+/// macOS always prompts before touching the user trust domain — so this only has
+/// to be short enough that a genuinely stuck command eventually releases instead
+/// of hanging the enable/regenerate flow forever.
+const TRUST_MUTATE_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteProxyTrustOutcome {
@@ -276,6 +285,11 @@ fn uninstall_commands(
                 "delete-certificate".to_string(),
                 "-Z".to_string(),
                 material.root_thumbprint_sha1.clone(),
+                // `-t` also drops the user trust setting. Without it the
+                // certificate goes away but its `trustRoot` entry survives in
+                // the user trust domain, so a later reinstall stacks a second
+                // setting onto an orphaned one.
+                "-t".to_string(),
                 login_keychain_path().display().to_string(),
             ],
         }],
@@ -607,13 +621,81 @@ async fn inspect_windows(material: &RouteProxyHttpsMaterial) -> RouteProxyTrustO
 }
 
 async fn inspect_macos(material: &RouteProxyHttpsMaterial) -> RouteProxyTrustOutcome {
-    inspect_command_output(
+    // macOS stores the certificate and its trust setting in two different
+    // places, so presence in the login keychain proves nothing on its own: an
+    // `add-trusted-cert` whose authorization prompt was dismissed leaves the
+    // certificate imported and still untrusted, which is exactly what browsers
+    // surface as ERR_CERT_AUTHORITY_INVALID. Unlike the Windows adapter — where
+    // `certutil -store Root` queries the trusted store itself, so presence does
+    // imply trust — both halves have to be confirmed separately here.
+    let present = match command_output_matches_material(
         material,
-        "macos-login-keychain",
-        TrustAdapterKind::System,
-        inspect_commands(TrustPlatform::MacOsLoginKeychain, material),
+        &inspect_commands(TrustPlatform::MacOsLoginKeychain, material),
     )
     .await
+    {
+        Ok(present) => present,
+        Err(error) => {
+            return RouteProxyTrustOutcome::unknown(
+                material,
+                format!("Could not safely inspect the login keychain: {error}"),
+            )
+        }
+    };
+    if !present {
+        return RouteProxyTrustOutcome::untrusted(
+            material,
+            "Managed Root CA is not installed in the login keychain",
+        );
+    }
+
+    match run_command_output(&macos_trust_settings_command()).await {
+        Ok(output) if output.contains(ROOT_COMMON_NAME) => RouteProxyTrustOutcome {
+            status: RouteProxyTrustStatus::SystemTrusted,
+            adapter: Some("macos-login-keychain".to_string()),
+            message: Some(
+                "Managed Root CA is installed in the login keychain and trusted as a root"
+                    .to_string(),
+            ),
+            manual_instructions: Vec::new(),
+        },
+        Ok(_) => RouteProxyTrustOutcome::untrusted(
+            material,
+            "Managed Root CA is in the login keychain but carries no user trust setting",
+        ),
+        // An empty user trust domain exits non-zero instead of printing nothing,
+        // which is a definite "not trusted" rather than a failed inspection.
+        Err(error) if macos_trust_domain_is_empty(&error) => RouteProxyTrustOutcome::untrusted(
+            material,
+            "Managed Root CA is in the login keychain but the user trust domain is empty",
+        ),
+        Err(error) => RouteProxyTrustOutcome::unknown(
+            material,
+            format!("Could not safely inspect the user trust settings: {error}"),
+        ),
+    }
+}
+
+/// `dump-trust-settings` reads the *user* trust domain by default, which is the
+/// domain `add-trusted-cert` writes to when invoked without `-d`. There is no
+/// `-u` flag; `-s` and `-d` would inspect the system and admin domains we never
+/// write to.
+///
+/// Known limitation: this output identifies certificates by common name only, so
+/// it cannot bind a trust setting to one specific certificate. A stale root left
+/// over from an earlier regeneration shares our common name and would satisfy
+/// this check. The thumbprint-matched keychain lookup above is what pins
+/// identity, and removing the old trust setting on uninstall (`-t`) is what
+/// keeps the two from drifting apart.
+fn macos_trust_settings_command() -> TrustCommand {
+    TrustCommand {
+        program: "security".to_string(),
+        args: vec!["dump-trust-settings".to_string()],
+    }
+}
+
+fn macos_trust_domain_is_empty(error: &str) -> bool {
+    error.to_ascii_lowercase().contains("no trust settings")
 }
 
 async fn inspect_linux(material: &RouteProxyHttpsMaterial) -> RouteProxyTrustOutcome {
@@ -872,16 +954,36 @@ fn merge_install_outcome(
 }
 
 async fn run_command(command: &TrustCommand) -> Result<(), String> {
-    run_command_output(command).await.map(|_| ())
+    run_command_output_with_timeout(command, TRUST_MUTATE_TIMEOUT)
+        .await
+        .map(|_| ())
 }
 
 async fn run_command_output(command: &TrustCommand) -> Result<String, String> {
-    let output = tokio::process::Command::new(&command.program)
+    run_command_output_with_timeout(command, TRUST_INSPECT_TIMEOUT).await
+}
+
+async fn run_command_output_with_timeout(
+    command: &TrustCommand,
+    budget: Duration,
+) -> Result<String, String> {
+    let execution = tokio::process::Command::new(&command.program)
         .args(&command.args)
         .kill_on_drop(true)
-        .output()
-        .await
-        .map_err(|error| format!("Could not run {}: {error}", command.program))?;
+        .output();
+    let output = match tokio::time::timeout(budget, execution).await {
+        Ok(result) => {
+            result.map_err(|error| format!("Could not run {}: {error}", command.program))?
+        }
+        // `kill_on_drop` reaps the child when the timed-out future is dropped.
+        Err(_) => {
+            return Err(format!(
+                "{} did not finish within {} seconds",
+                command.program,
+                budget.as_secs()
+            ))
+        }
+    };
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if output.status.success() {
@@ -1062,21 +1164,38 @@ mod tests {
         );
     }
 
+    /// Checks a keychain argument against a literal path tail instead of against
+    /// `login_keychain_path()`. Comparing that helper with itself passes for
+    /// whatever it returns — including the meaningless
+    /// `C:\Users\...\Library\Keychains\login.keychain-db` it produces on Windows,
+    /// where `home_dir()` falls back to `USERPROFILE`.
+    fn assert_login_keychain_argument(argument: &str) {
+        let normalized = argument.replace('\\', "/");
+        assert!(
+            normalized.ends_with("/Library/Keychains/login.keychain-db"),
+            "expected a login keychain path, got {argument}"
+        );
+    }
+
     #[test]
-    fn macos_commands_target_only_the_login_keychain_and_thumbprint() {
+    fn macos_uninstall_removes_the_thumbprint_and_its_trust_setting() {
         let material = fixture_material();
         let uninstall = uninstall_commands(TrustPlatform::MacOsLoginKeychain, &material, None);
 
+        assert_eq!(uninstall.len(), 1);
         assert_eq!(uninstall[0].program, "security");
         assert_eq!(
-            uninstall[0].args,
-            vec![
+            uninstall[0].args[..4],
+            [
                 "delete-certificate".to_string(),
                 "-Z".to_string(),
-                material.root_thumbprint_sha1,
-                login_keychain_path().display().to_string(),
+                material.root_thumbprint_sha1.clone(),
+                // Without `-t` the certificate is removed but its `trustRoot`
+                // entry survives in the user trust domain.
+                "-t".to_string(),
             ]
         );
+        assert_login_keychain_argument(&uninstall[0].args[4]);
     }
 
     #[test]
@@ -1088,15 +1207,68 @@ mod tests {
         // Must not use `-d` (admin domain requires sudo and fails silently).
         assert!(!install[0].args.contains(&"-d".to_string()));
         assert_eq!(
-            install[0].args,
-            vec![
+            install[0].args[..4],
+            [
                 "add-trusted-cert".to_string(),
                 "-r".to_string(),
                 "trustRoot".to_string(),
                 "-k".to_string(),
-                login_keychain_path().display().to_string(),
-                material.root_certificate_pem.display().to_string(),
             ]
+        );
+        assert_login_keychain_argument(&install[0].args[4]);
+        assert_eq!(
+            install[0].args[5],
+            material.root_certificate_pem.display().to_string()
+        );
+    }
+
+    #[test]
+    fn macos_trust_inspection_reads_the_user_domain() {
+        let command = macos_trust_settings_command();
+
+        assert_eq!(command.program, "security");
+        // User is the default domain and there is no `-u`; `-d` and `-s` would
+        // read the admin and system domains the installer never writes to.
+        assert_eq!(command.args, vec!["dump-trust-settings".to_string()]);
+    }
+
+    #[test]
+    fn an_empty_user_trust_domain_reads_as_untrusted_not_as_a_failed_inspection() {
+        assert!(macos_trust_domain_is_empty(
+            "SecTrustSettingsCopyCertificates: No Trust Settings for specified domain."
+        ));
+        assert!(macos_trust_domain_is_empty("no trust settings found"));
+        // A denied or wedged inspection must stay "unknown" so the UI keeps
+        // offering the manual instructions instead of claiming nothing is set.
+        assert!(!macos_trust_domain_is_empty(
+            "User interaction is not allowed."
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_wedged_trust_command_fails_instead_of_hanging_forever() {
+        // macOS is the only platform where a trust command can block on a GUI
+        // authorization prompt, so the budget exists to bound that wait rather
+        // than to make slow commands fail.
+        let command = if cfg!(target_os = "windows") {
+            TrustCommand {
+                program: "ping".to_string(),
+                args: vec!["-n".to_string(), "6".to_string(), "127.0.0.1".to_string()],
+            }
+        } else {
+            TrustCommand {
+                program: "sh".to_string(),
+                args: vec!["-c".to_string(), "sleep 5".to_string()],
+            }
+        };
+
+        let error = run_command_output_with_timeout(&command, Duration::from_millis(300))
+            .await
+            .expect_err("command should have exceeded its budget");
+
+        assert!(
+            error.contains("did not finish"),
+            "unexpected error: {error}"
         );
     }
 

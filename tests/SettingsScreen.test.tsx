@@ -301,6 +301,41 @@ describe("SettingsScreen", () => {
     expect(screen.getByRole("button", { name: "重新导入根证书" })).toBeEnabled();
   });
 
+  it("still surfaces recovery commands when trust could not be verified", async () => {
+    // macOS lands here whenever the authorization prompt is dismissed: the
+    // import reports success but the trust setting was never written. Gating the
+    // panel on "untrusted" used to swallow the commands in exactly this state.
+    vi.mocked(getSettings).mockResolvedValue(settingsFixture);
+    vi.mocked(getRouteProxyHttpsStatus).mockResolvedValue({
+      ...httpsStatusFixture,
+      enabled: true,
+      certReady: true,
+      trustStatus: "unknown" as const,
+      message: "Root CA installation completed, but the local trust store could not verify it",
+      manualInstructions: [
+        "security add-trusted-cert -r trustRoot -k /Users/example/Library/Keychains/login.keychain-db /tmp/root-ca.pem",
+      ],
+    });
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <I18nProvider initialLanguage="zh-CN">
+          <SettingsScreen />
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /HTTPS/ }));
+    expect(
+      await screen.findByText(
+        "security add-trusted-cert -r trustRoot -k /Users/example/Library/Keychains/login.keychain-db /tmp/root-ca.pem",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Root CA installation completed, but the local trust store could not verify it"),
+    ).toBeInTheDocument();
+  });
+
   it("preserves advanced Web TLS fields when saving unrelated settings", async () => {
     vi.mocked(getSettings).mockResolvedValue(settingsFixture);
     vi.mocked(getWebServiceConfig).mockResolvedValue({

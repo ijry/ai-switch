@@ -103,7 +103,7 @@ Once enabled, the certificate material is generated in `~/.ai-switch/certs/route
 | `server-key.pem` | Server private key (mode 0600 on Unix) |
 | `metadata.json` | Root SHA-256 fingerprint, SHA-1 thumbprint, validity dates |
 
-Certificate parameters: the root CN is `AI Switch Route Proxy Root CA` with 3650 days of validity; the server CN is `AI Switch Route Proxy localhost` with 825 days, and its SANs are exactly `localhost` and `127.0.0.1`. Because there is no external hostname in the SAN list, this material **is only valid for local access** — it cannot be reused for another machine.
+Certificate parameters: the root CN is `AI Switch Route Proxy Root CA` with 3650 days of validity; the server CN is `AI Switch Route Proxy localhost` with 823 days, and its SANs are exactly `localhost` and `127.0.0.1`. Both certificates are backdated by one day to tolerate a lagging client clock, so the server certificate presents a 824-day validity span — deliberately under the 825-day ceiling that macOS and iOS enforce on TLS server certificates, including those signed by a custom root. Because there is no external hostname in the SAN list, this material **is only valid for local access** — it cannot be reused for another machine.
 
 ### Trusting it
 
@@ -132,6 +132,8 @@ macOS writes to the login keychain:
 security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db \
   ~/.ai-switch/certs/route-proxy/root-ca.pem
 ```
+
+Omitting `-d` targets the **user** trust domain, so this needs no administrator privileges — but macOS still asks for your password before changing trust settings. Dismissing that prompt imports the certificate without trusting it, which browsers then report as `ERR_CERT_AUTHORITY_INVALID`. AI Switch reports that state as untrusted, so if trust status stays untrusted after a successful import, re-run the command and complete the prompt. To undo it, remember `-t` — `security delete-certificate -Z <sha1> -t ~/Library/Keychains/login.keychain-db` — otherwise the trust setting outlives the certificate.
 
 Linux varies by distribution — pick the line that matches yours:
 

@@ -214,7 +214,11 @@ export function RouteProxyHttpsSettings() {
             </p>
           </div>
 
-          {https.trustStatus === "untrusted" ? (
+          {/* Gate on the instructions themselves rather than on `untrusted`: the
+              backend also supplies them for `unknown` and `partiallyTrusted`,
+              which is exactly when a macOS user needs them most, and it leaves
+              them empty for the trusted states. */}
+          {https.manualInstructions.length > 0 ? (
             <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
               <div className="flex items-center gap-1.5 font-semibold">
                 <AlertTriangle className="h-3.5 w-3.5" />

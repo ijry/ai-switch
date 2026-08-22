@@ -390,8 +390,8 @@ Use this exact platform behavior:
 ```text
 Windows install:   certutil.exe -user -addstore Root <root-ca.pem>
 Windows uninstall: certutil.exe -user -delstore Root <sha1-thumbprint>
-macOS install:     security add-trusted-cert -d -r trustRoot -k <login-keychain> <root-ca.pem>
-macOS uninstall:   security delete-certificate -Z <sha1-thumbprint> <login-keychain>
+macOS install:     security add-trusted-cert -r trustRoot -k <login-keychain> <root-ca.pem>
+macOS uninstall:   security delete-certificate -Z <sha1-thumbprint> -t <login-keychain>
 p11-kit install:   trust anchor <root-ca.pem>
 p11-kit uninstall: trust anchor --remove <root-ca.pem>
 Debian install:    [pkexec] install -Dm644 <root-ca.pem> /usr/local/share/ca-certificates/ai-switch-route-proxy-<sha256>.crt; [pkexec] update-ca-certificates
@@ -401,6 +401,8 @@ RHEL uninstall:    [pkexec] rm -f /etc/pki/ca-trust/source/anchors/ai-switch-rou
 NSS install:       certutil -A -d sql:<HOME>/.pki/nssdb -n "AI Switch Route Proxy Root CA" -t C,, -i <root-ca.pem>
 NSS uninstall:     certutil -D -d sql:<HOME>/.pki/nssdb -n "AI Switch Route Proxy Root CA"
 ```
+
+> Both macOS lines were corrected after this plan was written, and the block above reflects the corrections. The install command originally carried `-d`, which targets the admin trust domain: it needs sudo, fails non-interactively from the app, and leaves the certificate present but untrusted (`ERR_CERT_AUTHORITY_INVALID`). Dropping `-d` writes to the user domain, mirroring the per-user Windows Root store. The uninstall command originally omitted `-t`, which left the `trustRoot` setting behind in the user domain after the certificate itself was deleted.
 
 Define this executor boundary before the production adapter so lifecycle tests never touch the real user's Root store:
 

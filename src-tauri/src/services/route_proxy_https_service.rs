@@ -33,7 +33,17 @@ const METADATA_FILE: &str = "metadata.json";
 const ROOT_COMMON_NAME: &str = "AI Switch Route Proxy Root CA";
 const SERVER_COMMON_NAME: &str = "AI Switch Route Proxy localhost";
 const ROOT_VALIDITY_DAYS: i64 = 3650;
-const LEAF_VALIDITY_DAYS: i64 = 825;
+/// Certificates are backdated slightly so a client whose clock lags a little
+/// still accepts them. This counts toward the total validity span.
+const CERTIFICATE_BACKDATE_DAYS: i64 = 1;
+/// macOS and iOS reject TLS server certificates whose NotBefore..NotAfter span
+/// exceeds 825 days, and that ceiling applies to leaves signed by a custom root
+/// as well. `CERTIFICATE_BACKDATE_DAYS` is part of that span, so this stays a
+/// day under the limit instead of sitting exactly on it.
+const LEAF_VALIDITY_DAYS: i64 = 823;
+/// Leaves are re-signed a little before they lapse, so a proxy that is running
+/// when the deadline passes does not begin serving an expired certificate.
+const LEAF_RENEWAL_THRESHOLD_DAYS: i64 = 30;
 
 #[derive(Debug, Clone)]
 pub struct RouteProxyHttpsMaterial {
@@ -98,6 +108,15 @@ impl RouteProxyHttpsService {
     }
 
     pub async fn ensure_material(paths: &AppPaths) -> Result<RouteProxyHttpsMaterial, AppError> {
+        // A leaf that merely aged out does not justify a new Root CA. The root
+        // outlives it by years, and minting a fresh one here would silently
+        // invalidate the trust the user already granted while orphaning the old
+        // root in their trust store — so re-sign the leaf under the existing root
+        // first and only fall through to a full regeneration when that is not
+        // possible.
+        if let Some(renewed) = Self::renew_leaf_if_due(paths).await? {
+            return Ok(renewed);
+        }
         if let Some(material) = Self::load_material(paths).await? {
             return Ok(material);
         }
@@ -795,6 +814,76 @@ impl RouteProxyHttpsService {
         }))
     }
 
+    /// Re-signs the server certificate under the Root CA already on disk.
+    ///
+    /// Returns `Ok(None)` whenever reuse is not clearly safe — no root on disk,
+    /// unreadable metadata, a root whose fingerprint drifted from the one the
+    /// trust record refers to, or a root too close to its own expiry to issue
+    /// another leaf. Every one of those cases falls through to a full
+    /// regeneration, which is the conservative direction: worst case the user
+    /// re-trusts a new root, rather than the proxy serving a chain nobody trusts.
+    async fn renew_leaf_if_due(
+        paths: &AppPaths,
+    ) -> Result<Option<RouteProxyHttpsMaterial>, AppError> {
+        let target = paths.route_proxy_https_dir.clone();
+        let root_certificate_pem = target.join(ROOT_CERTIFICATE_FILE);
+        let root_private_key_pem = target.join(ROOT_PRIVATE_KEY_FILE);
+        if !root_certificate_pem.exists() || !root_private_key_pem.exists() {
+            return Ok(None);
+        }
+        let Some(metadata) = Self::load_metadata(paths).await? else {
+            return Ok(None);
+        };
+        if !leaf_renewal_due(&metadata.expires_at)? {
+            return Ok(None);
+        }
+
+        let root_pem = tokio::fs::read(&root_certificate_pem).await?;
+        let root_der = parse_certificate_der(&root_pem)?;
+        if hex_sha256(&root_der) != metadata.root_fingerprint_sha256
+            || !root_outlives_a_new_leaf(&root_der)?
+        {
+            return Ok(None);
+        }
+        let root_key = tokio::fs::read_to_string(&root_private_key_pem).await?;
+
+        let certificate_parent = target.parent().ok_or_else(|| AppError::Filesystem {
+            code: "filesystem.route_proxy_https_parent",
+            message: "Local certificate directory has no parent".to_string(),
+            details: None,
+            recoverable: false,
+        })?;
+        let temporary_dir = certificate_parent.join(format!(".route-proxy-{}.tmp", Uuid::new_v4()));
+        tokio::fs::create_dir(&temporary_dir).await?;
+        let generated =
+            match renew_leaf_certificate_files(&temporary_dir, &root_pem, &root_key, &metadata)
+                .await
+            {
+                Ok(generated) => generated,
+                Err(error) => {
+                    let _ = tokio::fs::remove_dir_all(&temporary_dir).await;
+                    return Err(error);
+                }
+            };
+        let backup_dir = match Self::promote_replacement_material(paths, &temporary_dir).await {
+            Ok(backup_dir) => backup_dir,
+            Err(error) => {
+                let _ = tokio::fs::remove_dir_all(&temporary_dir).await;
+                return Err(error);
+            }
+        };
+        let _ = tokio::fs::remove_dir_all(&backup_dir).await;
+
+        Ok(Some(RouteProxyHttpsMaterial {
+            root_certificate_pem: target.join(ROOT_CERTIFICATE_FILE),
+            root_fingerprint_sha256: generated.root_fingerprint_sha256,
+            root_thumbprint_sha1: generated.root_thumbprint_sha1,
+            server_certificate_pem: target.join(SERVER_CERTIFICATE_FILE),
+            server_private_key_pem: target.join(SERVER_PRIVATE_KEY_FILE),
+            expires_at: generated.expires_at,
+        }))
+    }
+
     async fn generate_material(paths: &AppPaths) -> Result<RouteProxyHttpsMaterial, AppError> {
         let certificate_parent =
             paths
@@ -868,7 +957,7 @@ struct GeneratedMaterial {
 async fn generate_certificate_files(directory: &Path) -> Result<GeneratedMaterial, AppError> {
     let now = OffsetDateTime::now_utc();
     let mut root_params = CertificateParams::default();
-    root_params.not_before = now - Duration::days(1);
+    root_params.not_before = now - Duration::days(CERTIFICATE_BACKDATE_DAYS);
     root_params.not_after = now + Duration::days(ROOT_VALIDITY_DAYS);
     root_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     root_params.key_usages = vec![
@@ -880,16 +969,7 @@ async fn generate_certificate_files(directory: &Path) -> Result<GeneratedMateria
         .distinguished_name
         .push(DnType::CommonName, ROOT_COMMON_NAME);
 
-    let mut leaf_params =
-        CertificateParams::new(vec!["localhost".to_string(), "127.0.0.1".to_string()])
-            .map_err(certificate_generation_error)?;
-    leaf_params.not_before = now - Duration::days(1);
-    leaf_params.not_after = now + Duration::days(LEAF_VALIDITY_DAYS);
-    leaf_params
-        .distinguished_name
-        .push(DnType::CommonName, SERVER_COMMON_NAME);
-    leaf_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-    leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    let leaf_params = leaf_certificate_params(now)?;
     let leaf_expires_at = leaf_params.not_after;
 
     let root_key = KeyPair::generate().map_err(certificate_generation_error)?;
@@ -901,14 +981,7 @@ async fn generate_certificate_files(directory: &Path) -> Result<GeneratedMateria
         .signed_by(&leaf_key, &root_certificate, &root_key)
         .map_err(certificate_generation_error)?;
     let root_der = root_certificate.der();
-    let expires_at = leaf_expires_at
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|error| AppError::Validation {
-            code: "validation.route_proxy_https_expiry",
-            message: "Could not format local HTTPS certificate expiry".to_string(),
-            details: Some(error.to_string()),
-            recoverable: false,
-        })?;
+    let expires_at = format_expiry(leaf_expires_at)?;
     let metadata = RouteProxyHttpsMetadata {
         root_fingerprint_sha256: hex_sha256(root_der.as_ref()),
         root_thumbprint_sha1: hex_sha1(root_der.as_ref()),
@@ -948,6 +1021,129 @@ async fn generate_certificate_files(directory: &Path) -> Result<GeneratedMateria
         root_thumbprint_sha1: metadata.root_thumbprint_sha1,
         expires_at,
     })
+}
+
+/// Writes a directory holding the *existing* Root CA and a freshly signed leaf.
+///
+/// The root certificate and key are copied byte for byte rather than rebuilt, so
+/// the fingerprint the user trusted cannot drift and the trust record carries
+/// over untouched. Only the leaf keypair and the metadata expiry move.
+async fn renew_leaf_certificate_files(
+    directory: &Path,
+    root_certificate_pem: &[u8],
+    root_private_key_pem: &str,
+    previous: &RouteProxyHttpsMetadata,
+) -> Result<GeneratedMaterial, AppError> {
+    let now = OffsetDateTime::now_utc();
+    let root_key = KeyPair::from_pem(root_private_key_pem).map_err(certificate_generation_error)?;
+    let root_certificate_pem_text =
+        std::str::from_utf8(root_certificate_pem).map_err(|error| AppError::Validation {
+            code: "validation.route_proxy_https_certificate",
+            message: "Local route proxy HTTPS Root CA is not valid UTF-8 PEM".to_string(),
+            details: Some(error.to_string()),
+            recoverable: true,
+        })?;
+    // Rebuilt only to source the issuer distinguished name and sign with; the
+    // bytes written to disk below are the original root's, not this one's.
+    let issuer = CertificateParams::from_ca_cert_pem(root_certificate_pem_text)
+        .map_err(certificate_generation_error)?
+        .self_signed(&root_key)
+        .map_err(certificate_generation_error)?;
+
+    let leaf_params = leaf_certificate_params(now)?;
+    let leaf_expires_at = leaf_params.not_after;
+    let leaf_key = KeyPair::generate().map_err(certificate_generation_error)?;
+    let leaf_certificate = leaf_params
+        .signed_by(&leaf_key, &issuer, &root_key)
+        .map_err(certificate_generation_error)?;
+
+    let expires_at = format_expiry(leaf_expires_at)?;
+    let metadata = RouteProxyHttpsMetadata {
+        root_fingerprint_sha256: previous.root_fingerprint_sha256.clone(),
+        root_thumbprint_sha1: previous.root_thumbprint_sha1.clone(),
+        expires_at: expires_at.clone(),
+        // The root the user trusted is unchanged, so its trust record still
+        // describes reality and must survive the swap.
+        trust: previous.trust.clone(),
+    };
+
+    write_file(
+        directory.join(ROOT_CERTIFICATE_FILE),
+        root_certificate_pem,
+        false,
+    )
+    .await?;
+    write_file(
+        directory.join(ROOT_PRIVATE_KEY_FILE),
+        root_private_key_pem.as_bytes(),
+        true,
+    )
+    .await?;
+    write_file(
+        directory.join(SERVER_CERTIFICATE_FILE),
+        leaf_certificate.pem().as_bytes(),
+        false,
+    )
+    .await?;
+    write_file(
+        directory.join(SERVER_PRIVATE_KEY_FILE),
+        leaf_key.serialize_pem().as_bytes(),
+        true,
+    )
+    .await?;
+    let metadata_json = serde_json::to_vec_pretty(&metadata)?;
+    write_file(directory.join(METADATA_FILE), &metadata_json, false).await?;
+
+    Ok(GeneratedMaterial {
+        root_fingerprint_sha256: metadata.root_fingerprint_sha256,
+        root_thumbprint_sha1: metadata.root_thumbprint_sha1,
+        expires_at,
+    })
+}
+
+fn leaf_certificate_params(now: OffsetDateTime) -> Result<CertificateParams, AppError> {
+    let mut leaf_params =
+        CertificateParams::new(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+            .map_err(certificate_generation_error)?;
+    leaf_params.not_before = now - Duration::days(CERTIFICATE_BACKDATE_DAYS);
+    leaf_params.not_after = now + Duration::days(LEAF_VALIDITY_DAYS);
+    leaf_params
+        .distinguished_name
+        .push(DnType::CommonName, SERVER_COMMON_NAME);
+    leaf_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    Ok(leaf_params)
+}
+
+fn format_expiry(expires_at: OffsetDateTime) -> Result<String, AppError> {
+    expires_at
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| AppError::Validation {
+            code: "validation.route_proxy_https_expiry",
+            message: "Could not format local HTTPS certificate expiry".to_string(),
+            details: Some(error.to_string()),
+            recoverable: false,
+        })
+}
+
+fn leaf_renewal_due(expires_at: &str) -> Result<bool, AppError> {
+    let expires_at = parse_expiry(expires_at)?;
+    Ok(expires_at - OffsetDateTime::now_utc() <= Duration::days(LEAF_RENEWAL_THRESHOLD_DAYS))
+}
+
+/// A leaf must never outlive the root that signed it, so a root inside its own
+/// final `LEAF_VALIDITY_DAYS` cannot be reused for renewal.
+fn root_outlives_a_new_leaf(root_der: &[u8]) -> Result<bool, AppError> {
+    let (_, certificate) =
+        x509_parser::parse_x509_certificate(root_der).map_err(|error| AppError::Validation {
+            code: "validation.route_proxy_https_certificate",
+            message: "Local route proxy HTTPS Root CA is invalid".to_string(),
+            details: Some(error.to_string()),
+            recoverable: true,
+        })?;
+    let new_leaf_expiry =
+        (OffsetDateTime::now_utc() + Duration::days(LEAF_VALIDITY_DAYS)).unix_timestamp();
+    Ok(certificate.validity().not_after.timestamp() >= new_leaf_expiry)
 }
 
 async fn write_file(path: PathBuf, contents: &[u8], private: bool) -> Result<(), AppError> {
@@ -1013,16 +1209,18 @@ fn leaf_pem_contains_required_sans(pem: &[u8]) -> Result<bool, AppError> {
 }
 
 fn is_expired(expires_at: &str) -> Result<bool, AppError> {
-    let expires_at =
-        OffsetDateTime::parse(expires_at, &time::format_description::well_known::Rfc3339).map_err(
-            |error| AppError::Validation {
-                code: "validation.route_proxy_https_metadata",
-                message: "Local route proxy HTTPS certificate expiry is invalid".to_string(),
-                details: Some(error.to_string()),
-                recoverable: true,
-            },
-        )?;
-    Ok(expires_at <= OffsetDateTime::now_utc())
+    Ok(parse_expiry(expires_at)? <= OffsetDateTime::now_utc())
+}
+
+fn parse_expiry(expires_at: &str) -> Result<OffsetDateTime, AppError> {
+    OffsetDateTime::parse(expires_at, &time::format_description::well_known::Rfc3339).map_err(
+        |error| AppError::Validation {
+            code: "validation.route_proxy_https_metadata",
+            message: "Local route proxy HTTPS certificate expiry is invalid".to_string(),
+            details: Some(error.to_string()),
+            recoverable: true,
+        },
+    )
 }
 
 fn status_uses_https(status: &RouteProxyStatus) -> bool {
@@ -1298,6 +1496,152 @@ mod tests {
         assert!(status.root_fingerprint.is_some());
         assert!(status_json.contains("rootFingerprint"));
         assert!(!status_json.contains("PRIVATE KEY"));
+    }
+
+    #[tokio::test]
+    async fn a_lapsing_leaf_is_re_signed_under_the_same_root_so_trust_survives() {
+        let temp = tempdir().expect("temp dir");
+        let paths = AppPaths::from_data_dir(temp.path().to_path_buf());
+
+        let original = RouteProxyHttpsService::ensure_material(&paths)
+            .await
+            .expect("certificate material");
+        let original_root = tokio::fs::read(&original.root_certificate_pem)
+            .await
+            .expect("root pem");
+        let original_leaf = tokio::fs::read(&original.server_certificate_pem)
+            .await
+            .expect("leaf pem");
+
+        // Bring the leaf inside the renewal window and record that the user has
+        // already trusted this root, which is the state renewal has to protect.
+        let mut metadata = RouteProxyHttpsService::load_metadata(&paths)
+            .await
+            .expect("metadata read")
+            .expect("metadata");
+        metadata.expires_at =
+            format_expiry(OffsetDateTime::now_utc() + Duration::days(5)).expect("formatted expiry");
+        metadata.trust = trusted_outcome().into_record();
+        tokio::fs::write(
+            paths.route_proxy_https_dir.join(METADATA_FILE),
+            serde_json::to_vec_pretty(&metadata).expect("metadata json"),
+        )
+        .await
+        .expect("metadata write");
+
+        let renewed = RouteProxyHttpsService::ensure_material(&paths)
+            .await
+            .expect("renewed material");
+        let renewed_root = tokio::fs::read(&renewed.root_certificate_pem)
+            .await
+            .expect("root pem");
+        let renewed_leaf = tokio::fs::read(&renewed.server_certificate_pem)
+            .await
+            .expect("leaf pem");
+        let renewed_metadata = RouteProxyHttpsService::load_metadata(&paths)
+            .await
+            .expect("metadata read")
+            .expect("metadata");
+
+        // The root the user trusted must come through byte for byte, otherwise
+        // the trust they granted silently stops applying.
+        assert_eq!(renewed_root, original_root);
+        assert_eq!(
+            renewed.root_fingerprint_sha256,
+            original.root_fingerprint_sha256
+        );
+        assert_eq!(
+            renewed_metadata.trust.status,
+            RouteProxyTrustStatus::SystemTrusted
+        );
+        // ...while the leaf itself is genuinely new and pushed back out.
+        assert_ne!(renewed_leaf, original_leaf);
+        assert!(!leaf_renewal_due(&renewed.expires_at).expect("renewal check"));
+
+        // The replacement leaf still chains to that same root.
+        let (_, root_pem) = x509_parser::pem::parse_x509_pem(&renewed_root).expect("root pem");
+        let (_, root) =
+            x509_parser::parse_x509_certificate(&root_pem.contents).expect("root certificate");
+        let (_, leaf_pem) = x509_parser::pem::parse_x509_pem(&renewed_leaf).expect("leaf pem");
+        let (_, leaf) =
+            x509_parser::parse_x509_certificate(&leaf_pem.contents).expect("leaf certificate");
+        assert_eq!(leaf.issuer().as_raw(), root.subject().as_raw());
+        assert!(leaf_pem_contains_required_sans(&renewed_leaf).expect("san check"));
+    }
+
+    #[tokio::test]
+    async fn a_root_too_close_to_its_own_expiry_is_not_reused_for_renewal() {
+        let temp = tempdir().expect("temp dir");
+        let paths = AppPaths::from_data_dir(temp.path().to_path_buf());
+
+        let original = RouteProxyHttpsService::ensure_material(&paths)
+            .await
+            .expect("certificate material");
+        let root_der = parse_certificate_der(
+            &tokio::fs::read(&original.root_certificate_pem)
+                .await
+                .expect("root pem"),
+        )
+        .expect("root der");
+
+        // A fresh 10-year root can outlive another leaf; a root with less
+        // remaining life than a new leaf would have must not be reused, or the
+        // leaf would outlive its own issuer.
+        assert!(root_outlives_a_new_leaf(&root_der).expect("root validity check"));
+
+        let short_lived = {
+            let mut params = CertificateParams::default();
+            let now = OffsetDateTime::now_utc();
+            params.not_before = now - Duration::days(CERTIFICATE_BACKDATE_DAYS);
+            params.not_after = now + Duration::days(LEAF_VALIDITY_DAYS - 1);
+            params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+            params
+                .distinguished_name
+                .push(DnType::CommonName, ROOT_COMMON_NAME);
+            let key = KeyPair::generate().expect("key");
+            params.self_signed(&key).expect("short lived root")
+        };
+
+        assert!(!root_outlives_a_new_leaf(short_lived.der()).expect("root validity check"));
+    }
+
+    #[test]
+    fn renewal_is_due_only_inside_the_threshold() {
+        let now = OffsetDateTime::now_utc();
+        let at = |days: i64| format_expiry(now + Duration::days(days)).expect("expiry");
+
+        assert!(leaf_renewal_due(&at(-1)).expect("expired leaf is due"));
+        assert!(leaf_renewal_due(&at(LEAF_RENEWAL_THRESHOLD_DAYS - 1)).expect("lapsing leaf"));
+        assert!(!leaf_renewal_due(&at(LEAF_RENEWAL_THRESHOLD_DAYS + 1)).expect("healthy leaf"));
+        assert!(!leaf_renewal_due(&at(LEAF_VALIDITY_DAYS)).expect("fresh leaf"));
+    }
+
+    #[tokio::test]
+    async fn generated_leaf_stays_within_the_macos_validity_ceiling() {
+        let temp = tempdir().expect("temp dir");
+        let paths = AppPaths::from_data_dir(temp.path().to_path_buf());
+
+        let material = RouteProxyHttpsService::ensure_material(&paths)
+            .await
+            .expect("certificate material");
+        let leaf = tokio::fs::read(&material.server_certificate_pem)
+            .await
+            .expect("leaf pem");
+        let (_, pem) = x509_parser::pem::parse_x509_pem(&leaf).expect("pem");
+        let (_, certificate) =
+            x509_parser::parse_x509_certificate(&pem.contents).expect("x509 certificate");
+
+        let validity = certificate.validity();
+        let span_days = (validity.not_after.timestamp() - validity.not_before.timestamp()) / 86_400;
+
+        // The backdated NotBefore is part of the span macOS measures, so a leaf
+        // configured for exactly 825 days would actually present 826 and be
+        // rejected even when the managed root is trusted.
+        assert_eq!(span_days, LEAF_VALIDITY_DAYS + CERTIFICATE_BACKDATE_DAYS);
+        assert!(
+            span_days <= 825,
+            "leaf validity span is {span_days} days, which exceeds the 825-day ceiling macOS applies to custom-root leaves"
+        );
     }
 
     #[tokio::test]

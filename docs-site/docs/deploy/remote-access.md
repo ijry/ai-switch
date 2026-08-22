@@ -103,7 +103,7 @@ Funnel 模式默认走 443 端口（443 / 8443 / 10000 这几个 Funnel 支持�
 | `server-key.pem` | 服务器私钥（Unix 下权限 0600） |
 | `metadata.json` | 根证书 SHA-256 指纹、SHA-1 指纹、有效期等元信息 |
 
-证书参数：根证书 CN 为 `AI Switch Route Proxy Root CA`，有效期 3650 天；服务器证书 CN 为 `AI Switch Route Proxy localhost`，有效期 825 天，SAN 只包含 `localhost` 和 `127.0.0.1`。因为 SAN 里没有任何外部主机名，这套证书**只对本机访问有效**，拿去给别的机器用是不成立的。
+证书参数：根证书 CN 为 `AI Switch Route Proxy Root CA`，有效期 3650 天；服务器证书 CN 为 `AI Switch Route Proxy localhost`，有效期 823 天，SAN 只包含 `localhost` 和 `127.0.0.1`。两张证书都倒签 1 天以容忍客户端时钟偏慢，所以服务器证书实际跨度为 824 天 —— 刻意留在 825 天以下，因为 macOS 和 iOS 对 TLS 服务器证书强制这一上限，自建根签发的证书同样受限。因为 SAN 里没有任何外部主机名，这套证书**只对本机访问有效**，拿去给别的机器用是不成立的。
 
 ### 怎么信任
 
@@ -132,6 +132,8 @@ macOS 写入登录钥匙串：
 security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db \
   ~/.ai-switch/certs/route-proxy/root-ca.pem
 ```
+
+不带 `-d` 写入的是**用户**信任域，因此不需要管理员权限 —— 但 macOS 修改信任设置前仍会要求输入密码。取消那个弹窗会导致证书被导入却未被信任，浏览器随后报 `ERR_CERT_AUTHORITY_INVALID`。AI Switch 会把这种状态判为未信任，所以如果导入成功后信任状态仍显示未信任，请重新执行并完成弹窗验证。撤销时记得加 `-t` —— `security delete-certificate -Z <sha1> -t ~/Library/Keychains/login.keychain-db` —— 否则信任设置会比证书活得更久。
 
 Linux 因发行版而异，按你的系统选一条：
 
