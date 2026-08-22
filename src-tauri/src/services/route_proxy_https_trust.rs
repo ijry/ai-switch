@@ -650,6 +650,17 @@ async fn inspect_macos(material: &RouteProxyHttpsMaterial) -> RouteProxyTrustOut
     }
 
     match run_command_output(&macos_trust_settings_command()).await {
+        // Being listed at all is the signal, and the count that follows is not.
+        // `security add-trusted-cert -r trustRoot` records blanket trust as an
+        // *empty* settings array, which prints as "Number of trust settings : 0"
+        // — counterintuitive, but per Apple's SecTrustSettings.h an empty array
+        // means "always trust this cert, with a resulting
+        // kSecTrustSettingsResult of kSecTrustSettingsResultTrustRoot", and is
+        // "definitely not the same as *no* Trust Settings, which means this cert
+        // must be verified to a known trusted cert". A certificate with no
+        // settings at all is absent from this output entirely, which is the
+        // untrusted case handled below. Do not "fix" this by requiring a
+        // non-zero count: that reports a correctly trusted root as untrusted.
         Ok(output) if output.contains(ROOT_COMMON_NAME) => RouteProxyTrustOutcome {
             status: RouteProxyTrustStatus::SystemTrusted,
             adapter: Some("macos-login-keychain".to_string()),
@@ -687,6 +698,11 @@ async fn inspect_macos(material: &RouteProxyHttpsMaterial) -> RouteProxyTrustOut
 /// this check. The thumbprint-matched keychain lookup above is what pins
 /// identity, and removing the old trust setting on uninstall (`-t`) is what
 /// keeps the two from drifting apart.
+///
+/// Second limitation: a certificate the user explicitly *distrusted* also appears
+/// here, so it would read as trusted. Distinguishing that needs the per-setting
+/// `Result` lines parsed, which we have no real sample of; the failure is rare and
+/// the user can only reach it by deliberately denying our root.
 fn macos_trust_settings_command() -> TrustCommand {
     TrustCommand {
         program: "security".to_string(),
@@ -1230,6 +1246,23 @@ mod tests {
         // User is the default domain and there is no `-u`; `-d` and `-s` would
         // read the admin and system domains the installer never writes to.
         assert_eq!(command.args, vec!["dump-trust-settings".to_string()]);
+    }
+
+    #[test]
+    fn a_zero_count_trust_setting_still_reads_as_trusted() {
+        // Real `security dump-trust-settings` output from a macOS machine where
+        // the root was installed successfully. Apple records blanket root trust
+        // as an empty settings array, so the count is 0 even though the
+        // certificate IS trusted (SecTrustSettings.h: an empty array means
+        // "always trust this cert", and is "definitely not the same as *no*
+        // Trust Settings"). Requiring a non-zero count here would report a
+        // working install as untrusted.
+        let output = "Number of trusted certs = 1\n\
+                      Cert 0: AI Switch Route Proxy Root CA\n   \
+                      Number of trust settings : 0\n";
+
+        assert!(output.contains(ROOT_COMMON_NAME));
+        assert!(!macos_trust_domain_is_empty(output));
     }
 
     #[test]
