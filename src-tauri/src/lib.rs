@@ -86,7 +86,7 @@ use services::deeplink_service::{parse_deeplink_url, DeepLinkErrorPayload};
 use services::route_proxy_https_service::RouteProxyHttpsService;
 use services::route_proxy_service::RouteProxyRuntimeState;
 use services::route_recovery_service::RouteRecoveryService;
-use services::tailscale_service::TailscaleRuntimeState;
+use services::tailscale_service::{TailscaleRuntimeState, TailscaleService};
 use services::web_service::{WebService, WebServiceRuntimeState};
 use skills::command::{
     skills_delete, skills_install_package, skills_list, skills_list_agents, skills_list_packages,
@@ -96,7 +96,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_deep_link::DeepLinkExt;
 use terminal_manager::TerminalManager;
 use web::event_bridge::{EventEmitter, WebEventBroadcaster};
@@ -492,6 +492,22 @@ pub fn run() {
             skills_read_package,
             skills_install_package
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run AI Switch");
+        .build(tauri::generate_context!())
+        .expect("failed to build AI Switch")
+        .run(|app_handle, event| {
+            // The tray-quit path calls `app.exit(0)`, which terminates without
+            // dropping Tauri-managed state — so neither `kill_on_drop` nor any
+            // `Drop` impl runs and child processes are left behind. This is the
+            // only hook where we still get to end them.
+            //
+            // Note this is a backstop, not the whole fix: the updater's
+            // `relaunch()` goes through `AppHandle::restart`, which documents
+            // that it may skip these events entirely. The sidecar's stdin
+            // watchdog is what covers that path.
+            if let RunEvent::Exit = event {
+                let state = app_handle.state::<AppState>();
+                tauri::async_runtime::block_on(TailscaleService::shutdown(&state.tailscale));
+                state.terminals.kill_all();
+            }
+        });
 }

@@ -11,6 +11,14 @@ pub trait SidecarControlClient: Send + Sync {
     async fn stop(&self) -> Result<TailscaleStatus, String>;
     async fn logout(&self) -> Result<TailscaleStatus, String>;
     async fn status(&self) -> Result<TailscaleStatus, String>;
+
+    /// Terminates the sidecar process and waits for the OS to release its file
+    /// handle, so an installer may overwrite the executable straight after.
+    ///
+    /// Unlike [`SidecarControlClient::stop`], this does not ask the sidecar to
+    /// leave the network — it ends the process outright. Defaults to a no-op
+    /// because only the real client owns a process.
+    async fn shutdown_process(&self) {}
 }
 
 #[derive(Debug)]
@@ -240,6 +248,14 @@ impl HttpSidecarControlClient {
         command
             .arg("--control-addr")
             .arg("127.0.0.1:0")
+            // The sidecar watches stdin for EOF and exits when it arrives. We
+            // keep the write end open for as long as this process lives — see
+            // the note below about never taking it out of the `Child` — so the
+            // OS closes it on *any* death of ours, including a crash or a kill
+            // that gives us no chance to run cleanup. Without this the sidecar
+            // outlives us and keeps its own executable locked, which is what
+            // makes the Windows updater fail to overwrite it.
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
@@ -281,6 +297,9 @@ impl HttpSidecarControlClient {
                 .child
                 .lock()
                 .map_err(|_| "secure network process lock poisoned".to_string())?;
+            // Storing the whole `Child` is what keeps the stdin pipe alive: its
+            // write end lives inside here. Never `child.stdin.take()` — doing so
+            // hands the sidecar an immediate EOF and it exits on us.
             *child_slot = Some(child);
         }
         let base = format!("http://{control_addr}");
@@ -417,6 +436,13 @@ impl SidecarControlClient for HttpSidecarControlClient {
 
     async fn status(&self) -> Result<TailscaleStatus, String> {
         self.get_json("/control/status").await
+    }
+
+    async fn shutdown_process(&self) {
+        // No `/control/stop` first: this runs on app exit, where the only thing
+        // that matters is that the process is gone and its handle released.
+        // `kill_process` already awaits `wait()`, which is what gives us that.
+        self.kill_process().await;
     }
 }
 

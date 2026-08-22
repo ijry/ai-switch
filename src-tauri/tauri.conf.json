@@ -48,7 +48,12 @@
     },
     "externalBin": [
       "binaries/ai-switch-tsnet"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "nsis-hooks.nsh"
+      }
+    }
   },
   "plugins": {
     "updater": {

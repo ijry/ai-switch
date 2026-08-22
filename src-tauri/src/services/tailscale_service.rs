@@ -257,6 +257,23 @@ impl TailscaleService {
         }
     }
 
+    /// Ends the sidecar process on app shutdown.
+    ///
+    /// Deliberately narrower than [`Self::disconnect`]: it never spawns a client
+    /// just to tear one down, and it does not ask the sidecar to leave the
+    /// network — leaving the node registered is fine, and on exit the only thing
+    /// that matters is that the executable stops being locked. If no client was
+    /// ever created there is no process to end and this is a no-op.
+    pub async fn shutdown(runtime: &TailscaleRuntimeState) {
+        let client = {
+            let mut inner = runtime.inner.lock().await;
+            inner.client.take()
+        };
+        if let Some(client) = client {
+            client.shutdown_process().await;
+        }
+    }
+
     pub async fn disconnect_with_client<F>(
         runtime: &TailscaleRuntimeState,
         _paths: &AppPaths,
