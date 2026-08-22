@@ -28,25 +28,28 @@ use crate::services::route_model_capability::{
     supports_requested_model,
 };
 use crate::services::route_protocol_bridge::{
-    prepare_request as prepare_protocol_bridge_request,
+    is_anthropic_count_tokens_path, prepare_request as prepare_protocol_bridge_request,
     transform_response_with_tool_namespaces as transform_protocol_bridge_response,
     PreparedBridgeRequest, ProtocolBridgeKind,
 };
 use crate::services::route_proxy_live_log::{
     stage_preview, RouteProxyLiveLog, RouteProxyLiveLogEntry,
 };
+use crate::services::route_proxy_stream::{prime_upstream_stream, PrimedUpstream, MAX_PRIME_BYTES};
 use axum::body::Body;
 use axum::extract::State as AxumState;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
@@ -79,6 +82,12 @@ const ROUTE_PROXY_RESPONSE_BODY_LIMIT: usize = 16 * 1024;
 /// `usage_events`, which is never pruned.
 const ROUTE_PROXY_SUCCESS_BODY_LIMIT: usize = 2 * 1024;
 
+/// How long the incremental path waits for the upstream's first byte. The
+/// outbound client is built with no request timeout, so without this an upstream
+/// that accepts the request and then goes silent would hang the client forever.
+/// Only bounds the wait for the *first* chunk; a live stream is never cut off.
+const INCREMENTAL_FIRST_CHUNK_TIMEOUT: Duration = Duration::from_secs(120);
+
 async fn wait_for_credential_retry(policy: RouteCredentialFailurePolicy) {
     if policy.retry_interval_ms > 0 {
         tokio::time::sleep(Duration::from_millis(policy.retry_interval_ms.into())).await;
@@ -107,6 +116,10 @@ pub struct RouteProxyRuntimeState {
     inner: Arc<Mutex<RouteProxyInner>>,
     activity: RouteCredentialActivityRegistry,
     live_log: RouteProxyLiveLog,
+    /// Mirrors `AppSettings::incremental_streaming_enabled`. Held as an atomic so
+    /// the proxy can read it per request without touching disk, and so toggling
+    /// the setting takes effect without restarting the proxy.
+    incremental_streaming: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -125,6 +138,7 @@ struct ProxyAppState {
     activity: RouteCredentialActivityRegistry,
     live_log: RouteProxyLiveLog,
     codex_history: CodexReasoningCache,
+    incremental_streaming: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -141,6 +155,11 @@ impl RouteProxyRuntimeState {
 
     pub fn live_log(&self) -> RouteProxyLiveLog {
         self.live_log.clone()
+    }
+
+    /// Applied on the next request; no proxy restart needed.
+    pub fn set_incremental_streaming(&self, enabled: bool) {
+        self.incremental_streaming.store(enabled, Ordering::Relaxed);
     }
 }
 
@@ -258,6 +277,7 @@ impl RouteProxyService {
             activity: state.activity.clone(),
             live_log: state.live_log.clone(),
             codex_history: CodexReasoningCache::default(),
+            incremental_streaming: state.incremental_streaming.clone(),
         };
         let app = Router::new()
             .fallback(any(proxy_handler))
@@ -496,6 +516,30 @@ async fn forward_request(
     let body_bytes = axum::body::to_bytes(body, 32 * 1024 * 1024)
         .await
         .map_err(|err| format!("Could not read proxy request body: {err}"))?;
+
+    // Anthropic's token-counting endpoint, answered locally. No bridge can
+    // convert it, and most third-party relays do not implement it — forwarding
+    // it earns a 404 that the retry loop would charge against every credential
+    // in the pool, cooling down accounts that are perfectly healthy.
+    if is_anthropic_count_tokens_path(&path) {
+        if method != Method::POST {
+            return Ok((
+                StatusCode::METHOD_NOT_ALLOWED,
+                [("content-type", "application/json"), ("allow", "POST")],
+                json!({
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": "Method not allowed for count_tokens",
+                    }
+                })
+                .to_string(),
+            )
+                .into_response());
+        }
+        return Ok(json_count_tokens_response(&body_bytes));
+    }
+
     let requested_model = requested_model_from_body(&body_bytes);
     let credentials = select_pool_credentials(pool, &platform)
         .await
@@ -787,13 +831,46 @@ async fn forward_request(
         let status =
             StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
         let mut upstream_headers = upstream.headers().clone();
-        let mut response_bytes = match upstream.bytes().await {
-            Ok(bytes) => bytes,
+        // Incremental relay is opt-in and only for same-protocol routing: a
+        // bridged request needs its converter to run over the whole body, which
+        // is still a buffered operation.
+        let use_incremental = should_relay_incrementally(
+            state.incremental_streaming.load(Ordering::Relaxed),
+            streaming_request,
+            bridge_kind,
+        );
+        // When incremental, keep the live remainder aside so it can be handed to
+        // the client after the primed prefix passes inspection below.
+        let mut primed_rest: Option<PrimedUpstream> = None;
+        let mut response_bytes = if use_incremental {
+            match prime_upstream_stream(
+                upstream.bytes_stream(),
+                MAX_PRIME_BYTES,
+                Some(INCREMENTAL_FIRST_CHUNK_TIMEOUT),
+            )
+            .await
+            {
+                // The body ended while priming, so there is nothing to stream:
+                // fall through to the buffered path, failover included.
+                Ok(PrimedUpstream::Complete(body)) => Ok(Bytes::from(body)),
+                Ok(primed) => {
+                    let prefix = Bytes::from(primed.prefix().to_vec());
+                    primed_rest = Some(primed);
+                    Ok(prefix)
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            upstream
+                .bytes()
+                .await
+                .map_err(|error| format!("could not read upstream response: {error}"))
+        };
+        // Normalize back to the shape the rest of this function expects.
+        let mut response_bytes = match response_bytes.as_mut() {
+            Ok(bytes) => std::mem::take(bytes),
             Err(error) => {
-                let error_message = format!(
-                    "{}: could not read upstream response: {error}",
-                    credential.display_name
-                );
+                let error_message = format!("{}: {error}", credential.display_name);
                 let should_retry_same_credential =
                     credential_retry_count < failure_policy.retry_count as usize;
                 let metadata = route_proxy_request_metadata(
@@ -1119,6 +1196,12 @@ async fn forward_request(
             continue;
         }
         if should_retry {
+            // A request- or endpoint-level rejection is not this credential's
+            // fault; return it to the client instead of walking the pool and
+            // marking every account as failing.
+            if is_credential_neutral_status(status) && semantic_failure.is_none() {
+                return proxy_upstream_response(status, upstream_headers, response_bytes.to_vec());
+            }
             let error_message = format!("upstream returned {}", status.as_u16());
             record_route_credential_failure(
                 &state.activity,
@@ -1145,6 +1228,13 @@ async fn forward_request(
             state
                 .activity
                 .notify_status_change(&platform, &credential.id);
+        }
+        // The primed prefix passed every check above, so commit: replay it and
+        // chain the live remainder. Past this point the client holds bytes, so
+        // this request can no longer be moved to another credential — the
+        // trade-off the setting buys.
+        if let Some(primed) = primed_rest {
+            return proxy_streamed_response(status, upstream_headers, primed);
         }
         return proxy_upstream_response(status, upstream_headers, response_bytes.to_vec());
     }
@@ -1479,6 +1569,45 @@ fn proxy_upstream_response(
         .map_err(|error| format!("Could not build proxy response: {error}"))
 }
 
+/// Whether to relay this response incrementally instead of buffering it.
+///
+/// All three conditions are required:
+/// - the user opted in — buffering is the safe default because it is what allows
+///   a failed stream to be retried on another credential;
+/// - the client asked for a stream — a non-streaming client gains nothing and
+///   the buffered path keeps every inspection intact;
+/// - no protocol bridge is involved — a converter has to see the whole body, so
+///   bridged requests stay buffered until the converters are incremental.
+pub(crate) fn should_relay_incrementally(
+    setting_enabled: bool,
+    streaming_request: bool,
+    bridge_kind: Option<ProtocolBridgeKind>,
+) -> bool {
+    setting_enabled && streaming_request && bridge_kind.is_none()
+}
+
+/// Same header handling as [`proxy_upstream_response`], but the body is the
+/// primed prefix followed by the live remainder, so the client receives bytes as
+/// they arrive instead of after the generation completes.
+fn proxy_streamed_response(
+    status: StatusCode,
+    upstream_headers: HeaderMap,
+    primed: PrimedUpstream,
+) -> Result<Response, String> {
+    let mut response = Response::builder().status(status);
+    if let Some(header_map) = response.headers_mut() {
+        for (name, value) in upstream_headers.iter() {
+            if is_hop_by_hop_header(name) {
+                continue;
+            }
+            header_map.append(name.clone(), value.clone());
+        }
+    }
+    response
+        .body(Body::from_stream(primed.into_stream()))
+        .map_err(|error| format!("Could not build streamed proxy response: {error}"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProxyFailureKind {
     Transient,
@@ -1515,7 +1644,30 @@ fn should_retry_proxy_failure(status: StatusCode) -> bool {
 }
 
 pub(crate) fn should_retry_same_credential_status(status: StatusCode) -> bool {
-    !status.is_success() && !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+    !status.is_success() && !is_credential_neutral_status(status)
+}
+
+/// Statuses that describe the request or the endpoint rather than the health of
+/// the credential that served it. Retrying these on another account repeats the
+/// same failure while marking healthy credentials as failing, so they are
+/// returned to the client as-is.
+///
+/// 401/403 are excluded from *retry* for the opposite reason — they are
+/// credential-specific and handled by the revoke/permanent-failure path.
+pub(crate) fn is_credential_neutral_status(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::UNAUTHORIZED
+            | StatusCode::FORBIDDEN
+            // Endpoint not implemented by this upstream (e.g. a relay without
+            // count_tokens): forwarding it to the next account 404s identically.
+            | StatusCode::NOT_FOUND
+            | StatusCode::METHOD_NOT_ALLOWED
+            // The client sent something the upstream rejected; another
+            // credential will reject it the same way.
+            | StatusCode::BAD_REQUEST
+            | StatusCode::UNPROCESSABLE_ENTITY
+    )
 }
 
 pub fn credential_is_retryable_now(
@@ -2316,7 +2468,12 @@ fn build_api_upstream_request(
         upstream_query,
         body: rewritten_body,
         tool_namespaces,
-        ..
+        // Keep the bridge's own answer. It reads `stream` from the *original*
+        // client body; recomputing it from `rewritten_body` is wrong for
+        // Gemini, whose converted body carries no `stream` key at all (the flag
+        // moves into the `?alt=sse` query), so the recomputed value was always
+        // false and truncated streams were reported as complete.
+        streaming: streaming_request,
     } = prepare_protocol_bridge_request(platform, dialect, &upstream_path, &rewritten_body)?;
     let merged_query = merge_query_parts(query, upstream_query.as_deref());
     let mut target_url = build_target_url(base_url, &upstream_path, merged_query.as_deref());
@@ -2357,7 +2514,6 @@ fn build_api_upstream_request(
     }
 
     apply_credential_user_agent(headers, config)?;
-    let streaming_request = request_body_requests_stream(&rewritten_body);
     Ok(BuiltUpstreamRequest {
         target_url,
         headers: headers.clone(),
@@ -3549,6 +3705,54 @@ fn json_models_list_response(
         .into_response()
 }
 
+/// Answers `POST /v1/messages/count_tokens` locally in Anthropic's response
+/// shape. The count is an estimate: the upstream tokenizer is not available
+/// here, and Claude Code uses this only to size its context meter, so an
+/// approximation keeps the meter working without risking the credential pool.
+fn json_count_tokens_response(body: &[u8]) -> Response {
+    (
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        json!({ "input_tokens": estimate_anthropic_input_tokens(body) }).to_string(),
+    )
+        .into_response()
+}
+
+/// Rough token estimate over the text content of an Anthropic request: counts
+/// `system`, every message's text, and tool schemas at ~4 characters per token.
+fn estimate_anthropic_input_tokens(body: &[u8]) -> i64 {
+    const CHARS_PER_TOKEN: i64 = 4;
+
+    fn text_len(value: &Value) -> i64 {
+        match value {
+            Value::String(text) => text.chars().count() as i64,
+            Value::Array(items) => items.iter().map(text_len).sum(),
+            Value::Object(fields) => fields
+                .iter()
+                .map(|(key, nested)| match key.as_str() {
+                    // Base64 payloads are not text; skip them rather than
+                    // inflating the estimate by megabytes of encoded bytes.
+                    "data" if nested.is_string() => 0,
+                    _ => text_len(nested),
+                })
+                .sum(),
+            _ => 0,
+        }
+    }
+
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return 0;
+    };
+    let chars: i64 = ["system", "messages", "tools", "tool_choice"]
+        .iter()
+        .filter_map(|key| value.get(*key))
+        .map(text_len)
+        .sum();
+    // Always report at least 1 token for a non-empty request so clients do not
+    // read the estimate as "no context".
+    (chars / CHARS_PER_TOKEN).max(i64::from(chars > 0))
+}
+
 fn insert_header(headers: &mut HeaderMap, name: &'static str, value: &str) -> Result<(), String> {
     let value =
         HeaderValue::from_str(value).map_err(|err| format!("Invalid header value: {err}"))?;
@@ -4043,6 +4247,39 @@ async fn insert_route_credential_request_event(
 
 #[cfg(test)]
 mod tests {
+    /// Buffering is the safe default because it is what allows a failed stream to
+    /// be retried on another credential. Nothing may opt in on the user's behalf.
+    #[test]
+    fn incremental_relay_requires_all_three_conditions() {
+        // The happy case: opted in, streaming, same-protocol routing.
+        assert!(should_relay_incrementally(true, true, None));
+
+        // Setting off is decisive, whatever else is true.
+        assert!(
+            !should_relay_incrementally(false, true, None),
+            "must never stream without the user opting in"
+        );
+
+        // A non-streaming client gains nothing and keeps full inspection.
+        assert!(!should_relay_incrementally(true, false, None));
+
+        // Every bridge kind must stay buffered: its converter needs the whole body.
+        for kind in [
+            ProtocolBridgeKind::ResponsesToChat,
+            ProtocolBridgeKind::ResponsesToResponses,
+            ProtocolBridgeKind::ResponsesToAnthropic,
+            ProtocolBridgeKind::ResponsesToGemini,
+            ProtocolBridgeKind::ClaudeToChat,
+            ProtocolBridgeKind::ClaudeToResponses,
+            ProtocolBridgeKind::ClaudeToGemini,
+        ] {
+            assert!(
+                !should_relay_incrementally(true, true, Some(kind)),
+                "{kind:?} must stay buffered"
+            );
+        }
+    }
+
     use super::*;
     use crate::database::{create_memory_pool, run_migrations};
     use crate::models::route_credential::DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT;
@@ -5997,6 +6234,115 @@ mod tests {
         assert!(!should_retry_same_credential_status(StatusCode::FORBIDDEN));
     }
 
+    /// A missing endpoint or a malformed request is a property of the request,
+    /// not of the account that served it. Retrying it across the pool repeats
+    /// the same failure while marking healthy credentials as failing.
+    #[test]
+    fn same_account_retry_excludes_request_and_endpoint_errors() {
+        for status in [
+            StatusCode::NOT_FOUND,
+            StatusCode::METHOD_NOT_ALLOWED,
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ] {
+            assert!(
+                !should_retry_same_credential_status(status),
+                "{status} must not be retried against the same credential"
+            );
+            assert!(
+                is_credential_neutral_status(status),
+                "{status} must not count against credential health"
+            );
+        }
+
+        // Genuinely transient statuses stay retryable.
+        for status in [
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+        ] {
+            assert!(!is_credential_neutral_status(status), "{status}");
+        }
+    }
+
+    #[test]
+    fn count_tokens_path_is_recognized_across_version_spellings() {
+        for path in [
+            "/v1/messages/count_tokens",
+            "/messages/count_tokens",
+            "/v1/messages/count_tokens/",
+        ] {
+            assert!(
+                is_anthropic_count_tokens_path(path),
+                "should recognize {path}"
+            );
+        }
+        // The chat endpoint itself, and unrelated sub-resources, must not match.
+        for path in [
+            "/v1/messages",
+            "/v1/messages/batches",
+            "/v1/responses",
+            "/v1/count_tokens",
+        ] {
+            assert!(
+                !is_anthropic_count_tokens_path(path),
+                "should not recognize {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn count_tokens_estimate_covers_text_and_skips_base64() {
+        let empty = estimate_anthropic_input_tokens(br#"{"messages":[]}"#);
+        assert_eq!(empty, 0, "an empty request has no tokens");
+
+        let body = serde_json::json!({
+            "model": "claude-sonnet-4",
+            "system": "You are concise.",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello there"}]}]
+        });
+        let counted = estimate_anthropic_input_tokens(&serde_json::to_vec(&body).unwrap());
+        assert!(counted > 0, "text content must produce a positive estimate");
+
+        // A base64 image must not inflate the estimate by its encoded size.
+        let with_image = serde_json::json!({
+            "model": "claude-sonnet-4",
+            "system": "You are concise.",
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "Hello there"},
+                {"type": "image", "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "A".repeat(100_000)
+                }}
+            ]}]
+        });
+        let with_image_count =
+            estimate_anthropic_input_tokens(&serde_json::to_vec(&with_image).unwrap());
+        assert!(
+            with_image_count < counted + 500,
+            "base64 payload must not dominate the estimate: {with_image_count} vs {counted}"
+        );
+    }
+
+    #[test]
+    fn count_tokens_response_uses_anthropic_shape() {
+        let body = serde_json::json!({
+            "model": "claude-sonnet-4",
+            "messages": [{"role": "user", "content": "Count these tokens please"}]
+        });
+        let response = json_count_tokens_response(&serde_json::to_vec(&body).unwrap());
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+    }
+
     #[test]
     fn proxy_failure_classification_separates_transient_and_permanent_errors() {
         assert_eq!(
@@ -6661,6 +7007,7 @@ mod tests {
             activity: RouteCredentialActivityRegistry::default(),
             live_log: RouteProxyLiveLog::default(),
             codex_history: CodexReasoningCache::default(),
+            incremental_streaming: Arc::new(AtomicBool::new(false)),
         };
 
         let mut headers = HeaderMap::new();
@@ -6692,6 +7039,7 @@ mod tests {
             activity: RouteCredentialActivityRegistry::default(),
             live_log: RouteProxyLiveLog::default(),
             codex_history: CodexReasoningCache::default(),
+            incremental_streaming: Arc::new(AtomicBool::new(false)),
         };
 
         let error = resolve_platform(&state, &HeaderMap::new(), None)
@@ -6718,6 +7066,7 @@ mod tests {
             activity: RouteCredentialActivityRegistry::default(),
             live_log: RouteProxyLiveLog::default(),
             codex_history: CodexReasoningCache::default(),
+            incremental_streaming: Arc::new(AtomicBool::new(false)),
         };
 
         let key = "sk-invalid";

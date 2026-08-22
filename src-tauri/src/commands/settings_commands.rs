@@ -16,7 +16,12 @@ pub async fn save_settings(
     state: State<'_, AppState>,
     settings: AppSettings,
 ) -> Result<AppSettingsView, ApiError> {
-    save_settings_core(&state.paths, &state.deeplink_protocols, settings)
-        .await
-        .map_err(ApiError::from)
+    save_settings_core(
+        &state.paths,
+        &state.deeplink_protocols,
+        &state.route_proxy,
+        settings,
+    )
+    .await
+    .map_err(ApiError::from)
 }

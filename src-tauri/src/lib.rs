@@ -322,6 +322,15 @@ pub fn run() {
                 .route_proxy
                 .live_log()
                 .set_emitter(EventEmitter::Tauri(app.handle().clone()));
+            // Seed the proxy's in-memory copy of the streaming preference from
+            // disk. Outside the platform gate below: this applies everywhere.
+            if let Ok(settings) = tauri::async_runtime::block_on(
+                services::settings_service::SettingsService::load(&state.paths),
+            ) {
+                state
+                    .route_proxy
+                    .set_incremental_streaming(settings.incremental_streaming_enabled);
+            }
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             {
                 state

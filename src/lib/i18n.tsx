@@ -576,6 +576,9 @@ const en = {
   "settings.ccswitch.label": "Enable cc-switch deep-link compatibility",
   "settings.ccswitch.warning": "This changes the default handler for ccswitch:// links.",
   "settings.ccswitch.unsupported": "This runtime cannot register deep-link protocols.",
+  "settings.incrementalStreaming.label": "Relay streaming responses incrementally (experimental)",
+  "settings.incrementalStreaming.warning":
+    "Streamed replies reach the client as they arrive instead of all at once. In exchange, a stream that fails partway can no longer be retried on another account — the partial reply is delivered as-is. Applies to accounts whose protocol matches the client's.",
   "settings.themeToggle": "Toggle theme value",
   "settings.saved": "Settings saved.",
   "settings.saveError": "Could not save settings.",
@@ -1235,6 +1238,9 @@ const zh = {
   "settings.ccswitch.label": "启用 cc-switch 导入协议兼容",
   "settings.ccswitch.warning": "启用后会接管 ccswitch:// 链接的默认处理程序。",
   "settings.ccswitch.unsupported": "当前运行环境不支持注册导入协议。",
+  "settings.incrementalStreaming.label": "流式响应逐步转发（实验性）",
+  "settings.incrementalStreaming.warning":
+    "流式回复会边到达边转发给客户端，而不是全部缓冲完再一次性下发。代价是：流到一半失败后无法再换账号重试，已生成的部分会原样交付。仅对协议与客户端一致的账号生效。",
   "settings.themeToggle": "切换主题值",
   "settings.saved": "设置已保存。",
   "settings.saveError": "无法保存设置。",

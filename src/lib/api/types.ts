@@ -656,6 +656,7 @@ export type AppSettings = {
   secret_storage: string;
   data_dir: string;
   ccswitch_deeplink_compat_enabled: boolean;
+  incremental_streaming_enabled: boolean;
 };
 
 export type AppSettingsView = AppSettings & {

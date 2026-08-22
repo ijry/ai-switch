@@ -41,4 +41,5 @@ export const settingsFixture: AppSettings = {
   secret_storage: "keyring",
   data_dir: "C:/Users/example/.ai-switch",
   ccswitch_deeplink_compat_enabled: false,
+  incremental_streaming_enabled: false,
 };

@@ -59,6 +59,7 @@ mod tests {
             secret_storage: "keyring".to_string(),
             data_dir: paths.data_dir.display().to_string(),
             ccswitch_deeplink_compat_enabled: false,
+            incremental_streaming_enabled: true,
         };
 
         SettingsService::save(&paths, &settings)
@@ -69,5 +70,46 @@ mod tests {
         assert_eq!(loaded.language, "en");
         assert_eq!(loaded.theme, "dark");
         assert!(loaded.copy_import_sources);
+        assert!(
+            loaded.incremental_streaming_enabled,
+            "a non-default flag must survive the round trip"
+        );
+    }
+
+    /// Settings live in a JSON file and `load` has no fallback on parse error,
+    /// so a newly added field must be `#[serde(default)]` or every existing
+    /// installation fails to start.
+    #[tokio::test]
+    async fn loads_settings_written_before_new_fields_existed() {
+        let dir = tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(dir.path().to_path_buf());
+        if let Some(parent) = paths.settings_file.parent() {
+            tokio::fs::create_dir_all(parent).await.expect("mkdir");
+        }
+        // Exactly the shape an older release wrote: no incremental_streaming_enabled,
+        // no ccswitch_deeplink_compat_enabled.
+        tokio::fs::write(
+            &paths.settings_file,
+            r#"{
+                "language": "en",
+                "theme": "dark",
+                "copy_import_sources": false,
+                "logging_enabled": true,
+                "secret_storage": "keyring",
+                "data_dir": "whatever"
+            }"#,
+        )
+        .await
+        .expect("write legacy settings");
+
+        let loaded = SettingsService::load(&paths)
+            .await
+            .expect("legacy settings must still load");
+
+        assert_eq!(loaded.theme, "dark");
+        assert!(
+            !loaded.incremental_streaming_enabled,
+            "a missing flag must default to off"
+        );
     }
 }

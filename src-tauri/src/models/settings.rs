@@ -10,6 +10,12 @@ pub struct AppSettings {
     pub data_dir: String,
     #[serde(default)]
     pub ccswitch_deeplink_compat_enabled: bool,
+    /// Relay streaming responses to the client incrementally instead of
+    /// buffering the whole body first. Off by default: buffering is what lets
+    /// the proxy retry a failed stream on another credential, and that guarantee
+    /// is given up once the first bytes are on the wire.
+    #[serde(default)]
+    pub incremental_streaming_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -22,6 +28,7 @@ pub struct AppSettingsView {
     pub data_dir: String,
     pub ccswitch_deeplink_compat_enabled: bool,
     pub ccswitch_deeplink_compat_supported: bool,
+    pub incremental_streaming_enabled: bool,
 }
 
 impl AppSettingsView {
@@ -35,6 +42,7 @@ impl AppSettingsView {
             data_dir: settings.data_dir,
             ccswitch_deeplink_compat_enabled: settings.ccswitch_deeplink_compat_enabled,
             ccswitch_deeplink_compat_supported: supported,
+            incremental_streaming_enabled: settings.incremental_streaming_enabled,
         }
     }
 }
@@ -49,6 +57,7 @@ impl AppSettings {
             secret_storage: "keyring".to_string(),
             data_dir,
             ccswitch_deeplink_compat_enabled: false,
+            incremental_streaming_enabled: false,
         }
     }
 }
