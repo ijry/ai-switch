@@ -1,4 +1,8 @@
+use crate::adapters::claude_code_config::{
+    render_claude_code_provider_config, resolve_claude_code_config_path,
+};
 use crate::adapters::codex_config::{render_codex_provider_config, resolve_codex_config_path};
+use crate::adapters::gemini_config::{render_gemini_provider_config, resolve_gemini_config_path};
 use crate::adapters::opencode_config::{
     render_opencode_provider_config, resolve_opencode_config_path,
 };
@@ -25,7 +29,9 @@ pub struct ProviderSwitchService;
 
 #[derive(Debug, Clone, Default)]
 struct RealConfigPathOverrides {
+    claude_code: Option<PathBuf>,
     codex: Option<PathBuf>,
+    gemini: Option<PathBuf>,
     opencode: Option<PathBuf>,
 }
 
@@ -61,7 +67,30 @@ impl ProviderSwitchService {
             paths,
             request,
             RealConfigPathOverrides {
+                claude_code: None,
                 codex: Some(codex_config_path),
+                gemini: None,
+                opencode: None,
+            },
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub async fn switch_provider_with_gemini_config_path(
+        pool: &SqlitePool,
+        paths: &AppPaths,
+        request: ProviderSwitchRequest,
+        gemini_config_path: PathBuf,
+    ) -> Result<ProviderSwitchOutcome, AppError> {
+        Self::switch_provider_inner(
+            pool,
+            paths,
+            request,
+            RealConfigPathOverrides {
+                claude_code: None,
+                codex: None,
+                gemini: Some(gemini_config_path),
                 opencode: None,
             },
         )
@@ -80,8 +109,31 @@ impl ProviderSwitchService {
             paths,
             request,
             RealConfigPathOverrides {
+                claude_code: None,
                 codex: None,
+                gemini: None,
                 opencode: Some(opencode_config_path),
+            },
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub async fn switch_provider_with_claude_code_config_path(
+        pool: &SqlitePool,
+        paths: &AppPaths,
+        request: ProviderSwitchRequest,
+        claude_code_config_path: PathBuf,
+    ) -> Result<ProviderSwitchOutcome, AppError> {
+        Self::switch_provider_inner(
+            pool,
+            paths,
+            request,
+            RealConfigPathOverrides {
+                claude_code: Some(claude_code_config_path),
+                codex: None,
+                gemini: None,
+                opencode: None,
             },
         )
         .await
@@ -185,12 +237,26 @@ async fn switch_provider_real(
     path_overrides: RealConfigPathOverrides,
 ) -> Result<ProviderSwitchOutcome, AppError> {
     match target.key.as_str() {
+        "claude_code" => {
+            let path = match path_overrides.claude_code {
+                Some(path) => path,
+                None => resolve_claude_code_config_path()?,
+            };
+            switch_provider_real_claude_code(pool, paths, target, provider, path).await
+        }
         "codex" => {
             let path = match path_overrides.codex {
                 Some(path) => path,
                 None => resolve_codex_config_path()?,
             };
             switch_provider_real_codex(pool, paths, target, provider, path).await
+        }
+        "gemini_cli" => {
+            let path = match path_overrides.gemini {
+                Some(path) => path,
+                None => resolve_gemini_config_path()?,
+            };
+            switch_provider_real_gemini(pool, paths, target, provider, path).await
         }
         "opencode" => {
             let path = match path_overrides.opencode {
@@ -201,11 +267,71 @@ async fn switch_provider_real(
         }
         _ => Err(AppError::Validation {
             code: "validation.real_target_not_supported",
-            message: "Real provider switching is available for Codex and OpenCode".to_string(),
+            message:
+                "Real provider switching is available for Claude Code, Codex, Gemini CLI, and OpenCode"
+                    .to_string(),
             details: Some(target.key),
             recoverable: true,
         }),
     }
+}
+
+async fn switch_provider_real_claude_code(
+    pool: &SqlitePool,
+    paths: &AppPaths,
+    target: TargetApp,
+    provider: Provider,
+    path: PathBuf,
+) -> Result<ProviderSwitchOutcome, AppError> {
+    let written_at = Utc::now().to_rfc3339();
+    let rendered = match render_claude_code_provider_config(&path, &provider).await {
+        Ok(rendered) => rendered,
+        Err(error) => {
+            record_failed_attempt(
+                pool,
+                &target,
+                &path,
+                "switch_provider:real",
+                error.code(),
+                &written_at,
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    let backup_dir = real_config_backup_dir(paths, &target)?;
+    let write_outcome = match ConfigWriter::write_atomic_with_backup(
+        &rendered.path,
+        &rendered.contents,
+        &backup_dir,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            record_failed_attempt(
+                pool,
+                &target,
+                &path,
+                "switch_provider:real",
+                error.code(),
+                &written_at,
+            )
+            .await;
+            return Err(error);
+        }
+    };
+
+    record_successful_attempt(
+        pool,
+        target,
+        provider,
+        "real",
+        "switch_provider:real",
+        write_outcome,
+        written_at,
+    )
+    .await
 }
 
 async fn switch_provider_real_codex(
@@ -217,6 +343,64 @@ async fn switch_provider_real_codex(
 ) -> Result<ProviderSwitchOutcome, AppError> {
     let written_at = Utc::now().to_rfc3339();
     let rendered = match render_codex_provider_config(&path, &provider).await {
+        Ok(rendered) => rendered,
+        Err(error) => {
+            record_failed_attempt(
+                pool,
+                &target,
+                &path,
+                "switch_provider:real",
+                error.code(),
+                &written_at,
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    let backup_dir = real_config_backup_dir(paths, &target)?;
+    let write_outcome = match ConfigWriter::write_atomic_with_backup(
+        &rendered.path,
+        &rendered.contents,
+        &backup_dir,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            record_failed_attempt(
+                pool,
+                &target,
+                &path,
+                "switch_provider:real",
+                error.code(),
+                &written_at,
+            )
+            .await;
+            return Err(error);
+        }
+    };
+
+    record_successful_attempt(
+        pool,
+        target,
+        provider,
+        "real",
+        "switch_provider:real",
+        write_outcome,
+        written_at,
+    )
+    .await
+}
+
+async fn switch_provider_real_gemini(
+    pool: &SqlitePool,
+    paths: &AppPaths,
+    target: TargetApp,
+    provider: Provider,
+    path: PathBuf,
+) -> Result<ProviderSwitchOutcome, AppError> {
+    let written_at = Utc::now().to_rfc3339();
+    let rendered = match render_gemini_provider_config(&path, &provider).await {
         Ok(rendered) => rendered,
         Err(error) => {
             record_failed_attempt(
@@ -919,6 +1103,148 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn switch_provider_real_mode_writes_gemini_config_and_records_state() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let targets = TargetRepository::ensure_defaults(&pool)
+            .await
+            .expect("targets");
+        let gemini = targets
+            .iter()
+            .find(|target| target.key == "gemini_cli")
+            .expect("gemini")
+            .clone();
+        let provider = seeded_provider(&pool).await;
+        let data_dir = tempdir().expect("data dir");
+        let gemini_home = tempdir().expect("gemini home");
+        let paths = AppPaths::from_data_dir(data_dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
+        let gemini_config_path = gemini_home.path().join("settings.json");
+
+        let outcome = ProviderSwitchService::switch_provider_with_gemini_config_path(
+            &pool,
+            &paths,
+            ProviderSwitchRequest {
+                target_app_id: gemini.id.clone(),
+                provider_id: provider.id.clone(),
+                mode: "real".to_string(),
+            },
+            gemini_config_path.clone(),
+        )
+        .await
+        .expect("switch");
+
+        let written = tokio::fs::read_to_string(&gemini_config_path)
+            .await
+            .expect("gemini config");
+        let parsed: Value = serde_json::from_str(&written).expect("json");
+        let snapshot = ConfigSnapshotRepository::latest_for_target(&pool, &gemini.id)
+            .await
+            .expect("snapshot query")
+            .expect("snapshot");
+        let state = TargetStateRepository::get_for_target(&pool, &gemini.id)
+            .await
+            .expect("state");
+
+        assert_eq!(outcome.mode, "real");
+        assert_eq!(outcome.status, "written");
+        assert_eq!(outcome.path, gemini_config_path.display().to_string());
+        assert_eq!(parsed["model"]["name"], "gpt-4.1");
+        assert_eq!(
+            parsed["aiSwitch"]["activeProvider"]["id"],
+            provider.id.as_str()
+        );
+        assert_eq!(
+            parsed["aiSwitch"]["activeProvider"]["envKey"],
+            "GEMINI_API_KEY"
+        );
+        assert!(!written.contains("secret://provider/acme"));
+        assert_eq!(snapshot.operation, "switch_provider:real");
+        assert_eq!(snapshot.status, "written");
+        assert!(snapshot.backup_path.is_some());
+        assert_eq!(state.active_item_type.as_deref(), Some("provider"));
+        assert_eq!(state.active_item_id.as_deref(), Some(provider.id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn switch_provider_real_mode_writes_claude_code_config_and_records_state() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let targets = TargetRepository::ensure_defaults(&pool)
+            .await
+            .expect("targets");
+        let claude = targets
+            .iter()
+            .find(|target| target.key == "claude_code")
+            .expect("claude")
+            .clone();
+        let provider = seeded_provider(&pool).await;
+        let data_dir = tempdir().expect("data dir");
+        let claude_home = tempdir().expect("claude home");
+        let paths = AppPaths::from_data_dir(data_dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
+        let claude_config_path = claude_home.path().join("settings.json");
+        tokio::fs::write(
+            &claude_config_path,
+            r#"{"permissions":{"allow":["Bash(ls:*)"]}}"#,
+        )
+        .await
+        .expect("seed claude settings");
+
+        let outcome = ProviderSwitchService::switch_provider_with_claude_code_config_path(
+            &pool,
+            &paths,
+            ProviderSwitchRequest {
+                target_app_id: claude.id.clone(),
+                provider_id: provider.id.clone(),
+                mode: "real".to_string(),
+            },
+            claude_config_path.clone(),
+        )
+        .await
+        .expect("switch");
+
+        let written = tokio::fs::read_to_string(&claude_config_path)
+            .await
+            .expect("claude settings");
+        let parsed: Value = serde_json::from_str(&written).expect("json");
+        let snapshot = ConfigSnapshotRepository::latest_for_target(&pool, &claude.id)
+            .await
+            .expect("snapshot query")
+            .expect("snapshot");
+        let state = TargetStateRepository::get_for_target(&pool, &claude.id)
+            .await
+            .expect("state");
+
+        assert_eq!(outcome.mode, "real");
+        assert_eq!(outcome.status, "written");
+        assert_eq!(outcome.path, claude_config_path.display().to_string());
+        assert_eq!(parsed["permissions"]["allow"][0], "Bash(ls:*)");
+        assert_eq!(parsed["env"]["ANTHROPIC_BASE_URL"], "https://api.example.com/v1");
+        assert_eq!(parsed["env"]["ANTHROPIC_MODEL"], "gpt-4.1");
+        assert!(
+            parsed["apiKeyHelper"]
+                .as_str()
+                .expect("api key helper")
+                .contains("ANTHROPIC_API_KEY")
+        );
+        assert_eq!(
+            parsed["aiSwitch"]["activeProvider"]["id"],
+            provider.id.as_str()
+        );
+        assert_eq!(
+            parsed["aiSwitch"]["activeProvider"]["envKey"],
+            "ANTHROPIC_API_KEY"
+        );
+        assert!(!written.contains("secret://provider/acme"));
+        assert_eq!(snapshot.operation, "switch_provider:real");
+        assert_eq!(snapshot.status, "written");
+        assert!(snapshot.backup_path.is_some());
+        assert_eq!(state.active_item_type.as_deref(), Some("provider"));
+        assert_eq!(state.active_item_id.as_deref(), Some(provider.id.as_str()));
+    }
+
+    #[tokio::test]
     async fn rollback_config_snapshot_restores_previous_real_config_file() {
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
@@ -1043,25 +1369,23 @@ mod tests {
         let targets = TargetRepository::ensure_defaults(&pool)
             .await
             .expect("targets");
-        let claude = targets
+        let claude_desktop = targets
             .iter()
-            .find(|target| target.key == "claude_code")
-            .expect("claude")
+            .find(|target| target.key == "claude_desktop")
+            .expect("claude desktop")
             .clone();
         let provider = seeded_provider(&pool).await;
         let data_dir = tempdir().expect("data dir");
-        let codex_home = tempdir().expect("codex home");
         let paths = AppPaths::from_data_dir(data_dir.path().to_path_buf());
 
-        let error = ProviderSwitchService::switch_provider_with_codex_config_path(
+        let error = ProviderSwitchService::switch_provider(
             &pool,
             &paths,
             ProviderSwitchRequest {
-                target_app_id: claude.id,
+                target_app_id: claude_desktop.id,
                 provider_id: provider.id,
                 mode: "real".to_string(),
             },
-            codex_home.path().join("config.toml"),
         )
         .await
         .expect_err("error");
@@ -1185,6 +1509,66 @@ mod tests {
         assert_eq!(
             snapshot.error_code.as_deref(),
             Some("validation.provider_base_url_required")
+        );
+        assert_eq!(state.last_write_status.as_deref(), Some("failed"));
+    }
+
+    #[tokio::test]
+    async fn switch_provider_real_mode_records_failure_after_gemini_path_resolution() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let targets = TargetRepository::ensure_defaults(&pool)
+            .await
+            .expect("targets");
+        let gemini = targets
+            .iter()
+            .find(|target| target.key == "gemini_cli")
+            .expect("gemini")
+            .clone();
+        let provider = ProviderRepository::create(
+            &pool,
+            NewProvider {
+                name: "Broken Provider".to_string(),
+                kind: "openai_compatible".to_string(),
+                base_url: None,
+                model_config_json: "{}".to_string(),
+                target_options_json: "{}".to_string(),
+                secret_ref: None,
+            },
+        )
+        .await
+        .expect("provider");
+        let data_dir = tempdir().expect("data dir");
+        let gemini_home = tempdir().expect("gemini home");
+        let paths = AppPaths::from_data_dir(data_dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
+
+        let error = ProviderSwitchService::switch_provider_with_gemini_config_path(
+            &pool,
+            &paths,
+            ProviderSwitchRequest {
+                target_app_id: gemini.id.clone(),
+                provider_id: provider.id,
+                mode: "real".to_string(),
+            },
+            gemini_home.path().join("settings.json"),
+        )
+        .await
+        .expect_err("error");
+        let snapshot = ConfigSnapshotRepository::latest_for_target(&pool, &gemini.id)
+            .await
+            .expect("snapshot query")
+            .expect("snapshot");
+        let state = TargetStateRepository::get_for_target(&pool, &gemini.id)
+            .await
+            .expect("state");
+
+        assert_eq!(error.code(), "validation.provider_model_required");
+        assert_eq!(snapshot.operation, "switch_provider:real");
+        assert_eq!(snapshot.status, "failed");
+        assert_eq!(
+            snapshot.error_code.as_deref(),
+            Some("validation.provider_model_required")
         );
         assert_eq!(state.last_write_status.as_deref(), Some("failed"));
     }

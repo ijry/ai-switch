@@ -1,6 +1,6 @@
 # AI Switch Foundation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
 **Goal:** Build the Phase A foundation for a Tauri-based AI provider and official account switching app with batch-first listing, SQLite storage, import history, atomic config writes, and extension interfaces.
 
@@ -167,7 +167,7 @@ Each backend module should own one boundary:
 - Produces: `AppLayout` React component accepting `children: React.ReactNode`.
 - Produces: npm scripts `dev`, `tauri:dev`, `build`, `typecheck`, `test`, `test:run`, `rust:check`, and `rust:test`.
 
-- [ ] **Step 1: Create frontend package and config files**
+- [x] **Step 1: Create frontend package and config files**
 
 Write `package.json`:
 
@@ -362,7 +362,7 @@ module.exports = {
 };
 ```
 
-- [ ] **Step 2: Create minimal React shell**
+- [x] **Step 2: Create minimal React shell**
 
 Write `src/main.tsx`:
 
@@ -461,7 +461,7 @@ body {
 }
 ```
 
-- [ ] **Step 3: Create Tauri shell**
+- [x] **Step 3: Create Tauri shell**
 
 Write `src-tauri/Cargo.toml`:
 
@@ -561,7 +561,7 @@ pub fn run() {
 }
 ```
 
-- [ ] **Step 4: Install dependencies**
+- [x] **Step 4: Install dependencies**
 
 Run:
 
@@ -572,7 +572,7 @@ pnpm install
 
 Expected: dependencies install without errors and `pnpm-lock.yaml` is created.
 
-- [ ] **Step 5: Verify scaffold**
+- [x] **Step 5: Verify scaffold**
 
 Run:
 
@@ -584,7 +584,7 @@ pnpm rust:check
 
 Expected: all commands exit with code `0`.
 
-- [ ] **Step 6: Commit scaffold**
+- [x] **Step 6: Commit scaffold**
 
 ```powershell
 git add .gitignore LICENSE index.html package.json pnpm-lock.yaml postcss.config.cjs tailwind.config.ts tsconfig.json tsconfig.node.json vite.config.ts vitest.config.ts src src-tauri
@@ -613,7 +613,7 @@ git commit -m "chore: scaffold tauri react app"
 - Produces: `SettingsService::load(&AppPaths) -> Result<AppSettings, AppError>`.
 - Produces: Tauri commands `get_settings` and `save_settings`.
 
-- [ ] **Step 1: Write failing Rust tests for paths and settings**
+- [x] **Step 1: Write failing Rust tests for paths and settings**
 
 Add these tests inside `src-tauri/src/services/settings_service.rs` after the implementation module is created in Step 3:
 
@@ -659,7 +659,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify failure**
+- [x] **Step 2: Run tests to verify failure**
 
 Run:
 
@@ -669,7 +669,7 @@ pnpm rust:test settings_service
 
 Expected: FAIL because `SettingsService`, `AppPaths`, and `AppSettings` do not exist yet.
 
-- [ ] **Step 3: Implement error, path, and settings modules**
+- [x] **Step 3: Implement error, path, and settings modules**
 
 Write `src-tauri/src/error.rs`:
 
@@ -945,7 +945,7 @@ pub fn run() {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify pass**
+- [x] **Step 4: Run tests to verify pass**
 
 Run:
 
@@ -956,7 +956,7 @@ pnpm rust:check
 
 Expected: PASS and `cargo check` exits with code `0`.
 
-- [ ] **Step 5: Commit settings foundation**
+- [x] **Step 5: Commit settings foundation**
 
 ```powershell
 git add src-tauri/src
@@ -985,7 +985,7 @@ git commit -m "feat: add settings and app state foundation"
 - Produces: `run_migrations(pool: &SqlitePool) -> Result<(), AppError>`.
 - Produces model structs `Batch`, `Provider`, `OfficialAccount`, `ImportJob`, `TargetApp`, `BatchItem`, and `BatchGroup`.
 
-- [ ] **Step 1: Write migration file**
+- [x] **Step 1: Write migration file**
 
 Write `src-tauri/migrations/202607130001_foundation.sql`:
 
@@ -1122,7 +1122,7 @@ CREATE INDEX IF NOT EXISTS idx_accounts_platform ON official_accounts(platform);
 CREATE INDEX IF NOT EXISTS idx_import_jobs_created_at ON import_jobs(created_at);
 ```
 
-- [ ] **Step 2: Write database test before implementation**
+- [x] **Step 2: Write database test before implementation**
 
 Write `src-tauri/src/database/test_support.rs`:
 
@@ -1145,7 +1145,7 @@ async fn migrations_create_foundation_tables() {
 }
 ```
 
-- [ ] **Step 3: Run database test to verify failure**
+- [x] **Step 3: Run database test to verify failure**
 
 Run:
 
@@ -1155,7 +1155,7 @@ pnpm rust:test migrations_create_foundation_tables
 
 Expected: FAIL because database helpers are not implemented.
 
-- [ ] **Step 4: Implement database module**
+- [x] **Step 4: Implement database module**
 
 Write `src-tauri/src/database/mod.rs`:
 
@@ -1258,7 +1258,7 @@ Use that exact content for:
 - `src-tauri/src/database/repositories/provider_repository.rs`
 - `src-tauri/src/database/repositories/target_repository.rs`
 
-- [ ] **Step 5: Add model structs**
+- [x] **Step 5: Add model structs**
 
 Write `src-tauri/src/models/batch.rs`:
 
@@ -1428,7 +1428,7 @@ pub mod settings;
 pub mod target_app;
 ```
 
-- [ ] **Step 6: Wire database into app state**
+- [x] **Step 6: Wire database into app state**
 
 Update `src-tauri/src/app_state.rs`:
 
@@ -1477,7 +1477,7 @@ pub fn run() {
 }
 ```
 
-- [ ] **Step 7: Run tests and check**
+- [x] **Step 7: Run tests and check**
 
 Run:
 
@@ -1488,7 +1488,7 @@ pnpm rust:check
 
 Expected: PASS and `cargo check` exits with code `0`.
 
-- [ ] **Step 8: Commit database foundation**
+- [x] **Step 8: Commit database foundation**
 
 ```powershell
 git add src-tauri/migrations src-tauri/src
@@ -1515,7 +1515,7 @@ git commit -m "feat: add sqlite foundation schema"
 - Produces: `ImportRepository::list_recent(pool) -> Result<Vec<ImportJob>, AppError>`.
 - Produces: `TargetRepository::ensure_defaults(pool) -> Result<Vec<TargetApp>, AppError>`.
 
-- [ ] **Step 1: Write repository tests**
+- [x] **Step 1: Write repository tests**
 
 Append tests to `src-tauri/src/database/repositories/batch_repository.rs`:
 
@@ -1572,7 +1572,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run repository test to verify failure**
+- [x] **Step 2: Run repository test to verify failure**
 
 Run:
 
@@ -1582,7 +1582,7 @@ pnpm rust:test list_groups_returns_batch_with_provider_and_account_children
 
 Expected: FAIL because repository methods are not implemented.
 
-- [ ] **Step 3: Implement provider and account repositories**
+- [x] **Step 3: Implement provider and account repositories**
 
 Write `src-tauri/src/database/repositories/provider_repository.rs`:
 
@@ -1696,7 +1696,7 @@ impl AccountRepository {
 }
 ```
 
-- [ ] **Step 4: Implement batch repository**
+- [x] **Step 4: Implement batch repository**
 
 Write `src-tauri/src/database/repositories/batch_repository.rs` with the test from Step 1 kept at the end:
 
@@ -1882,7 +1882,7 @@ impl BatchRepository {
 }
 ```
 
-- [ ] **Step 5: Implement import and target repositories**
+- [x] **Step 5: Implement import and target repositories**
 
 Write `src-tauri/src/database/repositories/import_repository.rs`:
 
@@ -2036,7 +2036,7 @@ impl TargetRepository {
 }
 ```
 
-- [ ] **Step 6: Run repository tests**
+- [x] **Step 6: Run repository tests**
 
 Run:
 
@@ -2048,7 +2048,7 @@ pnpm rust:check
 
 Expected: PASS and `cargo check` exits with code `0`.
 
-- [ ] **Step 7: Commit repositories**
+- [x] **Step 7: Commit repositories**
 
 ```powershell
 git add src-tauri/src/database src-tauri/src/models
@@ -2073,7 +2073,7 @@ git commit -m "feat: add repositories and batch grouping"
 - Produces: `BatchService::list_groups(pool, Option<String>)`.
 - Produces: Tauri commands `create_batch`, `list_batch_groups`, `create_provider`, `create_official_account`, `list_target_apps`.
 
-- [ ] **Step 1: Write service tests**
+- [x] **Step 1: Write service tests**
 
 Add tests in `src-tauri/src/services/batch_service.rs`:
 
@@ -2100,7 +2100,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run service test to verify failure**
+- [x] **Step 2: Run service test to verify failure**
 
 Run:
 
@@ -2110,7 +2110,7 @@ pnpm rust:test create_batch_rejects_empty_name
 
 Expected: FAIL because `BatchService` is not implemented.
 
-- [ ] **Step 3: Implement services**
+- [x] **Step 3: Implement services**
 
 Write `src-tauri/src/services/batch_service.rs`:
 
@@ -2209,7 +2209,7 @@ pub mod settings_service;
 pub mod target_service;
 ```
 
-- [ ] **Step 4: Implement Tauri commands**
+- [x] **Step 4: Implement Tauri commands**
 
 Write `src-tauri/src/commands/batch_commands.rs`:
 
@@ -2301,7 +2301,7 @@ Use this handler:
 ])
 ```
 
-- [ ] **Step 5: Run service and command checks**
+- [x] **Step 5: Run service and command checks**
 
 Run:
 
@@ -2313,7 +2313,7 @@ pnpm rust:check
 
 Expected: PASS and `cargo check` exits with code `0`.
 
-- [ ] **Step 6: Commit services and commands**
+- [x] **Step 6: Commit services and commands**
 
 ```powershell
 git add src-tauri/src
@@ -2339,7 +2339,7 @@ git commit -m "feat: add core services and commands"
 - Produces: `ImportService::import_example_json(pool, request) -> Result<ImportJob, AppError>`.
 - Produces: Tauri command `import_example_json`.
 
-- [ ] **Step 1: Create fixture**
+- [x] **Step 1: Create fixture**
 
 Write `fixtures/example-import.json`:
 
@@ -2368,7 +2368,7 @@ Write `fixtures/example-import.json`:
 }
 ```
 
-- [ ] **Step 2: Write importer test**
+- [x] **Step 2: Write importer test**
 
 Add tests in `src-tauri/src/services/import_service.rs`:
 
@@ -2402,7 +2402,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Run importer test to verify failure**
+- [x] **Step 3: Run importer test to verify failure**
 
 Run:
 
@@ -2412,7 +2412,7 @@ pnpm rust:test import_example_json_creates_batch_items_and_job
 
 Expected: FAIL because importer and service are not implemented.
 
-- [ ] **Step 4: Implement example importer**
+- [x] **Step 4: Implement example importer**
 
 Write `src-tauri/src/importers/example_json.rs`:
 
@@ -2440,7 +2440,7 @@ Write `src-tauri/src/importers/mod.rs`:
 pub mod example_json;
 ```
 
-- [ ] **Step 5: Implement import service and command**
+- [x] **Step 5: Implement import service and command**
 
 Write `src-tauri/src/services/import_service.rs`:
 
@@ -2548,7 +2548,7 @@ pub mod target_commands;
 
 Update `src-tauri/src/lib.rs` with `mod importers;`, import `import_example_json`, and include it in `generate_handler!`.
 
-- [ ] **Step 6: Run importer tests**
+- [x] **Step 6: Run importer tests**
 
 Run:
 
@@ -2559,7 +2559,7 @@ pnpm rust:check
 
 Expected: PASS and `cargo check` exits with code `0`.
 
-- [ ] **Step 7: Commit import pipeline**
+- [x] **Step 7: Commit import pipeline**
 
 ```powershell
 git add fixtures src-tauri/src
@@ -2582,7 +2582,7 @@ git commit -m "feat: add example json import pipeline"
 - Produces: `QuotaProvider` trait.
 - Produces: `SecretStore` trait and `KeyringSecretStore`.
 
-- [ ] **Step 1: Write atomic writer test**
+- [x] **Step 1: Write atomic writer test**
 
 Add tests in `src-tauri/src/config_writer/mod.rs`:
 
@@ -2609,7 +2609,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run atomic writer test to verify failure**
+- [x] **Step 2: Run atomic writer test to verify failure**
 
 Run:
 
@@ -2619,7 +2619,7 @@ pnpm rust:test write_atomic_replaces_content_and_reports_hashes
 
 Expected: FAIL because `ConfigWriter` does not exist.
 
-- [ ] **Step 3: Implement config writer**
+- [x] **Step 3: Implement config writer**
 
 Write `src-tauri/src/config_writer/mod.rs`:
 
@@ -2683,7 +2683,7 @@ fn hash_bytes(bytes: &[u8]) -> String {
 }
 ```
 
-- [ ] **Step 4: Implement extension traits**
+- [x] **Step 4: Implement extension traits**
 
 Write `src-tauri/src/adapters/mod.rs`:
 
@@ -2808,7 +2808,7 @@ mod config_writer;
 mod security;
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run:
 
@@ -2819,7 +2819,7 @@ pnpm rust:check
 
 Expected: PASS and `cargo check` exits with code `0`.
 
-- [ ] **Step 6: Commit writer and interfaces**
+- [x] **Step 6: Commit writer and interfaces**
 
 ```powershell
 git add src-tauri/src
@@ -2841,7 +2841,7 @@ git commit -m "feat: add config writer and extension interfaces"
 - Produces TypeScript types `BatchGroup`, `Provider`, `OfficialAccount`, `ImportJob`, `AppSettings`.
 - Produces API functions `listBatchGroups`, `createBatch`, `importExampleJson`, `getSettings`, `saveSettings`, `listTargetApps`.
 
-- [ ] **Step 1: Write API type files**
+- [x] **Step 1: Write API type files**
 
 Write `src/lib/api/types.ts`:
 
@@ -2995,7 +2995,7 @@ export function createQueryClient() {
 }
 ```
 
-- [ ] **Step 2: Add frontend test setup and fixtures**
+- [x] **Step 2: Add frontend test setup and fixtures**
 
 Write `src/test/setup.ts`:
 
@@ -3049,7 +3049,7 @@ export const settingsFixture: AppSettings = {
 };
 ```
 
-- [ ] **Step 3: Run typecheck**
+- [x] **Step 3: Run typecheck**
 
 Run:
 
@@ -3060,7 +3060,7 @@ pnpm test:run -- --passWithNoTests
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit frontend API foundation**
+- [x] **Step 4: Commit frontend API foundation**
 
 ```powershell
 git add src/lib src/test
@@ -3085,7 +3085,7 @@ git commit -m "feat: add typed frontend api client"
 - Produces: `BatchList({ groups, search })`.
 - Produces: screen navigation in `App`.
 
-- [ ] **Step 1: Write BatchList test**
+- [x] **Step 1: Write BatchList test**
 
 Write `tests/BatchList.test.tsx`:
 
@@ -3117,7 +3117,7 @@ describe("BatchList", () => {
 });
 ```
 
-- [ ] **Step 2: Run UI test to verify failure**
+- [x] **Step 2: Run UI test to verify failure**
 
 Run:
 
@@ -3127,7 +3127,7 @@ pnpm test:run tests/BatchList.test.tsx
 
 Expected: FAIL because `BatchList` does not exist.
 
-- [ ] **Step 3: Implement BatchList**
+- [x] **Step 3: Implement BatchList**
 
 Write `src/components/batches/BatchList.tsx`:
 
@@ -3211,7 +3211,7 @@ export function BatchList({ groups, search }: BatchListProps) {
 }
 ```
 
-- [ ] **Step 4: Implement screens and navigation**
+- [x] **Step 4: Implement screens and navigation**
 
 Write `src/screens/DashboardScreen.tsx`:
 
@@ -3352,7 +3352,7 @@ export function App() {
 }
 ```
 
-- [ ] **Step 5: Run UI tests**
+- [x] **Step 5: Run UI tests**
 
 Run:
 
@@ -3363,7 +3363,7 @@ pnpm typecheck
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit batch UI**
+- [x] **Step 6: Commit batch UI**
 
 ```powershell
 git add src tests
@@ -3388,7 +3388,7 @@ git commit -m "feat: add batch-first ui"
 - Produces: `ImportPanel({ onImport })`.
 - Produces screens that call existing API functions.
 
-- [ ] **Step 1: Write ImportPanel test**
+- [x] **Step 1: Write ImportPanel test**
 
 Write `tests/ImportPanel.test.tsx`:
 
@@ -3412,7 +3412,7 @@ describe("ImportPanel", () => {
 });
 ```
 
-- [ ] **Step 2: Implement ImportPanel**
+- [x] **Step 2: Implement ImportPanel**
 
 Write `src/components/imports/ImportPanel.tsx`:
 
@@ -3478,7 +3478,7 @@ export function ImportPanel({ onImport }: ImportPanelProps) {
 }
 ```
 
-- [ ] **Step 3: Implement remaining screens**
+- [x] **Step 3: Implement remaining screens**
 
 Write `src/screens/ImportsScreen.tsx`:
 
@@ -3614,7 +3614,7 @@ Change the fallback condition to:
 )}
 ```
 
-- [ ] **Step 4: Run frontend tests**
+- [x] **Step 4: Run frontend tests**
 
 Run:
 
@@ -3625,7 +3625,7 @@ pnpm typecheck
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit import and settings UI**
+- [x] **Step 5: Commit import and settings UI**
 
 ```powershell
 git add src tests
@@ -3643,7 +3643,7 @@ git commit -m "feat: add import and settings screens"
 **Interfaces:**
 - Produces documented commands for local development and Phase A verification.
 
-- [ ] **Step 1: Update README**
+- [x] **Step 1: Update README**
 
 Replace `README.md` with:
 
@@ -3697,7 +3697,7 @@ pnpm tauri:dev
 This project may study public behavior, public documentation, and public file formats from related tools. It must not copy or translate non-commercial source code from `cockpit-tools`.
 ```
 
-- [ ] **Step 2: Add smoke checklist**
+- [x] **Step 2: Add smoke checklist**
 
 Write `docs/superpowers/plans/2026-07-13-ai-switch-foundation-smoke.md`:
 
@@ -3719,7 +3719,7 @@ Run these checks after completing Phase A implementation.
 - Navigate to `Settings`; the data directory path is visible.
 ```
 
-- [ ] **Step 3: Run full verification**
+- [x] **Step 3: Run full verification**
 
 Run:
 
@@ -3732,7 +3732,7 @@ pnpm rust:test
 
 Expected: all commands exit with code `0`.
 
-- [ ] **Step 4: Commit documentation**
+- [x] **Step 4: Commit documentation**
 
 ```powershell
 git add README.md docs/superpowers/plans/2026-07-13-ai-switch-foundation-smoke.md

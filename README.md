@@ -42,6 +42,32 @@ Run the desktop app in development mode:
 pnpm tauri:dev
 ```
 
+## Release Builds
+
+Run the full local release verification and no-bundle Tauri build:
+
+```powershell
+pnpm release:build
+```
+
+This runs release readiness checks, TypeScript checks, frontend tests, Rust
+checks, Rust tests, and `tauri build --ci --no-bundle`. The built executable is
+written to:
+
+```text
+src-tauri/target/release/ai-switch.exe
+```
+
+Build unsigned Windows installers only after the same verification passes:
+
+```powershell
+pnpm release:bundle:windows
+```
+
+The Windows bundle command intentionally uses `--no-sign` until code-signing
+credentials are configured. Replace `src-tauri/icons/icon.ico` with a real app
+icon before public distribution.
+
 ## Clean-Room Boundary
 
 This project may study public behavior, public documentation, and public file formats from related tools. It must not copy or translate non-commercial source code from `cockpit-tools`.
@@ -117,6 +143,58 @@ Safe smoke test:
 7. Verify the temporary `opencode.json` contains `$schema`, `model`, `provider.<ai-switch-id>.options.baseURL`, and `provider.<ai-switch-id>.options.apiKey`.
 8. Verify your real `~/.config/opencode/opencode.json` was not modified when using temporary `OPENCODE_CONFIG`.
 
+## Provider Switching B2.3: Gemini CLI Real Mode
+
+B2.3 adds explicit real provider switching for Gemini CLI. Codex real mode, OpenCode real mode, and sandbox switching remain available.
+
+Gemini CLI real mode writes the path from `GEMINI_CLI_SETTINGS` when set. Otherwise it writes:
+
+```text
+~/.gemini/settings.json
+```
+
+The Gemini CLI settings file contains the selected model under `model.name` and AI Switch metadata under `aiSwitch.activeProvider`. It does not store raw API keys or provider `secret_ref` values.
+
+Safe smoke test:
+
+1. Set `GEMINI_CLI_SETTINGS` to a temporary JSON path.
+2. Start the app with `pnpm tauri:dev`.
+3. Import or create a provider with a model in `model_config_json.default`.
+4. Open `Providers`.
+5. Select `Gemini CLI`.
+6. Click `Switch Gemini CLI config`.
+7. Verify the temporary `settings.json` contains `model.name` and `aiSwitch.activeProvider`.
+8. Verify your real `~/.gemini/settings.json` was not modified when using temporary `GEMINI_CLI_SETTINGS`.
+
+## Provider Switching B2.4: Claude Code Real Mode
+
+B2.4 adds explicit real provider switching for Claude Code. Codex, Gemini CLI, OpenCode, and sandbox switching remain available.
+
+Claude Code real mode writes:
+
+```text
+<CLAUDE_CONFIG_DIR>/settings.json
+```
+
+If `CLAUDE_CONFIG_DIR` is not set, the app uses:
+
+```text
+~/.claude/settings.json
+```
+
+The Claude Code settings file contains provider metadata under `aiSwitch`, sets `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_MODEL`, and optionally `env.ANTHROPIC_SMALL_FAST_MODEL`. API keys are read through `apiKeyHelper` from an environment variable such as `ANTHROPIC_API_KEY`; raw API keys are not stored.
+
+Safe smoke test:
+
+1. Set `CLAUDE_CONFIG_DIR` to a temporary directory.
+2. Start the app with `pnpm tauri:dev`.
+3. Import or create a provider with `base_url` and a model in `model_config_json.default`.
+4. Open `Providers`.
+5. Select `Claude Code`.
+6. Click `Switch Claude Code config`.
+7. Verify the temporary `settings.json` contains `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_MODEL`, `apiKeyHelper`, and `aiSwitch.activeProvider`.
+8. Verify your real `~/.claude/settings.json` was not modified when using temporary `CLAUDE_CONFIG_DIR`.
+
 ## Provider Presets And Export B3
 
 B3 adds built-in provider presets and example JSON export. Presets create normal provider records without storing raw API keys; they use environment references such as `env://OPENAI_API_KEY`.
@@ -134,7 +212,7 @@ Preset and export smoke test:
 
 ## Tray Switching B4
 
-B4 adds a system tray menu for quick provider switching. The tray menu includes app open, refresh, sandbox switch actions for every target, real switch actions for Codex and OpenCode, and quit.
+B4 adds a system tray menu for quick provider switching. The tray menu includes app open, refresh, sandbox switch actions for every target, real switch actions for Claude Code, Codex, Gemini CLI, and OpenCode, and quit.
 
 Tray smoke test:
 
@@ -143,17 +221,17 @@ Tray smoke test:
 3. Use the tray menu to refresh entries.
 4. Choose a sandbox target switch from the tray.
 5. Open `Targets` and confirm the target state updated.
-6. For real mode, use temporary `CODEX_HOME` or `OPENCODE_CONFIG` paths before choosing Codex/OpenCode real config actions.
+6. For real mode, use temporary `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_SETTINGS`, or `OPENCODE_CONFIG` paths before choosing real config actions.
 
 ## Provider Switching B5: Rollback
 
-B5 adds rollback for successful real Codex/OpenCode switch snapshots. Real switches save backup metadata under the app backup directory before writing the external config. Sandbox writes do not expose rollback.
+B5 adds rollback for successful real Claude Code/Codex/Gemini CLI/OpenCode switch snapshots. Real switches save backup metadata under the app backup directory before writing the external config. Sandbox writes do not expose rollback.
 
 Rollback smoke test:
 
-1. Set `CODEX_HOME` or `OPENCODE_CONFIG` to a temporary location.
+1. Set `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_SETTINGS`, or `OPENCODE_CONFIG` to a temporary location.
 2. Start the app with `pnpm tauri:dev`.
-3. Switch a provider to Codex or OpenCode real config.
+3. Switch a provider to Claude Code, Codex, Gemini CLI, or OpenCode real config.
 4. Open `Targets`.
 5. Click `Restore previous real config`.
 6. Confirm the config file is restored to its previous content, or removed if it did not exist before the switch.

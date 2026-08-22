@@ -15,7 +15,7 @@
 ## Steps
 
 - [x] Extend `WriteOutcome` and `ConfigWriter` with backup-aware real writes.
-- [x] Save `backup_path` for real Codex/OpenCode switch snapshots.
+- [x] Save `backup_path` for real Codex/Gemini CLI/OpenCode switch snapshots.
 - [x] Add repository helpers to load snapshots by id.
 - [x] Add target-state rollback update helper.
 - [x] Add rollback service and Tauri command.

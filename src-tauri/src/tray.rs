@@ -262,7 +262,10 @@ fn show_main_window(app: &AppHandle) {
 }
 
 fn is_real_tray_target(target_key: &str) -> bool {
-    matches!(target_key, "codex" | "opencode")
+    matches!(
+        target_key,
+        "claude_code" | "codex" | "gemini_cli" | "opencode"
+    )
 }
 
 fn map_tray_error(error: tauri::Error) -> AppError {
@@ -307,6 +310,7 @@ mod tests {
         let providers = vec![provider("provider-1"), provider("provider-2")];
         let targets = vec![
             target("target-codex", "codex"),
+            target("target-gemini", "gemini_cli"),
             target("target-opencode", "opencode"),
             target("target-claude", "claude_code"),
         ];
@@ -314,8 +318,8 @@ mod tests {
         let status = tray_menu_status(&providers, &targets);
 
         assert_eq!(status.provider_count, 2);
-        assert_eq!(status.target_count, 3);
-        assert_eq!(status.switch_item_count, 10);
+        assert_eq!(status.target_count, 4);
+        assert_eq!(status.switch_item_count, 16);
     }
 
     fn provider(id: &str) -> Provider {

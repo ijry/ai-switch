@@ -12,7 +12,12 @@
     "test": "vitest",
     "test:run": "vitest run",
     "rust:check": "cd src-tauri && cargo check",
-    "rust:test": "cd src-tauri && cargo test"
+    "rust:test": "cd src-tauri && cargo test",
+    "tauri:build": "tauri build --ci --no-bundle",
+    "tauri:bundle:windows": "tauri build --ci --no-sign --bundles nsis,msi",
+    "release:verify": "node scripts/check-release.mjs && pnpm typecheck && pnpm test:run && pnpm rust:check && pnpm rust:test",
+    "release:build": "pnpm release:verify && pnpm tauri:build",
+    "release:bundle:windows": "pnpm release:verify && pnpm tauri:bundle:windows"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.51.1",

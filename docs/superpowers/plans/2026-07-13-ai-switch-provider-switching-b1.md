@@ -1,6 +1,6 @@
 # AI Switch Provider Switching B1 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
 **Goal:** Build sandbox-first provider switching for the seven default AI tool targets without writing real external tool configuration files.
 
@@ -97,7 +97,7 @@ tests/TargetsScreen.test.tsx
 - Produces: `TargetStateRepository::record_failure(pool: &SqlitePool, target_app_id: &str, error_code: &str, written_at: &str) -> Result<TargetAppState, AppError>`.
 - Produces: `TargetStateRepository::list_switch_statuses(pool: &SqlitePool) -> Result<Vec<TargetSwitchStatus>, AppError>`.
 
-- [ ] **Step 1: Write failing repository tests**
+- [x] **Step 1: Write failing repository tests**
 
 Append this test to `src-tauri/src/database/repositories/provider_repository.rs` inside its `#[cfg(test)]` module. If the file has no test module yet, add this full module at the end of the file:
 
@@ -304,7 +304,7 @@ pnpm rust:test config_snapshot_repository
 
 Expected: FAIL because `TargetAppState`, `TargetSwitchStatus`, `ConfigSnapshot`, `NewConfigSnapshot`, `ProviderRepository::list`, `TargetRepository::get`, and repository implementations are not complete.
 
-- [ ] **Step 2: Add backend switch state models**
+- [x] **Step 2: Add backend switch state models**
 
 Create `src-tauri/src/models/config_snapshot.rs`:
 
@@ -384,7 +384,7 @@ pub mod target_app;
 pub mod target_state;
 ```
 
-- [ ] **Step 3: Implement provider and target repository additions**
+- [x] **Step 3: Implement provider and target repository additions**
 
 Add this method to `impl ProviderRepository` in `src-tauri/src/database/repositories/provider_repository.rs`:
 
@@ -421,7 +421,7 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<TargetApp, AppError> {
 }
 ```
 
-- [ ] **Step 4: Implement config snapshot repository**
+- [x] **Step 4: Implement config snapshot repository**
 
 Replace `src-tauri/src/database/repositories/config_snapshot_repository.rs` with:
 
@@ -497,7 +497,7 @@ impl ConfigSnapshotRepository {
 }
 ```
 
-- [ ] **Step 5: Implement target state repository**
+- [x] **Step 5: Implement target state repository**
 
 Replace `src-tauri/src/database/repositories/target_state_repository.rs` with:
 
@@ -708,7 +708,7 @@ impl TargetStateRepository {
 }
 ```
 
-- [ ] **Step 6: Run repository tests**
+- [x] **Step 6: Run repository tests**
 
 Run:
 
@@ -721,7 +721,7 @@ pnpm rust:test config_snapshot_repository
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit backend repository layer**
+- [x] **Step 7: Commit backend repository layer**
 
 ```powershell
 git add src-tauri/src/models src-tauri/src/database/repositories
@@ -742,7 +742,7 @@ git commit -m "feat: add provider switch state repositories"
 - Produces: `render_provider_sandbox_config(target: &TargetApp, provider: &Provider) -> Result<String, AppError>`.
 - Produces: `AppError::Adapter` and `AppError::code(&self) -> &'static str`.
 
-- [ ] **Step 1: Write failing renderer tests**
+- [x] **Step 1: Write failing renderer tests**
 
 Create `src-tauri/src/adapters/provider_renderers.rs` with this test-first scaffold:
 
@@ -862,7 +862,7 @@ pnpm rust:test provider_renderers
 
 Expected: FAIL because `AppError::code` and the renderer implementation do not exist yet.
 
-- [ ] **Step 2: Extend AppError for adapter errors and stable code lookup**
+- [x] **Step 2: Extend AppError for adapter errors and stable code lookup**
 
 Modify `src-tauri/src/error.rs`.
 
@@ -935,7 +935,7 @@ impl AppError {
 }
 ```
 
-- [ ] **Step 3: Implement provider sandbox renderer**
+- [x] **Step 3: Implement provider sandbox renderer**
 
 Replace `src-tauri/src/adapters/provider_renderers.rs` with:
 
@@ -1065,7 +1065,7 @@ fn parse_json_object(
 
 Keep the tests from Step 1 at the bottom of the file.
 
-- [ ] **Step 4: Run renderer tests**
+- [x] **Step 4: Run renderer tests**
 
 Run:
 
@@ -1076,7 +1076,7 @@ pnpm rust:check
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit sandbox renderer**
+- [x] **Step 5: Commit sandbox renderer**
 
 ```powershell
 git add src-tauri/src/error.rs src-tauri/src/adapters
@@ -1106,7 +1106,7 @@ git commit -m "feat: add sandbox provider renderers"
 - Produces: `ProviderSwitchService::switch_provider`.
 - Produces Tauri commands `list_providers`, `list_target_switch_statuses`, and `switch_target_provider`.
 
-- [ ] **Step 1: Add provider switch models**
+- [x] **Step 1: Add provider switch models**
 
 Create `src-tauri/src/models/provider_switch.rs`:
 
@@ -1143,7 +1143,7 @@ Update `src-tauri/src/models/mod.rs` so it includes:
 pub mod provider_switch;
 ```
 
-- [ ] **Step 2: Write failing provider switch service tests**
+- [x] **Step 2: Write failing provider switch service tests**
 
 Create `src-tauri/src/services/provider_switch_service.rs` with this test-first scaffold:
 
@@ -1329,7 +1329,7 @@ pnpm rust:test provider_switch_service
 
 Expected: FAIL because the service methods are scaffolds.
 
-- [ ] **Step 3: Implement provider switch service**
+- [x] **Step 3: Implement provider switch service**
 
 Replace the non-test portion of `src-tauri/src/services/provider_switch_service.rs` with:
 
@@ -1505,7 +1505,7 @@ async fn record_failed_attempt(
 
 Keep the tests from Step 2 at the bottom of the file.
 
-- [ ] **Step 4: Add Tauri commands**
+- [x] **Step 4: Add Tauri commands**
 
 Create `src-tauri/src/commands/provider_commands.rs`:
 
@@ -1598,7 +1598,7 @@ tauri::generate_handler![
 ]
 ```
 
-- [ ] **Step 5: Run service and backend checks**
+- [x] **Step 5: Run service and backend checks**
 
 Run:
 
@@ -1609,7 +1609,7 @@ pnpm rust:check
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit provider switch backend API**
+- [x] **Step 6: Commit provider switch backend API**
 
 ```powershell
 git add src-tauri/src/models src-tauri/src/services src-tauri/src/commands src-tauri/src/lib.rs
@@ -1634,7 +1634,7 @@ git commit -m "feat: add sandbox provider switch service"
 - Produces: `listProviders`, `listTargetSwitchStatuses`, and `switchTargetProvider` frontend API wrappers.
 - Produces: Providers screen with empty state, provider list, target selector, sandbox switch action, and mutation result message.
 
-- [ ] **Step 1: Write failing frontend API wrapper tests**
+- [x] **Step 1: Write failing frontend API wrapper tests**
 
 Create `tests/apiClient.test.ts`:
 
@@ -1682,7 +1682,7 @@ pnpm test:run tests/apiClient.test.ts
 
 Expected: FAIL because the new API wrappers do not exist.
 
-- [ ] **Step 2: Add frontend provider switch types and API wrappers**
+- [x] **Step 2: Add frontend provider switch types and API wrappers**
 
 Append these types to `src/lib/api/types.ts`:
 
@@ -1760,7 +1760,7 @@ pnpm typecheck
 
 Expected: PASS.
 
-- [ ] **Step 3: Add frontend fixtures for provider switching**
+- [x] **Step 3: Add frontend fixtures for provider switching**
 
 Update the import in `src/test/fixtures.ts`:
 
@@ -1825,7 +1825,7 @@ export const targetSwitchStatusesFixture: TargetSwitchStatus[] = [
 ];
 ```
 
-- [ ] **Step 4: Write failing ProvidersScreen tests**
+- [x] **Step 4: Write failing ProvidersScreen tests**
 
 Create `tests/ProvidersScreen.test.tsx`:
 
@@ -1913,7 +1913,7 @@ pnpm test:run tests/ProvidersScreen.test.tsx
 
 Expected: FAIL because `ProvidersScreen` still does not render provider switching controls.
 
-- [ ] **Step 5: Implement ProvidersScreen**
+- [x] **Step 5: Implement ProvidersScreen**
 
 Replace `src/screens/ProvidersScreen.tsx` with:
 
@@ -2048,7 +2048,7 @@ export function ProvidersScreen() {
 }
 ```
 
-- [ ] **Step 6: Run ProvidersScreen tests**
+- [x] **Step 6: Run ProvidersScreen tests**
 
 Run:
 
@@ -2059,7 +2059,7 @@ pnpm typecheck
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit frontend Providers switching flow**
+- [x] **Step 7: Commit frontend Providers switching flow**
 
 ```powershell
 git add src/lib/api src/test/fixtures.ts src/screens/ProvidersScreen.tsx tests/apiClient.test.ts tests/ProvidersScreen.test.tsx
@@ -2080,7 +2080,7 @@ git commit -m "feat: add provider sandbox switching ui"
 - Produces: Targets screen cards with target metadata, active provider, last write status, last error code, last write time, and sandbox path.
 - Produces: README B1 verification notes.
 
-- [ ] **Step 1: Write failing TargetsScreen test**
+- [x] **Step 1: Write failing TargetsScreen test**
 
 Create `tests/TargetsScreen.test.tsx`:
 
@@ -2133,7 +2133,7 @@ pnpm test:run tests/TargetsScreen.test.tsx
 
 Expected: FAIL because `TargetsScreen` still calls `listTargetApps` and does not render switch status.
 
-- [ ] **Step 2: Implement TargetsScreen switch status display**
+- [x] **Step 2: Implement TargetsScreen switch status display**
 
 Replace `src/screens/TargetsScreen.tsx` with:
 
@@ -2187,7 +2187,7 @@ export function TargetsScreen() {
 }
 ```
 
-- [ ] **Step 3: Update README with B1 sandbox verification**
+- [x] **Step 3: Update README with B1 sandbox verification**
 
 Append this section to `README.md`:
 
@@ -2212,7 +2212,7 @@ Verification flow:
 6. Confirm the target shows the active provider, write status, and sandbox output path.
 ````
 
-- [ ] **Step 4: Run frontend verification**
+- [x] **Step 4: Run frontend verification**
 
 Run:
 
@@ -2223,7 +2223,7 @@ pnpm typecheck
 
 Expected: PASS.
 
-- [ ] **Step 5: Run full backend and frontend verification**
+- [x] **Step 5: Run full backend and frontend verification**
 
 Run:
 
@@ -2236,7 +2236,7 @@ pnpm rust:test
 
 Expected: PASS.
 
-- [ ] **Step 6: Manual smoke check**
+- [x] **Step 6: Manual smoke check**
 
 Run:
 
@@ -2256,7 +2256,7 @@ Expected:
 - `~/.ai-switch/targets/codex/provider.json` exists.
 - No real external tool config file was modified by this workflow.
 
-- [ ] **Step 7: Commit target status UI and documentation**
+- [x] **Step 7: Commit target status UI and documentation**
 
 ```powershell
 git add src/screens/TargetsScreen.tsx tests/TargetsScreen.test.tsx README.md

@@ -1,6 +1,6 @@
 # AI Switch Provider Switching B2.1 Codex Real Adapter Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
 **Goal:** Add explicit real provider switching for the Codex target by writing documented Codex user config through the existing atomic writer and snapshot pipeline.
 
@@ -71,7 +71,7 @@ README.md
 - Produces: `render_codex_provider_config(path: &Path, provider: &Provider) -> Result<CodexRenderedConfig, AppError>`.
 - Produces: `render_codex_provider_config_from_str(path: &Path, existing: &str, provider: &Provider) -> Result<CodexRenderedConfig, AppError>`.
 
-- [ ] **Step 1: Add TOML dependency**
+- [x] **Step 1: Add TOML dependency**
 
 Add this dependency to `src-tauri/Cargo.toml` under `[dependencies]`:
 
@@ -79,7 +79,7 @@ Add this dependency to `src-tauri/Cargo.toml` under `[dependencies]`:
 toml_edit = "0.22"
 ```
 
-- [ ] **Step 2: Write failing adapter tests**
+- [x] **Step 2: Write failing adapter tests**
 
 Create `src-tauri/src/adapters/codex_config.rs` with this test-first scaffold:
 
@@ -255,7 +255,7 @@ pnpm rust:test codex_config
 
 Expected: FAIL because the adapter functions are not implemented.
 
-- [ ] **Step 3: Implement Codex adapter**
+- [x] **Step 3: Implement Codex adapter**
 
 Replace `src-tauri/src/adapters/codex_config.rs` with:
 
@@ -577,7 +577,7 @@ base_url = "https://other.example.com/v1"
 }
 ```
 
-- [ ] **Step 4: Run adapter tests**
+- [x] **Step 4: Run adapter tests**
 
 Run:
 
@@ -587,7 +587,7 @@ pnpm rust:test codex_config
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit adapter**
+- [x] **Step 5: Commit adapter**
 
 ```powershell
 git add src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/src/adapters/mod.rs src-tauri/src/adapters/codex_config.rs
@@ -607,7 +607,7 @@ git commit -m "feat: add codex provider config adapter"
 - Produces: test-only `ProviderSwitchService::switch_provider_with_codex_config_path(pool, paths, request, codex_config_path)`.
 - Preserves: `ProviderSwitchOutcome` shape.
 
-- [ ] **Step 1: Write failing backend service tests**
+- [x] **Step 1: Write failing backend service tests**
 
 Append these tests to the existing `#[cfg(test)]` module in `src-tauri/src/services/provider_switch_service.rs`:
 
@@ -768,7 +768,7 @@ pnpm rust:test provider_switch_service
 
 Expected: FAIL because real-mode service helpers do not exist.
 
-- [ ] **Step 2: Implement service dispatch and real write helper**
+- [x] **Step 2: Implement service dispatch and real write helper**
 
 Modify the top imports in `src-tauri/src/services/provider_switch_service.rs`:
 
@@ -1025,7 +1025,7 @@ async fn record_failed_attempt(
 }
 ```
 
-- [ ] **Step 3: Run backend service tests**
+- [x] **Step 3: Run backend service tests**
 
 Run:
 
@@ -1036,7 +1036,7 @@ pnpm rust:test codex_config
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit backend real mode**
+- [x] **Step 4: Commit backend real mode**
 
 ```powershell
 git add src-tauri/src/services/provider_switch_service.rs
@@ -1058,7 +1058,7 @@ git commit -m "feat: add codex real provider switching"
 - Produces: TypeScript `ProviderSwitchRequest.mode: "sandbox" | "real"`.
 - Produces: `Switch Codex config` button only for selected Codex target.
 
-- [ ] **Step 1: Update API types**
+- [x] **Step 1: Update API types**
 
 Change `src/lib/api/types.ts`:
 
@@ -1076,7 +1076,7 @@ Change `ProviderSwitchOutcome.mode`:
   mode: "sandbox" | "real";
 ```
 
-- [ ] **Step 2: Update API client test for real mode**
+- [x] **Step 2: Update API client test for real mode**
 
 Append this assertion inside `tests/apiClient.test.ts` after the existing sandbox switch assertion:
 
@@ -1104,7 +1104,7 @@ pnpm test:run tests/apiClient.test.ts
 
 Expected: PASS after Step 1.
 
-- [ ] **Step 3: Write failing ProvidersScreen real-mode tests**
+- [x] **Step 3: Write failing ProvidersScreen real-mode tests**
 
 Append these tests to `tests/ProvidersScreen.test.tsx`:
 
@@ -1166,7 +1166,7 @@ pnpm test:run tests/ProvidersScreen.test.tsx
 
 Expected: FAIL because the UI does not render real Codex controls yet.
 
-- [ ] **Step 4: Implement ProvidersScreen real action**
+- [x] **Step 4: Implement ProvidersScreen real action**
 
 In `src/screens/ProvidersScreen.tsx`, change the intro copy:
 
@@ -1217,7 +1217,7 @@ Replace the error copy with:
           Provider switch failed.
 ```
 
-- [ ] **Step 5: Run frontend tests and typecheck**
+- [x] **Step 5: Run frontend tests and typecheck**
 
 Run:
 
@@ -1228,7 +1228,7 @@ pnpm typecheck
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit frontend real-mode UI**
+- [x] **Step 6: Commit frontend real-mode UI**
 
 ```powershell
 git add src/lib/api/types.ts tests/apiClient.test.ts tests/ProvidersScreen.test.tsx src/screens/ProvidersScreen.tsx
@@ -1246,7 +1246,7 @@ git commit -m "feat: add codex real switching ui"
 - Consumes: B2.1 backend and frontend behavior.
 - Produces: README smoke instructions using temporary `CODEX_HOME`.
 
-- [ ] **Step 1: Update README B2.1 notes**
+- [x] **Step 1: Update README B2.1 notes**
 
 Append this section to `README.md`:
 
@@ -1281,7 +1281,7 @@ Safe smoke test:
 8. Verify your real `~/.codex/config.toml` was not modified when using temporary `CODEX_HOME`.
 ````
 
-- [ ] **Step 2: Run full verification**
+- [x] **Step 2: Run full verification**
 
 Run:
 
@@ -1301,14 +1301,14 @@ Expected:
 - Rust check passes.
 - Rust tests pass.
 
-- [ ] **Step 3: Commit docs**
+- [x] **Step 3: Commit docs**
 
 ```powershell
 git add README.md
 git commit -m "docs: add codex real switching smoke notes"
 ```
 
-- [ ] **Step 4: Optional manual smoke**
+- [x] **Step 4: Optional manual smoke**
 
 Run only when an interactive app window is acceptable:
 

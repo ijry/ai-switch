@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
+pub mod claude_code_config;
 pub mod codex_config;
+pub mod gemini_config;
 pub mod opencode_config;
 pub mod provider_renderers;
 

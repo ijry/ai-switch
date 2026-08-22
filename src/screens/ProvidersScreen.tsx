@@ -9,7 +9,9 @@ import {
 } from "../lib/api/client";
 
 const realConfigTargetLabels: Record<string, string> = {
+  claude_code: "Claude Code",
   codex: "Codex",
+  gemini_cli: "Gemini CLI",
   opencode: "OpenCode",
 };
 

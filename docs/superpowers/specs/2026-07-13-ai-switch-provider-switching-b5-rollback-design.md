@@ -2,7 +2,7 @@
 
 ## Context
 
-B2.1 and B2.2 added real provider switching for Codex and OpenCode. Those writes already create `config_snapshots` rows with before/after hashes, but B4-era snapshots do not persist restorable backup content.
+B2.1, B2.2, and B2.3 added real provider switching for Codex, OpenCode, and Gemini CLI. Those writes create `config_snapshots` rows with before/after hashes; B5 makes successful real-write snapshots restorable by requiring backup metadata.
 
 B5 adds user-facing rollback for real provider switch writes. Rollback must restore the target config file to the state it had immediately before a successful real switch, or remove the file when the original file did not exist.
 
@@ -69,7 +69,7 @@ The UI labels rollback conservatively: it restores the prior config file state a
 
 ## Completion Criteria
 
-- Real Codex/OpenCode writes create restorable backup paths.
+- Real Codex/Gemini CLI/OpenCode writes create restorable backup paths.
 - Rollback restores previous file content for existing-file writes.
 - Rollback deletes the target file for newly-created real config files.
 - Rollback records a new snapshot and marks target state `rolled_back`.

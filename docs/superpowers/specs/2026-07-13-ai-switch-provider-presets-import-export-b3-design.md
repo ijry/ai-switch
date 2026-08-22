@@ -5,7 +5,7 @@ Status: In implementation
 
 ## Context
 
-Phase B1 added sandbox provider switching. B2.1 and B2.2 added real provider switching for Codex and OpenCode. B3 starts provider preset and import/export expansion without changing the database schema or introducing secret storage complexity.
+Phase B1 added sandbox provider switching. B2.1, B2.2, and B2.3 added real provider switching for Codex, OpenCode, and Gemini CLI. B3 starts provider preset and import/export expansion without changing the database schema or introducing secret storage complexity.
 
 The existing import format is `example_json`, which accepts `providers` and `accounts`. B3 reuses that format for export so exported data can be pasted back into the existing import flow.
 

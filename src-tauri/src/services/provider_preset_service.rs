@@ -76,7 +76,7 @@ fn provider_presets() -> Vec<ProviderPreset> {
             kind: "openai_compatible".to_string(),
             base_url: Some("https://api.openai.com/v1".to_string()),
             model_config_json: r#"{"default":"gpt-4.1","model_name":"GPT 4.1"}"#.to_string(),
-            target_options_json: r#"{"env_key":"OPENAI_API_KEY","codex":{"env_key":"OPENAI_API_KEY"},"opencode":{"env_key":"OPENAI_API_KEY","model":"gpt-4.1","model_name":"GPT 4.1"}}"#.to_string(),
+            target_options_json: r#"{"env_key":"OPENAI_API_KEY","claude_code":{"env_key":"OPENAI_API_KEY","model":"gpt-4.1"},"codex":{"env_key":"OPENAI_API_KEY"},"opencode":{"env_key":"OPENAI_API_KEY","model":"gpt-4.1","model_name":"GPT 4.1"}}"#.to_string(),
             secret_env_key: Some("OPENAI_API_KEY".to_string()),
         },
         ProviderPreset {
@@ -86,7 +86,7 @@ fn provider_presets() -> Vec<ProviderPreset> {
             kind: "openai_compatible".to_string(),
             base_url: Some("http://127.0.0.1:11434/v1".to_string()),
             model_config_json: r#"{"default":"qwen2.5-coder","model_name":"Qwen Coder"}"#.to_string(),
-            target_options_json: r#"{"env_key":"OPENAI_API_KEY","codex":{"env_key":"OPENAI_API_KEY"},"opencode":{"env_key":"OPENAI_API_KEY","model":"qwen2.5-coder","model_name":"Qwen Coder"}}"#.to_string(),
+            target_options_json: r#"{"env_key":"OPENAI_API_KEY","claude_code":{"env_key":"OPENAI_API_KEY","model":"qwen2.5-coder"},"codex":{"env_key":"OPENAI_API_KEY"},"opencode":{"env_key":"OPENAI_API_KEY","model":"qwen2.5-coder","model_name":"Qwen Coder"}}"#.to_string(),
             secret_env_key: Some("OPENAI_API_KEY".to_string()),
         },
     ]
