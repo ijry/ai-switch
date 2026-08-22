@@ -32,7 +32,7 @@ use crate::services::route_model_capability::{
     supports_requested_model,
 };
 use crate::services::route_protocol_bridge::{
-    prepare_request as prepare_protocol_bridge_request,
+    is_anthropic_count_tokens_path, prepare_request as prepare_protocol_bridge_request,
     transform_response_with_tool_namespaces as transform_protocol_bridge_response,
     PreparedBridgeRequest, ProtocolBridgeKind,
 };
@@ -587,6 +587,30 @@ async fn forward_request(
     let body_bytes = axum::body::to_bytes(body, 32 * 1024 * 1024)
         .await
         .map_err(|err| format!("Could not read proxy request body: {err}"))?;
+
+    // Anthropic's token-counting endpoint, answered locally. No bridge can
+    // convert it, and most third-party relays do not implement it — forwarding
+    // it earns a 404 that the retry loop would charge against every credential
+    // in the pool, cooling down accounts that are perfectly healthy.
+    if is_anthropic_count_tokens_path(&path) {
+        if method != Method::POST {
+            return Ok((
+                StatusCode::METHOD_NOT_ALLOWED,
+                [("content-type", "application/json"), ("allow", "POST")],
+                json!({
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": "Method not allowed for count_tokens",
+                    }
+                })
+                .to_string(),
+            )
+                .into_response());
+        }
+        return Ok(json_count_tokens_response(&body_bytes));
+    }
+
     let requested_model = requested_model_from_body(&body_bytes);
     let credentials = select_pool_credentials(pool, &platform)
         .await
@@ -4171,6 +4195,50 @@ fn json_models_list_response(
         payload.to_string(),
     )
         .into_response()
+}
+
+fn json_count_tokens_response(body: &[u8]) -> Response {
+    (
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        json!({ "input_tokens": estimate_anthropic_input_tokens(body) }).to_string(),
+    )
+        .into_response()
+}
+
+/// Rough token estimate over the text content of an Anthropic request: counts
+/// `system`, every message's text, and tool schemas at ~4 characters per token.
+fn estimate_anthropic_input_tokens(body: &[u8]) -> i64 {
+    const CHARS_PER_TOKEN: i64 = 4;
+
+    fn text_len(value: &Value) -> i64 {
+        match value {
+            Value::String(text) => text.chars().count() as i64,
+            Value::Array(items) => items.iter().map(text_len).sum(),
+            Value::Object(fields) => fields
+                .iter()
+                .map(|(key, nested)| match key.as_str() {
+                    // Base64 payloads are not text; skip them rather than
+                    // inflating the estimate by megabytes of encoded bytes.
+                    "data" if nested.is_string() => 0,
+                    _ => text_len(nested),
+                })
+                .sum(),
+            _ => 0,
+        }
+    }
+
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return 0;
+    };
+    let chars: i64 = ["system", "messages", "tools", "tool_choice"]
+        .iter()
+        .filter_map(|key| value.get(*key))
+        .map(text_len)
+        .sum();
+    // Always report at least 1 token for a non-empty request so clients do not
+    // read the estimate as "no context".
+    (chars / CHARS_PER_TOKEN).max(i64::from(chars > 0))
 }
 
 fn insert_header(headers: &mut HeaderMap, name: &'static str, value: &str) -> Result<(), String> {
@@ -9341,5 +9409,83 @@ data: [DONE]\n\n";
         assert!(build_route_models_list_payload("codex", &[credential])
             .get("models")
             .is_none());
+    }
+
+    #[test]
+    fn count_tokens_path_is_recognized_across_version_spellings() {
+        for path in [
+            "/v1/messages/count_tokens",
+            "/messages/count_tokens",
+            "/v1/messages/count_tokens/",
+        ] {
+            assert!(
+                is_anthropic_count_tokens_path(path),
+                "should recognize {path}"
+            );
+        }
+        // The chat endpoint itself, and unrelated sub-resources, must not match.
+        for path in [
+            "/v1/messages",
+            "/v1/messages/batches",
+            "/v1/responses",
+            "/v1/count_tokens",
+        ] {
+            assert!(
+                !is_anthropic_count_tokens_path(path),
+                "should not recognize {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn count_tokens_estimate_covers_text_and_skips_base64() {
+        let empty = estimate_anthropic_input_tokens(br#"{"messages":[]}"#);
+        assert_eq!(empty, 0, "an empty request has no tokens");
+
+        let body = serde_json::json!({
+            "model": "claude-sonnet-4",
+            "system": "You are concise.",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello there"}]}]
+        });
+        let counted = estimate_anthropic_input_tokens(&serde_json::to_vec(&body).unwrap());
+        assert!(counted > 0, "text content must produce a positive estimate");
+
+        // A base64 image must not inflate the estimate by its encoded size.
+        let with_image = serde_json::json!({
+            "model": "claude-sonnet-4",
+            "system": "You are concise.",
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "Hello there"},
+                {"type": "image", "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "A".repeat(100_000)
+                }}
+            ]}]
+        });
+        let with_image_count =
+            estimate_anthropic_input_tokens(&serde_json::to_vec(&with_image).unwrap());
+        assert!(
+            with_image_count < counted + 500,
+            "base64 payload must not dominate the estimate: {with_image_count} vs {counted}"
+        );
+    }
+
+    #[test]
+    fn count_tokens_response_uses_anthropic_shape() {
+        let body = serde_json::json!({
+            "model": "claude-sonnet-4",
+            "messages": [{"role": "user", "content": "Count these tokens please"}]
+        });
+        let response = json_count_tokens_response(&serde_json::to_vec(&body).unwrap());
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
     }
 }
