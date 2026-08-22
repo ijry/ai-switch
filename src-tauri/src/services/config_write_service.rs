@@ -1026,6 +1026,7 @@ mod tests {
                 input: RouteConfigInput {
                     base_url: BASE_URL.to_string(),
                     route_proxy_key: ROUTE_PROXY_KEY.to_string(),
+                    subagent_model: None,
                 },
             }
         }
@@ -1044,6 +1045,7 @@ mod tests {
                 input: RouteConfigInput {
                     base_url: BASE_URL.to_string(),
                     route_proxy_key: ROUTE_PROXY_KEY.to_string(),
+                    subagent_model: None,
                 },
             }
         }

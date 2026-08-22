@@ -18,6 +18,11 @@ pub(super) const INVALID_EXISTING_CONFIG_CODE: &str = "validation.route_config_e
 pub struct RouteConfigInput {
     pub base_url: String,
     pub route_proxy_key: String,
+    /// Generic alias written into the agent's subagent-model env key, or `None`
+    /// to clear it. Deliberately an alias rather than an upstream model name:
+    /// one settings file serves the whole pool, so each account must translate
+    /// it through its own mapping.
+    pub subagent_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -144,6 +149,7 @@ mod tests {
         RouteConfigInput {
             base_url: BASE_URL.to_string(),
             route_proxy_key: ROUTE_PROXY_KEY.to_string(),
+            subagent_model: None,
         }
     }
 

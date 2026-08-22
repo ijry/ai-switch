@@ -7,7 +7,7 @@ use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepo
 use crate::error::AppError;
 use crate::models::config_snapshot::ConfigWriteOutcome;
 use crate::models::platform::{PlatformId, PlatformOperation};
-use crate::models::route_credential::RouteCredentialPoolScope;
+use crate::models::route_credential::{RouteCredentialPoolScope, CLAUDE_SUBAGENT_MODEL_ALIAS};
 use crate::models::route_credential_transfer::RouteCredentialSelectionContext;
 use crate::paths::AppPaths;
 use crate::services::config_write_service::{
@@ -72,12 +72,14 @@ impl RouteConfigService {
         if platform == PlatformId::Codex {
             Self::write_codex_model_catalog(pool, home).await?;
         }
+        let subagent_model = Self::resolve_subagent_model(pool, platform).await?;
         let request = ConfigWriteRequest {
             adapter,
             home: home.to_path_buf(),
             input: RouteConfigInput {
                 base_url: base_url.to_string(),
                 route_proxy_key: route_proxy_key.clone(),
+                subagent_model,
             },
         };
         match ConfigWriteCoordinator::write_group(paths, pool, runtime, vec![request]).await {
@@ -162,12 +164,14 @@ impl RouteConfigService {
             if parsed == PlatformId::Codex {
                 Self::write_codex_model_catalog(pool, home).await?;
             }
+            let subagent_model = Self::resolve_subagent_model(pool, parsed).await?;
             requests.push(ConfigWriteRequest {
                 adapter,
                 home: home.to_path_buf(),
                 input: RouteConfigInput {
                     base_url: base_url.to_string(),
                     route_proxy_key,
+                    subagent_model,
                 },
             });
         }
@@ -197,12 +201,14 @@ impl RouteConfigService {
         let base_url = normalize_base_url(base_url)?;
         let platform = PlatformId::parse(platform)?;
         PlatformCapabilityService::require(platform, PlatformOperation::ConfigWrite)?;
+        let subagent_model = Self::resolve_subagent_model(pool, platform).await?;
         let request = ConfigWriteRequest {
             adapter: route_config_adapter(platform)?,
             home: home.to_path_buf(),
             input: RouteConfigInput {
                 base_url: base_url.to_string(),
                 route_proxy_key: route_proxy_key.to_string(),
+                subagent_model,
             },
         };
         if platform == PlatformId::Codex {
@@ -218,6 +224,50 @@ impl RouteConfigService {
                 details: None,
                 recoverable: false,
             })
+    }
+
+    /// Resolves the alias to write into the agent's subagent-model env key, or
+    /// `None` when no enabled in-pool account configures one (which clears it).
+    ///
+    /// Always the generic alias, never an account's upstream model name: one
+    /// settings file serves the whole pool, so the proxy must do the per-account
+    /// translation. Official credentials are excluded — their bodies are
+    /// forwarded without model rewriting, so an alias would reach the vendor
+    /// verbatim and 404. Like the Codex catalog, this does not filter on
+    /// `status`, so a cooling account still counts.
+    async fn resolve_subagent_model(
+        pool: &SqlitePool,
+        platform: PlatformId,
+    ) -> Result<Option<String>, AppError> {
+        if platform != PlatformId::Claude {
+            return Ok(None);
+        }
+
+        let ids = RoutePoolRepository::list_member_ids(pool, PlatformId::Claude.as_str()).await?;
+        let credentials = RouteCredentialRepository::list_by_ids(
+            pool,
+            &ids,
+            &RouteCredentialSelectionContext {
+                platform: PlatformId::Claude.as_str().to_string(),
+                pool_scope: RouteCredentialPoolScope::InPool,
+            },
+        )
+        .await?;
+
+        let configured = credentials
+            .iter()
+            .filter(|credential| credential.kind == "api")
+            .any(|credential| {
+                parse_model_capability(&credential.config_json)
+                    .mappings
+                    .iter()
+                    .any(|mapping| {
+                        mapping.from.trim() == CLAUDE_SUBAGENT_MODEL_ALIAS
+                            && !mapping.to.trim().is_empty()
+                    })
+            });
+
+        Ok(configured.then(|| CLAUDE_SUBAGENT_MODEL_ALIAS.to_string()))
     }
 
     async fn write_codex_model_catalog(pool: &SqlitePool, home: &Path) -> Result<(), AppError> {

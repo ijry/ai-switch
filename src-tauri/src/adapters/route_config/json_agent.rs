@@ -11,6 +11,9 @@ pub(super) struct JsonAgentAdapter {
     platform: PlatformId,
     config_dir: &'static str,
     platform_base_url_keys: &'static [&'static str],
+    /// Env key that pins the model for agent-spawned subagents. Claude-only —
+    /// gemini and grok have no equivalent, so they must never receive it.
+    subagent_env_key: Option<&'static str>,
 }
 
 impl JsonAgentAdapter {
@@ -20,6 +23,7 @@ impl JsonAgentAdapter {
             platform: PlatformId::Claude,
             config_dir: ".claude",
             platform_base_url_keys: &["ANTHROPIC_BASE_URL"],
+            subagent_env_key: Some("CLAUDE_CODE_SUBAGENT_MODEL"),
         }
     }
 
@@ -29,6 +33,7 @@ impl JsonAgentAdapter {
             platform: PlatformId::Gemini,
             config_dir: ".gemini",
             platform_base_url_keys: &["GEMINI_API_BASE_URL", "GOOGLE_GEMINI_BASE_URL"],
+            subagent_env_key: None,
         }
     }
 
@@ -38,6 +43,7 @@ impl JsonAgentAdapter {
             platform: PlatformId::Grok,
             config_dir: ".grok",
             platform_base_url_keys: &["XAI_API_BASE_URL", "GROK_API_BASE_URL"],
+            subagent_env_key: None,
         }
     }
 }
@@ -106,6 +112,24 @@ impl TargetAdapter for JsonAgentAdapter {
             "AI_SWITCH_ROUTE_PROXY_API_KEY".to_string(),
             Value::String(input.route_proxy_key.clone()),
         );
+
+        // Mirror-inverse: write the alias when the pool provides one, remove it
+        // otherwise, so a stale value never hardens into an explicit setting.
+        if let Some(key) = self.subagent_env_key {
+            match input
+                .subagent_model
+                .as_deref()
+                .map(str::trim)
+                .filter(|alias| !alias.is_empty())
+            {
+                Some(alias) => {
+                    env.insert(key.to_string(), Value::String(alias.to_string()));
+                }
+                None => {
+                    env.remove(key);
+                }
+            }
+        }
 
         let rendered = if pretty {
             serde_json::to_vec_pretty(&config)
