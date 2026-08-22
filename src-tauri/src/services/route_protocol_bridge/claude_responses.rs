@@ -1,3 +1,4 @@
+use super::common::stringify_tool_result_content;
 use super::{sse, TransformedBridgeResponse};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -110,19 +111,25 @@ fn convert_user_message(blocks: &[Value], input: &mut Vec<Value>) -> Result<(), 
                     content = Vec::new();
                 }
                 let call_id = required_string(object, "tool_use_id", "tool_result")?;
-                let output = object
+                let mut output = object
                     .get("content")
                     .map(stringify_tool_result_content)
                     .transpose()?
                     .unwrap_or_default();
+                // Anthropic marks a failed tool call with `is_error`; the
+                // Responses API has no equivalent field on function_call_output.
+                if object.get("is_error").and_then(Value::as_bool) == Some(true) {
+                    output = format!("[tool error] {output}");
+                }
                 input.push(json!({
                     "type": "function_call_output",
                     "call_id": call_id,
                     "output": output
                 }));
             }
-            Some(other) => return Err(format!("Unsupported Anthropic user content type: {other}")),
-            None => return Err("Anthropic content block is missing type".to_string()),
+            // Unknown/newer block types are skipped: a degraded turn beats a 502
+            // that also marks every credential in the pool as failed.
+            Some(_) | None => {}
         }
     }
     if !content.is_empty() {
@@ -164,12 +171,11 @@ fn convert_assistant_message(blocks: &[Value], input: &mut Vec<Value>) -> Result
                     "arguments": arguments
                 }));
             }
-            Some(other) => {
-                return Err(format!(
-                    "Unsupported Anthropic assistant content type: {other}"
-                ));
-            }
-            None => return Err("Anthropic content block is missing type".to_string()),
+            // Claude Code replays thinking blocks in assistant history whenever
+            // extended thinking is on. The Responses API has no inbound slot for
+            // them, so drop them instead of failing every turn after the first.
+            Some("thinking") | Some("redacted_thinking") => {}
+            Some(_) | None => {}
         }
     }
     if !content.is_empty() {
@@ -382,7 +388,9 @@ fn responses_sse_to_anthropic(body: &[u8]) -> Result<Vec<u8>, String> {
     } else if aggregate.status == "incomplete" {
         "max_tokens"
     } else if aggregate.status == "failed" {
-        "error"
+        // "error" is not in Anthropic's stop_reason enum, and Claude Code
+        // validates against it. A failed turn reads as a refusal.
+        "refusal"
     } else {
         "end_turn"
     };
@@ -498,7 +506,8 @@ fn responses_stop_reason(value: &Value, content: &[Value]) -> &'static str {
     }
     match value.get("status").and_then(Value::as_str) {
         Some("incomplete") => "max_tokens",
-        Some("failed") => "error",
+        // "error" is not a valid Anthropic stop_reason.
+        Some("failed") => "refusal",
         _ => "end_turn",
     }
 }
@@ -662,20 +671,6 @@ fn content_blocks(value: &Value) -> Result<Vec<Value>, String> {
     }
 }
 
-fn stringify_tool_result_content(value: &Value) -> Result<String, String> {
-    match value {
-        Value::String(text) => Ok(text.clone()),
-        Value::Array(parts) => Ok(parts
-            .iter()
-            .filter_map(|part| part.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("")),
-        Value::Null => Ok(String::new()),
-        _ => serde_json::to_string(value)
-            .map_err(|error| format!("Could not serialize tool result content: {error}")),
-    }
-}
-
 fn parse_json_or_string(value: &str) -> Value {
     serde_json::from_str::<Value>(value).unwrap_or_else(|_| Value::String(value.to_string()))
 }
@@ -771,5 +766,37 @@ mod tests {
         assert_eq!(output["content"][0]["type"], "text");
         assert_eq!(output["content"][1]["type"], "tool_use");
         assert_eq!(output["stop_reason"], "tool_use");
+    }
+
+    /// Claude Code replays thinking blocks in assistant history whenever extended
+    /// thinking is on, so erroring here wedges every session after turn one.
+    #[test]
+    fn drops_replayed_thinking_blocks() {
+        let body = json!({
+            "model": "gpt-5",
+            "max_tokens": 128,
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "Find x"}]},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "Let me look.", "signature": "sig"},
+                    {"type": "redacted_thinking", "data": "opaque"},
+                    {"type": "text", "text": "Found it."}
+                ]},
+                {"role": "user", "content": [{"type": "text", "text": "thanks"}]}
+            ]
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &anthropic_request_to_responses(&serde_json::to_vec(&body).unwrap())
+                .expect("replayed thinking must not fail the request"),
+        )
+        .unwrap();
+
+        let rendered = serde_json::to_string(&converted).unwrap();
+        assert!(
+            !rendered.contains("Let me look."),
+            "reasoning must not be forwarded as input: {rendered}"
+        );
+        assert!(rendered.contains("Found it."));
     }
 }

@@ -1,7 +1,9 @@
+mod anthropic_cache;
 mod claude_chat;
 mod claude_gemini;
 mod claude_responses;
 mod common;
+mod gemini_schema;
 mod responses_chat;
 mod responses_claude;
 mod responses_gemini;
@@ -36,6 +38,16 @@ pub struct PreparedBridgeRequest {
 pub struct TransformedBridgeResponse {
     pub body: Vec<u8>,
     pub content_type: Option<String>,
+}
+
+/// True when the path is Anthropic's `/v1/messages/count_tokens` endpoint.
+///
+/// Claude Code calls this to size its context meter. It is not a chat
+/// completion, so no bridge can convert it — and most third-party relays do not
+/// implement it. Forwarding it upstream earns a 404 that the retry loop would
+/// otherwise charge against every credential in the pool.
+pub fn is_anthropic_count_tokens_path(path: &str) -> bool {
+    common::is_create_subpath(path, "messages", "count_tokens")
 }
 
 pub fn prepare_request(
@@ -193,6 +205,47 @@ fn passthrough_request(path: &str, body: &[u8], streaming: bool) -> PreparedBrid
 
 #[cfg(test)]
 mod tests {
+    /// The streaming flag must be read from the *client* body. The Gemini
+    /// converter moves the flag into the `?alt=sse` query and emits no `stream`
+    /// key, so a caller that recomputes it from the converted body always gets
+    /// false — and a stream cut mid-generation is then reported as complete.
+    #[test]
+    fn gemini_bridge_reports_streaming_though_converted_body_has_no_stream_key() {
+        let body = serde_json::to_vec(&json!({
+            "model": "gemini-2.5-flash",
+            "max_tokens": 64,
+            "stream": true,
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .unwrap();
+
+        let prepared = prepare_request(
+            PlatformId::Claude,
+            ApiDialect::Gemini,
+            "/v1/messages",
+            &body,
+        )
+        .expect("converted request");
+
+        assert!(
+            prepared.streaming,
+            "the bridge must report the client's streaming intent"
+        );
+        assert!(
+            prepared.upstream_query.as_deref() == Some("alt=sse"),
+            "streaming Gemini requests go to ?alt=sse: {:?}",
+            prepared.upstream_query
+        );
+
+        // The converted body carries no `stream` key, which is exactly why the
+        // flag cannot be recovered from it downstream.
+        let converted: Value = serde_json::from_slice(&prepared.body).unwrap();
+        assert!(
+            converted.get("stream").is_none(),
+            "precondition: Gemini body has no stream key: {converted}"
+        );
+    }
+
     use super::{
         prepare_request, transform_response, transform_response_with_tool_namespaces,
         ProtocolBridgeKind,
@@ -659,14 +712,14 @@ mod tests {
         let converted: Value = serde_json::from_slice(&prepared.body).expect("chat json");
         let messages = converted["messages"].as_array().expect("messages");
 
-        let system_count = messages
-            .iter()
-            .filter(|m| m["role"] == "system")
-            .count();
+        let system_count = messages.iter().filter(|m| m["role"] == "system").count();
         assert_eq!(system_count, 1, "system messages should collapse to one");
         assert_eq!(messages[0]["role"], "system");
         let head = messages[0]["content"].as_str().unwrap_or_default();
-        assert!(head.contains("BASE") && head.contains("DEV"), "head: {head}");
+        assert!(
+            head.contains("BASE") && head.contains("DEV"),
+            "head: {head}"
+        );
         assert_eq!(messages[1]["role"], "user");
         assert_eq!(messages[1]["content"], "hi");
     }
@@ -1537,7 +1590,10 @@ mod tests {
 
         let completed = completed_response(&output);
         let items = completed["output"].as_array().expect("output array");
-        assert!(!items.is_empty(), "reasoning-only stream must not yield empty output");
+        assert!(
+            !items.is_empty(),
+            "reasoning-only stream must not yield empty output"
+        );
         assert_eq!(items[0]["type"], "reasoning");
         assert_eq!(items[0]["summary"][0]["text"], "Thinking only.");
     }

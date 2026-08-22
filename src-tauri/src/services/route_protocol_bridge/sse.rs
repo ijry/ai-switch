@@ -1,5 +1,12 @@
 use serde_json::{json, Value};
 
+/// Collects the JSON payload of every `data:` record in an SSE body.
+///
+/// Unparseable records are skipped rather than failing the whole parse. A
+/// generation that was cut mid-record leaves a truncated tail, and some
+/// gateways omit the blank line between records so two get joined — aborting
+/// there would throw away every valid record that preceded the bad one and
+/// charge the failure against the credential.
 pub(super) fn parse_sse_data_records(body: &[u8]) -> Result<Vec<Value>, String> {
     let text = String::from_utf8_lossy(body).replace("\r\n", "\n");
     let mut records = Vec::new();
@@ -12,12 +19,30 @@ pub(super) fn parse_sse_data_records(body: &[u8]) -> Result<Vec<Value>, String> 
         if data.is_empty() || data == "[DONE]" {
             continue;
         }
-        records.push(
-            serde_json::from_str::<Value>(&data)
-                .map_err(|error| format!("SSE data is invalid JSON: {error}"))?,
-        );
+        match serde_json::from_str::<Value>(&data) {
+            Ok(record) => records.push(record),
+            // A gateway that drops the blank line between records yields
+            // `{...}\n{...}` in one block; recover both instead of losing them.
+            Err(_) => records.extend(split_concatenated_json(&data)),
+        }
     }
     Ok(records)
+}
+
+/// Recovers records from a block holding several whitespace-separated JSON
+/// values. Returns nothing when the text is simply truncated or malformed.
+fn split_concatenated_json(data: &str) -> Vec<Value> {
+    let mut deserializer = serde_json::Deserializer::from_str(data).into_iter::<Value>();
+    let mut records = Vec::new();
+    for value in deserializer.by_ref() {
+        match value {
+            Ok(record) => records.push(record),
+            // Stop at the first unreadable value: anything after it cannot be
+            // positioned reliably.
+            Err(_) => break,
+        }
+    }
+    records
 }
 
 pub(super) fn responses_events_from_completed_response(
@@ -301,4 +326,77 @@ fn push_responses_event(output: &mut String, event: &str, value: Value) -> Resul
     );
     output.push_str("\n\n");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_sse_data_records;
+
+    #[test]
+    fn parses_records_and_skips_terminal_markers() {
+        let body = concat!(
+            "data: {\"a\":1}\n\n",
+            "data: [DONE]\n\n",
+            "\n\n",
+            ": keep-alive comment\n\n",
+            "data: {\"b\":2}\n\n"
+        );
+
+        let records = parse_sse_data_records(body.as_bytes()).unwrap();
+        assert_eq!(records.len(), 2, "records={records:?}");
+        assert_eq!(records[0]["a"], 1);
+        assert_eq!(records[1]["b"], 2);
+    }
+
+    /// A stream cut mid-record leaves a truncated tail. Aborting there would
+    /// discard every valid record that preceded it.
+    #[test]
+    fn truncated_tail_does_not_discard_earlier_records() {
+        let body = concat!(
+            "data: {\"id\":\"chatcmpl-1\",\"text\":\"hello\"}\n\n",
+            "data: {\"id\":\"chatcmpl-1\",\"text\":\" world\"}\n\n",
+            "data: {\"id\":\"chatcmp"
+        );
+
+        let records = parse_sse_data_records(body.as_bytes()).unwrap();
+        assert_eq!(records.len(), 2, "earlier records must survive");
+        assert_eq!(records[1]["text"], " world");
+    }
+
+    /// Some gateways omit the blank line between records, joining two payloads
+    /// into one block. Both should be recovered.
+    #[test]
+    fn recovers_records_joined_without_a_blank_line() {
+        let body = "data: {\"a\":1}\ndata: {\"b\":2}\n\n";
+
+        let records = parse_sse_data_records(body.as_bytes()).unwrap();
+        assert_eq!(records.len(), 2, "records={records:?}");
+        assert_eq!(records[0]["a"], 1);
+        assert_eq!(records[1]["b"], 2);
+    }
+
+    #[test]
+    fn handles_crlf_and_multiline_data_continuation() {
+        // CRLF terminators, plus a payload split across two data: lines.
+        let body = "data: {\"a\":\r\ndata: 1}\r\n\r\ndata: {\"b\":2}\r\n\r\n";
+
+        let records = parse_sse_data_records(body.as_bytes()).unwrap();
+        assert_eq!(records.len(), 2, "records={records:?}");
+        assert_eq!(records[0]["a"], 1);
+        assert_eq!(records[1]["b"], 2);
+    }
+
+    #[test]
+    fn a_single_unreadable_record_does_not_fail_the_parse() {
+        let body = concat!(
+            "data: {\"good\":1}\n\n",
+            "data: not json at all\n\n",
+            "data: {\"good\":2}\n\n"
+        );
+
+        let records = parse_sse_data_records(body.as_bytes()).unwrap();
+        assert_eq!(records.len(), 2, "the readable records must survive");
+        assert_eq!(records[0]["good"], 1);
+        assert_eq!(records[1]["good"], 2);
+    }
 }

@@ -1,3 +1,4 @@
+use super::common::stringify_tool_result_content;
 use super::{sse, TransformedBridgeResponse};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -68,23 +69,64 @@ fn convert_messages(messages: &Value) -> Result<Value, String> {
     let messages = messages
         .as_array()
         .ok_or_else(|| "Anthropic messages must be an array".to_string())?;
+    // Gemini correlates a functionResponse to its call by function NAME, while
+    // Anthropic uses an opaque tool_use_id. Pre-scan assistant turns so every
+    // tool_result can recover the name its id referred to.
+    let function_names = collect_tool_use_names(messages);
     let mut contents = Vec::with_capacity(messages.len());
     for message in messages {
         let object = message
             .as_object()
             .ok_or_else(|| "Anthropic messages entries must be objects".to_string())?;
+        // Gemini accepts only "user" and "model"; anything else (including a
+        // client-injected "system" turn) folds into "user".
         let role = match object.get("role").and_then(Value::as_str).unwrap_or("user") {
             "assistant" => "model",
-            "user" => "user",
-            other => return Err(format!("Unsupported Anthropic message role: {other}")),
+            _ => "user",
         };
-        let parts = convert_content_blocks(object.get("content").unwrap_or(&Value::Null))?;
+        let parts = convert_content_blocks(
+            object.get("content").unwrap_or(&Value::Null),
+            &function_names,
+        )?;
+        // Gemini rejects a Content whose parts array is empty.
+        if parts.is_empty() {
+            continue;
+        }
         contents.push(json!({"role": role, "parts": parts}));
     }
     Ok(Value::Array(contents))
 }
 
-fn convert_content_blocks(content: &Value) -> Result<Vec<Value>, String> {
+/// Maps every assistant `tool_use` id to its function name so a later
+/// `tool_result` can be re-keyed for Gemini's name-based correlation.
+fn collect_tool_use_names(messages: &[Value]) -> BTreeMap<String, String> {
+    let mut names = BTreeMap::new();
+    for message in messages {
+        let Some(content) = message.get("content").and_then(Value::as_array) else {
+            continue;
+        };
+        for block in content {
+            let Some(object) = block.as_object() else {
+                continue;
+            };
+            if object.get("type").and_then(Value::as_str) != Some("tool_use") {
+                continue;
+            }
+            if let (Some(id), Some(name)) = (
+                object.get("id").and_then(Value::as_str),
+                object.get("name").and_then(Value::as_str),
+            ) {
+                names.insert(id.to_string(), name.to_string());
+            }
+        }
+    }
+    names
+}
+
+fn convert_content_blocks(
+    content: &Value,
+    function_names: &BTreeMap<String, String>,
+) -> Result<Vec<Value>, String> {
     let blocks = content_blocks(content)?;
     let mut parts = Vec::with_capacity(blocks.len());
     for block in blocks {
@@ -96,52 +138,90 @@ fn convert_content_blocks(content: &Value) -> Result<Vec<Value>, String> {
                 let text = object.get("text").and_then(Value::as_str).unwrap_or("");
                 parts.push(json!({"text": text}));
             }
-            Some("image") => parts.push(convert_image_block(object)?),
+            Some("image") => {
+                // A non-base64 source has no bytes to forward; skip it rather
+                // than fail the whole request over one unfetchable attachment.
+                if let Some(part) = convert_image_block(object) {
+                    parts.push(part);
+                }
+            }
+            Some("document") => {
+                if let Some(part) = convert_document_block(object) {
+                    parts.push(part);
+                }
+            }
             Some("tool_use") => {
                 let name = required_string(object, "name", "tool_use")?;
                 let input = object.get("input").cloned().unwrap_or_else(|| json!({}));
                 parts.push(json!({"functionCall": {"name": name, "args": input}}));
             }
             Some("tool_result") => {
-                let name = required_string(object, "tool_use_id", "tool_result")?;
+                // Gemini keys functionResponse by the declared function name, not
+                // by an opaque id, so the caller resolves it from history first.
+                let tool_use_id = required_string(object, "tool_use_id", "tool_result")?;
+                let name = function_names
+                    .get(tool_use_id)
+                    .map(String::as_str)
+                    .unwrap_or(tool_use_id);
                 let output = object
                     .get("content")
                     .map(stringify_tool_result_content)
                     .transpose()?
                     .unwrap_or_default();
+                // Gemini's functionResponse has no error flag, so an Anthropic
+                // `is_error` result has to say so in the payload.
+                let response = if object.get("is_error").and_then(Value::as_bool) == Some(true) {
+                    json!({"error": output})
+                } else {
+                    json!({"output": output})
+                };
                 parts.push(json!({
                     "functionResponse": {
                         "name": name,
-                        "response": {"output": output}
+                        "response": response
                     }
                 }));
             }
-            Some(other) => return Err(format!("Unsupported Anthropic content type: {other}")),
-            None => return Err("Anthropic content block is missing type".to_string()),
+            // Anthropic-only reasoning blocks. Claude Code replays these in
+            // assistant history, and Gemini has no inbound equivalent, so drop
+            // them instead of failing every turn after the first.
+            Some("thinking") | Some("redacted_thinking") => {}
+            // Unknown/newer block types (server_tool_use, mcp_tool_use, …) are
+            // dropped: a degraded turn beats a 502 that also fails the pool.
+            Some(_) | None => {}
         }
     }
     Ok(parts)
 }
 
-fn convert_image_block(object: &Map<String, Value>) -> Result<Value, String> {
-    let source = object
-        .get("source")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "Anthropic image block is missing source".to_string())?;
+/// Returns `None` when the block carries no inlinable bytes (a `url`/`file`
+/// source, or a missing media_type/data), so the caller can skip it.
+fn convert_image_block(object: &Map<String, Value>) -> Option<Value> {
+    inline_data_part(object, None)
+}
+
+/// Anthropic `document` blocks (PDF attachments) map onto the same Gemini
+/// inlineData channel; media_type defaults to PDF when omitted.
+fn convert_document_block(object: &Map<String, Value>) -> Option<Value> {
+    inline_data_part(object, Some("application/pdf"))
+}
+
+fn inline_data_part(object: &Map<String, Value>, default_mime: Option<&str>) -> Option<Value> {
+    let source = object.get("source").and_then(Value::as_object)?;
     let source_type = source
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or("base64");
     if source_type != "base64" {
-        return Err(format!(
-            "Unsupported Anthropic image source type: {source_type}"
-        ));
+        return None;
     }
-    Ok(json!({
-        "inlineData": {
-            "mimeType": required_string(source, "media_type", "image source")?,
-            "data": required_string(source, "data", "image source")?
-        }
+    let mime_type = source
+        .get("media_type")
+        .and_then(Value::as_str)
+        .or(default_mime)?;
+    let data = source.get("data").and_then(Value::as_str)?;
+    Some(json!({
+        "inlineData": {"mimeType": mime_type, "data": data}
     }))
 }
 
@@ -172,19 +252,13 @@ fn convert_tools(tools: &Value) -> Result<Value, String> {
             .as_object()
             .ok_or_else(|| "Anthropic tool entries must be objects".to_string())?;
         let name = required_string(object, "name", "tool")?;
-        let mut declaration = Map::new();
-        declaration.insert("name".to_string(), Value::String(name.to_string()));
-        if let Some(description) = object.get("description") {
-            declaration.insert("description".to_string(), description.clone());
-        }
-        declaration.insert(
-            "parameters".to_string(),
-            object
-                .get("input_schema")
-                .cloned()
-                .unwrap_or_else(|| json!({"type": "object", "properties": {}})),
-        );
-        declarations.push(Value::Object(declaration));
+        // Gemini's `parameters` is a restricted proto that rejects JSON Schema
+        // keywords; the sanitizer picks a channel that can carry this schema.
+        declarations.push(super::gemini_schema::build_gemini_function_declaration(
+            name,
+            object.get("description"),
+            object.get("input_schema"),
+        ));
     }
     Ok(json!([{"functionDeclarations": declarations}]))
 }
@@ -201,18 +275,38 @@ fn gemini_json_to_anthropic(body: &[u8]) -> Result<Vec<u8>, String> {
         .and_then(Value::as_str)
         .or_else(|| value.get("model").and_then(Value::as_str))
         .unwrap_or("unknown");
+    // A prompt-level safety block arrives with no candidates at all. Surface it
+    // as a refusal the client can render rather than failing the transform.
+    if let Some(reason) = prompt_block_reason(&value) {
+        let response = anthropic_message(
+            response_id,
+            model,
+            vec![json!({
+                "type": "text",
+                "text": format!("Request blocked by Gemini safety filters: {reason}")
+            })],
+            "refusal",
+            gemini_usage_to_anthropic(value.get("usageMetadata")),
+        );
+        return serde_json::to_vec(&response)
+            .map_err(|error| format!("Could not serialize Anthropic response: {error}"));
+    }
     let candidate = value
         .get("candidates")
         .and_then(Value::as_array)
         .and_then(|items| items.first())
-        .ok_or_else(|| "Gemini response is missing candidates[0]".to_string())?;
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    // Gemini legitimately returns a candidate with no content (MAX_TOKENS spent
+    // entirely on thinking, SAFETY, RECITATION). Treat that as empty content.
     let parts = candidate
         .get("content")
         .and_then(Value::as_object)
         .and_then(|content| content.get("parts"))
         .and_then(Value::as_array)
-        .ok_or_else(|| "Gemini response is missing content.parts".to_string())?;
-    let content = gemini_parts_to_anthropic_content(parts)?;
+        .cloned()
+        .unwrap_or_default();
+    let content = gemini_parts_to_anthropic_content(&parts)?;
     let finish_reason = candidate.get("finishReason").and_then(Value::as_str);
     let stop_reason = gemini_stop_reason(finish_reason, &content);
     let response = anthropic_message(
@@ -254,7 +348,7 @@ fn gemini_sse_to_anthropic(body: &[u8]) -> Result<Vec<u8>, String> {
     if !aggregate.text.is_empty() {
         content.push(json!({"type": "text", "text": aggregate.text}));
     }
-    for tool in aggregate.tools.values() {
+    for tool in &aggregate.tools {
         content.push(json!({
             "type": "tool_use",
             "id": tool.id.as_str(),
@@ -279,7 +373,9 @@ struct GeminiStreamAggregate {
     response_id: String,
     model: String,
     text: String,
-    tools: BTreeMap<usize, StreamToolCall>,
+    // Insertion-ordered: a sorted map would reorder parallel tool calls, and the
+    // client executes them in the order it receives them.
+    tools: Vec<StreamToolCall>,
     finish_reason: Option<String>,
     input_tokens: i64,
     output_tokens: i64,
@@ -319,11 +415,22 @@ impl GeminiStreamAggregate {
             let Some(object) = part.as_object() else {
                 continue;
             };
+            // Thought summaries must not reach the visible text block.
+            if object.get("thought").and_then(Value::as_bool) == Some(true) {
+                continue;
+            }
             if let Some(text) = object.get("text").and_then(Value::as_str) {
-                self.text.push_str(text);
+                // Gemini's alt=sse may deliver either incremental deltas or a
+                // cumulative snapshot of the text so far. Appending a snapshot
+                // would duplicate ("hel" + "hello" -> "helhello"), so detect the
+                // cumulative case and append only the new suffix.
+                if let Some(suffix) = text.strip_prefix(self.text.as_str()) {
+                    self.text.push_str(suffix);
+                } else {
+                    self.text.push_str(text);
+                }
             }
             if let Some(function_call) = object.get("functionCall").and_then(Value::as_object) {
-                let index = self.tools.len();
                 let name = function_call
                     .get("name")
                     .and_then(Value::as_str)
@@ -332,14 +439,33 @@ impl GeminiStreamAggregate {
                     .get("args")
                     .cloned()
                     .unwrap_or_else(|| json!({}));
-                self.tools.insert(
-                    index,
-                    StreamToolCall {
-                        id: format!("{name}_{index}"),
-                        name: name.to_string(),
-                        input,
-                    },
-                );
+                // Prefer Gemini's own call id; it is the only stable key when a
+                // cumulative chunk re-sends calls that were already seen. Without
+                // one, fall back to matching on name so a re-sent snapshot
+                // overwrites instead of duplicating.
+                let call_id = function_call.get("id").and_then(Value::as_str);
+                let existing = self.tools.iter_mut().find(|tool| match call_id {
+                    Some(id) => tool.id == id,
+                    None => tool.name == name,
+                });
+                // Re-sent snapshots overwrite rather than duplicate, so one call
+                // does not become three tool_use blocks the client executes.
+                match existing {
+                    Some(tool) => {
+                        tool.name = name.to_string();
+                        tool.input = input;
+                    }
+                    None => {
+                        let id = call_id
+                            .map(str::to_string)
+                            .unwrap_or_else(|| format!("{name}_{}", self.tools.len()));
+                        self.tools.push(StreamToolCall {
+                            id,
+                            name: name.to_string(),
+                            input,
+                        });
+                    }
+                }
             }
         }
     }
@@ -374,6 +500,11 @@ fn gemini_parts_to_anthropic_content(parts: &[Value]) -> Result<Vec<Value>, Stri
         let object = part
             .as_object()
             .ok_or_else(|| "Gemini content parts must be objects".to_string())?;
+        // `thought: true` marks the model's internal reasoning summary. Emitting
+        // it as text would leak thinking into the user-visible answer.
+        if object.get("thought").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
         if let Some(text) = object.get("text").and_then(Value::as_str) {
             content.push(json!({"type": "text", "text": text}));
             continue;
@@ -395,6 +526,11 @@ fn gemini_parts_to_anthropic_content(parts: &[Value]) -> Result<Vec<Value>, Stri
 }
 
 fn gemini_stop_reason(finish_reason: Option<&str>, content: &[Value]) -> &'static str {
+    // MAX_TOKENS wins over tool_use: a truncated tool call must not be reported
+    // as a complete one, or the client will try to execute a partial call.
+    if finish_reason == Some("MAX_TOKENS") {
+        return "max_tokens";
+    }
     if content
         .iter()
         .any(|item| item.get("type").and_then(Value::as_str) == Some("tool_use"))
@@ -402,20 +538,50 @@ fn gemini_stop_reason(finish_reason: Option<&str>, content: &[Value]) -> &'stati
         return "tool_use";
     }
     match finish_reason {
-        Some("MAX_TOKENS") => "max_tokens",
-        Some("SAFETY" | "RECITATION") => "stop_sequence",
+        // Safety/policy stops are refusals, not custom stop-sequence matches.
+        Some(
+            "SAFETY" | "RECITATION" | "SPII" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "IMAGE_SAFETY",
+        ) => "refusal",
         _ => "end_turn",
     }
+}
+
+/// Reads a prompt-level block reason, which Gemini reports instead of returning
+/// any candidate.
+fn prompt_block_reason(value: &Value) -> Option<&str> {
+    value
+        .get("promptFeedback")
+        .and_then(Value::as_object)
+        .and_then(|feedback| feedback.get("blockReason"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
 }
 
 fn gemini_usage_to_anthropic(usage: Option<&Value>) -> Value {
     let Some(usage) = usage else {
         return json!({"input_tokens": 0, "output_tokens": 0});
     };
-    json!({
-        "input_tokens": usage.get("promptTokenCount").and_then(Value::as_i64).unwrap_or(0),
-        "output_tokens": usage.get("candidatesTokenCount").and_then(Value::as_i64).unwrap_or(0)
-    })
+    let field = |key: &str| usage.get(key).and_then(Value::as_i64).unwrap_or(0);
+    let prompt_tokens = field("promptTokenCount");
+    let cached_tokens = field("cachedContentTokenCount");
+    let total_tokens = field("totalTokenCount");
+    // Gemini's promptTokenCount INCLUDES cache reads, while Anthropic's
+    // input_tokens excludes them, so subtract to avoid double-billing.
+    let input_tokens = prompt_tokens.saturating_sub(cached_tokens);
+    // candidatesTokenCount omits thinking tokens; deriving output from the total
+    // captures thoughtsTokenCount without depending on that field being present.
+    let output_tokens = total_tokens
+        .saturating_sub(prompt_tokens)
+        .max(field("candidatesTokenCount"));
+    let mut result = json!({
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens
+    });
+    if cached_tokens > 0 {
+        result["cache_read_input_tokens"] = json!(cached_tokens);
+    }
+    result
 }
 
 fn anthropic_message(
@@ -523,8 +689,9 @@ fn anthropic_sse(
                     json!({"type": "content_block_stop", "index": index}),
                 )?;
             }
-            Some(other) => return Err(format!("Unsupported Anthropic SSE content type: {other}")),
-            None => {}
+            // Blocks this bridge does not emit are skipped rather than failing a
+            // stream that already has valid content.
+            Some(_) | None => {}
         }
     }
     push_sse_event(
@@ -564,20 +731,6 @@ fn content_blocks(value: &Value) -> Result<Vec<Value>, String> {
         Value::Array(items) => Ok(items.clone()),
         Value::Null => Ok(Vec::new()),
         _ => Err("Anthropic content must be a string or array".to_string()),
-    }
-}
-
-fn stringify_tool_result_content(value: &Value) -> Result<String, String> {
-    match value {
-        Value::String(text) => Ok(text.clone()),
-        Value::Array(parts) => Ok(parts
-            .iter()
-            .filter_map(|part| part.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("")),
-        Value::Null => Ok(String::new()),
-        _ => serde_json::to_string(value)
-            .map_err(|error| format!("Could not serialize tool result content: {error}")),
     }
 }
 
@@ -646,6 +799,67 @@ mod tests {
         );
     }
 
+    /// End-to-end guard through the real request converter: a Claude Code tool
+    /// schema must never reach Gemini's restricted `parameters` channel with
+    /// JSON Schema keywords intact, which 400s the whole request.
+    #[test]
+    fn tool_schemas_are_sanitized_before_reaching_gemini() {
+        let body = json!({
+            "model": "gemini-2.5-flash",
+            "max_tokens": 64,
+            "messages": [{"role":"user","content":[{"type":"text","text":"read it"}]}],
+            "tools": [
+                {
+                    "name": "Read",
+                    "description": "Read a file",
+                    "input_schema": {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {"file_path": {"type": "string"}},
+                        "required": ["file_path"]
+                    }
+                },
+                {
+                    // No-argument tool: must still get an explicit object schema.
+                    "name": "TodoRead",
+                    "description": "Read todos"
+                }
+            ]
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &anthropic_request_to_gemini(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        let declarations = converted["tools"][0]["functionDeclarations"]
+            .as_array()
+            .expect("functionDeclarations");
+
+        // The rich schema routes to the JSON Schema channel, with document
+        // metadata stripped.
+        let read = &declarations[0];
+        assert_eq!(read["name"], "Read");
+        assert!(
+            read.get("parameters").is_none(),
+            "rich schema must not use the restricted channel: {read}"
+        );
+        assert!(read["parametersJsonSchema"].get("$schema").is_none());
+
+        // The no-argument tool gets a valid object schema Vertex will accept.
+        let todo = &declarations[1];
+        assert_eq!(todo["parameters"]["type"], "object");
+        assert!(todo["parameters"]["properties"].is_object());
+
+        // Belt-and-braces: `$schema` must not appear anywhere in the payload.
+        let rendered = serde_json::to_string(&converted).unwrap();
+        assert!(
+            !rendered.contains("$schema"),
+            "no JSON Schema metadata may reach Gemini: {rendered}"
+        );
+    }
+
     #[test]
     fn converts_gemini_response_to_anthropic_json() {
         let upstream = json!({
@@ -670,5 +884,194 @@ mod tests {
         assert_eq!(output["content"][0]["type"], "text");
         assert_eq!(output["usage"]["input_tokens"], 3);
         assert_eq!(output["usage"]["output_tokens"], 5);
+    }
+
+    #[test]
+    fn drops_thinking_blocks_instead_of_failing_the_turn() {
+        // Claude Code replays thinking blocks in assistant history once extended
+        // thinking is on, so this is every turn after the first.
+        let body = json!({
+            "model": "gemini-2.5-flash",
+            "max_tokens": 64,
+            "messages": [
+                {"role":"user","content":[{"type":"text","text":"Find x"}]},
+                {"role":"assistant","content":[
+                    {"type":"thinking","thinking":"Let me look.","signature":"sig"},
+                    {"type":"redacted_thinking","data":"opaque"},
+                    {"type":"text","text":"Found it."}
+                ]}
+            ]
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &anthropic_request_to_gemini(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        let parts = converted["contents"][1]["parts"].as_array().unwrap();
+        assert_eq!(
+            parts.len(),
+            1,
+            "reasoning blocks must not survive: {parts:?}"
+        );
+        assert_eq!(parts[0]["text"], "Found it.");
+    }
+
+    #[test]
+    fn resolves_function_response_name_from_tool_use_id() {
+        // Gemini correlates functionResponse by function NAME; forwarding the
+        // opaque Anthropic id leaves the result uncorrelated.
+        let body = json!({
+            "model": "gemini-2.5-flash",
+            "max_tokens": 64,
+            "messages": [
+                {"role":"user","content":[{"type":"text","text":"run it"}]},
+                {"role":"assistant","content":[
+                    {"type":"tool_use","id":"toolu_01ABC","name":"lookup","input":{"q":"x"}}
+                ]},
+                {"role":"user","content":[
+                    {"type":"tool_result","tool_use_id":"toolu_01ABC","content":"42"}
+                ]}
+            ]
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &anthropic_request_to_gemini(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            converted["contents"][2]["parts"][0]["functionResponse"]["name"],
+            "lookup"
+        );
+    }
+
+    #[test]
+    fn tolerates_candidate_without_content() {
+        // MAX_TOKENS spent entirely on thinking yields a candidate with no
+        // content. That is a normal Gemini reply, not a transform failure.
+        let upstream = json!({
+            "candidates": [{"finishReason": "MAX_TOKENS"}],
+            "usageMetadata": {"promptTokenCount": 10, "totalTokenCount": 4010}
+        });
+
+        let output = gemini_response_to_anthropic(
+            200,
+            Some("application/json"),
+            &serde_json::to_vec(&upstream).unwrap(),
+        )
+        .expect("a contentless candidate must not fail the transform");
+        let value: Value = serde_json::from_slice(&output.body).unwrap();
+
+        assert_eq!(value["content"].as_array().unwrap().len(), 0);
+        assert_eq!(value["stop_reason"], "max_tokens");
+    }
+
+    #[test]
+    fn surfaces_prompt_block_as_refusal() {
+        let upstream = json!({
+            "promptFeedback": {"blockReason": "SAFETY"},
+            "usageMetadata": {"promptTokenCount": 8, "totalTokenCount": 8}
+        });
+
+        let output = gemini_response_to_anthropic(
+            200,
+            Some("application/json"),
+            &serde_json::to_vec(&upstream).unwrap(),
+        )
+        .expect("a prompt-level block must not fail the transform");
+        let value: Value = serde_json::from_slice(&output.body).unwrap();
+
+        assert_eq!(value["stop_reason"], "refusal");
+        assert!(value["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("SAFETY"));
+    }
+
+    #[test]
+    fn usage_captures_thinking_and_separates_cache_reads() {
+        let upstream = json!({
+            "candidates": [{
+                "content": {"role":"model","parts":[{"text":"hi"}]},
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 10000,
+                "candidatesTokenCount": 50,
+                "thoughtsTokenCount": 4000,
+                "cachedContentTokenCount": 9000,
+                "totalTokenCount": 14050
+            }
+        });
+
+        let output = gemini_response_to_anthropic(
+            200,
+            Some("application/json"),
+            &serde_json::to_vec(&upstream).unwrap(),
+        )
+        .unwrap();
+        let value: Value = serde_json::from_slice(&output.body).unwrap();
+
+        // promptTokenCount includes cache reads; Anthropic's input_tokens does not.
+        assert_eq!(value["usage"]["input_tokens"], 1000);
+        assert_eq!(value["usage"]["cache_read_input_tokens"], 9000);
+        // total - prompt captures thinking tokens candidatesTokenCount omits.
+        assert_eq!(value["usage"]["output_tokens"], 4050);
+    }
+
+    #[test]
+    fn skips_thought_parts_so_reasoning_does_not_leak() {
+        let upstream = json!({
+            "candidates": [{
+                "content": {"role":"model","parts":[
+                    {"text":"Internal deliberation.","thought":true},
+                    {"text":"The answer is 42."}
+                ]},
+                "finishReason": "STOP"
+            }]
+        });
+
+        let output = gemini_response_to_anthropic(
+            200,
+            Some("application/json"),
+            &serde_json::to_vec(&upstream).unwrap(),
+        )
+        .unwrap();
+        let value: Value = serde_json::from_slice(&output.body).unwrap();
+
+        let content = value["content"].as_array().unwrap();
+        assert_eq!(
+            content.len(),
+            1,
+            "thought parts must be filtered: {content:?}"
+        );
+        assert_eq!(content[0]["text"], "The answer is 42.");
+    }
+
+    #[test]
+    fn cumulative_stream_chunks_do_not_duplicate_text_or_tools() {
+        // Gemini's alt=sse may resend the whole content as a snapshot per chunk.
+        let upstream = concat!(
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hel\"}]}}]}\n\n",
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]}}]}\n\n",
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"id\":\"fc1\",\"name\":\"lookup\",\"args\":{\"q\":\"x\"}}}]}}]}\n\n",
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"id\":\"fc1\",\"name\":\"lookup\",\"args\":{\"q\":\"x\"}}}],\"role\":\"model\"},\"finishReason\":\"STOP\"}]}\n\n"
+        );
+
+        let output =
+            gemini_response_to_anthropic(200, Some("text/event-stream"), upstream.as_bytes())
+                .unwrap();
+        let text = String::from_utf8(output.body).unwrap();
+
+        assert!(
+            !text.contains("helhello"),
+            "cumulative snapshots must not be concatenated: {text}"
+        );
+        assert_eq!(
+            text.matches("\"type\":\"tool_use\"").count(),
+            1,
+            "a resent tool call must not become multiple tool_use blocks: {text}"
+        );
     }
 }

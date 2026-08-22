@@ -1,5 +1,50 @@
 #[cfg(test)]
 mod tests {
+    /// A Codex client never sends cache_control, so without injection every
+    /// turn re-bills the whole system prompt and tool array at full price.
+    #[test]
+    fn codex_requests_get_cache_breakpoints() {
+        let body = serde_json::json!({
+            "model": "claude-sonnet-4",
+            "max_output_tokens": 1024,
+            "instructions": "You are a careful engineer.",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "first"}]},
+                {"type": "function_call", "call_id": "c1", "name": "read", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "ok"},
+                {"role": "user", "content": [{"type": "input_text", "text": "second"}]}
+            ],
+            "tools": [{
+                "type": "function",
+                "name": "read",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &responses_request_to_anthropic(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        // Tools and system carry the stable prefix markers.
+        let tools = converted["tools"].as_array().expect("tools");
+        assert!(
+            tools.last().unwrap()["cache_control"].is_object(),
+            "tools tail must be marked: {converted}"
+        );
+        assert!(
+            converted["system"][0]["cache_control"].is_object(),
+            "system tail must be marked: {converted}"
+        );
+
+        // At least one message anchor extends the cached prefix, and the total
+        // stays within Anthropic's limit of four.
+        let rendered = serde_json::to_string(&converted).unwrap();
+        let total = rendered.matches("\"cache_control\"").count();
+        assert!(total >= 3, "expected several breakpoints, got {total}");
+        assert!(total <= 4, "must not exceed 4 breakpoints, got {total}");
+    }
+
     use super::{anthropic_response_to_responses, responses_request_to_anthropic};
     use serde_json::Value;
     use std::collections::BTreeMap;
@@ -29,7 +74,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(converted["system"], "Be concise");
+        // `system` is promoted to Anthropic's block form so it can carry a
+        // cache_control breakpoint; the text itself is unchanged.
+        assert_eq!(converted["system"][0]["type"], "text");
+        assert_eq!(converted["system"][0]["text"], "Be concise");
         assert_eq!(converted["messages"][0]["role"], "user");
         assert_eq!(converted["messages"][0]["content"][0]["type"], "text");
         assert_eq!(converted["messages"][1]["content"][0]["type"], "tool_use");
@@ -141,6 +189,89 @@ mod tests {
         assert!(output.contains("\"delta\":\"hello\""));
         assert!(output.contains("event: response.completed"));
     }
+
+    /// This bridge asks the upstream for thinking, so it must accept the thinking
+    /// blocks that request produces. Failing here 502s and fails every credential.
+    #[test]
+    fn accepts_the_thinking_it_enables() {
+        let request = serde_json::json!({
+            "model": "claude-sonnet-4",
+            "max_output_tokens": 8192,
+            "reasoning": {"effort": "medium"},
+            "input": [{"type": "message", "role": "user", "content": "hi"}]
+        });
+        let prepared: Value = serde_json::from_slice(
+            &responses_request_to_anthropic(&serde_json::to_vec(&request).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            prepared["thinking"]["type"], "enabled",
+            "precondition: the bridge enables thinking"
+        );
+
+        let upstream = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-sonnet-4\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me think.\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"Erf1\"}}\n\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"42\"}}\n\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+
+        let converted = anthropic_response_to_responses(
+            200,
+            Some("text/event-stream"),
+            upstream.as_bytes(),
+            &BTreeMap::new(),
+        )
+        .expect("thinking deltas must not fail the transform");
+        let output = String::from_utf8(converted.body).unwrap();
+
+        assert!(output.contains("event: response.completed"));
+        assert!(
+            output.contains("\"delta\":\"42\""),
+            "visible text must survive: {output}"
+        );
+        assert!(
+            !output.contains("Let me think."),
+            "reasoning must not leak into visible output: {output}"
+        );
+    }
+
+    #[test]
+    fn thinking_content_blocks_do_not_become_output_text() {
+        let upstream = serde_json::json!({
+            "id": "msg_1",
+            "model": "claude-sonnet-4",
+            "stop_reason": "end_turn",
+            "content": [
+                {"type": "thinking", "thinking": "Internal reasoning.", "signature": "sig"},
+                {"type": "redacted_thinking", "data": "opaque"},
+                {"type": "text", "text": "The answer is 42."}
+            ],
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        });
+
+        let converted = anthropic_response_to_responses(
+            200,
+            Some("application/json"),
+            &serde_json::to_vec(&upstream).unwrap(),
+            &BTreeMap::new(),
+        )
+        .expect("thinking blocks must not fail the transform");
+        let value: Value = serde_json::from_slice(&converted.body).unwrap();
+
+        let rendered = serde_json::to_string(&value).unwrap();
+        assert!(
+            !rendered.contains("Internal reasoning."),
+            "reasoning must not leak into output: {rendered}"
+        );
+        assert!(rendered.contains("The answer is 42."));
+    }
 }
 
 use super::common::{
@@ -151,6 +282,10 @@ use super::common::{
 use super::{common::parse_base64_data_url, sse, TransformedBridgeResponse};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
+
+/// Anthropic requires `max_tokens`; the Responses API does not, and Codex never
+/// sends `max_output_tokens`. Large enough not to truncate real answers.
+const DEFAULT_ANTHROPIC_MAX_TOKENS: i64 = 8_192;
 
 pub(super) fn responses_request_to_anthropic(body: &[u8]) -> Result<Vec<u8>, String> {
     let value = serde_json::from_slice::<Value>(body)
@@ -174,10 +309,17 @@ pub(super) fn responses_request_to_anthropic(body: &[u8]) -> Result<Vec<u8>, Str
         messages.extend(convert_input(input)?);
     }
     result.insert("messages".to_string(), Value::Array(messages));
-    let max_tokens = object.get("max_output_tokens").and_then(Value::as_i64);
-    if let Some(max_tokens) = object.get("max_output_tokens") {
-        result.insert("max_tokens".to_string(), max_tokens.clone());
-    }
+    // Anthropic requires max_tokens, but the Responses API treats
+    // max_output_tokens as optional and Codex omits it entirely. Without a
+    // default every Codex request would 400.
+    let max_tokens = object
+        .get("max_output_tokens")
+        .and_then(Value::as_i64)
+        .filter(|value| *value > 0);
+    result.insert(
+        "max_tokens".to_string(),
+        json!(max_tokens.unwrap_or(DEFAULT_ANTHROPIC_MAX_TOKENS)),
+    );
     if let Some(effort) = responses_reasoning_effort(object)
         .and_then(|effort| anthropic_thinking_budget(&effort, max_tokens))
     {
@@ -188,7 +330,10 @@ pub(super) fn responses_request_to_anthropic(body: &[u8]) -> Result<Vec<u8>, Str
     }
     copy_fields(object, &mut result, &["temperature", "top_p", "stream"]);
     if result.get("thinking").is_some() {
+        // Extended thinking rejects temperature outright and constrains top_p to
+        // 0.95-1, so drop both rather than risk a 400 on the caller's value.
         result.remove("temperature");
+        result.remove("top_p");
     }
     if let Some(stop) = object.get("stop") {
         result.insert("stop_sequences".to_string(), stop.clone());
@@ -202,9 +347,69 @@ pub(super) fn responses_request_to_anthropic(body: &[u8]) -> Result<Vec<u8>, Str
             result.insert("tools".to_string(), converted_tools);
         }
     }
+    // Only meaningful alongside tools; a dangling tool_choice is a 400.
+    if result.contains_key("tools") {
+        if let Some(tool_choice) = responses_tool_choice_to_anthropic(object) {
+            result.insert("tool_choice".to_string(), tool_choice);
+        }
+    }
 
-    serde_json::to_vec(&Value::Object(result))
+    // A Codex client has no cache_control concept, so without this the whole
+    // system prompt and tool array is re-billed at full input price every turn.
+    let mut result = Value::Object(result);
+    super::anthropic_cache::inject_cache_breakpoints(&mut result);
+
+    serde_json::to_vec(&result)
         .map_err(|error| format!("Could not serialize Anthropic request: {error}"))
+}
+
+/// Maps a Responses `tool_choice` (plus `parallel_tool_calls`) onto Anthropic's
+/// shape. Dropping this silently downgrades a forced tool call to optional,
+/// which stalls agent loops that depend on it.
+fn responses_tool_choice_to_anthropic(object: &Map<String, Value>) -> Option<Value> {
+    let disable_parallel = object
+        .get("parallel_tool_calls")
+        .and_then(Value::as_bool)
+        .is_some_and(|parallel| !parallel);
+    let mut choice = match object.get("tool_choice") {
+        Some(Value::String(value)) => match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => json!({"type": "auto"}),
+            "required" | "any" => json!({"type": "any"}),
+            "none" => json!({"type": "none"}),
+            _ => return None,
+        },
+        Some(Value::Object(value)) => {
+            let choice_type = value
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            match choice_type {
+                // Responses names a forced tool via {type:"function",name:"x"}.
+                "function" | "tool" | "custom" => {
+                    let name = value
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())?;
+                    json!({"type": "tool", "name": name})
+                }
+                "allowed_tools" => json!({"type": "any"}),
+                "auto" => json!({"type": "auto"}),
+                "required" | "any" => json!({"type": "any"}),
+                "none" => json!({"type": "none"}),
+                _ => return None,
+            }
+        }
+        // No explicit choice: still surface a parallel-tool-use opt-out.
+        _ if disable_parallel => json!({"type": "auto"}),
+        _ => return None,
+    };
+    // Anthropic expresses "no parallel calls" as a flag on tool_choice, and
+    // rejects it on {type:"none"}.
+    if disable_parallel && choice.get("type").and_then(Value::as_str) != Some("none") {
+        choice["disable_parallel_tool_use"] = Value::Bool(true);
+    }
+    Some(choice)
 }
 
 pub(super) fn anthropic_response_to_responses(
@@ -401,8 +606,10 @@ impl AnthropicSseState {
                     block["input"] = input;
                 }
             }
-            Some(other) => return Err(format!("Unsupported Anthropic SSE delta type: {other}")),
-            None => {}
+            // thinking_delta / signature_delta arrive whenever this bridge asked
+            // for thinking (see the request path). Reasoning has no Responses
+            // input slot here, so absorb the deltas instead of failing.
+            Some(_) | None => {}
         }
         Ok(())
     }
@@ -604,8 +811,11 @@ fn anthropic_content_to_responses_output(
                 }
                 output.push(function_call);
             }
-            Some(other) => return Err(format!("Unsupported Anthropic content type: {other}")),
-            None => return Err("Anthropic content block is missing type".to_string()),
+            // Thinking blocks arrive because the request path enables thinking.
+            // They are reasoning, not visible output, so they must not be pushed
+            // into output_text — drop them rather than failing the transform.
+            Some("thinking") | Some("redacted_thinking") => {}
+            Some(_) | None => {}
         }
     }
     if !message_content.is_empty() {
@@ -635,12 +845,17 @@ fn anthropic_usage_to_responses(usage: Option<&Value>) -> Value {
         .get("output_tokens")
         .and_then(Value::as_i64)
         .unwrap_or(0);
+    let field = |key: &str| usage.get(key).and_then(Value::as_i64).unwrap_or(0);
+    // Anthropic reports cache reads/writes outside input_tokens, so the Responses
+    // total has to add them back or a cached turn undercounts by the whole prefix.
+    let cache_read = field("cache_read_input_tokens");
+    let cache_creation = field("cache_creation_input_tokens");
     json!({
-        "input_tokens": input_tokens,
-        "input_tokens_details": {"cached_tokens": 0},
+        "input_tokens": input_tokens + cache_read + cache_creation,
+        "input_tokens_details": {"cached_tokens": cache_read},
         "output_tokens": output_tokens,
         "output_tokens_details": {"reasoning_tokens": 0},
-        "total_tokens": input_tokens + output_tokens
+        "total_tokens": input_tokens + cache_read + cache_creation + output_tokens
     })
 }
 
