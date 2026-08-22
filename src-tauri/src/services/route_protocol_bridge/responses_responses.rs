@@ -174,8 +174,13 @@ fn responses_sse_to_responses(
             output.push_str("\n\n");
             continue;
         }
-        let value = serde_json::from_str::<Value>(&data)
-            .map_err(|error| format!("Responses SSE data is invalid JSON: {error}"))?;
+        // This path only rewrites tool names, so a record we cannot parse is
+        // forwarded untouched instead of failing the whole stream.
+        let Ok(value) = serde_json::from_str::<Value>(&data) else {
+            output.push_str(block);
+            output.push_str("\n\n");
+            continue;
+        };
         for line in block
             .lines()
             .filter(|line| !line.trim().starts_with("data:"))

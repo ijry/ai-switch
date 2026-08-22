@@ -54,7 +54,7 @@ pub(super) fn responses_request_to_chat(body: &[u8]) -> Result<Vec<u8>, String> 
             .get("model")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let key = if is_openai_o_series(model) {
+        let key = if super::common::requires_max_completion_tokens(model) {
             "max_completion_tokens"
         } else {
             "max_tokens"
@@ -226,8 +226,12 @@ fn chat_sse_to_responses(
             saw_done = true;
             break;
         }
-        let value = serde_json::from_str::<Value>(&data)
-            .map_err(|error| format!("Chat SSE data is invalid JSON: {error}"))?;
+        // Skip a record we cannot read rather than discarding the whole
+        // generation: a stream cut mid-record leaves a truncated tail, and the
+        // events already emitted above are still valid.
+        let Ok(value) = serde_json::from_str::<Value>(&data) else {
+            continue;
+        };
         if value.get("error").is_some() {
             ensure_stream_started(&mut state, &mut output, &mut sequence_number);
             push_sse_event(
@@ -1504,16 +1508,21 @@ fn function_call_to_chat(
         .ok_or_else(|| "Responses function_call is missing call_id".to_string())?;
     let name = required_string(object, "name", "function_call")?;
     let namespace = object.get("namespace").and_then(Value::as_str);
-    let name = namespace
-        .filter(|value| !value.trim().is_empty())
-        .map(|namespace| super::common::qualified_response_tool_name(namespace, name))
-        .unwrap_or_else(|| {
-            if tool_namespaces.contains_key(name) {
-                name.to_string()
-            } else {
+    // Tools went upstream under their namespace-qualified name. A client that
+    // replays a function_call without the `namespace` field would otherwise
+    // send the bare name, which no longer matches any declared tool — so
+    // re-qualify it from the namespace map built at request time.
+    let name = match namespace.filter(|value| !value.trim().is_empty()) {
+        Some(namespace) => super::common::qualified_response_tool_name(namespace, name),
+        None => match super::common::response_tool_namespace(name, tool_namespaces) {
+            // Already qualified (the map keys both spellings) — leave it alone.
+            Some(_) if tool_namespaces.contains_key(name) && name.contains("__") => {
                 name.to_string()
             }
-        });
+            Some(namespace) => super::common::qualified_response_tool_name(namespace, name),
+            None => name.to_string(),
+        },
+    };
     let arguments = object
         .get("arguments")
         .map(stringify_content)
@@ -1776,11 +1785,145 @@ fn copy_fields(source: &Map<String, Value>, target: &mut Map<String, Value>, fie
     }
 }
 
-fn is_openai_o_series(model: &str) -> bool {
-    model.len() > 1
-        && model.starts_with('o')
-        && model
-            .as_bytes()
-            .get(1)
-            .is_some_and(|byte| byte.is_ascii_digit())
+#[cfg(test)]
+mod tests {
+    use super::responses_request_to_chat;
+    use serde_json::Value;
+
+    /// Tools go upstream under their namespace-qualified name. A client that
+    /// replays a function_call without the `namespace` field must still produce
+    /// the qualified name, or the transcript references a tool that was never
+    /// declared and strict gateways reject it.
+    #[test]
+    fn replayed_function_call_is_requalified_from_the_namespace_map() {
+        let body = serde_json::json!({
+            "model": "gpt-4o",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "go"}]},
+                // Replayed by the client with the namespace field dropped.
+                {"type": "function_call", "call_id": "c1", "name": "lookup", "arguments": "{}"}
+            ],
+            "tools": [{
+                "type": "namespace",
+                "name": "database",
+                "tools": [{
+                    "type": "function",
+                    "name": "lookup",
+                    "parameters": {"type": "object", "properties": {}}
+                }]
+            }]
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &responses_request_to_chat(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        let declared = converted["tools"][0]["function"]["name"]
+            .as_str()
+            .expect("declared tool name");
+        assert_eq!(declared, "database__lookup");
+
+        let replayed = converted["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .find_map(|message| message.get("tool_calls"))
+            .and_then(|calls| calls.get(0))
+            .and_then(|call| call["function"]["name"].as_str())
+            .expect("replayed tool call");
+
+        assert_eq!(
+            replayed, declared,
+            "the replayed call must match the declared tool name: {converted}"
+        );
+    }
+
+    /// A call that already carries its qualified name must not be double-prefixed.
+    #[test]
+    fn already_qualified_function_call_is_not_double_prefixed() {
+        let body = serde_json::json!({
+            "model": "gpt-4o",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "go"}]},
+                {"type": "function_call", "call_id": "c1", "name": "database__lookup", "arguments": "{}"}
+            ],
+            "tools": [{
+                "type": "namespace",
+                "name": "database",
+                "tools": [{
+                    "type": "function",
+                    "name": "lookup",
+                    "parameters": {"type": "object", "properties": {}}
+                }]
+            }]
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &responses_request_to_chat(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        let replayed = converted["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .find_map(|message| message.get("tool_calls"))
+            .and_then(|calls| calls.get(0))
+            .and_then(|call| call["function"]["name"].as_str())
+            .expect("replayed tool call");
+
+        assert_eq!(replayed, "database__lookup", "converted={converted}");
+    }
+
+    /// A tool with no namespace must pass through untouched.
+    #[test]
+    fn unnamespaced_function_call_is_unchanged() {
+        let body = serde_json::json!({
+            "model": "gpt-4o",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "go"}]},
+                {"type": "function_call", "call_id": "c1", "name": "lookup", "arguments": "{}"}
+            ],
+            "tools": [{
+                "type": "function",
+                "name": "lookup",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &responses_request_to_chat(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        let replayed = converted["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .find_map(|message| message.get("tool_calls"))
+            .and_then(|calls| calls.get(0))
+            .and_then(|call| call["function"]["name"].as_str())
+            .expect("replayed tool call");
+
+        assert_eq!(replayed, "lookup", "converted={converted}");
+    }
+
+    /// Streamed chat responses omit usage unless this is set, which would leave
+    /// every streamed turn reporting zero tokens.
+    #[test]
+    fn streaming_requests_opt_into_usage_reporting() {
+        let body = serde_json::json!({
+            "model": "gpt-4o",
+            "stream": true,
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &responses_request_to_chat(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(converted["stream_options"]["include_usage"], true);
+    }
 }

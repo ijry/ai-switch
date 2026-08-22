@@ -33,6 +33,44 @@ mod tests {
         );
     }
 
+    /// Same guard as the Claude direction: Codex/MCP tool schemas carry JSON
+    /// Schema keywords that Gemini's restricted `parameters` channel rejects.
+    #[test]
+    fn tool_schemas_are_sanitized_before_reaching_gemini() {
+        let body = serde_json::json!({
+            "model": "gemini-2.5-flash",
+            "input": [{"role":"user","content":[{"type":"input_text","text":"go"}]}],
+            "tools": [{
+                "type": "function",
+                "name": "apply_patch",
+                "parameters": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {"patch": {"type": "string"}}
+                }
+            }]
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &responses_request_to_gemini(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        let declaration = &converted["tools"][0]["functionDeclarations"][0];
+        assert_eq!(declaration["name"], "apply_patch");
+        assert!(
+            declaration.get("parameters").is_none(),
+            "rich schema must use parametersJsonSchema: {declaration}"
+        );
+
+        let rendered = serde_json::to_string(&converted).unwrap();
+        assert!(
+            !rendered.contains("$schema"),
+            "no JSON Schema metadata may reach Gemini: {rendered}"
+        );
+    }
+
     #[test]
     fn converts_responses_request_input_image_and_function_result_to_gemini() {
         let body = serde_json::json!({
@@ -107,8 +145,8 @@ mod tests {
 
 use super::common::{
     flatten_responses_function_tools, gemini_thinking_config, is_reasoning_input_item,
-    response_tool_name, response_tool_namespace, response_tool_parameters,
-    responses_reasoning_effort, ResponsesToolNamespaces,
+    response_tool_name, response_tool_namespace, responses_reasoning_effort,
+    ResponsesToolNamespaces,
 };
 use super::{common::parse_base64_data_url, sse, TransformedBridgeResponse};
 use serde_json::{json, Map, Value};
@@ -221,15 +259,22 @@ fn gemini_json_to_responses(
         .get("candidates")
         .and_then(Value::as_array)
         .and_then(|items| items.first())
-        .ok_or_else(|| "Gemini response is missing candidates[0]".to_string())?;
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    // Gemini legitimately returns a candidate with no content (MAX_TOKENS spent
+    // entirely on thinking, SAFETY, RECITATION), and a prompt-level block omits
+    // candidates altogether. Neither is a transform failure.
     let parts = candidate
         .get("content")
         .and_then(Value::as_object)
         .and_then(|content| content.get("parts"))
         .and_then(Value::as_array)
-        .ok_or_else(|| "Gemini response is missing content.parts".to_string())?;
-    let (output, text) = gemini_parts_to_responses_output(response_id, parts, tool_namespaces)?;
-    let finish_reason = candidate.get("finishReason").and_then(Value::as_str);
+        .cloned()
+        .unwrap_or_default();
+    let (output, text) = gemini_parts_to_responses_output(response_id, &parts, tool_namespaces)?;
+    let block_reason = prompt_block_reason(&value);
+    let finish_reason =
+        block_reason.or_else(|| candidate.get("finishReason").and_then(Value::as_str));
     let response = json!({
         "id": response_id,
         "object": "response",
@@ -238,7 +283,7 @@ fn gemini_json_to_responses(
         "model": model,
         "output": output,
         "output_text": text,
-        "error": Value::Null,
+        "error": gemini_error_payload(block_reason, finish_reason),
         "incomplete_details": incomplete_details(finish_reason),
         "usage": gemini_usage_to_responses(value.get("usageMetadata")),
     });
@@ -325,7 +370,12 @@ fn convert_input(input: &Value) -> Result<Value, String> {
 }
 
 fn convert_message(object: &Map<String, Value>) -> Result<Value, String> {
-    let role = object.get("role").and_then(Value::as_str).unwrap_or("user");
+    // Gemini accepts only "user" and "model"; forwarding "assistant",
+    // "developer", or "system" verbatim is a 400 on contents[N].role.
+    let role = match object.get("role").and_then(Value::as_str).unwrap_or("user") {
+        "assistant" => "model",
+        _ => "user",
+    };
     let parts = object
         .get("content")
         .map(convert_message_content)
@@ -363,8 +413,10 @@ fn convert_content_part(part: &Value) -> Result<Option<Value>, String> {
             .map(|text| json!({"text": text}))),
         Some("input_image") => {
             let image_url = required_string(object, "image_url", "input_image")?;
+            // A remote URL has no bytes to inline; skip it rather than fail the
+            // whole request over one attachment.
             let Some((mime_type, data)) = parse_base64_data_url(image_url) else {
-                return Err("Gemini bridge only supports base64 data URL images".to_string());
+                return Ok(None);
             };
             Ok(Some(json!({
                 "inlineData": {
@@ -373,8 +425,21 @@ fn convert_content_part(part: &Value) -> Result<Option<Value>, String> {
                 }
             })))
         }
-        Some(other) => Err(format!("Unsupported Responses content type: {other}")),
-        None => Err("Responses content part is missing type".to_string()),
+        Some("input_file") => {
+            let Some((mime_type, data)) = object
+                .get("file_data")
+                .and_then(Value::as_str)
+                .and_then(parse_base64_data_url)
+            else {
+                return Ok(None);
+            };
+            Ok(Some(json!({
+                "inlineData": {"mimeType": mime_type, "data": data}
+            })))
+        }
+        // Unknown/newer part types are skipped: a degraded turn beats a 502 that
+        // also marks every credential in the pool as failed.
+        Some(_) | None => Ok(None),
     }
 }
 
@@ -387,10 +452,16 @@ fn convert_function_call(
     state
         .function_names
         .insert(call_id.to_string(), name.to_string());
-    let arguments = object
-        .get("arguments")
-        .cloned()
-        .unwrap_or_else(|| Value::String("{}".to_string()));
+    // Responses carries `arguments` as a serialized JSON string, but Gemini's
+    // FunctionCall.args is a protobuf Struct — a string there is a 400.
+    let arguments = match object.get("arguments") {
+        Some(Value::String(raw)) => serde_json::from_str::<Value>(raw.trim())
+            .ok()
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({})),
+        Some(Value::Object(map)) => Value::Object(map.clone()),
+        _ => json!({}),
+    };
     Ok(json!({
         "role": "model",
         "parts": [{
@@ -440,13 +511,17 @@ fn convert_tools(tools: &Value) -> Result<Value, String> {
     let mut declarations = Vec::with_capacity(tools.len());
     for object in tools {
         let name = required_string(&object, "name", "function tool")?;
-        let mut declaration = Map::new();
-        declaration.insert("name".to_string(), Value::String(name.to_string()));
-        if let Some(description) = object.get("description") {
-            declaration.insert("description".to_string(), description.clone());
-        }
-        declaration.insert("parameters".to_string(), response_tool_parameters(&object));
-        declarations.push(Value::Object(declaration));
+        // Gemini's `parameters` is a restricted proto that rejects JSON Schema
+        // keywords; the sanitizer picks a channel that can carry this schema.
+        // `parameters` / `inputSchema` are both spellings Responses tools use.
+        let schema = object
+            .get("parameters")
+            .or_else(|| object.get("inputSchema"));
+        declarations.push(super::gemini_schema::build_gemini_function_declaration(
+            name,
+            object.get("description"),
+            schema,
+        ));
     }
     Ok(json!([{"functionDeclarations": declarations}]))
 }
@@ -463,6 +538,11 @@ fn gemini_parts_to_responses_output(
         let object = part
             .as_object()
             .ok_or_else(|| "Gemini content parts must be objects".to_string())?;
+        // `thought: true` marks internal reasoning. Emitting it as output_text
+        // would leak the model's thinking into the user-visible answer.
+        if object.get("thought").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
         if let Some(text_value) = object.get("text").and_then(Value::as_str) {
             text.push_str(text_value);
             message_parts.push(json!({
@@ -522,23 +602,25 @@ fn gemini_usage_to_responses(usage: Option<&Value>) -> Value {
     let Some(usage) = usage else {
         return Value::Null;
     };
-    let input_tokens = usage
-        .get("promptTokenCount")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let output_tokens = usage
-        .get("candidatesTokenCount")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let field = |key: &str| usage.get(key).and_then(Value::as_i64).unwrap_or(0);
+    let prompt_tokens = field("promptTokenCount");
+    let cached_tokens = field("cachedContentTokenCount");
+    let thoughts_tokens = field("thoughtsTokenCount");
+    let candidates_tokens = field("candidatesTokenCount");
     let total_tokens = usage
         .get("totalTokenCount")
         .and_then(Value::as_i64)
-        .unwrap_or(input_tokens + output_tokens);
+        .unwrap_or(prompt_tokens + candidates_tokens + thoughts_tokens);
+    // candidatesTokenCount omits thinking tokens, so derive output from the total
+    // to capture them even when thoughtsTokenCount is absent.
+    let output_tokens = total_tokens
+        .saturating_sub(prompt_tokens)
+        .max(candidates_tokens + thoughts_tokens);
     json!({
-        "input_tokens": input_tokens,
-        "input_tokens_details": {"cached_tokens": 0},
+        "input_tokens": prompt_tokens,
+        "input_tokens_details": {"cached_tokens": cached_tokens},
         "output_tokens": output_tokens,
-        "output_tokens_details": {"reasoning_tokens": 0},
+        "output_tokens_details": {"reasoning_tokens": thoughts_tokens},
         "total_tokens": total_tokens
     })
 }
@@ -661,14 +743,53 @@ impl GeminiStreamAggregate {
 fn responses_status(finish_reason: Option<&str>) -> &'static str {
     match finish_reason {
         Some("MAX_TOKENS") => "incomplete",
-        Some("SAFETY") => "failed",
+        // A safety stop is a completed turn the model refused, not an upstream
+        // failure. Reporting "failed" makes the proxy's own failure detector
+        // retry the request across every credential and mark each one failed.
+        Some(
+            "SAFETY" | "RECITATION" | "SPII" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "IMAGE_SAFETY",
+        ) => "incomplete",
         _ => "completed",
+    }
+}
+
+/// Reads a prompt-level block reason, which Gemini reports instead of returning
+/// any candidate.
+fn prompt_block_reason(value: &Value) -> Option<&str> {
+    value
+        .get("promptFeedback")
+        .and_then(Value::as_object)
+        .and_then(|feedback| feedback.get("blockReason"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+}
+
+/// Surfaces a content-filter stop as a readable reason instead of a bare
+/// `status` with `error: null`, which tells the client nothing.
+fn gemini_error_payload(block_reason: Option<&str>, finish_reason: Option<&str>) -> Value {
+    let reason = block_reason.or(match finish_reason {
+        Some(
+            reason @ ("SAFETY" | "RECITATION" | "SPII" | "BLOCKLIST" | "PROHIBITED_CONTENT"
+            | "IMAGE_SAFETY"),
+        ) => Some(reason),
+        _ => None,
+    });
+    match reason {
+        Some(reason) => json!({
+            "code": "content_filter",
+            "message": format!("Gemini stopped generating: {reason}")
+        }),
+        None => Value::Null,
     }
 }
 
 fn incomplete_details(finish_reason: Option<&str>) -> Value {
     match finish_reason {
         Some("MAX_TOKENS") => json!({"reason": "max_output_tokens"}),
+        Some(
+            "SAFETY" | "RECITATION" | "SPII" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "IMAGE_SAFETY",
+        ) => json!({"reason": "content_filter"}),
         _ => Value::Null,
     }
 }

@@ -258,6 +258,67 @@ pub(super) fn response_tool_parameters(object: &Map<String, Value>) -> Value {
         .cloned()
         .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}}))
 }
+/// Renders Anthropic `tool_result` content as the plain string that Chat,
+/// Responses, and Gemini all require for a tool result.
+///
+/// Non-text blocks cannot survive as-is in a string field, but dropping them
+/// silently is worse than saying so: an MCP screenshot tool would return an
+/// empty result and the model would answer as though it had seen nothing.
+/// Each one is replaced by a short marker instead.
+///
+/// Never returns an empty string for a non-empty result — several
+/// OpenAI-compatible gateways reject a `tool` message whose content is `""`.
+pub(super) fn stringify_tool_result_content(value: &Value) -> Result<String, String> {
+    match value {
+        Value::String(text) => Ok(text.clone()),
+        Value::Array(parts) => {
+            let rendered = parts
+                .iter()
+                .map(tool_result_part_to_text)
+                .collect::<Vec<_>>();
+            let joined = rendered
+                .iter()
+                .filter(|part| !part.is_empty())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(joined)
+        }
+        Value::Null => Ok(String::new()),
+        _ => serde_json::to_string(value)
+            .map_err(|error| format!("Could not serialize tool result content: {error}")),
+    }
+}
+
+/// Renders one `tool_result` content block. Media becomes a marker naming what
+/// was there, so the model can ask for it another way instead of assuming the
+/// tool returned nothing.
+fn tool_result_part_to_text(part: &Value) -> String {
+    let Some(object) = part.as_object() else {
+        return part.as_str().map(str::to_string).unwrap_or_default();
+    };
+    if let Some(text) = object.get("text").and_then(Value::as_str) {
+        return text.to_string();
+    }
+    match object.get("type").and_then(Value::as_str) {
+        Some("image") => {
+            let media_type = object
+                .get("source")
+                .and_then(Value::as_object)
+                .and_then(|source| source.get("media_type"))
+                .and_then(Value::as_str)
+                .unwrap_or("image");
+            format!("[ai-switch: tool returned an image ({media_type}) that this upstream cannot receive in a tool result]")
+        }
+        Some("document") => {
+            "[ai-switch: tool returned a document that this upstream cannot receive in a tool result]"
+                .to_string()
+        }
+        Some(other) => format!("[ai-switch: tool returned unsupported content of type {other}]"),
+        None => String::new(),
+    }
+}
+
 pub(super) fn normalize_path(path: &str) -> String {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -270,15 +331,34 @@ pub(super) fn normalize_path(path: &str) -> String {
 }
 
 pub(super) fn is_create_path(path: &str, expected: &str) -> bool {
-    let normalized = normalize_path(path);
-    let mut remaining = normalized.trim_start_matches('/');
+    strip_version_segments(path).trim_end_matches('/') == expected.trim_start_matches('/')
+}
+
+/// Matches a sub-resource of a create path, e.g. `messages/count_tokens`
+/// against `("messages", "count_tokens")`.
+pub(super) fn is_create_subpath(path: &str, expected: &str, sub: &str) -> bool {
+    let remaining = strip_version_segments(path).trim_end_matches('/');
+    let Some(rest) = remaining.strip_prefix(expected.trim_start_matches('/')) else {
+        return false;
+    };
+    rest.strip_prefix('/') == Some(sub)
+}
+
+/// Strips leading API version segments (`v1`, `v1beta`, …) so path matching is
+/// insensitive to how the client spells the version prefix.
+fn strip_version_segments(path: &str) -> &str {
+    let normalized = path.trim();
+    let mut remaining = normalized
+        .strip_prefix('/')
+        .unwrap_or(normalized)
+        .trim_start_matches('/');
     while let Some(first) = remaining.split('/').next() {
         if !is_version_segment(first) {
             break;
         }
         remaining = remaining[first.len()..].trim_start_matches('/');
     }
-    remaining.trim_end_matches('/') == expected.trim_start_matches('/')
+    remaining
 }
 
 pub(super) fn request_streaming(body: &[u8]) -> bool {
@@ -300,7 +380,20 @@ pub(super) fn gemini_model_from_body(body: &[u8]) -> Result<String, String> {
         .ok_or_else(|| "Gemini bridge request is missing model".to_string())
 }
 
+/// Models that reject `max_tokens` and require `max_completion_tokens`: the
+/// o-series (o1, o3, o4-mini, …).
+pub(super) fn requires_max_completion_tokens(model: &str) -> bool {
+    let model = model.trim().to_ascii_lowercase();
+    model.len() > 1
+        && model.starts_with('o')
+        && model
+            .as_bytes()
+            .get(1)
+            .is_some_and(|byte| byte.is_ascii_digit())
+}
+
 pub(super) fn gemini_endpoint(model: &str, streaming: bool) -> (String, Option<String>) {
+    let model = normalize_gemini_model_id(model);
     if streaming {
         (
             format!("/v1beta/models/{model}:streamGenerateContent"),
@@ -309,6 +402,14 @@ pub(super) fn gemini_endpoint(model: &str, streaming: bool) -> (String, Option<S
     } else {
         (format!("/v1beta/models/{model}:generateContent"), None)
     }
+}
+
+/// Strips a leading `models/` (or `/`) so the endpoint format string cannot
+/// produce a doubled prefix like `/v1beta/models/models/gemini-2.5-pro`, which
+/// the upstream rejects. Model mappings and client env vars both supply that form.
+fn normalize_gemini_model_id(model: &str) -> &str {
+    let trimmed = model.trim().trim_start_matches('/');
+    trimmed.strip_prefix("models/").unwrap_or(trimmed)
 }
 
 pub(super) fn parse_base64_data_url(value: &str) -> Option<(String, String)> {
@@ -328,4 +429,96 @@ fn is_version_segment(segment: &str) -> bool {
         return false;
     };
     !rest.is_empty() && rest.chars().next().is_some_and(|ch| ch.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_create_path, is_create_subpath, stringify_tool_result_content};
+    use serde_json::json;
+
+    /// An MCP screenshot tool returns an image. Dropping it silently made the
+    /// model answer as though the tool had returned nothing at all.
+    #[test]
+    fn tool_result_image_becomes_a_visible_marker() {
+        let rendered = stringify_tool_result_content(&json!([
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+        ]))
+        .unwrap();
+
+        assert!(
+            !rendered.trim().is_empty(),
+            "an image-only result must not render as empty"
+        );
+        assert!(rendered.contains("image/png"), "rendered={rendered}");
+        // The base64 payload itself must not be inlined.
+        assert!(!rendered.contains("iVBORw0KGgo="), "rendered={rendered}");
+    }
+
+    #[test]
+    fn tool_result_keeps_text_alongside_media() {
+        let rendered = stringify_tool_result_content(&json!([
+            {"type": "text", "text": "Screenshot captured."},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
+        ]))
+        .unwrap();
+
+        assert!(
+            rendered.contains("Screenshot captured."),
+            "rendered={rendered}"
+        );
+        assert!(rendered.contains("image/png"), "rendered={rendered}");
+    }
+
+    #[test]
+    fn tool_result_plain_text_is_unchanged() {
+        assert_eq!(
+            stringify_tool_result_content(&json!("42")).unwrap(),
+            "42",
+            "a plain string result must pass through verbatim"
+        );
+        assert_eq!(
+            stringify_tool_result_content(&json!([{"type": "text", "text": "42"}])).unwrap(),
+            "42"
+        );
+    }
+
+    #[test]
+    fn create_path_matching_ignores_version_prefixes() {
+        assert!(is_create_path("/v1/messages", "messages"));
+        assert!(is_create_path("/messages", "messages"));
+        assert!(is_create_path("/v1beta/messages/", "messages"));
+        assert!(!is_create_path("/v1/messages/count_tokens", "messages"));
+        assert!(!is_create_path("/v1/responses", "messages"));
+    }
+
+    #[test]
+    fn create_subpath_matches_only_the_named_sub_resource() {
+        assert!(is_create_subpath(
+            "/v1/messages/count_tokens",
+            "messages",
+            "count_tokens"
+        ));
+        assert!(is_create_subpath(
+            "/messages/count_tokens",
+            "messages",
+            "count_tokens"
+        ));
+        // The parent path and a different sub-resource must not match.
+        assert!(!is_create_subpath(
+            "/v1/messages",
+            "messages",
+            "count_tokens"
+        ));
+        assert!(!is_create_subpath(
+            "/v1/messages/batches",
+            "messages",
+            "count_tokens"
+        ));
+        // A deeper path must not match either.
+        assert!(!is_create_subpath(
+            "/v1/messages/count_tokens/extra",
+            "messages",
+            "count_tokens"
+        ));
+    }
 }

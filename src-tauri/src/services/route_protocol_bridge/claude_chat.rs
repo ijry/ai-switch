@@ -1,3 +1,4 @@
+use super::common::stringify_tool_result_content;
 use super::{sse, TransformedBridgeResponse};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -35,9 +36,24 @@ pub(super) fn anthropic_request_to_chat(body: &[u8]) -> Result<Vec<u8>, String> 
     result.insert("messages".to_string(), Value::Array(messages));
 
     if let Some(max_tokens) = object.get("max_tokens") {
-        result.insert("max_tokens".to_string(), max_tokens.clone());
+        // o-series and gpt-5+ reject max_tokens outright.
+        let model = object
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let key = if super::common::requires_max_completion_tokens(model) {
+            "max_completion_tokens"
+        } else {
+            "max_tokens"
+        };
+        result.insert(key.to_string(), max_tokens.clone());
     }
     copy_fields(object, &mut result, &["temperature", "top_p", "stream"]);
+    // OpenAI-compatible upstreams omit usage from streamed responses unless this
+    // is set, which would leave every streamed turn reporting zero tokens.
+    if object.get("stream").and_then(Value::as_bool) == Some(true) {
+        result.insert("stream_options".to_string(), json!({"include_usage": true}));
+    }
     if let Some(stop) = object.get("stop_sequences") {
         result.insert("stop".to_string(), stop.clone());
     }
@@ -113,19 +129,32 @@ fn convert_user_message(blocks: &[Value]) -> Result<Vec<Value>, String> {
             }
             Some("tool_result") => {
                 let call_id = required_string(object, "tool_use_id", "tool_result")?;
-                let content = object
+                let mut content = object
                     .get("content")
                     .map(stringify_tool_result_content)
                     .transpose()?
                     .unwrap_or_default();
+                // Several OpenAI-compatible gateways reject a `tool` message
+                // whose content is empty, so give an empty result a body.
+                if content.trim().is_empty() {
+                    content = "[ai-switch: tool returned no content]".to_string();
+                }
+                // Anthropic marks a failed tool call with `is_error`; chat has no
+                // equivalent field, so state it in the content or the model
+                // cannot tell success from failure.
+                if object.get("is_error").and_then(Value::as_bool) == Some(true) {
+                    content = format!("[tool error] {content}");
+                }
                 tool_messages.push(json!({
                     "role": "tool",
                     "tool_call_id": call_id,
                     "content": content
                 }));
             }
-            Some(other) => return Err(format!("Unsupported Anthropic user content type: {other}")),
-            None => return Err("Anthropic content block is missing type".to_string()),
+            // Unknown/newer block types (document, thinking, mcp_tool_use, …)
+            // are skipped: a degraded turn beats a 502 that also marks every
+            // credential in the pool as failed.
+            Some(_) | None => {}
         }
     }
 
@@ -172,12 +201,9 @@ fn convert_assistant_message(blocks: &[Value]) -> Result<Vec<Value>, String> {
                     "function": {"name": name, "arguments": arguments}
                 }));
             }
-            Some(other) => {
-                return Err(format!(
-                    "Unsupported Anthropic assistant content type: {other}"
-                ));
-            }
-            None => return Err("Anthropic content block is missing type".to_string()),
+            // Unknown/newer block types are skipped rather than failing the
+            // whole request; `thinking` and `redacted_thinking` are handled above.
+            Some(_) | None => {}
         }
     }
 
@@ -676,20 +702,6 @@ fn content_blocks(value: &Value) -> Result<Vec<Value>, String> {
     }
 }
 
-fn stringify_tool_result_content(value: &Value) -> Result<String, String> {
-    match value {
-        Value::String(text) => Ok(text.clone()),
-        Value::Array(parts) => Ok(parts
-            .iter()
-            .filter_map(|part| part.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("")),
-        Value::Null => Ok(String::new()),
-        _ => serde_json::to_string(value)
-            .map_err(|error| format!("Could not serialize tool result content: {error}")),
-    }
-}
-
 fn parse_json_or_string(value: &str) -> Value {
     serde_json::from_str::<Value>(value).unwrap_or_else(|_| Value::String(value.to_string()))
 }
@@ -737,6 +749,56 @@ fn looks_like_sse(body: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// A tool whose result is only an image must not produce an empty `tool`
+    /// message: the model would see nothing, and several OpenAI-compatible
+    /// gateways reject empty content with a 400.
+    #[test]
+    fn tool_result_media_and_errors_survive_conversion() {
+        let body = json!({
+            "model": "gpt-4o",
+            "max_tokens": 64,
+            "messages": [
+                {"role":"user","content":[{"type":"text","text":"screenshot it"}]},
+                {"role":"assistant","content":[
+                    {"type":"tool_use","id":"toolu_1","name":"screenshot","input":{}}
+                ]},
+                {"role":"user","content":[
+                    {"type":"tool_result","tool_use_id":"toolu_1","content":[
+                        {"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}
+                    ]}
+                ]},
+                {"role":"assistant","content":[
+                    {"type":"tool_use","id":"toolu_2","name":"run","input":{}}
+                ]},
+                {"role":"user","content":[
+                    {"type":"tool_result","tool_use_id":"toolu_2","is_error":true,"content":"boom"}
+                ]}
+            ]
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &anthropic_request_to_chat(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+        let messages = converted["messages"].as_array().unwrap();
+
+        let tool_messages: Vec<&Value> = messages.iter().filter(|m| m["role"] == "tool").collect();
+        assert_eq!(tool_messages.len(), 2, "messages={messages:?}");
+
+        // The image result is described rather than dropped, and is non-empty.
+        let image_result = tool_messages[0]["content"].as_str().unwrap();
+        assert!(!image_result.trim().is_empty(), "content={image_result}");
+        assert!(image_result.contains("image/png"), "content={image_result}");
+
+        // The failed tool call is distinguishable from a successful one.
+        let error_result = tool_messages[1]["content"].as_str().unwrap();
+        assert!(
+            error_result.contains("tool error"),
+            "content={error_result}"
+        );
+        assert!(error_result.contains("boom"), "content={error_result}");
+    }
+
     use super::{anthropic_request_to_chat, chat_response_to_anthropic};
     use serde_json::{json, Value};
 
