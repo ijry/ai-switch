@@ -154,9 +154,11 @@ pub enum RouteProxyTransportPlan {
 都映射到 `HttpOnly`，plan 没有变化，重启纯属多余。复选框保持可点，用户可以先配好、之后开启
 HTTPS 时即生效；不采用"禁用控件"，因为那会让人以为设置没被记住。
 
-**必须接上的联动**：切换该复选框使 `base_url` 在 `http://` 与 `https://` 间变化，**已写入的
-客户端配置随之失效**。新命令须触发仓库现有的"配置变更后提示需重新写入客户端配置"机制，不能让
-用户配置默默失配。仅当 `enabled = true`（即 plan 真的变了）时才需要该提示。
+**已写入客户端配置的失效提示**：切换该复选框使 `base_url` 在 `http://` 与 `https://` 间变化，
+已写入的客户端配置随之失配。**这一联动无需新增代码**：`RouteConfigService::config_write_is_stale`
+以 `base_url` 为入参、比对渲染结果与磁盘内容，而 `AccountsScreen` 已把实时的
+`routeProxyQuery.data?.base_url` 喂给它，所以 `base_url` 一变提示自然出现。新命令只需像
+`enable`/`disable` 那样把新的 `routeProxy` 状态同步回 query cache 即可。
 
 ## 错误处理
 
