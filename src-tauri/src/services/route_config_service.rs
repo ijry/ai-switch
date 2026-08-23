@@ -885,10 +885,9 @@ command = "npx"
         assert_eq!(json["permissions"]["allow"][0], "Bash(ls)");
         assert_eq!(json["env"]["EXISTING_FLAG"], "1");
         assert_eq!(json["env"]["ANTHROPIC_BASE_URL"], "https://127.0.0.1:43111");
-        assert_eq!(
-            json["env"]["AI_SWITCH_ROUTE_PROXY_API_KEY"],
-            "sk-ai-switch-test"
-        );
+        // The key Claude Code actually authenticates with.
+        assert_eq!(json["env"]["ANTHROPIC_AUTH_TOKEN"], "sk-ai-switch-test");
+        assert!(json["env"].get("AI_SWITCH_ROUTE_PROXY_API_KEY").is_none());
         assert_eq!(
             json["aiSwitch"]["routeProxy"]["baseUrl"],
             "https://127.0.0.1:43111"

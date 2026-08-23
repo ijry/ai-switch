@@ -14,6 +14,14 @@ pub(super) struct JsonAgentAdapter {
     platform: PlatformId,
     config_dir: &'static str,
     platform_base_url_keys: &'static [&'static str],
+    /// Env keys through which this agent supplies its credential. The route proxy
+    /// key goes here so the agent actually authenticates against the local proxy —
+    /// pointing it at `base_url` without a credential earns a 401 before any
+    /// request reaches the pool.
+    ///
+    /// Empty for agents whose credential env key has not been verified; writing a
+    /// guess would put a value the CLI may not read into the user's environment.
+    platform_auth_token_keys: &'static [&'static str],
     /// Whether this agent honors Claude Code's model-slot env keys. Claude-only —
     /// gemini and grok have no equivalent, so they must never receive them.
     writes_claude_model_env: bool,
@@ -26,6 +34,7 @@ impl JsonAgentAdapter {
             platform: PlatformId::Claude,
             config_dir: ".claude",
             platform_base_url_keys: &["ANTHROPIC_BASE_URL"],
+            platform_auth_token_keys: &["ANTHROPIC_AUTH_TOKEN"],
             writes_claude_model_env: true,
         }
     }
@@ -36,6 +45,7 @@ impl JsonAgentAdapter {
             platform: PlatformId::Gemini,
             config_dir: ".gemini",
             platform_base_url_keys: &["GEMINI_API_BASE_URL", "GOOGLE_GEMINI_BASE_URL"],
+            platform_auth_token_keys: &[],
             writes_claude_model_env: false,
         }
     }
@@ -46,10 +56,20 @@ impl JsonAgentAdapter {
             platform: PlatformId::Grok,
             config_dir: ".grok",
             platform_base_url_keys: &["XAI_API_BASE_URL", "GROK_API_BASE_URL"],
+            platform_auth_token_keys: &[],
             writes_claude_model_env: false,
         }
     }
 }
+
+/// Env keys earlier versions wrote that nothing ever read.
+///
+/// `AI_SWITCH_ROUTE_PROXY` duplicated the platform's own base-url key, and
+/// `AI_SWITCH_ROUTE_PROXY_API_KEY` duplicated `aiSwitch.routeProxy.apiKey` while
+/// also exposing the credential to every process the agent spawns. Removed on
+/// each write so they do not linger in configs written by those versions.
+const LEGACY_UNREAD_ENV_KEYS: [&str; 2] =
+    ["AI_SWITCH_ROUTE_PROXY", "AI_SWITCH_ROUTE_PROXY_API_KEY"];
 
 /// Env key pinning the model for Claude Code's spawned subagents.
 pub(super) const CLAUDE_SUBAGENT_MODEL_ENV_KEY: &str = "CLAUDE_CODE_SUBAGENT_MODEL";
@@ -140,14 +160,18 @@ impl TargetAdapter for JsonAgentAdapter {
         for key in self.platform_base_url_keys {
             env.insert((*key).to_string(), Value::String(input.base_url.clone()));
         }
-        env.insert(
-            "AI_SWITCH_ROUTE_PROXY".to_string(),
-            Value::String(input.base_url.clone()),
-        );
-        env.insert(
-            "AI_SWITCH_ROUTE_PROXY_API_KEY".to_string(),
-            Value::String(input.route_proxy_key.clone()),
-        );
+        // Without this the agent is told where the proxy is but not how to
+        // authenticate to it, so every request is rejected before a credential is
+        // even selected — which also means it never reaches the request log.
+        for key in self.platform_auth_token_keys {
+            env.insert(
+                (*key).to_string(),
+                Value::String(input.route_proxy_key.clone()),
+            );
+        }
+        for key in LEGACY_UNREAD_ENV_KEYS {
+            env.remove(key);
+        }
 
         // Mirror-inverse on every managed key: write what the pool resolves,
         // remove what it doesn't, so a stale value never hardens into an
@@ -282,5 +306,30 @@ mod tests {
         assert!(JsonAgentAdapter::claude().writes_claude_model_env);
         assert!(!JsonAgentAdapter::gemini().writes_claude_model_env);
         assert!(!JsonAgentAdapter::grok().writes_claude_model_env);
+    }
+
+    #[test]
+    fn only_claude_has_a_verified_auth_token_env_key() {
+        // Claude Code reads ANTHROPIC_AUTH_TOKEN; writing the route proxy key
+        // there is what lets it authenticate against the local proxy at all.
+        assert_eq!(
+            JsonAgentAdapter::claude().platform_auth_token_keys,
+            &["ANTHROPIC_AUTH_TOKEN"]
+        );
+        // Left empty deliberately: guessing a credential env key would put a
+        // value the CLI may not read into the user's environment. Fill these in
+        // only once the real key is confirmed.
+        assert!(JsonAgentAdapter::gemini()
+            .platform_auth_token_keys
+            .is_empty());
+        assert!(JsonAgentAdapter::grok().platform_auth_token_keys.is_empty());
+    }
+
+    #[test]
+    fn legacy_unread_env_keys_are_the_two_nothing_consumed() {
+        assert_eq!(
+            LEGACY_UNREAD_ENV_KEYS,
+            ["AI_SWITCH_ROUTE_PROXY", "AI_SWITCH_ROUTE_PROXY_API_KEY"]
+        );
     }
 }

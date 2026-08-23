@@ -270,13 +270,17 @@ api_key = "legacy-key"
     fn json_render_preserves_unmanaged_settings_and_env() {
         let registry = TargetAdapterRegistry::new();
         let adapter = registry.for_platform(PlatformId::Claude).unwrap();
+        // Carries both legacy keys so the render is also the migration path off
+        // them.
         let existing = br#"{
   "permissions": {
     "allow": ["Bash(ls)"]
   },
   "env": {
     "EXISTING_FLAG": "1",
-    "ANTHROPIC_BASE_URL": "https://old.example"
+    "ANTHROPIC_BASE_URL": "https://old.example",
+    "AI_SWITCH_ROUTE_PROXY": "https://old.example",
+    "AI_SWITCH_ROUTE_PROXY_API_KEY": "sk-ai-switch-stale"
   }
 }"#;
 
@@ -288,12 +292,18 @@ api_key = "legacy-key"
         assert_eq!(json["permissions"]["allow"][0], "Bash(ls)");
         assert_eq!(json["env"]["EXISTING_FLAG"], "1");
         assert_eq!(json["env"]["ANTHROPIC_BASE_URL"], BASE_URL);
-        assert_eq!(
-            json["env"]["AI_SWITCH_ROUTE_PROXY_API_KEY"],
-            ROUTE_PROXY_KEY
-        );
+        // Claude Code authenticates with this one. Without it the agent knows
+        // where the proxy is but not how to authenticate, so it gets a 401.
+        assert_eq!(json["env"]["ANTHROPIC_AUTH_TOKEN"], ROUTE_PROXY_KEY);
+        // Nothing ever read these, and the second one leaked the credential into
+        // every process the agent spawns.
+        assert!(json["env"].get("AI_SWITCH_ROUTE_PROXY").is_none());
+        assert!(json["env"].get("AI_SWITCH_ROUTE_PROXY_API_KEY").is_none());
         assert_eq!(json["aiSwitch"]["routeProxy"]["baseUrl"], BASE_URL);
         assert_eq!(json["aiSwitch"]["routeProxy"]["platform"], "claude");
+        // The credential still travels here, outside `env`, so it is not handed
+        // to spawned processes.
+        assert_eq!(json["aiSwitch"]["routeProxy"]["apiKey"], ROUTE_PROXY_KEY);
     }
 
     #[test]
