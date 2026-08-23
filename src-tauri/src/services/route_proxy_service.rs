@@ -727,6 +727,8 @@ async fn forward_request(
                         attempt,
                         &path,
                         None,
+                        // Failed before an upstream request was built.
+                        None,
                         None,
                         false,
                         trace_id.as_deref(),
@@ -803,6 +805,9 @@ async fn forward_request(
                     attempt,
                     &path,
                     None,
+                    // The upstream request could not be built, so there are no
+                    // outbound headers to report.
+                    None,
                     None,
                     false,
                     trace_id.as_deref(),
@@ -869,6 +874,7 @@ async fn forward_request(
                     attempt,
                     &path,
                     Some(&target_url),
+                    Some(&request_headers),
                     None,
                     false,
                     trace_id.as_deref(),
@@ -952,6 +958,7 @@ async fn forward_request(
                             bridge_name: bridge_name.as_deref(),
                             client_request: &body_bytes,
                             upstream_request: &upstream_request_bytes,
+                            upstream_headers: &request_headers,
                         },
                         credential_retry_count < failure_policy.retry_count as usize,
                         failure_policy,
@@ -986,6 +993,7 @@ async fn forward_request(
                             bridge_name: bridge_name.as_deref(),
                             client_request: &body_bytes,
                             upstream_request: &upstream_request_bytes,
+                            upstream_headers: &request_headers,
                         },
                         credential_retry_count < failure_policy.retry_count as usize,
                         failure_policy,
@@ -1021,6 +1029,7 @@ async fn forward_request(
                         bridge_name: bridge_name.as_deref(),
                         client_request: &body_bytes,
                         upstream_request: &upstream_request_bytes,
+                        upstream_headers: &request_headers,
                     },
                     !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
                         && credential_retry_count < failure_policy.retry_count as usize,
@@ -1056,6 +1065,7 @@ async fn forward_request(
                 bridge_name: bridge_name.clone(),
                 client_request: body_bytes.clone(),
                 upstream_request: upstream_request_bytes.clone(),
+                upstream_headers: request_headers.clone(),
                 observer: StreamObserver::new(LIVE_LOG_STAGE_LIMIT, streaming_request),
                 // Held until the stream ends so the account's concurrency slot
                 // is not handed out while this response is still in flight.
@@ -1106,6 +1116,7 @@ async fn forward_request(
                     attempt,
                     &path,
                     Some(&target_url),
+                    Some(&request_headers),
                     None,
                     false,
                     trace_id.as_deref(),
@@ -1212,6 +1223,7 @@ async fn forward_request(
                         attempt,
                         &path,
                         Some(&target_url),
+                        Some(&request_headers),
                         Some(status.as_u16()),
                         false,
                         trace_id.as_deref(),
@@ -1316,6 +1328,7 @@ async fn forward_request(
             attempt,
             &path,
             Some(&target_url),
+            Some(&request_headers),
             Some(status.as_u16()),
             proxy_success,
             trace_id.as_deref(),
@@ -1587,6 +1600,7 @@ fn emit_live_log(
     attempt: usize,
     path: &str,
     target_url: Option<&str>,
+    upstream_headers: Option<&HeaderMap>,
     status: Option<u16>,
     success: bool,
     trace_id: Option<&str>,
@@ -1615,7 +1629,8 @@ fn emit_live_log(
         credential_name: credential.display_name.clone(),
         attempt,
         path: path.to_string(),
-        target_url: target_url.map(str::to_string),
+        target_url: target_url.map(redact_sensitive_url),
+        upstream_headers: upstream_headers.map(format_upstream_headers),
         requested_model: requested_model
             .map(str::trim)
             .filter(|model| !model.is_empty())
@@ -1742,6 +1757,90 @@ fn elapsed_millis(started_at: Instant) -> i64 {
     started_at.elapsed().as_millis().min(i64::MAX as u128) as i64
 }
 
+/// Header names whose values carry a credential and must never reach the live log.
+///
+/// Everything else is shown in full — the identity headers the proxy injects to
+/// look like an official CLI (`user-agent`, `anthropic-beta`, `x-app`,
+/// `x-stainless-*`, `originator`) are exactly what a gateway fingerprints on, so
+/// masking them would defeat the purpose of logging headers at all.
+const SENSITIVE_HEADER_NAMES: [&str; 5] = [
+    "authorization",
+    "x-api-key",
+    "api-key",
+    "x-goog-api-key",
+    "x-xai-token-auth",
+];
+
+/// Query keys that carry a credential in the URL rather than a header.
+const SENSITIVE_QUERY_KEYS: [&str; 2] = ["key", "api_key"];
+
+/// Keep the shape of a secret without revealing it: a short value is fully
+/// masked, a long one keeps its last four characters so two credentials can be
+/// told apart in a log.
+fn mask_secret(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let chars = trimmed.chars().count();
+    if chars <= 8 {
+        return "***".to_string();
+    }
+    let tail: String = trimmed.chars().skip(chars - 4).collect();
+    format!("***{tail}")
+}
+
+/// Mask credential-bearing query values in a URL.
+///
+/// Gemini puts the API key in `?key=` (see `append_query_param` at the Gemini
+/// dialect arm), so the target URL is itself a secret-bearing string and cannot
+/// be logged verbatim.
+fn redact_sensitive_url(url: &str) -> String {
+    let Some((base, query)) = url.split_once('?') else {
+        return url.to_string();
+    };
+    let redacted = query
+        .split('&')
+        .map(|part| match part.split_once('=') {
+            Some((key, value))
+                if SENSITIVE_QUERY_KEYS
+                    .iter()
+                    .any(|sensitive| key.eq_ignore_ascii_case(sensitive)) =>
+            {
+                format!("{key}={}", mask_secret(value))
+            }
+            _ => part.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{base}?{redacted}")
+}
+
+/// Render outbound headers as sorted `name: value` lines for the live log.
+///
+/// Sorted so two requests can be diffed by eye, which is the whole point when a
+/// gateway accepts one request and rejects another with `unauthorized client
+/// detected`.
+fn format_upstream_headers(headers: &HeaderMap) -> String {
+    let mut lines = headers
+        .iter()
+        .map(|(name, value)| {
+            let name = name.as_str();
+            let value = value.to_str().unwrap_or("<non-utf8>");
+            if SENSITIVE_HEADER_NAMES
+                .iter()
+                .any(|sensitive| name.eq_ignore_ascii_case(sensitive))
+            {
+                format!("{name}: {}", mask_secret(value))
+            } else {
+                format!("{name}: {value}")
+            }
+        })
+        .collect::<Vec<_>>();
+    lines.sort();
+    lines.join("\n")
+}
+
 fn retry_credential_indexes(len: usize, cursor: i64) -> Vec<usize> {
     if len == 0 {
         return Vec::new();
@@ -1833,6 +1932,7 @@ struct StreamPrimeContext<'a> {
     bridge_name: Option<&'a str>,
     client_request: &'a [u8],
     upstream_request: &'a [u8],
+    upstream_headers: &'a HeaderMap,
 }
 
 /// Record a failure that happened before any byte reached the client.
@@ -1883,6 +1983,7 @@ async fn handle_stream_prime_failure(
         context.attempt,
         context.path,
         Some(context.target_url),
+        Some(context.upstream_headers),
         Some(context.status.as_u16()),
         false,
         context.trace_id,
@@ -1934,6 +2035,7 @@ struct StreamCompletion {
     bridge_name: Option<String>,
     client_request: axum::body::Bytes,
     upstream_request: Vec<u8>,
+    upstream_headers: HeaderMap,
     observer: StreamObserver,
     _activity_lease: RouteCredentialActivityLease,
 }
@@ -1959,6 +2061,7 @@ impl StreamCompletion {
             bridge_name,
             client_request,
             upstream_request,
+            upstream_headers,
             observer,
             _activity_lease,
         } = self;
@@ -1999,6 +2102,7 @@ impl StreamCompletion {
             attempt,
             &path,
             Some(&target_url),
+            Some(&upstream_headers),
             Some(status.as_u16()),
             !truncated,
             trace_id.as_deref(),
@@ -7190,6 +7294,75 @@ mod tests {
         assert!(is_messages_path("messages"));
         assert!(!is_messages_path("/v1/chat/completions"));
         assert!(!is_messages_path("/v1/models"));
+    }
+
+    #[test]
+    fn redacted_url_masks_the_gemini_key_but_keeps_other_query_parts() {
+        // Gemini carries its credential in the URL, so the target URL is itself
+        // secret-bearing and cannot be logged verbatim.
+        assert_eq!(
+            redact_sensitive_url(
+                "https://generativelanguage.googleapis.com/v1beta/models/x:generateContent?alt=sse&key=AIzaSyVerySecret123"
+            ),
+            "https://generativelanguage.googleapis.com/v1beta/models/x:generateContent?alt=sse&key=***t123"
+        );
+        // `?beta=true` must survive: it is the proxy-only query flag we need to
+        // see when comparing an accepted request against a rejected one.
+        assert_eq!(
+            redact_sensitive_url("https://api.example.com/v1/messages?beta=true"),
+            "https://api.example.com/v1/messages?beta=true"
+        );
+        assert_eq!(
+            redact_sensitive_url("https://api.example.com/v1/messages"),
+            "https://api.example.com/v1/messages"
+        );
+    }
+
+    #[test]
+    fn formatted_headers_mask_credentials_and_keep_client_identity() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_static("Bearer sk-ant-super-secret-value"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-api-key"),
+            HeaderValue::from_static("sk-short"),
+        );
+        headers.insert(
+            HeaderName::from_static("user-agent"),
+            HeaderValue::from_static("claude-cli/2.1.2 (external, cli)"),
+        );
+        headers.insert(
+            HeaderName::from_static("anthropic-beta"),
+            HeaderValue::from_static("claude-code-20250219"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-stainless-os"),
+            HeaderValue::from_static("Windows"),
+        );
+
+        let rendered = format_upstream_headers(&headers);
+
+        // Credentials never reach the log.
+        assert!(!rendered.contains("super-secret-value"));
+        assert!(!rendered.contains("sk-short"));
+        assert!(rendered.contains("authorization: ***alue"));
+        // A short secret is masked whole rather than leaking half of itself.
+        assert!(rendered.contains("x-api-key: ***"));
+        // The identity headers a gateway fingerprints on must be fully visible —
+        // masking them would defeat the purpose of logging headers.
+        assert!(rendered.contains("user-agent: claude-cli/2.1.2 (external, cli)"));
+        assert!(rendered.contains("anthropic-beta: claude-code-20250219"));
+        assert!(rendered.contains("x-stainless-os: Windows"));
+        // Sorted so two requests can be diffed by eye.
+        let names: Vec<&str> = rendered
+            .lines()
+            .filter_map(|line| line.split(':').next())
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
     }
 
     #[test]

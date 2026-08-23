@@ -481,6 +481,7 @@ export type RouteProxyLiveLogEntry = {
   attempt: number;
   path: string;
   target_url?: string | null;
+  upstream_headers?: string | null;
   requested_model?: string | null;
   upstream_model?: string | null;
   status?: number | null;

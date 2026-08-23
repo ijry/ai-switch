@@ -32,6 +32,15 @@ pub struct RouteProxyLiveLogEntry {
     pub attempt: usize,
     pub path: String,
     pub target_url: Option<String>,
+    /// Headers actually sent upstream, one `name: value` per line, sorted.
+    ///
+    /// Credential-bearing values are masked. The identity headers the proxy
+    /// injects to look like an official CLI stay visible — they are what a
+    /// fingerprinting gateway accepts or rejects on, so this is the field that
+    /// makes an `unauthorized client detected` diagnosable. Defaulted so older
+    /// payloads stay compatible.
+    #[serde(default)]
+    pub upstream_headers: Option<String>,
     pub requested_model: Option<String>,
     pub upstream_model: Option<String>,
     pub status: Option<u16>,
@@ -141,6 +150,7 @@ mod tests {
             attempt: 0,
             path: "/v1/messages".to_string(),
             target_url: None,
+            upstream_headers: None,
             requested_model: None,
             upstream_model: None,
             status: Some(200),

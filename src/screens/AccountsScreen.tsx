@@ -5643,6 +5643,12 @@ export function AccountsScreen({
                             </ul>
                           ) : null}
                           <LiveLogStage title="原始请求" body={entry.client_request} />
+                          {entry.target_url ? (
+                            <LiveLogStage title="上游地址" body={entry.target_url} />
+                          ) : null}
+                          {entry.upstream_headers ? (
+                            <LiveLogStage title="上游请求头" body={entry.upstream_headers} />
+                          ) : null}
                           <LiveLogStage title="发往上游" body={entry.upstream_request} />
                           <LiveLogStage title="上游原始返回" body={entry.upstream_response} />
                           <LiveLogStage
