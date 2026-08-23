@@ -584,11 +584,20 @@ const CLAUDE_SUBAGENT_ALIAS = "claude-subagent";
 const CLAUDE_FALLBACK_ALIAS = "*";
 
 // The four roles Claude Code shows in its /model menu.
+//
+// `supportsOneM` marks the roles that may advertise a `[1m]` variant. Haiku is
+// excluded: it is the small fast model and has no 1M context tier, so offering
+// the flag would let a user declare a context window the tier cannot serve.
 const claudeModelTemplates = [
-  { value: "claude-sonnet-5", label: "Sonnet", keywords: ["sonnet"] },
-  { value: "claude-opus-4-8", label: "Opus", keywords: ["opus"] },
-  { value: "claude-fable-5", label: "Fable", keywords: ["fable"] },
-  { value: "claude-haiku-4-5", label: "Haiku", keywords: ["haiku", "flash", "mini", "lite"] },
+  { value: "claude-sonnet-5", label: "Sonnet", keywords: ["sonnet"], supportsOneM: true },
+  { value: "claude-opus-4-8", label: "Opus", keywords: ["opus"], supportsOneM: true },
+  { value: "claude-fable-5", label: "Fable", keywords: ["fable"], supportsOneM: true },
+  {
+    value: "claude-haiku-4-5",
+    label: "Haiku",
+    keywords: ["haiku", "flash", "mini", "lite"],
+    supportsOneM: false,
+  },
 ] as const;
 
 // Appended after the menu roles so the existing rows keep their positions (the
@@ -614,14 +623,15 @@ const claudeRoleTemplates = [
     value: template.value,
     label: template.label,
     editableLabel: true,
-    supportsOneM: true,
+    supportsOneM: template.supportsOneM,
     hint: null as string | null,
   })),
   ...claudeExtraRoleTemplates.map((template) => ({
     value: template.value,
     label: template.label,
     editableLabel: false,
-    supportsOneM: true,
+    // Matches the comment above: these two never advertise a [1m] variant.
+    supportsOneM: false,
     hint: template.hint as string | null,
   })),
 ];
@@ -783,6 +793,16 @@ function isClaudeTemplateSource(value: string) {
   return claudeRoleTemplates.some((template) => template.value === value.trim());
 }
 
+/// Whether a Claude role may advertise a `[1m]` variant.
+///
+/// Non-role rows (a hand-written alias) are allowed it — only the built-in roles
+/// have a known context tier. Haiku has no 1M tier, and Subagent/fallback are
+/// written as plain aliases, so a `[1m]` variant there is a phantom model id.
+function claudeRoleSupportsOneM(from: string) {
+  const template = claudeRoleTemplates.find((item) => item.value === from.trim());
+  return template ? template.supportsOneM : true;
+}
+
 function modelIdList(models: FetchedRouteModel[]) {
   return models.map((model) => model.id).filter(Boolean);
 }
@@ -919,7 +939,10 @@ function normalizeModelMappings(mappings: ModelMapping[], platform: PlatformKey)
       };
     }
     const normalizedMapping: ModelMapping = label ? { from, to, label } : { from, to };
-    if (platform === "claude" && mapping.supports_1m === true) {
+    // Gate on the role, not just the checkbox: a stored flag from before Haiku
+    // and the Subagent/fallback rows lost their checkbox would otherwise survive
+    // every save, since a hidden checkbox can never clear it.
+    if (platform === "claude" && mapping.supports_1m === true && claudeRoleSupportsOneM(from)) {
       normalizedMapping.supports_1m = true;
     }
     normalized.push(normalizedMapping);
