@@ -4363,9 +4363,34 @@ fn fill_header_if_absent(headers: &mut HeaderMap, name: &'static str, value: &st
         .or_insert(value);
 }
 
+/// True when the request already carries an Anthropic SDK identity.
+///
+/// Anthropic's SDK is Stainless-generated and tags every request with
+/// `x-stainless-*`. Their presence means the caller is a genuine SDK client —
+/// Claude Code among them — already carrying a complete, self-consistent identity.
+fn has_stainless_sdk_identity(headers: &HeaderMap) -> bool {
+    headers
+        .keys()
+        .any(|name| name.as_str().starts_with("x-stainless-"))
+}
+
 /// Make an Anthropic-dialect upstream request look like Claude Code: guarantee
-/// the `claude-code-*` beta marker and fill missing CLI identity headers.
+/// the `claude-code-*` beta marker, and own the CLI identity headers whenever the
+/// caller does not already have an SDK identity of its own.
+///
+/// Identity is applied all-or-nothing. Filling only the gaps used to splice our
+/// hardcoded versions into a real client's set — a request would claim
+/// `x-stainless-package-version: 0.70.0` from us alongside the caller's newer
+/// runtime and `user-agent`, a combination no real client emits. A gateway that
+/// fingerprints clients (agentrouter.org rejects with `unauthorized client
+/// detected`) sees that as more suspicious than either identity alone, which is
+/// why routing through the pool failed where a direct per-account test — starting
+/// from an empty header map, so every value came from us — succeeded.
 fn apply_claude_code_identity(headers: &mut HeaderMap) {
+    // Merged either way: the beta marker is a capability signal rather than part
+    // of the identity set, and gateways gate on it. A plain SDK caller that omits
+    // it still ends up in Claude Code's shape, since Claude Code is itself an SDK
+    // client carrying this marker.
     let existing_beta = headers
         .get("anthropic-beta")
         .and_then(|value| value.to_str().ok());
@@ -4374,8 +4399,18 @@ fn apply_claude_code_identity(headers: &mut HeaderMap) {
             headers.insert(HeaderName::from_static("anthropic-beta"), value);
         }
     }
+
+    // The caller brought its own coherent identity; adding ours would only
+    // contradict it.
+    if has_stainless_sdk_identity(headers) {
+        return;
+    }
+
     for (name, value) in client_identity::claude_code_identity_headers() {
-        fill_header_if_absent(headers, name, value);
+        let Ok(value) = HeaderValue::from_str(value) else {
+            continue;
+        };
+        headers.insert(HeaderName::from_static(name), value);
     }
 }
 
@@ -7390,7 +7425,11 @@ mod tests {
     }
 
     #[test]
-    fn apply_claude_code_identity_merges_beta_and_fills_headers() {
+    fn identity_is_left_alone_when_the_caller_is_already_an_sdk_client() {
+        // Claude Code's own request: a complete Stainless SDK identity. Splicing
+        // our hardcoded versions into it produced a combination no real client
+        // emits, which is what agentrouter.org rejected as `unauthorized client
+        // detected`.
         let mut headers = HeaderMap::new();
         headers.insert(
             HeaderName::from_static("anthropic-beta"),
@@ -7398,24 +7437,79 @@ mod tests {
         );
         headers.insert(
             HeaderName::from_static("user-agent"),
-            HeaderValue::from_static("claude-cli/9.9.9 (external, cli)"),
+            HeaderValue::from_static("claude-cli/2.5.0 (external, cli)"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-stainless-package-version"),
+            HeaderValue::from_static("0.99.0"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-stainless-runtime-version"),
+            HeaderValue::from_static("v24.0.0"),
         );
         apply_claude_code_identity(&mut headers);
 
+        // Every value the caller sent survives untouched.
+        assert_eq!(
+            headers.get("user-agent").and_then(|v| v.to_str().ok()),
+            Some("claude-cli/2.5.0 (external, cli)")
+        );
+        assert_eq!(
+            headers
+                .get("x-stainless-package-version")
+                .and_then(|v| v.to_str().ok()),
+            Some("0.99.0")
+        );
+        assert_eq!(
+            headers
+                .get("x-stainless-runtime-version")
+                .and_then(|v| v.to_str().ok()),
+            Some("v24.0.0")
+        );
+        // We do not graft on the headers it chose to omit.
+        assert!(!headers.contains_key("x-app"));
+        assert!(!headers.contains_key("x-stainless-os"));
+        // The beta marker is a capability signal, not identity, so it still merges.
         assert_eq!(
             headers.get("anthropic-beta").and_then(|v| v.to_str().ok()),
             Some("claude-code-20250219,interleaved-thinking-2025-05-14")
         );
-        // Client's own user-agent must win over the impersonated default.
+    }
+
+    #[test]
+    fn identity_is_applied_whole_when_the_caller_has_none() {
+        // A plain client (curl, a script, a non-SDK bridge) gets the full
+        // impersonation so it can pass a fingerprinting gateway at all.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("user-agent"),
+            HeaderValue::from_static("curl/8.18.0"),
+        );
+        apply_claude_code_identity(&mut headers);
+
+        // Our set wins outright — a half-curl half-CLI identity is exactly the
+        // contradiction that gets rejected.
         assert_eq!(
             headers.get("user-agent").and_then(|v| v.to_str().ok()),
-            Some("claude-cli/9.9.9 (external, cli)")
+            Some(client_identity::CLAUDE_CODE_USER_AGENT)
         );
         assert_eq!(
             headers.get("x-app").and_then(|v| v.to_str().ok()),
             Some("cli")
         );
         assert!(headers.contains_key("x-stainless-package-version"));
+        assert!(headers.contains_key("x-stainless-os"));
+    }
+
+    #[test]
+    fn a_single_stainless_header_is_enough_to_count_as_an_sdk_identity() {
+        let mut headers = HeaderMap::new();
+        assert!(!has_stainless_sdk_identity(&headers));
+        headers.insert(
+            HeaderName::from_static("x-stainless-lang"),
+            HeaderValue::from_static("js"),
+        );
+        assert!(has_stainless_sdk_identity(&headers));
     }
 
     #[test]
