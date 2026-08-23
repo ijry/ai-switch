@@ -72,24 +72,24 @@ describe("ModelMappingSummary", () => {
   it("expands Claude 1M mappings without duplicating an existing suffix", () => {
     expect(
       expandDisplayModelMappings("claude", [
-        { from: "claude-sonnet-5", to: "up-sonnet", label: "Sonnet", supports_1m: true },
-        { from: "claude-opus-4-8[1m]", to: "up-opus", supports_1m: true },
+        { from: "claude-sonnet-alias", to: "up-sonnet", label: "Sonnet", supports_1m: true },
+        { from: "claude-opus-alias[1m]", to: "up-opus", supports_1m: true },
       ]),
     ).toEqual([
       {
-        alias: "claude-sonnet-5",
+        alias: "claude-sonnet-alias",
         target: "up-sonnet",
         label: "Sonnet",
         oneM: false,
       },
       {
-        alias: "claude-sonnet-5[1m]",
+        alias: "claude-sonnet-alias[1m]",
         target: "up-sonnet",
         label: "Sonnet",
         oneM: true,
       },
       {
-        alias: "claude-opus-4-8[1m]",
+        alias: "claude-opus-alias[1m]",
         target: "up-opus",
         label: null,
         oneM: false,

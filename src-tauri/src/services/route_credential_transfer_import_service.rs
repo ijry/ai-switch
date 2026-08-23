@@ -539,7 +539,7 @@ mod tests {
             "api-key": "fixture-key-material",
             "base-url": endpoint(),
             "models": [
-                {"name": "provider-sonnet", "alias": "claude-sonnet-5", "display-name": "Sonnet"},
+                {"name": "provider-sonnet", "alias": "claude-sonnet-alias", "display-name": "Sonnet"},
                 {"name": "provider-haiku", "alias": "claude-subagent"},
                 {"name": "catch-all-upstream", "alias": "*"}
             ],
@@ -551,7 +551,7 @@ mod tests {
                 "cpa_section": "claude-api-key",
                 "interface_format": "anthropic",
                 "model_mappings": [
-                    {"from": "claude-sonnet-5", "to": "provider-sonnet", "label": "Sonnet"},
+                    {"from": "claude-sonnet-alias", "to": "provider-sonnet", "label": "Sonnet"},
                     {"from": "claude-subagent", "to": "provider-haiku"},
                     {"from": "*", "to": "catch-all-upstream"}
                 ]
@@ -571,7 +571,7 @@ mod tests {
                 .iter()
                 .filter_map(|mapping| mapping.get("from").and_then(Value::as_str))
                 .collect::<Vec<_>>(),
-            vec!["claude-sonnet-5", "claude-subagent", "*"]
+            vec!["claude-sonnet-alias", "claude-subagent", "*"]
         );
         assert_eq!(
             mappings

@@ -2931,11 +2931,14 @@ mod tests {
     #[test]
     fn request_model_skips_the_fallback_sentinel_when_no_model_is_requested() {
         // "*" is not a model name; probing it would send a meaningless request.
-        let mappings = vec![mapping("*", "catch-all"), mapping("claude-sonnet-5", "x")];
+        let mappings = vec![
+            mapping("*", "catch-all"),
+            mapping("claude-sonnet-alias", "x"),
+        ];
 
         assert_eq!(
             request_model("claude", "anthropic", &mappings, None),
-            "claude-sonnet-5"
+            "claude-sonnet-alias"
         );
     }
 

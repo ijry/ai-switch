@@ -291,22 +291,22 @@ pub const CLAUDE_SUBAGENT_MODEL_ALIAS: &str = "claude-subagent";
 /// keys — a client-side version bump would otherwise strand every account.
 pub const CLAUDE_MODEL_SLOTS: &[ClaudeModelSlot] = &[
     ClaudeModelSlot {
-        alias: "claude-sonnet-5",
+        alias: "claude-sonnet-alias",
         model_env_key: "ANTHROPIC_DEFAULT_SONNET_MODEL",
         name_env_key: "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
     },
     ClaudeModelSlot {
-        alias: "claude-opus-4-8",
+        alias: "claude-opus-alias",
         model_env_key: "ANTHROPIC_DEFAULT_OPUS_MODEL",
         name_env_key: "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
     },
     ClaudeModelSlot {
-        alias: "claude-fable-5",
+        alias: "claude-fable-alias",
         model_env_key: "ANTHROPIC_DEFAULT_FABLE_MODEL",
         name_env_key: "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
     },
     ClaudeModelSlot {
-        alias: "claude-haiku-4-5",
+        alias: "claude-haiku-alias",
         model_env_key: "ANTHROPIC_DEFAULT_HAIKU_MODEL",
         name_env_key: "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
     },

@@ -994,7 +994,7 @@ command = "npx"
         seed_claude_pool_member(
             &pool,
             "api",
-            r#"[{"from":"claude-sonnet-5","to":"provider-sonnet","label":"Sonnet"}]"#,
+            r#"[{"from":"claude-sonnet-alias","to":"provider-sonnet","label":"Sonnet"}]"#,
         )
         .await;
 
@@ -1051,14 +1051,14 @@ command = "npx"
     #[test]
     fn unconfigured_slots_are_cleared() {
         let writes = RouteConfigService::resolve_claude_slot_writes(&[vec![slot_mapping(
-            "claude-sonnet-5",
+            "claude-sonnet-alias",
             "provider-sonnet",
             None,
             false,
         )]]);
 
         assert_eq!(writes.len(), CLAUDE_MODEL_SLOTS.len());
-        assert_eq!(writes[0].model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(writes[0].model.as_deref(), Some("claude-sonnet-alias"));
         // Opus/Fable/Haiku unconfigured → cleared, not defaulted to something.
         assert_eq!(writes[1], ClaudeSlotWrite::default());
         assert_eq!(writes[3], ClaudeSlotWrite::default());
@@ -1067,54 +1067,54 @@ command = "npx"
     #[test]
     fn slot_model_is_the_generic_alias_never_the_upstream_name() {
         let write = sonnet_write(&[vec![slot_mapping(
-            "claude-sonnet-5",
+            "claude-sonnet-alias",
             "deepseek-v3-0324",
             None,
             false,
         )]]);
 
-        assert_eq!(write.model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(write.model.as_deref(), Some("claude-sonnet-alias"));
     }
 
     #[test]
     fn one_m_is_declared_only_when_every_account_supports_it() {
         let all = sonnet_write(&[
-            vec![slot_mapping("claude-sonnet-5", "a", None, true)],
-            vec![slot_mapping("claude-sonnet-5", "b", None, true)],
+            vec![slot_mapping("claude-sonnet-alias", "a", None, true)],
+            vec![slot_mapping("claude-sonnet-alias", "b", None, true)],
         ]);
-        assert_eq!(all.model.as_deref(), Some("claude-sonnet-5[1M]"));
+        assert_eq!(all.model.as_deref(), Some("claude-sonnet-alias[1M]"));
 
         // AND, not OR: declaring 1M here would route a 1M-sized prompt to the
         // account that cannot serve it.
         let mixed = sonnet_write(&[
-            vec![slot_mapping("claude-sonnet-5", "a", None, true)],
-            vec![slot_mapping("claude-sonnet-5", "b", None, false)],
+            vec![slot_mapping("claude-sonnet-alias", "a", None, true)],
+            vec![slot_mapping("claude-sonnet-alias", "b", None, false)],
         ]);
-        assert_eq!(mixed.model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(mixed.model.as_deref(), Some("claude-sonnet-alias"));
     }
 
     #[test]
     fn one_m_ignores_accounts_that_do_not_configure_the_slot() {
         // The second account configures only Haiku, so it must not veto Sonnet's 1M.
         let write = sonnet_write(&[
-            vec![slot_mapping("claude-sonnet-5", "a", None, true)],
-            vec![slot_mapping("claude-haiku-4-5", "b", None, false)],
+            vec![slot_mapping("claude-sonnet-alias", "a", None, true)],
+            vec![slot_mapping("claude-haiku-alias", "b", None, false)],
         ]);
 
-        assert_eq!(write.model.as_deref(), Some("claude-sonnet-5[1M]"));
+        assert_eq!(write.model.as_deref(), Some("claude-sonnet-alias[1M]"));
     }
 
     #[test]
     fn display_name_needs_pool_consensus() {
         let agreed = sonnet_write(&[
             vec![slot_mapping(
-                "claude-sonnet-5",
+                "claude-sonnet-alias",
                 "a",
                 Some("DeepSeek V3"),
                 false,
             )],
             vec![slot_mapping(
-                "claude-sonnet-5",
+                "claude-sonnet-alias",
                 "b",
                 Some("DeepSeek V3"),
                 false,
@@ -1125,12 +1125,17 @@ command = "npx"
         // Disagreement omits the key rather than silently picking a winner.
         let conflicting = sonnet_write(&[
             vec![slot_mapping(
-                "claude-sonnet-5",
+                "claude-sonnet-alias",
                 "a",
                 Some("DeepSeek V3"),
                 false,
             )],
-            vec![slot_mapping("claude-sonnet-5", "b", Some("Kimi K2"), false)],
+            vec![slot_mapping(
+                "claude-sonnet-alias",
+                "b",
+                Some("Kimi K2"),
+                false,
+            )],
         ]);
         assert_eq!(conflicting.display_name, None);
     }
@@ -1139,13 +1144,13 @@ command = "npx"
     fn blank_display_names_abstain_instead_of_vetoing() {
         let write = sonnet_write(&[
             vec![slot_mapping(
-                "claude-sonnet-5",
+                "claude-sonnet-alias",
                 "a",
                 Some("DeepSeek V3"),
                 false,
             )],
-            vec![slot_mapping("claude-sonnet-5", "b", None, false)],
-            vec![slot_mapping("claude-sonnet-5", "c", Some("  "), false)],
+            vec![slot_mapping("claude-sonnet-alias", "b", None, false)],
+            vec![slot_mapping("claude-sonnet-alias", "c", Some("  "), false)],
         ]);
 
         assert_eq!(write.display_name.as_deref(), Some("DeepSeek V3"));
@@ -1158,8 +1163,8 @@ command = "npx"
         seed_claude_pool_member(
             &pool,
             "api",
-            r#"[{"from":"claude-sonnet-5","to":"deepseek-v3","label":"DeepSeek V3","supports_1m":true},
-                {"from":"claude-haiku-4-5","to":"provider-haiku","label":"Haiku Fast"}]"#,
+            r#"[{"from":"claude-sonnet-alias","to":"deepseek-v3","label":"DeepSeek V3","supports_1m":true},
+                {"from":"claude-haiku-alias","to":"provider-haiku","label":"Haiku Fast"}]"#,
         )
         .await;
 
@@ -1167,11 +1172,14 @@ command = "npx"
         let env = &json["env"];
 
         // Generic aliases pin the client contract; the upstream name never leaks.
-        assert_eq!(env["ANTHROPIC_DEFAULT_SONNET_MODEL"], "claude-sonnet-5[1M]");
+        assert_eq!(
+            env["ANTHROPIC_DEFAULT_SONNET_MODEL"],
+            "claude-sonnet-alias[1M]"
+        );
         assert_eq!(env["ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"], "DeepSeek V3");
         assert_ne!(env["ANTHROPIC_DEFAULT_SONNET_MODEL"], "deepseek-v3");
 
-        assert_eq!(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "claude-haiku-4-5");
+        assert_eq!(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "claude-haiku-alias");
         assert_eq!(env["ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME"], "Haiku Fast");
 
         // Unconfigured slots stay absent rather than being invented.
@@ -1200,7 +1208,7 @@ command = "npx"
         seed_claude_pool_member(
             &pool,
             "api",
-            r#"[{"from":"claude-sonnet-5","to":"provider-sonnet"}]"#,
+            r#"[{"from":"claude-sonnet-alias","to":"provider-sonnet"}]"#,
         )
         .await;
         write_claude_config_with_pool(home.path(), &paths, &pool, &runtime).await;
@@ -1213,7 +1221,7 @@ command = "npx"
         seed_claude_pool_member(
             &pool,
             "api",
-            r#"[{"from":"claude-opus-4-8","to":"provider-opus"}]"#,
+            r#"[{"from":"claude-opus-alias","to":"provider-opus"}]"#,
         )
         .await;
         assert!(is_stale().await);

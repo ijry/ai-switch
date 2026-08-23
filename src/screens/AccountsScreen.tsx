@@ -589,11 +589,11 @@ const CLAUDE_FALLBACK_ALIAS = "*";
 // excluded: it is the small fast model and has no 1M context tier, so offering
 // the flag would let a user declare a context window the tier cannot serve.
 const claudeModelTemplates = [
-  { value: "claude-sonnet-5", label: "Sonnet", keywords: ["sonnet"], supportsOneM: true },
-  { value: "claude-opus-4-8", label: "Opus", keywords: ["opus"], supportsOneM: true },
-  { value: "claude-fable-5", label: "Fable", keywords: ["fable"], supportsOneM: true },
+  { value: "claude-sonnet-alias", label: "Sonnet", keywords: ["sonnet"], supportsOneM: true },
+  { value: "claude-opus-alias", label: "Opus", keywords: ["opus"], supportsOneM: true },
+  { value: "claude-fable-alias", label: "Fable", keywords: ["fable"], supportsOneM: true },
   {
-    value: "claude-haiku-4-5",
+    value: "claude-haiku-alias",
     label: "Haiku",
     keywords: ["haiku", "flash", "mini", "lite"],
     supportsOneM: false,
@@ -5553,7 +5553,7 @@ export function AccountsScreen({
             </label>
             {activePlatform === "claude" && (
               <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-[12px] font-medium text-amber-800">
-                claude-opus-4-8 等内部角色模型需要在账号模型映射里指向站点真实模型；不确定时留空使用默认 Claude 测试模型。
+                claude-opus-alias 等内部角色模型需要在账号模型映射里指向站点真实模型；不确定时留空使用默认 Claude 测试模型。
               </p>
             )}
 

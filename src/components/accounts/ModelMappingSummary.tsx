@@ -10,7 +10,7 @@ export type DisplayModelMapping = {
 
 const baselineModelsByPlatform: Record<string, readonly string[]> = {
   codex: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
-  claude: ["claude-sonnet-5", "claude-opus-4-8", "claude-fable-5", "claude-haiku-4-5"],
+  claude: ["claude-sonnet-alias", "claude-opus-alias", "claude-fable-alias", "claude-haiku-alias"],
   gemini: ["gemini-2.5-flash"],
   grok: ["grok-4.5"],
 };

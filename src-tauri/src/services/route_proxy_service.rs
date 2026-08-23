@@ -7768,16 +7768,16 @@ mod tests {
     #[test]
     fn apply_model_mappings_strips_claude_one_m_suffix_for_lookup() {
         let mapped = apply_model_mappings(
-            br#"{"model":"claude-sonnet-5 [1M]","nested":{"model":"claude-opus-4-8[1m]"}}"#,
+            br#"{"model":"claude-sonnet-alias [1M]","nested":{"model":"claude-opus-alias[1m]"}}"#,
             &[
                 ModelMapping {
-                    from: "claude-sonnet-5".to_string(),
+                    from: "claude-sonnet-alias".to_string(),
                     to: "provider-sonnet".to_string(),
                     label: Some("Sonnet".to_string()),
                     supports_1m: Some(true),
                 },
                 ModelMapping {
-                    from: "claude-opus-4-8".to_string(),
+                    from: "claude-opus-alias".to_string(),
                     to: "provider-opus".to_string(),
                     label: Some("Opus".to_string()),
                     supports_1m: Some(true),
@@ -7818,9 +7818,9 @@ mod tests {
     #[test]
     fn apply_model_mappings_uses_fallback_only_when_no_specific_entry_matches() {
         // Fallback sits FIRST on purpose: a single-pass `.find()` would let it
-        // swallow the specific claude-sonnet-5 entry that follows.
+        // swallow the specific claude-sonnet-alias entry that follows.
         let mapped = apply_model_mappings(
-            br#"{"model":"claude-sonnet-5","nested":{"model":"claude-opus-4-8"}}"#,
+            br#"{"model":"claude-sonnet-alias","nested":{"model":"claude-opus-alias"}}"#,
             &[
                 ModelMapping {
                     from: "*".to_string(),
@@ -7829,7 +7829,7 @@ mod tests {
                     supports_1m: None,
                 },
                 ModelMapping {
-                    from: "claude-sonnet-5".to_string(),
+                    from: "claude-sonnet-alias".to_string(),
                     to: "sonnet-upstream".to_string(),
                     label: None,
                     supports_1m: None,
@@ -8372,10 +8372,10 @@ data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"partia";
         // Anthropic nests the model under `message` in `message_start`.
         assert_eq!(
             extract_response_model(
-                b"data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-4-8\"}}\n\n"
+                b"data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-alias\"}}\n\n"
             )
             .as_deref(),
-            Some("claude-opus-4-8")
+            Some("claude-opus-alias")
         );
         // Gemini reports `modelVersion`.
         assert_eq!(
@@ -9418,7 +9418,7 @@ data: [DONE]\n\n";
         assert!(unmatched.is_empty());
 
         let baseline =
-            filter_credentials_for_model("claude", vec![official], Some("claude-sonnet-5"));
+            filter_credentials_for_model("claude", vec![official], Some("claude-sonnet-alias"));
         assert_eq!(baseline.len(), 1);
     }
 
@@ -9541,7 +9541,7 @@ data: [DONE]\n\n";
             "base_url": "https://api.example.com",
             "interface_format": "anthropic",
             "model_mappings": [
-                {"from":"claude-sonnet-5","to":"provider-sonnet"},
+                {"from":"claude-sonnet-alias","to":"provider-sonnet"},
                 {"from":"*","to":"catch-all-upstream"}
             ]
         })
@@ -9558,9 +9558,9 @@ data: [DONE]\n\n";
 
         // "*" is a routing sentinel, not a model id — it must never be advertised.
         assert!(!models.contains(&"*"), "models={models:?}");
-        assert!(models.contains(&"claude-sonnet-5"), "models={models:?}");
+        assert!(models.contains(&"claude-sonnet-alias"), "models={models:?}");
         // A fallback account accepts anything, so it advertises the baseline.
-        assert!(models.contains(&"claude-haiku-4-5"), "models={models:?}");
+        assert!(models.contains(&"claude-haiku-alias"), "models={models:?}");
     }
 
     #[test]
@@ -9572,12 +9572,12 @@ data: [DONE]\n\n";
             "interface_format": "anthropic",
             "model_mappings": [
                 {
-                    "from": "claude-sonnet-5",
+                    "from": "claude-sonnet-alias",
                     "to": "provider-sonnet",
                     "supports_1m": true
                 },
                 {
-                    "from": "claude-opus-4-8",
+                    "from": "claude-opus-alias",
                     "to": "provider-opus",
                     "supports_1m": false
                 }
@@ -9595,7 +9595,11 @@ data: [DONE]\n\n";
             .collect::<Vec<_>>();
         assert_eq!(
             models,
-            vec!["claude-sonnet-5", "claude-sonnet-5[1m]", "claude-opus-4-8"]
+            vec![
+                "claude-sonnet-alias",
+                "claude-sonnet-alias[1m]",
+                "claude-opus-alias"
+            ]
         );
     }
 

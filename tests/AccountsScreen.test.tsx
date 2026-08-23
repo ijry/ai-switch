@@ -1739,7 +1739,7 @@ describe("AccountsScreen", () => {
         base_url: "https://api.anthropic.test",
         interface_format: "anthropic",
         api_key_field: "ANTHROPIC_AUTH_TOKEN",
-        model_mappings_json: "[{\"from\":\"claude-sonnet-5\",\"to\":\"provider-sonnet\",\"label\":\"Sonnet\"}]",
+        model_mappings_json: "[{\"from\":\"claude-sonnet-alias\",\"to\":\"provider-sonnet\",\"label\":\"Sonnet\"}]",
         fetched_models_json: "[]",
         preview_json: null,
         batch_id: null,
@@ -1870,7 +1870,7 @@ describe("AccountsScreen", () => {
         expect.objectContaining({
           display_name: "Claude 1M API",
           model_mappings_json:
-            "[{\"from\":\"claude-sonnet-5\",\"to\":\"provider-sonnet-1m\",\"label\":\"Sonnet\",\"supports_1m\":true}]",
+            "[{\"from\":\"claude-sonnet-alias\",\"to\":\"provider-sonnet-1m\",\"label\":\"Sonnet\",\"supports_1m\":true}]",
         }),
       ),
     );

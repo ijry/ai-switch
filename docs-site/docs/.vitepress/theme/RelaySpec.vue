@@ -17,7 +17,7 @@ const isEn = computed(() => localeIndex.value === "en");
 const EXAMPLE_CLAUDE =
   "aiswitch://v1/import?resource=provider&app=claude&name=Example%20Relay" +
   "&endpoint=https%3A%2F%2Fapi.example.com%2Fv1&apiKey=sk-xxxxxxxx" +
-  "&sonnetModel=claude-sonnet-5&opusModel=claude-opus-4-8";
+  "&sonnetModel=claude-sonnet-alias&opusModel=claude-opus-alias";
 
 const EXAMPLE_CODEX =
   "aiswitch://v1/import?resource=provider&app=codex&name=Example%20Relay" +
@@ -114,9 +114,9 @@ const COPY = {
     modelClaudeHead: "app=claude",
     modelOtherHead: "app=codex / gemini / grok",
     modelClaude: [
-      { param: "haikuModel", from: "claude-haiku-4-5" },
-      { param: "sonnetModel", from: "claude-sonnet-5" },
-      { param: "opusModel", from: "claude-opus-4-8" },
+      { param: "haikuModel", from: "claude-haiku-alias" },
+      { param: "sonnetModel", from: "claude-sonnet-alias" },
+      { param: "opusModel", from: "claude-opus-alias" },
     ],
     modelOther: [
       { param: "model", from: "gpt-5", note: "app=codex" },
@@ -243,9 +243,9 @@ const COPY = {
     modelClaudeHead: "app=claude",
     modelOtherHead: "app=codex / gemini / grok",
     modelClaude: [
-      { param: "haikuModel", from: "claude-haiku-4-5" },
-      { param: "sonnetModel", from: "claude-sonnet-5" },
-      { param: "opusModel", from: "claude-opus-4-8" },
+      { param: "haikuModel", from: "claude-haiku-alias" },
+      { param: "sonnetModel", from: "claude-sonnet-alias" },
+      { param: "opusModel", from: "claude-opus-alias" },
     ],
     modelOther: [
       { param: "model", from: "gpt-5", note: "app=codex" },

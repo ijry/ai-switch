@@ -255,10 +255,10 @@ fn default_client_models(platform: &str) -> &'static [&'static str] {
     match platform {
         "codex" => &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
         "claude" => &[
-            "claude-sonnet-5",
-            "claude-opus-4-8",
-            "claude-fable-5",
-            "claude-haiku-4-5",
+            "claude-sonnet-alias",
+            "claude-opus-alias",
+            "claude-fable-alias",
+            "claude-haiku-alias",
         ],
         "gemini" => &["gemini-2.5-flash"],
         "grok" => &["grok-4.5"],
@@ -458,25 +458,25 @@ mod tests {
     #[test]
     fn claude_advertised_models_expand_one_m_and_dedupe_case_insensitively() {
         let capability = parse_model_capability(
-            r#"{"model_mappings":[{"from":"claude-sonnet-5","to":"sonnet","supports_1m":true},{"from":"CLAUDE-SONNET-5","to":"other"}]}"#,
+            r#"{"model_mappings":[{"from":"claude-sonnet-alias","to":"sonnet","supports_1m":true},{"from":"CLAUDE-SONNET-ALIAS","to":"other"}]}"#,
         );
 
         assert_eq!(
             advertised_model_ids("claude", &[capability]),
-            vec!["claude-sonnet-5", "claude-sonnet-5[1m]"]
+            vec!["claude-sonnet-alias", "claude-sonnet-alias[1m]"]
         );
     }
 
     #[test]
     fn fallback_mapping_makes_any_model_supported() {
         let capability = parse_model_capability(
-            r#"{"model_mappings":[{"from":"claude-sonnet-5","to":"x"},{"from":"*","to":"y"}]}"#,
+            r#"{"model_mappings":[{"from":"claude-sonnet-alias","to":"x"},{"from":"*","to":"y"}]}"#,
         );
 
         assert!(supports_requested_model(
             "claude",
             &capability,
-            Some("claude-opus-4-8")
+            Some("claude-opus-alias")
         ));
         assert!(supports_requested_model(
             "claude",
@@ -486,7 +486,7 @@ mod tests {
         assert!(supports_requested_model(
             "claude",
             &capability,
-            Some("claude-sonnet-5")
+            Some("claude-sonnet-alias")
         ));
         assert!(supports_requested_model("claude", &capability, None));
     }
@@ -494,7 +494,7 @@ mod tests {
     #[test]
     fn fallback_mapping_is_never_advertised_but_contributes_baseline() {
         let capability = parse_model_capability(
-            r#"{"model_mappings":[{"from":"claude-sonnet-5","to":"x"},{"from":"*","to":"y"}]}"#,
+            r#"{"model_mappings":[{"from":"claude-sonnet-alias","to":"x"},{"from":"*","to":"y"}]}"#,
         );
         let advertised = advertised_model_ids("claude", &[capability]);
 
@@ -503,10 +503,10 @@ mod tests {
         assert_eq!(
             advertised,
             vec![
-                "claude-sonnet-5",
-                "claude-opus-4-8",
-                "claude-fable-5",
-                "claude-haiku-4-5"
+                "claude-sonnet-alias",
+                "claude-opus-alias",
+                "claude-fable-alias",
+                "claude-haiku-alias"
             ]
         );
         assert!(!advertised.iter().any(|model| model == "*"));
@@ -532,20 +532,20 @@ mod tests {
         // Fallback deliberately sits FIRST: a single-pass `.find()` would let it
         // swallow every request, which is the bug this ordering guards against.
         let capability = parse_model_capability(
-            r#"{"model_mappings":[{"from":"*","to":"fallback-upstream"},{"from":"claude-sonnet-5","to":"sonnet-upstream","supports_1m":true}]}"#,
+            r#"{"model_mappings":[{"from":"*","to":"fallback-upstream"},{"from":"claude-sonnet-alias","to":"sonnet-upstream","supports_1m":true}]}"#,
         );
         let mappings = &capability.mappings;
 
         assert_eq!(
-            resolve_mapping_target(mappings, "claude-sonnet-5"),
+            resolve_mapping_target(mappings, "claude-sonnet-alias"),
             Some("sonnet-upstream")
         );
         assert_eq!(
-            resolve_mapping_target(mappings, "claude-haiku-4-5"),
+            resolve_mapping_target(mappings, "claude-haiku-alias"),
             Some("fallback-upstream")
         );
         assert_eq!(
-            resolve_mapping_target(mappings, "claude-sonnet-5[1m]"),
+            resolve_mapping_target(mappings, "claude-sonnet-alias[1m]"),
             Some("sonnet-upstream")
         );
     }
@@ -553,11 +553,11 @@ mod tests {
     #[test]
     fn resolve_mapping_target_returns_none_without_a_fallback() {
         let capability = parse_model_capability(
-            r#"{"model_mappings":[{"from":"claude-sonnet-5","to":"sonnet-upstream"}]}"#,
+            r#"{"model_mappings":[{"from":"claude-sonnet-alias","to":"sonnet-upstream"}]}"#,
         );
 
         assert_eq!(
-            resolve_mapping_target(&capability.mappings, "claude-haiku-4-5"),
+            resolve_mapping_target(&capability.mappings, "claude-haiku-alias"),
             None
         );
     }

@@ -284,9 +284,9 @@ fn build_claude_model_query_pairs<'a>(
     }
 
     let roles = [
-        ("claude-haiku-4-5", "Haiku", "haikuModel"),
-        ("claude-sonnet-5", "Sonnet", "sonnetModel"),
-        ("claude-opus-4-8", "Opus", "opusModel"),
+        ("claude-haiku-alias", "Haiku", "haikuModel"),
+        ("claude-sonnet-alias", "Sonnet", "sonnetModel"),
+        ("claude-opus-alias", "Opus", "opusModel"),
     ];
     let mut result = Vec::with_capacity(mappings.len());
     let mut previous_role = None;
@@ -348,21 +348,21 @@ fn build_model_mappings_json(
             &mut mappings,
             params,
             "haikuModel",
-            "claude-haiku-4-5",
+            "claude-haiku-alias",
             "Haiku",
         );
         push_claude_mapping(
             &mut mappings,
             params,
             "sonnetModel",
-            "claude-sonnet-5",
+            "claude-sonnet-alias",
             "Sonnet",
         );
         push_claude_mapping(
             &mut mappings,
             params,
             "opusModel",
-            "claude-opus-4-8",
+            "claude-opus-alias",
             "Opus",
         );
     } else if let Some(model) = optional_nonempty(params, "model") {
@@ -503,19 +503,19 @@ mod tests {
 
         let claude_mappings = vec![
             ModelMapping {
-                from: "claude-haiku-4-5".into(),
+                from: "claude-haiku-alias".into(),
                 to: "claude-haiku-custom".into(),
                 label: Some("Haiku".into()),
                 supports_1m: None,
             },
             ModelMapping {
-                from: "claude-sonnet-5".into(),
+                from: "claude-sonnet-alias".into(),
                 to: "claude-sonnet-custom".into(),
                 label: Some("Sonnet".into()),
                 supports_1m: None,
             },
             ModelMapping {
-                from: "claude-opus-4-8".into(),
+                from: "claude-opus-alias".into(),
                 to: "claude-opus-custom".into(),
                 label: Some("Opus".into()),
                 supports_1m: None,
@@ -585,7 +585,7 @@ mod tests {
         assert_safe_build_error(&input, "deeplink_export.multiple_models_unsupported");
 
         let supports_1m = vec![ModelMapping {
-            from: "claude-sonnet-5".into(),
+            from: "claude-sonnet-alias".into(),
             to: "claude-sonnet-custom".into(),
             label: Some("Sonnet".into()),
             supports_1m: Some(true),
@@ -626,7 +626,7 @@ mod tests {
     fn rejects_claude_subagent_and_fallback_mappings_with_the_existing_code() {
         // Intentional lossy-export refusal, not a bug: the aiswitch:// link
         // format has fixed haiku/sonnet/opus query keys with no room for these,
-        // and claude-fable-5 (a shipped role) is already refused the same way.
+        // and claude-fable-alias (a shipped role) is already refused the same way.
         // Do NOT "fix" this by widening the role table — inventing new query
         // keys makes links other tools silently mis-import.
         let empty_headers = json!({});
@@ -660,7 +660,7 @@ mod tests {
         let mappings: Vec<ModelMapping> =
             serde_json::from_str(&parsed.model_mappings_json).unwrap();
         assert_eq!(mappings.len(), 1);
-        assert_eq!(mappings[0].from, "claude-sonnet-5");
+        assert_eq!(mappings[0].from, "claude-sonnet-alias");
         assert_eq!(mappings[0].to, "claude-sonnet-4");
         assert_eq!(mappings[0].label.as_deref(), Some("Sonnet"));
     }
