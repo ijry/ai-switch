@@ -1626,6 +1626,161 @@ mod tests {
         assert_eq!(items[1]["content"][0]["text"], "Done.");
     }
 
+    #[test]
+    fn detects_native_finish_reason_network_error_as_failed() {
+        let body = concat!(
+            "data: {\"id\":\"chatcmpl-err\",\"model\":\"stealth/ox-alpha\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-err\",\"model\":\"stealth/ox-alpha\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\",\"native_finish_reason\":\"network_error\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let converted = transform_response(
+            ProtocolBridgeKind::ResponsesToChat,
+            200,
+            Some("text/event-stream"),
+            body.as_bytes(),
+        )
+        .expect("converted stream");
+        let output = String::from_utf8(converted.body).expect("utf8 stream");
+
+        assert!(
+            output.contains("event: response.failed"),
+            "network_error should produce response.failed, got: {}",
+            output
+        );
+        assert!(
+            !output.contains("event: response.completed"),
+            "network_error must not produce response.completed: {}",
+            output
+        );
+        let failed = failed_response(&output);
+        assert_eq!(failed["status"], "failed");
+        assert_eq!(failed["error"]["code"], "upstream_native_failure");
+        assert_eq!(failed["metadata"]["native_finish_reason"], "network_error");
+    }
+
+    #[test]
+    fn native_finish_reason_passthrough_detected_even_with_content() {
+        // When there IS content, native_finish_reason should NOT trigger
+        // incomplete status — the output is valid.
+        let body = concat!(
+            "data: {\"id\":\"chatcmpl-ok\",\"model\":\"stealth/ox-alpha\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-ok\",\"model\":\"stealth/ox-alpha\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-ok\",\"model\":\"stealth/ox-alpha\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\",\"native_finish_reason\":\"network_error\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let converted = transform_response(
+            ProtocolBridgeKind::ResponsesToChat,
+            200,
+            Some("text/event-stream"),
+            body.as_bytes(),
+        )
+        .expect("converted stream");
+        let output = String::from_utf8(converted.body).expect("utf8 stream");
+        assert!(
+            output.contains("event: response.completed"),
+            "content present should still yield completed: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn native_finish_reason_non_failure_value_does_not_downgrade() {
+        // native_finish_reason like "STOP" should not trigger incomplete.
+        let body = concat!(
+            "data: {\"id\":\"chatcmpl-ok2\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-ok2\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\",\"native_finish_reason\":\"STOP\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let converted = transform_response(
+            ProtocolBridgeKind::ResponsesToChat,
+            200,
+            Some("text/event-stream"),
+            body.as_bytes(),
+        )
+        .expect("converted stream");
+        let output = String::from_utf8(converted.body).expect("utf8 stream");
+        assert!(
+            output.contains("event: response.completed"),
+            "STOP native_finish_reason should still yield completed: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn native_finish_reason_network_error_in_non_stream_response() {
+        let body = json!({
+            "id": "chatcmpl-err-ns",
+            "model": "stealth/ox-alpha",
+            "choices": [{
+                "message": {"role": "assistant", "content": ""},
+                "finish_reason": "stop",
+                "native_finish_reason": "network_error"
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 0}
+        });
+        let converted = transform_response(
+            ProtocolBridgeKind::ResponsesToChat,
+            200,
+            Some("application/json"),
+            serde_json::to_vec(&body).unwrap().as_slice(),
+        )
+        .expect("converted json");
+        let response: Value = serde_json::from_slice(&converted.body).expect("responses json");
+
+        assert_eq!(
+            response["status"], "failed",
+            "non-stream network_error should be failed: {}",
+            response
+        );
+        assert_eq!(response["error"]["code"], "upstream_native_failure");
+        assert_eq!(
+            response["metadata"]["native_finish_reason"],
+            "network_error"
+        );
+    }
+
+    #[test]
+    fn native_finish_reason_absent_keeps_normal_behavior() {
+        // Regression: a normal stop without native_finish_reason stays completed.
+        let body = concat!(
+            "data: {\"id\":\"chatcmpl-norm\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-norm\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-norm\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let converted = transform_response(
+            ProtocolBridgeKind::ResponsesToChat,
+            200,
+            Some("text/event-stream"),
+            body.as_bytes(),
+        )
+        .expect("converted stream");
+        let output = String::from_utf8(converted.body).expect("utf8 stream");
+        assert!(
+            output.contains("event: response.completed"),
+            "normal stop must be completed"
+        );
+    }
+
+    fn failed_response(stream: &str) -> Value {
+        for block in stream.split("\n\n") {
+            let is_failed = block
+                .lines()
+                .any(|line| line.trim() == "event: response.failed");
+            if !is_failed {
+                continue;
+            }
+            let data = block
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("data:"))
+                .map(str::trim)
+                .expect("failed event data");
+            let value: Value = serde_json::from_str(data).expect("failed json");
+            return value["response"].clone();
+        }
+        panic!("no response.failed event found in stream");
+    }
+
     fn completed_response(stream: &str) -> Value {
         for block in stream.split("\n\n") {
             let is_completed = block

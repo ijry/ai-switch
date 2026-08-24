@@ -165,6 +165,7 @@ fn chat_json_to_responses(
         .cloned()
         .unwrap_or_default();
     let reasoning = message_reasoning_text(message);
+    let has_reasoning = reasoning.is_some();
     let mut output = build_output_items(
         response_id,
         &text,
@@ -187,7 +188,9 @@ fn chat_json_to_responses(
         ));
     }
     let finish_reason = choice.get("finish_reason").and_then(Value::as_str);
-    let status = responses_status(finish_reason);
+    let native_finish_reason = choice.get("native_finish_reason").and_then(Value::as_str);
+    let has_output_content = !text.is_empty() || !tool_calls.is_empty() || has_reasoning;
+    let status = responses_status(finish_reason, native_finish_reason, has_output_content);
     let response = response_object(
         response_id,
         model,
@@ -195,6 +198,7 @@ fn chat_json_to_responses(
         output,
         chat_usage_to_responses(value.get("usage")),
         finish_reason,
+        native_finish_reason,
     );
     let mut response = response;
     response["output_text"] = Value::String(text);
@@ -257,6 +261,9 @@ fn chat_sse_to_responses(
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
             state.finish_reason = Some(reason.to_string());
         }
+        if let Some(native_reason) = choice.get("native_finish_reason").and_then(Value::as_str) {
+            state.native_finish_reason = Some(native_reason.to_string());
+        }
         let delta = choice.get("delta").unwrap_or(&Value::Null);
         if let Some(reasoning) = delta_reasoning_text(delta) {
             emit_reasoning_delta(&mut state, &mut output, &mut sequence_number, reasoning)?;
@@ -305,6 +312,7 @@ struct ChatStreamState {
     tools: BTreeMap<usize, StreamToolCall>,
     next_output_index: usize,
     finish_reason: Option<String>,
+    native_finish_reason: Option<String>,
     usage: Option<Value>,
 }
 
@@ -377,6 +385,7 @@ fn ensure_stream_started(
         Vec::new(),
         Value::Null,
         None,
+        None,
     );
     let _ = push_sse_event(
         output,
@@ -394,6 +403,7 @@ fn ensure_stream_started(
         "in_progress",
         Vec::new(),
         Value::Null,
+        None,
         None,
     );
     let _ = push_sse_event(
@@ -748,7 +758,10 @@ fn finish_stream(
         final_output.push(message_output_item(&item_id, "completed", ""));
     }
     let finish_reason = state.finish_reason.as_deref();
-    let status = responses_status(finish_reason);
+    let native_finish_reason = state.native_finish_reason.as_deref();
+    let has_output_content =
+        state.reasoning_started || state.text_started || !state.tools.is_empty();
+    let status = responses_status(finish_reason, native_finish_reason, has_output_content);
     let response = response_object(
         state.response_id(),
         state.model(),
@@ -756,6 +769,7 @@ fn finish_stream(
         final_output,
         chat_usage_to_responses(state.usage.as_ref()),
         finish_reason,
+        native_finish_reason,
     );
     let event_name = if status == "failed" {
         "response.failed"
@@ -853,14 +867,22 @@ fn response_object(
     output: Vec<Value>,
     usage: Value,
     finish_reason: Option<&str>,
+    native_finish_reason: Option<&str>,
 ) -> Value {
+    let mut metadata = Map::new();
+    if let Some(native_finish_reason) = native_finish_reason {
+        metadata.insert(
+            "native_finish_reason".to_string(),
+            Value::String(native_finish_reason.to_string()),
+        );
+    }
     json!({
         "id": response_id,
         "object": "response",
         "created_at": chrono::Utc::now().timestamp(),
         "status": status,
         "background": false,
-        "error": Value::Null,
+        "error": native_response_error(status, native_finish_reason),
         "incomplete_details": incomplete_details(finish_reason),
         "instructions": Value::Null,
         "max_output_tokens": Value::Null,
@@ -877,7 +899,7 @@ fn response_object(
         "top_p": Value::Null,
         "truncation": "disabled",
         "usage": usage,
-        "metadata": {}
+        "metadata": metadata
     })
 }
 
@@ -971,7 +993,14 @@ fn chat_usage_to_responses(usage: Option<&Value>) -> Value {
     result
 }
 
-fn responses_status(finish_reason: Option<&str>) -> &'static str {
+fn responses_status(
+    finish_reason: Option<&str>,
+    native_finish_reason: Option<&str>,
+    has_output_content: bool,
+) -> &'static str {
+    if !has_output_content && is_native_finish_failure(native_finish_reason) {
+        return "failed";
+    }
     match finish_reason {
         Some("length" | "content_filter") => "incomplete",
         Some("error") => "failed",
@@ -985,6 +1014,38 @@ fn incomplete_details(finish_reason: Option<&str>) -> Value {
         Some("content_filter") => json!({"reason": "content_filter"}),
         _ => Value::Null,
     }
+}
+
+fn native_response_error(status: &str, native_finish_reason: Option<&str>) -> Value {
+    if status == "failed" && is_native_finish_failure(native_finish_reason) {
+        json!({
+            "code": "upstream_native_failure",
+            "message": format!(
+                "upstream ended the response with native_finish_reason: {}",
+                native_finish_reason.unwrap_or_default()
+            )
+        })
+    } else {
+        Value::Null
+    }
+}
+fn is_native_finish_failure(native_finish_reason: Option<&str>) -> bool {
+    let Some(reason) = native_finish_reason else {
+        return false;
+    };
+    let normalized = reason.to_ascii_lowercase().replace(['-', ' ', ':'], "_");
+    normalized.contains("network_error")
+        || normalized.contains("timeout")
+        || normalized.contains("timed_out")
+        || normalized.contains("connection_error")
+        || normalized.contains("connection_reset")
+        || normalized.contains("upstream_error")
+        || normalized.contains("server_error")
+        || normalized.contains("provider_error")
+        || normalized.contains("service_unavailable")
+        || normalized.contains("bad_gateway")
+        || normalized.contains("gateway_timeout")
+        || normalized.contains("internal_error")
 }
 
 fn failed_response_from_error(value: &Value) -> Value {
