@@ -2521,7 +2521,8 @@ export function AccountsScreen({
     const seen = new Map<string, string>();
     const addAlias = (alias: string) => {
       const trimmed = alias.trim();
-      // "*" is a routing sentinel, not a model name — probing it is meaningless.
+      // The catch-all is a routing sentinel, not a model name — probing it is
+      // meaningless.
       if (!trimmed || trimmed === CLAUDE_FALLBACK_ALIAS) {
         return;
       }

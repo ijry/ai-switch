@@ -1817,7 +1817,7 @@ describe("AccountsScreen", () => {
       "不显示在 /model 菜单",
     );
     expect(screen.getByLabelText("请求模型 5")).toHaveValue("claude-subagent");
-    expect(screen.getByLabelText("请求模型 6")).toHaveValue("*");
+    expect(screen.getByLabelText("请求模型 6")).toHaveValue("claude-model");
 
     // Only Haiku lacks the flag — it has no 1M context tier. Subagent and the
     // fallback keep it: the proxy strips the [1m] suffix before resolving a
@@ -1850,7 +1850,7 @@ describe("AccountsScreen", () => {
         expect.objectContaining({
           // Appended after Haiku, with no label key on either row.
           model_mappings_json:
-            "[{\"from\":\"claude-subagent\",\"to\":\"provider-haiku\",\"supports_1m\":true},{\"from\":\"*\",\"to\":\"provider-sonnet\"}]",
+            "[{\"from\":\"claude-subagent\",\"to\":\"provider-haiku\",\"supports_1m\":true},{\"from\":\"claude-model\",\"to\":\"provider-sonnet\"}]",
         }),
       ),
     );

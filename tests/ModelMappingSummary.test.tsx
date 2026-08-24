@@ -79,7 +79,7 @@ describe("ModelMappingSummary", () => {
           { from: "claude-sonnet-alias", to: "claude-opus-5", label: "Sonnet" },
           { from: "claude-opus-alias", to: "claude-opus-5", label: "Opus" },
           { from: "claude-subagent", to: "claude-opus-5" },
-          { from: "*", to: "claude-opus-5" },
+          { from: "claude-model", to: "claude-opus-5" },
         ]}
       />,
     );

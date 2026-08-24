@@ -631,7 +631,7 @@ mod tests {
         // keys makes links other tools silently mis-import.
         let empty_headers = json!({});
 
-        for from in ["claude-subagent", "*"] {
+        for from in ["claude-subagent", "claude-model"] {
             let mappings = vec![ModelMapping {
                 from: from.into(),
                 to: "provider-model".into(),

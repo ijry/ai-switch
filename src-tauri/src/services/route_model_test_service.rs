@@ -849,7 +849,7 @@ fn request_model(
     }
 
     // Skip the catch-all sentinel: it is not a model name, so probing it would
-    // send a meaningless request and display "*" as the tested model.
+    // send a meaningless request and display the sentinel as the tested model.
     mappings
         .iter()
         .find(|mapping| !is_fallback_mapping(mapping))
@@ -2930,9 +2930,10 @@ mod tests {
 
     #[test]
     fn request_model_skips_the_fallback_sentinel_when_no_model_is_requested() {
-        // "*" is not a model name; probing it would send a meaningless request.
+        // "claude-model" is not a model name; probing it would send a
+        // meaningless request.
         let mappings = vec![
-            mapping("*", "catch-all"),
+            mapping("claude-model", "catch-all"),
             mapping("claude-sonnet-alias", "x"),
         ];
 
@@ -2944,7 +2945,7 @@ mod tests {
 
     #[test]
     fn request_model_falls_back_to_the_platform_default_when_only_a_fallback_is_configured() {
-        let mappings = vec![mapping("*", "catch-all")];
+        let mappings = vec![mapping("claude-model", "catch-all")];
 
         assert_eq!(
             request_model("claude", "anthropic", &mappings, None),
@@ -2954,7 +2955,8 @@ mod tests {
 
     #[test]
     fn request_model_keeps_the_subagent_alias_as_a_probe_default() {
-        // Unlike "*", the subagent alias is routable and rewrites to a real model.
+        // Unlike the catch-all, the subagent alias is routable and rewrites to a
+        // real model.
         let mappings = vec![mapping("claude-subagent", "provider-haiku")];
 
         assert_eq!(
@@ -2966,7 +2968,7 @@ mod tests {
     #[test]
     fn gemini_path_model_skips_the_fallback_sentinel() {
         let mappings = vec![
-            mapping("*", "catch-all"),
+            mapping("claude-model", "catch-all"),
             mapping("gemini-2.5-flash", "provider-flash"),
         ];
 
@@ -2976,16 +2978,17 @@ mod tests {
     #[test]
     fn placeholder_filter_keeps_the_route_sentinels() {
         // `is_placeholder_model` is duplicated in this file; if a refactor ever
-        // teaches it about "*" or "claude-subagent", both features die silently.
+        // teaches it about the catch-all or subagent alias, both features die
+        // silently.
         let kept = remove_placeholder_model_mappings(vec![
-            mapping("*", "catch-all"),
+            mapping("claude-model", "catch-all"),
             mapping("claude-subagent", "provider-haiku"),
             mapping("upstream-model", "dropped"),
         ]);
 
         assert_eq!(
             kept.iter().map(|m| m.from.as_str()).collect::<Vec<_>>(),
-            vec!["*", "claude-subagent"]
+            vec!["claude-model", "claude-subagent"]
         );
     }
 }

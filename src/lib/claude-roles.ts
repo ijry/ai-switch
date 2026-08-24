@@ -12,7 +12,7 @@
  */
 
 export const CLAUDE_SUBAGENT_ALIAS = "claude-subagent";
-export const CLAUDE_FALLBACK_ALIAS = "*";
+export const CLAUDE_FALLBACK_ALIAS = "claude-model";
 
 export type ClaudeRole = {
   /** The alias a client requests, stored as a mapping's `from`. */

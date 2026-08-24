@@ -226,7 +226,8 @@ fn advertised_model_catalog_entries(
     for capability in capabilities {
         for mapping in &capability.mappings {
             // The catch-all sentinel is not a model id — advertising it would put
-            // "*" in front of users. Its baseline contribution is handled above.
+            // `FALLBACK_MODEL_ALIAS` in front of users as if it were something
+            // they could pick. Its baseline contribution is handled above.
             if is_fallback_mapping(mapping) {
                 continue;
             }
@@ -347,6 +348,7 @@ mod tests {
         parse_model_capability, requested_model_from_body, resolve_mapping_target,
         supports_requested_model,
     };
+    use crate::models::route_credential::FALLBACK_MODEL_ALIAS;
 
     #[test]
     fn codex_baseline_models_use_distinct_reasoning_profiles() {
@@ -470,7 +472,7 @@ mod tests {
     #[test]
     fn fallback_mapping_makes_any_model_supported() {
         let capability = parse_model_capability(
-            r#"{"model_mappings":[{"from":"claude-sonnet-alias","to":"x"},{"from":"*","to":"y"}]}"#,
+            r#"{"model_mappings":[{"from":"claude-sonnet-alias","to":"x"},{"from":"claude-model","to":"y"}]}"#,
         );
 
         assert!(supports_requested_model(
@@ -494,7 +496,7 @@ mod tests {
     #[test]
     fn fallback_mapping_is_never_advertised_but_contributes_baseline() {
         let capability = parse_model_capability(
-            r#"{"model_mappings":[{"from":"claude-sonnet-alias","to":"x"},{"from":"*","to":"y"}]}"#,
+            r#"{"model_mappings":[{"from":"claude-sonnet-alias","to":"x"},{"from":"claude-model","to":"y"}]}"#,
         );
         let advertised = advertised_model_ids("claude", &[capability]);
 
@@ -509,12 +511,13 @@ mod tests {
                 "claude-haiku-alias"
             ]
         );
-        assert!(!advertised.iter().any(|model| model == "*"));
+        assert!(!advertised.iter().any(|model| model == FALLBACK_MODEL_ALIAS));
     }
 
     #[test]
     fn fallback_only_capability_advertises_baseline_and_matches_everything() {
-        let capability = parse_model_capability(r#"{"model_mappings":[{"from":"*","to":"y"}]}"#);
+        let capability =
+            parse_model_capability(r#"{"model_mappings":[{"from":"claude-model","to":"y"}]}"#);
 
         assert_eq!(
             advertised_model_ids("codex", &[capability.clone()]),
@@ -532,7 +535,7 @@ mod tests {
         // Fallback deliberately sits FIRST: a single-pass `.find()` would let it
         // swallow every request, which is the bug this ordering guards against.
         let capability = parse_model_capability(
-            r#"{"model_mappings":[{"from":"*","to":"fallback-upstream"},{"from":"claude-sonnet-alias","to":"sonnet-upstream","supports_1m":true}]}"#,
+            r#"{"model_mappings":[{"from":"claude-model","to":"fallback-upstream"},{"from":"claude-sonnet-alias","to":"sonnet-upstream","supports_1m":true}]}"#,
         );
         let mappings = &capability.mappings;
 
@@ -563,11 +566,45 @@ mod tests {
     }
 
     #[test]
+    fn a_one_m_catch_all_row_is_not_advertised_under_either_name() {
+        // The catch-all alias now shares the `claude-` prefix with the real role
+        // aliases, so `is_claude_route_model` accepts it and no longer acts as a
+        // second line of defense in the 1M-variant expansion. Only the
+        // `is_fallback_mapping` guard keeps `claude-model[1m]` out of the catalog.
+        let capability = parse_model_capability(
+            r#"{"model_mappings":[{"from":"claude-sonnet-alias","to":"sonnet-upstream"},{"from":"claude-model","to":"fallback-upstream","supports_1m":true}]}"#,
+        );
+
+        let advertised = advertised_model_ids("claude", &[capability.clone()]);
+        assert!(
+            !advertised
+                .iter()
+                .any(|model| model.to_ascii_lowercase().starts_with(FALLBACK_MODEL_ALIAS)),
+            "advertised={advertised:?}"
+        );
+
+        // And the alias still routes when a client requests it verbatim —
+        // `ANTHROPIC_MODEL` is written as exactly this value.
+        for requested in [FALLBACK_MODEL_ALIAS, "claude-model[1M]"] {
+            assert!(supports_requested_model(
+                "claude",
+                &capability,
+                Some(requested)
+            ));
+            assert_eq!(
+                resolve_mapping_target(&capability.mappings, requested),
+                Some("fallback-upstream"),
+                "requested={requested}"
+            );
+        }
+    }
+
+    #[test]
     fn sentinels_are_not_placeholder_models() {
         // `is_placeholder_model` must keep ignoring the route sentinels: filtering
         // them here would silently delete both features at parse time.
         let capability = parse_model_capability(
-            r#"{"model_mappings":[{"from":"*","to":"y"},{"from":"claude-subagent","to":"z"}]}"#,
+            r#"{"model_mappings":[{"from":"claude-model","to":"y"},{"from":"claude-subagent","to":"z"}]}"#,
         );
 
         assert_eq!(capability.mappings.len(), 2);

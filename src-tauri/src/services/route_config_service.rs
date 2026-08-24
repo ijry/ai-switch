@@ -1267,7 +1267,7 @@ command = "npx"
         // The subagent and the catch-all are aliases too, so they carry [1M] the
         // same way and get rewritten per account by the proxy.
         assert_eq!(env["CLAUDE_CODE_SUBAGENT_MODEL"], "claude-subagent[1M]");
-        assert_eq!(env["ANTHROPIC_MODEL"], "*[1M]");
+        assert_eq!(env["ANTHROPIC_MODEL"], "claude-model[1M]");
 
         // Ten managed model keys in total: 4 slots x (model + display name),
         // plus the subagent and the catch-all.

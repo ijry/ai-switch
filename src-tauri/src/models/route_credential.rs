@@ -275,9 +275,15 @@ pub struct ModelMapping {
 
 /// Catch-all `from` alias: the account accepts any requested model and rewrites
 /// it to this entry's `to` when no specific mapping matched. Not a model id, so
-/// it is never advertised. Deliberately not a `claude-` prefix, which keeps it
-/// out of the `[1m]` normalization paths and lets every platform reuse it.
-pub const FALLBACK_MODEL_ALIAS: &str = "*";
+/// it is never advertised. The routing code is platform-agnostic even though the
+/// name reads Claude-specific — only the Claude editor offers the row.
+///
+/// It shares the `claude-` prefix with the real role aliases, which means
+/// `claude_route_lookup_model` treats it as a Claude route model. That is inert
+/// only because both `supports_requested_model` and `resolve_mapping_target`
+/// test `is_fallback_mapping` before they ever reach `model_mapping_matches` —
+/// drop either guard and the catch-all starts matching by name.
+pub const FALLBACK_MODEL_ALIAS: &str = "claude-model";
 
 /// Generic alias written into Claude Code's `CLAUDE_CODE_SUBAGENT_MODEL`. It is
 /// a real routable alias — the pool rewrites it per account — so unlike the

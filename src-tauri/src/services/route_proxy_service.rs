@@ -5035,7 +5035,9 @@ async fn insert_route_credential_request_event(
 mod tests {
     use super::*;
     use crate::database::{create_memory_pool, run_migrations};
-    use crate::models::route_credential::DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT;
+    use crate::models::route_credential::{
+        DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT, FALLBACK_MODEL_ALIAS,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -7860,7 +7862,7 @@ mod tests {
             br#"{"model":"claude-sonnet-alias","nested":{"model":"claude-opus-alias"}}"#,
             &[
                 ModelMapping {
-                    from: "*".to_string(),
+                    from: "claude-model".to_string(),
                     to: "fallback-upstream".to_string(),
                     label: None,
                     supports_1m: None,
@@ -9450,7 +9452,7 @@ data: [DONE]\n\n";
         );
         let fallback = api_credential_with_config(
             "fallback",
-            r#"{"model_mappings":[{"from":"*","to":"catch-all-upstream"}]}"#,
+            r#"{"model_mappings":[{"from":"claude-model","to":"catch-all-upstream"}]}"#,
         );
 
         // An unknown model used to empty the candidate list and hard-fail the
@@ -9514,7 +9516,7 @@ data: [DONE]\n\n";
     fn official_credentials_with_a_fallback_keep_baseline_only_semantics() {
         let mut official = api_credential_with_config(
             "official",
-            r#"{"model_mappings":[{"from":"*","to":"catch-all"}]}"#,
+            r#"{"model_mappings":[{"from":"claude-model","to":"catch-all"}]}"#,
         );
         official.kind = "official".to_string();
         official.platform = "claude".to_string();
@@ -9653,7 +9655,7 @@ data: [DONE]\n\n";
             "interface_format": "anthropic",
             "model_mappings": [
                 {"from":"claude-sonnet-alias","to":"provider-sonnet"},
-                {"from":"*","to":"catch-all-upstream"}
+                {"from":"claude-model","to":"catch-all-upstream"}
             ]
         })
         .to_string();
@@ -9667,8 +9669,9 @@ data: [DONE]\n\n";
             .filter_map(|item| item.get("id").and_then(Value::as_str))
             .collect::<Vec<_>>();
 
-        // "*" is a routing sentinel, not a model id — it must never be advertised.
-        assert!(!models.contains(&"*"), "models={models:?}");
+        // The catch-all is a routing sentinel, not a model id — it must never be
+        // advertised.
+        assert!(!models.contains(&FALLBACK_MODEL_ALIAS), "models={models:?}");
         assert!(models.contains(&"claude-sonnet-alias"), "models={models:?}");
         // A fallback account accepts anything, so it advertises the baseline.
         assert!(models.contains(&"claude-haiku-alias"), "models={models:?}");
