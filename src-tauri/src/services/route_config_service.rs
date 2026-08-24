@@ -965,6 +965,31 @@ command = "npx"
     }
 
     #[tokio::test]
+    async fn a_fresh_claude_write_carries_the_credential_claude_code_authenticates_with() {
+        // 0.7.0 shipped with only ANTHROPIC_BASE_URL here: the client was told
+        // where the proxy is but not how to authenticate to it, so every request
+        // died at 401 before a credential was picked — invisible in both the
+        // request log and the usage stats. `write_existing_config_for_home` has its
+        // own assertion; this pins the path behind the "write client config"
+        // button, which is the one users actually take.
+        let (_app_dir, paths, pool, runtime) = config_write_context().await;
+        let home = tempfile::tempdir().expect("home dir");
+
+        let json = write_claude_config_with_pool(home.path(), &paths, &pool, &runtime).await;
+
+        let token = json["env"]["ANTHROPIC_AUTH_TOKEN"]
+            .as_str()
+            .expect("ANTHROPIC_AUTH_TOKEN must be written");
+        assert!(!token.is_empty());
+        // Same value as the ledger entry, so the proxy recognizes the caller.
+        assert_eq!(json["aiSwitch"]["routeProxy"]["apiKey"], token);
+        // Two keys nothing ever read; one of them leaked the credential to every
+        // process the agent spawns.
+        assert!(json["env"].get("AI_SWITCH_ROUTE_PROXY").is_none());
+        assert!(json["env"].get("AI_SWITCH_ROUTE_PROXY_API_KEY").is_none());
+    }
+
+    #[tokio::test]
     async fn subagent_alias_is_written_only_when_a_pool_account_configures_it() {
         let (_app_dir, paths, pool, runtime) = config_write_context().await;
         let home = tempfile::tempdir().expect("home dir");
