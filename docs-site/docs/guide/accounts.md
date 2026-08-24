@@ -40,6 +40,8 @@ kind TEXT NOT NULL CHECK (kind IN ('official','api'))
 | 已拉取模型列表 | `config_json.fetched_models` | 由模型列表拉取写入，见 [模型连通性测试](/guide/model-test) |
 | 自定义工具兼容 | `config_json.responses_custom_tool_compat` | 布尔，默认 `false` |
 | 自定义 User-Agent | `config_json.headers["User-Agent"]` | 可选；填写后作为固定请求头下发 |
+| 每轮纠偏提醒 | `config_json.turn_reminder` | 布尔；开启后每轮在最后一条用户消息后追加一句要求。关闭时该键不写入 |
+| 提醒内容 | `config_json.turn_reminder_text` | 可选；留空则用默认「请用简体中文回复。」 |
 | 失败策略 | `config_json.failure_policy` | 单账号覆盖重试与语义失败阈值，见 [稳定性与自动恢复](/guide/reliability) |
 | 自动恢复规则 | `config_json.recovery` | 定时或探测恢复，见 [稳定性与自动恢复](/guide/reliability) |
 

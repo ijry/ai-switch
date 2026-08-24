@@ -45,6 +45,8 @@ const API_CONFIG_FIELDS: &[&str] = &[
     "responses_custom_tool_compat",
     "api_key_field",
     "headers",
+    "turn_reminder",
+    "turn_reminder_text",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -346,7 +348,12 @@ fn project_api(
         .collect::<Vec<_>>();
 
     if !include_enhanced_metadata {
-        for field in ["responses_custom_tool_compat", "api_key_field"] {
+        for field in [
+            "responses_custom_tool_compat",
+            "api_key_field",
+            "turn_reminder",
+            "turn_reminder_text",
+        ] {
             if config.get(field).is_some_and(is_nonempty) {
                 warnings.push(issue(
                     credential,
@@ -440,6 +447,8 @@ fn metadata(
             "responses_custom_tool_compat",
             "api_key_field",
             "model_mappings",
+            "turn_reminder",
+            "turn_reminder_text",
         ] {
             if let Some(value) = config.get(field).filter(|value| is_nonempty(value)) {
                 metadata.insert(field.to_string(), value.clone());

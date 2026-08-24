@@ -9,6 +9,7 @@ mod responses_claude;
 mod responses_gemini;
 mod responses_responses;
 pub(crate) mod sse;
+pub(crate) mod turn_reminder;
 
 use crate::models::platform::{ApiDialect, PlatformId};
 use std::collections::BTreeMap;

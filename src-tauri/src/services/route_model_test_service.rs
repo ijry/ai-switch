@@ -25,7 +25,8 @@ use crate::services::route_proxy_service::{
     classify_proxy_failure, credential_indexes_by_priority, extract_response_model,
     extract_usage_breakdown, maybe_persist_official_quota_from_response,
     maybe_refresh_official_credential, normalize_api_upstream_path, select_pool_credentials,
-    ProxyFailureKind, RouteProxyService, SelectedCredential, ROUTE_PROXY_TRACE_HEADER,
+    ProxyFailureKind, RouteProxyService, SelectedCredential, TurnReminderMode,
+    ROUTE_PROXY_TRACE_HEADER,
 };
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use serde_json::{json, Value};
@@ -200,6 +201,11 @@ impl RouteModelTestService {
             None,
             headers,
             parts.request_body_json.as_bytes(),
+            // The probe asks the model to reply with exactly `ai-switch-ok`. An
+            // account whose reminder says "answer in Chinese" contradicts that
+            // directly, so applying it here would make every probe against such
+            // an account fail permanently.
+            TurnReminderMode::Skip,
         ) {
             Ok(request) => request,
             Err(error) => {
@@ -2340,6 +2346,59 @@ mod tests {
             Some(format!("{base_url}/chat/completions").as_str())
         );
         assert!(outcome.success);
+    }
+
+    #[tokio::test]
+    async fn the_probe_body_carries_no_turn_reminder() {
+        // The probe asks the model to reply with exactly `ai-switch-ok`. An
+        // account whose reminder says "answer in Chinese" contradicts that head
+        // on, so if the reminder reached the probe every test against such an
+        // account would fail and the account would look broken when it was fine.
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let base_url = start_json_test_server(
+            axum::http::StatusCode::OK,
+            json!({
+                "choices": [{"message": {"content": "ai-switch-ok"}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1}
+            }),
+        )
+        .await;
+        let credential_id = create_api_credential_with_config(
+            &pool,
+            &base_url,
+            json!({"turn_reminder": true, "turn_reminder_text": "请用简体中文回复。"}),
+        )
+        .await;
+
+        RoutePoolService::set_members(
+            &pool,
+            SetRoutePoolMembersInput {
+                platform: "codex".to_string(),
+                account_ids: vec![credential_id.clone()],
+            },
+        )
+        .await
+        .expect("members");
+
+        let outcome = RouteModelTestService::test_model(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "codex".to_string(),
+                account_id: None,
+                model: None,
+                interface_format: None,
+            },
+        )
+        .await
+        .expect("outcome");
+
+        assert!(outcome.success);
+        assert!(
+            !outcome.request_body_json.contains("请用简体中文回复"),
+            "probe body must not carry the reminder: {}",
+            outcome.request_body_json
+        );
     }
 
     #[tokio::test]

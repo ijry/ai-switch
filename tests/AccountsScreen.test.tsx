@@ -2031,6 +2031,88 @@ describe("AccountsScreen", () => {
     expect(config.responses_custom_tool_compat).toBe(false);
   });
 
+  it("turns the per-turn reminder on with a custom text and writes both keys", async () => {
+    const api = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://api.example.com/v1",
+        interface_format: "openai",
+        model_mappings: [],
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([api]);
+    vi.mocked(updateRouteCredential).mockResolvedValue(api);
+
+    renderScreen();
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+
+    // The text field only exists once the box is ticked.
+    expect(screen.queryByLabelText("纠偏提醒内容")).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByLabelText("每轮追加纠偏提醒"));
+    await userEvent.type(screen.getByLabelText("纠偏提醒内容"), "Answer in Japanese.");
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const config = JSON.parse(vi.mocked(updateRouteCredential).mock.calls[0][1].config_json);
+    expect(config.turn_reminder).toBe(true);
+    expect(config.turn_reminder_text).toBe("Answer in Japanese.");
+  });
+
+  it("hydrates the per-turn reminder and clears both keys when switched off", async () => {
+    const api = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://api.example.com/v1",
+        interface_format: "openai",
+        model_mappings: [],
+        turn_reminder: true,
+        turn_reminder_text: "请用简体中文回复。",
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([api]);
+    vi.mocked(updateRouteCredential).mockResolvedValue(api);
+
+    renderScreen();
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+
+    const checkbox = await screen.findByLabelText("每轮追加纠偏提醒");
+    expect(checkbox).toBeChecked();
+    expect(screen.getByLabelText("纠偏提醒内容")).toHaveValue("请用简体中文回复。");
+
+    await userEvent.click(checkbox);
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const config = JSON.parse(vi.mocked(updateRouteCredential).mock.calls[0][1].config_json);
+    // Removed, not written as false: an account that opted out carries no trace.
+    expect(config).not.toHaveProperty("turn_reminder");
+    expect(config).not.toHaveProperty("turn_reminder_text");
+  });
+
+  it("leaves the reminder out of an empty-text save so the default applies", async () => {
+    const api = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://api.example.com/v1",
+        interface_format: "openai",
+        model_mappings: [],
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([api]);
+    vi.mocked(updateRouteCredential).mockResolvedValue(api);
+
+    renderScreen();
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await userEvent.click(await screen.findByLabelText("每轮追加纠偏提醒"));
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const config = JSON.parse(vi.mocked(updateRouteCredential).mock.calls[0][1].config_json);
+    expect(config.turn_reminder).toBe(true);
+    // No text key at all — the proxy falls back to its own default.
+    expect(config).not.toHaveProperty("turn_reminder_text");
+  });
+
   it("hydrates and saves User-Agent when editing an API account", async () => {
     vi.mocked(listRouteCredentials).mockResolvedValue([
       {

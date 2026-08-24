@@ -40,6 +40,8 @@ Secrets and non-secrets are stored separately: the API key lands in `secret_payl
 | Fetched model list | `config_json.fetched_models` | Written by the model-list fetch, see [Model Connectivity Tests](/en/guide/model-test) |
 | Custom-tool compat | `config_json.responses_custom_tool_compat` | Boolean, defaults to `false` |
 | Custom User-Agent | `config_json.headers["User-Agent"]` | Optional; sent as a fixed request header when set |
+| Per-turn reminder | `config_json.turn_reminder` | Boolean; when on, a line is appended after the newest user message on every turn. The key is omitted when off |
+| Reminder text | `config_json.turn_reminder_text` | Optional; falls back to the built-in default when blank |
 | Failure policy | `config_json.failure_policy` | Per-account retry and semantic-failure overrides, see [Reliability and Auto Recovery](/en/guide/reliability) |
 | Recovery rule | `config_json.recovery` | Scheduled or probe-based recovery, see [Reliability and Auto Recovery](/en/guide/reliability) |
 

@@ -34,7 +34,7 @@ use crate::services::route_model_capability::{
 };
 use crate::services::route_protocol_bridge::{
     is_anthropic_count_tokens_path, prepare_request as prepare_protocol_bridge_request,
-    transform_response_with_tool_namespaces as transform_protocol_bridge_response,
+    transform_response_with_tool_namespaces as transform_protocol_bridge_response, turn_reminder,
     PreparedBridgeRequest, ProtocolBridgeKind,
 };
 use crate::services::route_proxy_live_log::{
@@ -757,6 +757,7 @@ async fn forward_request(
             outbound_headers.clone(),
             &body_bytes,
             Some(&state.codex_history),
+            TurnReminderMode::Apply,
         );
         let BuiltUpstreamRequest {
             target_url,
@@ -2938,9 +2939,30 @@ pub fn build_upstream_request(
     headers: HeaderMap,
     body: &[u8],
 ) -> Result<(String, HeaderMap, Vec<u8>), String> {
-    let request =
-        build_upstream_request_internal(credential, platform, path, query, headers, body, None)?;
+    let request = build_upstream_request_internal(
+        credential,
+        platform,
+        path,
+        query,
+        headers,
+        body,
+        None,
+        TurnReminderMode::Apply,
+    )?;
     Ok((request.target_url, request.headers, request.body))
+}
+
+/// Whether a request carries the account's per-turn reminder.
+///
+/// The connectivity probe must opt out. It asks the model to reply with exactly
+/// `ai-switch-ok`, which a reminder like "answer in Chinese" contradicts head-on:
+/// the model may follow the reminder and stop emitting the token, so every probe
+/// against a reminder-enabled account would fail permanently. Spelled as an enum
+/// rather than a bool so the intent is legible at each call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TurnReminderMode {
+    Apply,
+    Skip,
 }
 
 pub(crate) fn build_upstream_request_with_bridge(
@@ -2950,8 +2972,18 @@ pub(crate) fn build_upstream_request_with_bridge(
     query: Option<&str>,
     headers: HeaderMap,
     body: &[u8],
+    turn_reminder: TurnReminderMode,
 ) -> Result<BuiltUpstreamRequest, String> {
-    build_upstream_request_internal(credential, platform, path, query, headers, body, None)
+    build_upstream_request_internal(
+        credential,
+        platform,
+        path,
+        query,
+        headers,
+        body,
+        None,
+        turn_reminder,
+    )
 }
 
 fn build_upstream_request_internal(
@@ -2962,6 +2994,7 @@ fn build_upstream_request_internal(
     mut headers: HeaderMap,
     body: &[u8],
     codex_history: Option<&CodexReasoningCache>,
+    turn_reminder: TurnReminderMode,
 ) -> Result<BuiltUpstreamRequest, String> {
     let secret = parse_json_object(&credential.secret_payload_json, "secret")?;
     let config = parse_json_object(&credential.config_json, "config")?;
@@ -2977,6 +3010,7 @@ fn build_upstream_request_internal(
             &secret,
             &config,
             codex_history,
+            turn_reminder,
         )
     } else {
         build_official_upstream_request(
@@ -3002,6 +3036,7 @@ fn build_api_upstream_request(
     secret: &Value,
     config: &Value,
     codex_history: Option<&CodexReasoningCache>,
+    turn_reminder: TurnReminderMode,
 ) -> Result<BuiltUpstreamRequest, String> {
     let platform = PlatformId::parse(platform).map_err(format_app_error)?;
     PlatformCapabilityService::require(platform, PlatformOperation::GenericApiRouting)
@@ -3071,6 +3106,17 @@ fn build_api_upstream_request(
         tool_namespaces,
         ..
     } = prepare_protocol_bridge_request(platform, dialect, &upstream_path, &rewritten_body)?;
+    // Only now is the body in its final upstream schema — bridging may have
+    // converted a Responses request into `messages` or `contents`, so a reminder
+    // written any earlier would land in the wrong shape. Everything below this
+    // point touches headers and the URL only.
+    let mut rewritten_body = rewritten_body;
+    if turn_reminder == TurnReminderMode::Apply {
+        if let Some(reminder) = turn_reminder_text(config) {
+            rewritten_body =
+                turn_reminder::append_turn_reminder(dialect, &rewritten_body, &reminder);
+        }
+    }
     let merged_query = merge_query_parts(query, upstream_query.as_deref());
     let mut target_url = build_target_url(base_url, &upstream_path, merged_query.as_deref());
 
@@ -3881,6 +3927,28 @@ fn responses_custom_tool_compat_enabled(config: &Value) -> bool {
         .get("responses_custom_tool_compat")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+/// The reminder this account appends to every turn, or `None` when off.
+///
+/// Two keys: `turn_reminder` switches it on, `turn_reminder_text` optionally
+/// overrides the wording. A blank or absent text falls back to the default, so
+/// ticking the box alone is enough to get a working reminder.
+fn turn_reminder_text(config: &Value) -> Option<String> {
+    if !config
+        .get("turn_reminder")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let text = config
+        .get("turn_reminder_text")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or(turn_reminder::DEFAULT_TURN_REMINDER);
+    Some(text.to_string())
 }
 
 /// Tool `type`s only OpenAI's own Responses backend can execute. Third-party
@@ -8956,6 +9024,178 @@ data: [DONE]\n\n";
             !beta.contains(client_identity::ANTHROPIC_ONE_M_CONTEXT_BETA),
             "a request that did not ask for 1M must not claim it: {beta}"
         );
+    }
+
+    /// A credential of `platform` whose upstream speaks `dialect`, with the
+    /// per-turn reminder switched on.
+    fn reminder_credential(
+        platform: &str,
+        dialect: &str,
+        text: Option<&str>,
+    ) -> SelectedCredential {
+        let mut config = serde_json::json!({
+            "base_url": "https://api.example.com",
+            "interface_format": dialect,
+            "model_mappings": [],
+            "turn_reminder": true,
+        });
+        if let Some(text) = text {
+            config["turn_reminder_text"] = serde_json::json!(text);
+        }
+        SelectedCredential {
+            id: format!("{platform}-{dialect}"),
+            platform: platform.to_string(),
+            kind: "api".to_string(),
+            display_name: format!("{platform} via {dialect}"),
+            status: "ok".to_string(),
+            route_priority: 1,
+            max_concurrency: 1,
+            secret_payload_json: serde_json::json!({"api_key": "sk-test"}).to_string(),
+            config_json: config.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_turn_reminder_lands_in_each_upstream_dialects_own_shape() {
+        // Injection has to happen after protocol bridging: a Codex client speaks
+        // Responses, so against an Anthropic upstream the body it produces is
+        // `messages`, and against Gemini it is `contents`. Each row below asserts
+        // the pointer where that dialect actually carries user text.
+        for (platform, dialect, path, request, pointer) in [
+            (
+                "claude",
+                "anthropic",
+                "/v1/messages",
+                r#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#,
+                "/messages/0/content/1/text",
+            ),
+            (
+                "codex",
+                "openai",
+                "/v1/responses",
+                r#"{"model":"m","input":"hi"}"#,
+                // No tools in this request, so no system message is prepended and
+                // the single converted user turn sits at index 0.
+                "/messages/0/content",
+            ),
+            (
+                "codex",
+                "openai-responses",
+                "/v1/responses",
+                r#"{"model":"m","input":"hi"}"#,
+                "/input",
+            ),
+            (
+                "codex",
+                "gemini",
+                "/v1/responses",
+                r#"{"model":"m","input":"hi"}"#,
+                "/contents/0/parts/1/text",
+            ),
+        ] {
+            let (_, _, body) = build_upstream_request(
+                &reminder_credential(platform, dialect, None),
+                platform,
+                path,
+                None,
+                HeaderMap::new(),
+                request.as_bytes(),
+            )
+            .unwrap_or_else(|error| panic!("{platform}/{dialect}: {error}"));
+
+            let sent: Value = serde_json::from_slice(&body).expect("body json");
+            let carried = sent
+                .pointer(pointer)
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| panic!("{platform}/{dialect}: nothing at {pointer}"));
+            assert!(
+                carried.contains(turn_reminder::DEFAULT_TURN_REMINDER),
+                "{platform}/{dialect}: {pointer} = {carried}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_custom_reminder_text_replaces_the_default() {
+        let (_, _, body) = build_upstream_request(
+            &reminder_credential("claude", "anthropic", Some("Answer in Japanese.")),
+            "claude",
+            "/v1/messages",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .expect("request");
+
+        let sent: Value = serde_json::from_slice(&body).expect("body json");
+        let text = sent
+            .pointer("/messages/0/content/1/text")
+            .and_then(Value::as_str)
+            .expect("reminder block");
+        assert_eq!(text, "Answer in Japanese.");
+        assert!(!text.contains(turn_reminder::DEFAULT_TURN_REMINDER));
+    }
+
+    #[test]
+    fn an_account_without_the_reminder_sends_a_byte_identical_body() {
+        let request = br#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#;
+        let mut off = reminder_credential("claude", "anthropic", None);
+        off.config_json = serde_json::json!({
+            "base_url": "https://api.example.com",
+            "interface_format": "anthropic",
+            "model_mappings": [],
+        })
+        .to_string();
+
+        let (_, _, body) = build_upstream_request(
+            &off,
+            "claude",
+            "/v1/messages",
+            None,
+            HeaderMap::new(),
+            request,
+        )
+        .expect("request");
+
+        // Anthropic→Anthropic is a passthrough, so an untouched body is literally
+        // the input bytes. Anything else means the feature leaked when off.
+        assert_eq!(body, request.to_vec());
+    }
+
+    #[test]
+    fn the_connectivity_probe_opts_out_of_the_reminder() {
+        // The probe asks for exactly `ai-switch-ok`. A reminder that says "answer
+        // in Chinese" contradicts that, so applying it here would make the probe
+        // fail forever on any account that enables the reminder — the account
+        // would look broken when only the probe was.
+        let credential = reminder_credential("claude", "anthropic", None);
+        let request = br#"{"model":"m","messages":[{"role":"user","content":"Reply with exactly: ai-switch-ok"}]}"#;
+
+        let probe = build_upstream_request_with_bridge(
+            &credential,
+            "claude",
+            "/v1/messages",
+            None,
+            HeaderMap::new(),
+            request,
+            TurnReminderMode::Skip,
+        )
+        .expect("probe request");
+        assert_eq!(probe.body, request.to_vec());
+
+        // Same credential on the proxy path still gets it — proving the exemption
+        // is the probe's, not a dead config reader.
+        let forwarded = build_upstream_request_with_bridge(
+            &credential,
+            "claude",
+            "/v1/messages",
+            None,
+            HeaderMap::new(),
+            request,
+            TurnReminderMode::Apply,
+        )
+        .expect("forwarded request");
+        assert_ne!(forwarded.body, request.to_vec());
     }
 
     #[test]

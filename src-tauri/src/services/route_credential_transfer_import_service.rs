@@ -1718,6 +1718,8 @@ const TRANSFER_METADATA_FIELDS: &[&str] = &[
     "responses_custom_tool_compat",
     "api_key_field",
     "model_mappings",
+    "turn_reminder",
+    "turn_reminder_text",
 ];
 
 pub(crate) struct CompleteSourceIdentity {
@@ -1766,6 +1768,8 @@ struct TransferMetadata {
     in_pool: bool,
     interface_format: Option<String>,
     responses_custom_tool_compat: Option<bool>,
+    turn_reminder: Option<bool>,
+    turn_reminder_text: Option<String>,
     api_key_field: Option<String>,
     model_mappings: Option<Value>,
     issue_codes: Vec<String>,
@@ -2540,6 +2544,18 @@ fn parse_transfer_metadata(
             ));
         }
     };
+    let turn_reminder = match object.get("turn_reminder") {
+        Some(Value::Bool(value)) => Some(*value),
+        Some(Value::Null) | None => None,
+        Some(_) => {
+            return Err(transfer_issue(
+                item_index,
+                display_name_masked,
+                "transfer.metadata_invalid",
+                Some("turn_reminder"),
+            ));
+        }
+    };
     let model_mappings = validate_metadata_model_mappings(
         item_index,
         display_name_masked,
@@ -2560,6 +2576,8 @@ fn parse_transfer_metadata(
         in_pool,
         interface_format: optional_string(object, "interface_format"),
         responses_custom_tool_compat,
+        turn_reminder,
+        turn_reminder_text: optional_string(object, "turn_reminder_text"),
         api_key_field: optional_string(object, "api_key_field"),
         model_mappings,
         issue_codes,
@@ -2665,6 +2683,8 @@ fn metadata_for_legacy_official(platform: PlatformId) -> TransferMetadata {
         in_pool: false,
         interface_format: None,
         responses_custom_tool_compat: None,
+        turn_reminder: None,
+        turn_reminder_text: None,
         api_key_field: None,
         model_mappings: None,
         issue_codes: Vec::new(),
@@ -2687,6 +2707,8 @@ fn metadata_for_legacy_api(legacy_type: Option<&str>) -> TransferMetadata {
         in_pool: false,
         interface_format: None,
         responses_custom_tool_compat: None,
+        turn_reminder: None,
+        turn_reminder_text: None,
         api_key_field: None,
         model_mappings: None,
         issue_codes: Vec::new(),
@@ -2998,6 +3020,20 @@ fn normalize_api_item(
             json!(metadata.responses_custom_tool_compat.unwrap_or(false)),
         ),
     ]);
+    // Omitted rather than written as `false`/empty: an export from a version that
+    // predates the feature has neither key, and materializing them would put
+    // noise into every imported account.
+    if metadata.turn_reminder == Some(true) {
+        config.insert("turn_reminder".to_string(), json!(true));
+        if let Some(text) = metadata
+            .turn_reminder_text
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            config.insert("turn_reminder_text".to_string(), json!(text));
+        }
+    }
     if !payload.headers.is_empty() {
         config.insert(
             "headers".to_string(),

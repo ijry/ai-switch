@@ -717,6 +717,14 @@ function shouldShowResponsesCustomToolCompatForFormat(
   return shouldShowResponsesCustomToolCompat(platform) && interfaceFormat === "openai-responses";
 }
 
+/// The four upstream dialects a per-turn reminder can be written into are all
+/// reachable from these three platforms. Grok and the OpenCode-family platforms
+/// are excluded by scope, not by any technical limit — the writers cover every
+/// dialect, so widening this is a one-line change.
+function shouldShowTurnReminder(platform: PlatformKey) {
+  return platform === "codex" || platform === "claude" || platform === "gemini";
+}
+
 function defaultAnthropicApiKeyFieldForCreate(platform: PlatformKey): AnthropicApiKeyField {
   return platform === "claude" ? "ANTHROPIC_AUTH_TOKEN" : "ANTHROPIC_API_KEY";
 }
@@ -1101,6 +1109,15 @@ function inlineRemoteImagesFromConfig(config: Record<string, unknown>): boolean 
   return config.inline_remote_images === true;
 }
 
+function turnReminderFromConfig(config: Record<string, unknown>): boolean {
+  return config.turn_reminder === true;
+}
+
+function turnReminderTextFromConfig(config: Record<string, unknown>): string {
+  const value = config.turn_reminder_text;
+  return typeof value === "string" ? value : "";
+}
+
 function apiConfigJsonWithFields(
   configJson: string,
   baseUrl: string,
@@ -1110,6 +1127,8 @@ function apiConfigJsonWithFields(
   responsesCustomToolCompat = false,
   userAgent = "",
   inlineRemoteImages = false,
+  turnReminder = false,
+  turnReminderText = "",
 ) {
   const config = parseJsonObject(configJson);
   config.base_url = baseUrl.trim();
@@ -1117,6 +1136,20 @@ function apiConfigJsonWithFields(
   config.model_mappings = mappings;
   config.responses_custom_tool_compat = responsesCustomToolCompat;
   config.inline_remote_images = inlineRemoteImages;
+  // Omitted rather than written as `false`/`""`, so an account that never opts in
+  // carries no trace of the feature in its config.
+  if (turnReminder) {
+    config.turn_reminder = true;
+    const text = turnReminderText.trim();
+    if (text) {
+      config.turn_reminder_text = text;
+    } else {
+      delete config.turn_reminder_text;
+    }
+  } else {
+    delete config.turn_reminder;
+    delete config.turn_reminder_text;
+  }
   if (isAnthropicInterfaceFormat(interfaceFormat)) {
     config.api_key_field = apiKeyField;
   } else {
@@ -1490,6 +1523,11 @@ function modelTestTargetText(outcome: RoutePoolModelTestOutcome) {
   }
   return outcome.request_path;
 }
+
+/// Mirrors `turn_reminder::DEFAULT_TURN_REMINDER` on the Rust side. Shown as the
+/// placeholder so an empty field reads as "this is what you'll get" rather than
+/// "nothing will be sent".
+const DEFAULT_TURN_REMINDER_PLACEHOLDER = "请用简体中文回复。";
 
 const modelTestPrompt = "Reply with exactly: ai-switch-ok";
 
@@ -1932,6 +1970,8 @@ export function AccountsScreen({
   const [editApiInterfaceFormat, setEditApiInterfaceFormat] = useState<InterfaceFormat>("openai");
   const [editResponsesCustomToolCompat, setEditResponsesCustomToolCompat] = useState(false);
   const [editInlineRemoteImages, setEditInlineRemoteImages] = useState(false);
+  const [editTurnReminder, setEditTurnReminder] = useState(false);
+  const [editTurnReminderText, setEditTurnReminderText] = useState("");
   const [editUserAgent, setEditUserAgent] = useState("");
   const [editApiKeyField, setEditApiKeyField] = useState<AnthropicApiKeyField>("ANTHROPIC_API_KEY");
   const [editSecretJson, setEditSecretJson] = useState("{}");
@@ -2478,6 +2518,8 @@ export function AccountsScreen({
       setEditApiKeyField(anthropicApiKeyFieldFromConfig(config, "ANTHROPIC_API_KEY"));
       setEditResponsesCustomToolCompat(responsesCustomToolCompatFromConfig(config));
       setEditInlineRemoteImages(inlineRemoteImagesFromConfig(config));
+      setEditTurnReminder(turnReminderFromConfig(config));
+      setEditTurnReminderText(turnReminderTextFromConfig(config));
       setEditApiKeyDecodeError(null);
       setEditApiKeyOcrError(null);
     } else {
@@ -2487,6 +2529,10 @@ export function AccountsScreen({
       setEditApiKeyField("ANTHROPIC_API_KEY");
       setEditResponsesCustomToolCompat(false);
       setEditInlineRemoteImages(false);
+      // Reset here too, or a value read from the previously edited API account
+      // bleeds into an official one that has no such setting.
+      setEditTurnReminder(false);
+      setEditTurnReminderText("");
       setEditApiKeyDecodeError(null);
       setEditApiKeyOcrError(null);
     }
@@ -3228,6 +3274,8 @@ export function AccountsScreen({
                 editResponsesCustomToolCompat,
                 editUserAgent,
                 editInlineRemoteImages,
+                editTurnReminder,
+                editTurnReminderText,
               ),
             )
           : writeUserAgentToConfig(
@@ -6588,6 +6636,40 @@ export function AccountsScreen({
                       </span>
                     </span>
                   </label>
+                  {shouldShowTurnReminder(activePlatform) ? (
+                    <div className="grid gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2">
+                      <label className="flex items-start gap-2 text-[12px] font-medium text-stone-700">
+                        <input
+                          aria-label="每轮追加纠偏提醒"
+                          checked={editTurnReminder}
+                          className="mt-0.5"
+                          onChange={(event) => setEditTurnReminder(event.target.checked)}
+                          type="checkbox"
+                        />
+                        <span className="grid gap-1">
+                          <span>每轮追加纠偏提醒</span>
+                          <span className="text-[11px] font-medium text-stone-500">
+                            在每次请求的最后一条用户消息后追加一句要求。紧凑模型在长会话里会逐渐忘掉系统提示里的约束（比如开始用英文回复），而追加在末尾的这句离生成最近、最有效。写在末尾也不会打断 prompt 缓存前缀，不增加重复上下文的费用。
+                          </span>
+                        </span>
+                      </label>
+                      {editTurnReminder ? (
+                        <label className={labelClass}>
+                          提醒内容
+                          <input
+                            aria-label="纠偏提醒内容"
+                            className={fieldClass}
+                            onChange={(event) => setEditTurnReminderText(event.target.value)}
+                            placeholder={DEFAULT_TURN_REMINDER_PLACEHOLDER}
+                            value={editTurnReminderText}
+                          />
+                          <span className="text-[11px] font-medium text-stone-500">
+                            留空则使用默认：{DEFAULT_TURN_REMINDER_PLACEHOLDER}
+                          </span>
+                        </label>
+                      ) : null}
+                    </div>
+                  ) : null}
                   <ModelMappingsEditor
                     error={editModelMappingsError}
                     fetchError={editFetchModelsError}
