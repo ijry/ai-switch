@@ -49,6 +49,9 @@
     "externalBin": [
       "binaries/ai-switch-tsnet"
     ],
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "windows": {
       "nsis": {
         "installerHooks": "nsis-hooks.nsh"
