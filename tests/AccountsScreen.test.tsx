@@ -1513,6 +1513,56 @@ describe("AccountsScreen", () => {
     );
   });
 
+  it("one-click flags 1M for the roles that have a 1M tier", async () => {
+    // Most third-party relays omit `supports_1m` from /v1/models. Reading that
+    // silence as a denial meant one-click never flagged 1M on those relays and
+    // users had to tick every role by hand.
+    vi.mocked(fetchRouteModels).mockResolvedValue([
+      { id: "claude-opus-5", owned_by: "gateway" },
+    ]);
+    renderScreen("claude");
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Relay API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-relay");
+    await userEvent.clear(screen.getByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://relay.test/v1");
+    await userEvent.selectOptions(screen.getByLabelText("接口格式"), "anthropic");
+    await userEvent.click(screen.getByRole("button", { name: "获取模型列表" }));
+    await waitFor(() => expect(fetchRouteModels).toHaveBeenCalled());
+
+    await userEvent.click(screen.getByRole("button", { name: "一键设置" }));
+
+    // Sonnet / Opus / Fable have a 1M tier; Haiku does not.
+    expect(screen.getByLabelText("声明支持 1M 1")).toBeChecked();
+    expect(screen.getByLabelText("声明支持 1M 2")).toBeChecked();
+    expect(screen.getByLabelText("声明支持 1M 3")).toBeChecked();
+    expect(screen.queryByLabelText("声明支持 1M 4")).not.toBeInTheDocument();
+  });
+
+  it("one-click respects an upstream that explicitly denies 1M", async () => {
+    vi.mocked(fetchRouteModels).mockResolvedValue([
+      { id: "claude-opus-5", owned_by: "gateway", supports_1m: false },
+    ]);
+    renderScreen("claude");
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Denying API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-deny");
+    await userEvent.clear(screen.getByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://deny.test/v1");
+    await userEvent.selectOptions(screen.getByLabelText("接口格式"), "anthropic");
+    await userEvent.click(screen.getByRole("button", { name: "获取模型列表" }));
+    await waitFor(() => expect(fetchRouteModels).toHaveBeenCalled());
+
+    await userEvent.click(screen.getByRole("button", { name: "一键设置" }));
+
+    // An explicit `false` is a denial and must be honoured.
+    expect(screen.getByLabelText("声明支持 1M 1")).not.toBeChecked();
+  });
+
   it("applies the AgentRouter preset to the create form", async () => {
     renderScreen();
 

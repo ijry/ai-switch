@@ -776,19 +776,27 @@ function pickModelByKeywords(models: FetchedRouteModel[], keywords: readonly str
   return null;
 }
 
-const oneMModelPattern = /(?:^|[^a-z0-9])(?:1m|1-m|1_m|1million|one[-_\s]?million)(?:[^a-z0-9]|$)/i;
-
-function fetchedModelSupportsOneM(model: FetchedRouteModel) {
-  return (
-    model.supports_1m === true ||
-    oneMModelPattern.test(model.id) ||
-    (model.owned_by ? oneMModelPattern.test(model.owned_by) : false)
-  );
-}
-
-function modelIdSupportsOneM(models: FetchedRouteModel[], id: string) {
-  const matched = models.find((model) => model.id === id);
-  return matched ? fetchedModelSupportsOneM(matched) : oneMModelPattern.test(id);
+/// Whether a role should be pre-flagged as 1M-capable during one-click setup.
+///
+/// An upstream that positively advertises 1M (or names it in the model id) is
+/// taken at its word. Silence is *not* treated as "no": most third-party relays
+/// omit `supports_1m` from `/v1/models` entirely, and reading that omission as a
+/// denial meant one-click setup never flagged 1M for anyone on such a relay —
+/// leaving users to tick every role by hand. So an unknown model on a role that
+/// has a 1M tier gets the flag; the proxy only sends the `context-1m` beta
+/// marker when a request actually asks for `[1M]`, and an upstream that cannot
+/// serve it says so.
+function shouldPreflagOneM(
+  models: FetchedRouteModel[],
+  id: string,
+  roleSupportsOneM: boolean,
+) {
+  if (!roleSupportsOneM) {
+    return false;
+  }
+  // Only an explicit `false` is a denial; `null`/`undefined` means unknown, and
+  // unknown defaults to flagged.
+  return models.find((model) => model.id === id)?.supports_1m !== false;
 }
 
 function pickGeneralModel(platform: PlatformKey, models: FetchedRouteModel[]) {
@@ -827,7 +835,9 @@ function buildOneClickMappings(
           from: template.value,
           to: target,
           label: template.label,
-          ...(target && modelIdSupportsOneM(models, target) ? { supports_1m: true } : {}),
+          ...(target && shouldPreflagOneM(models, target, template.supportsOneM)
+            ? { supports_1m: true }
+            : {}),
         };
       })
       .filter((mapping) => mapping.to.trim());
