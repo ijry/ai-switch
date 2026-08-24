@@ -9870,4 +9870,95 @@ data: [DONE]\n\n";
             Some("application/json")
         );
     }
+
+    /// Sweeps how one upstream reacts to each way of declaring the 1M context
+    /// window, so a report of "1M does not work on relay X" can be answered with
+    /// evidence instead of a guess.
+    ///
+    /// Opt in with two env vars; nothing runs without them:
+    ///
+    /// ```text
+    /// ONE_M_PROBE_URL=https://relay.example/v1/messages     /// ONE_M_PROBE_KEY=sk-...     ///   cargo test --lib probe_one_m_declaration -- --ignored --nocapture
+    /// ```
+    ///
+    /// `ONE_M_PROBE_MODEL` overrides the upstream model name (default
+    /// `claude-opus-5`) — send the real upstream name, not one of our aliases,
+    /// since this bypasses the proxy's mapping.
+    ///
+    /// Use the rustls-backed client the proxy itself uses. A relay's edge may
+    /// accept rustls while rejecting curl (Schannel) and Python (OpenSSL) at the
+    /// TLS handshake — mistaking that for an upstream outage cost real debugging
+    /// time on anyrouter.top, where every tool but this one failed to connect.
+    ///
+    /// Recorded result for anyrouter.top (2026-08-24): the header form is the only
+    /// one it reads. Without it, every combination returns 400 "1m 上下文已经全量
+    /// 可用，请启用 1m 上下文后重试"; with it, every combination returns 503. The
+    /// body array (which cc-switch also sends, as `anthropic_beta`) and adaptive
+    /// thinking changed nothing. So its 1M backend was simply unavailable — the
+    /// relay demanded a declaration it could not then serve.
+    #[tokio::test]
+    #[ignore = "diagnostic: set ONE_M_PROBE_URL and ONE_M_PROBE_KEY to hit a live relay"]
+    async fn probe_one_m_declaration() {
+        let (Ok(url), Ok(key)) = (
+            std::env::var("ONE_M_PROBE_URL"),
+            std::env::var("ONE_M_PROBE_KEY"),
+        ) else {
+            println!("  set ONE_M_PROBE_URL and ONE_M_PROBE_KEY to run this probe");
+            return;
+        };
+        let model =
+            std::env::var("ONE_M_PROBE_MODEL").unwrap_or_else(|_| "claude-opus-5".to_string());
+        let client = build_outbound_http_client(Some(Duration::from_secs(60))).expect("client");
+
+        // cc-switch declares 1M in two places: the `anthropic-beta` *header* and an
+        // `anthropic_beta` *body array* (note the underscore). This sweep isolates
+        // which form a given relay reads, and whether adaptive thinking matters.
+        for (label, header_one_m, body_one_m, adaptive) in [
+            ("A 头无 体无        ", false, false, false),
+            ("B 头有 体无        ", true, false, false),
+            ("C 头无 体有        ", false, true, false),
+            ("D 头有 体有        ", true, true, false),
+            ("E 头有 体有 +thinking", true, true, true),
+            ("F 头无 体有 +thinking", false, true, true),
+        ] {
+            let mut body = serde_json::json!({
+                "model": model,
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}],
+            });
+            if body_one_m {
+                body["anthropic_beta"] =
+                    serde_json::json!([client_identity::ANTHROPIC_ONE_M_CONTEXT_BETA]);
+            }
+            if adaptive {
+                body["thinking"] = serde_json::json!({"type": "adaptive"});
+                body["output_config"] = serde_json::json!({"effort": "max"});
+            }
+            let beta = if header_one_m {
+                "context-1m-2025-08-07,claude-code-20250219,interleaved-thinking-2025-05-14"
+            } else {
+                "claude-code-20250219,interleaved-thinking-2025-05-14"
+            };
+            match client
+                .post(&url)
+                .header("content-type", "application/json")
+                .header("x-api-key", key.as_str())
+                .header("anthropic-version", "2023-06-01")
+                .header("anthropic-beta", beta)
+                .header("user-agent", client_identity::CLAUDE_CODE_USER_AGENT)
+                .body(body.to_string())
+                .send()
+                .await
+            {
+                Ok(response) => {
+                    let status = response.status();
+                    let text = response.text().await.unwrap_or_default();
+                    let text: String = text.chars().take(160).collect();
+                    println!("  [{label}] http={status} {text}");
+                }
+                Err(error) => println!("  [{label}] ERR {error}"),
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+    }
 }
