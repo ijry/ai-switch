@@ -46,6 +46,13 @@ import { baselineModelsForPlatform, expandDisplayModelMappings, ModelMappingSumm
 import { RouteCredentialExportDialog } from "../components/accounts/RouteCredentialExportDialog";
 import { neighborsForDrop } from "../lib/accountReorder";
 import {
+  claudeAliasSupportsOneM,
+  CLAUDE_FALLBACK_ALIAS,
+  CLAUDE_MENU_ROLES,
+  CLAUDE_ROLES,
+  CLAUDE_SUBAGENT_ALIAS,
+} from "../lib/claude-roles";
+import {
   parseFetchedModelsFromConfig,
   writeFetchedModelsToConfig,
 } from "../lib/accountFetchedModels";
@@ -580,61 +587,22 @@ const anthropicApiKeyFields: Array<{ value: AnthropicApiKeyField; label: string;
   },
 ];
 
-const CLAUDE_SUBAGENT_ALIAS = "claude-subagent";
-const CLAUDE_FALLBACK_ALIAS = "*";
+// Role definitions live in src/lib/claude-roles.ts so the account-list summary
+// reads the same table instead of keeping its own copy of the aliases.
+const claudeModelTemplates = CLAUDE_MENU_ROLES.map((role) => ({
+  value: role.alias,
+  label: role.label,
+  keywords: role.keywords,
+  supportsOneM: role.supportsOneM,
+}));
 
-// The four roles Claude Code shows in its /model menu.
-//
-// `supportsOneM` marks the roles that may advertise a `[1m]` variant. Haiku is
-// excluded: it is the small fast model and has no 1M context tier, so offering
-// the flag would let a user declare a context window the tier cannot serve.
-const claudeModelTemplates = [
-  { value: "claude-sonnet-alias", label: "Sonnet", keywords: ["sonnet"], supportsOneM: true },
-  { value: "claude-opus-alias", label: "Opus", keywords: ["opus"], supportsOneM: true },
-  { value: "claude-fable-alias", label: "Fable", keywords: ["fable"], supportsOneM: true },
-  {
-    value: "claude-haiku-alias",
-    label: "Haiku",
-    keywords: ["haiku", "flash", "mini", "lite"],
-    supportsOneM: false,
-  },
-] as const;
-
-// Appended after the menu roles so the existing rows keep their positions (the
-// row aria-labels are 1-indexed by position). Neither has an editable display
-// name: Subagent never appears in the /model menu, and the fallback is a routing
-// rule rather than a model. Neither takes the 1M flag — the proxy writes a plain
-// alias, so a [1m] variant would only produce a phantom advertised model id.
-const claudeExtraRoleTemplates = [
-  {
-    value: CLAUDE_SUBAGENT_ALIAS,
-    label: "Subagent",
-    hint: "不显示在 /model 菜单",
-  },
-  {
-    value: CLAUDE_FALLBACK_ALIAS,
-    label: "默认兜底模型",
-    hint: "未匹配的模型走这里",
-  },
-] as const;
-
-const claudeRoleTemplates = [
-  ...claudeModelTemplates.map((template) => ({
-    value: template.value,
-    label: template.label,
-    editableLabel: true,
-    supportsOneM: template.supportsOneM,
-    hint: null as string | null,
-  })),
-  ...claudeExtraRoleTemplates.map((template) => ({
-    value: template.value,
-    label: template.label,
-    editableLabel: false,
-    // Matches the comment above: these two never advertise a [1m] variant.
-    supportsOneM: false,
-    hint: template.hint as string | null,
-  })),
-];
+const claudeRoleTemplates = CLAUDE_ROLES.map((role) => ({
+  value: role.alias,
+  label: role.label,
+  editableLabel: role.editableLabel,
+  supportsOneM: role.supportsOneM,
+  hint: role.hint,
+}));
 
 const claudeModelSources = [
   ...claudeModelTemplates.map((template) => ({
@@ -793,16 +761,6 @@ function isClaudeTemplateSource(value: string) {
   return claudeRoleTemplates.some((template) => template.value === value.trim());
 }
 
-/// Whether a Claude role may advertise a `[1m]` variant.
-///
-/// Non-role rows (a hand-written alias) are allowed it — only the built-in roles
-/// have a known context tier. Haiku has no 1M tier, and Subagent/fallback are
-/// written as plain aliases, so a `[1m]` variant there is a phantom model id.
-function claudeRoleSupportsOneM(from: string) {
-  const template = claudeRoleTemplates.find((item) => item.value === from.trim());
-  return template ? template.supportsOneM : true;
-}
-
 function modelIdList(models: FetchedRouteModel[]) {
   return models.map((model) => model.id).filter(Boolean);
 }
@@ -942,7 +900,7 @@ function normalizeModelMappings(mappings: ModelMapping[], platform: PlatformKey)
     // Gate on the role, not just the checkbox: a stored flag from before Haiku
     // and the Subagent/fallback rows lost their checkbox would otherwise survive
     // every save, since a hidden checkbox can never clear it.
-    if (platform === "claude" && mapping.supports_1m === true && claudeRoleSupportsOneM(from)) {
+    if (platform === "claude" && mapping.supports_1m === true && claudeAliasSupportsOneM(from)) {
       normalizedMapping.supports_1m = true;
     }
     normalized.push(normalizedMapping);

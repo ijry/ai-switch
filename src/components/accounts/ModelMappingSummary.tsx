@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ModelMapping } from "../../lib/api/types";
+import { CLAUDE_MENU_ROLES, claudeRoleLabel } from "../../lib/claude-roles";
 
 export type DisplayModelMapping = {
   alias: string;
@@ -10,7 +11,7 @@ export type DisplayModelMapping = {
 
 const baselineModelsByPlatform: Record<string, readonly string[]> = {
   codex: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
-  claude: ["claude-sonnet-alias", "claude-opus-alias", "claude-fable-alias", "claude-haiku-alias"],
+  claude: CLAUDE_MENU_ROLES.map((role) => role.alias),
   gemini: ["gemini-2.5-flash"],
   grok: ["grok-4.5"],
 };
@@ -21,6 +22,25 @@ export function baselineModelsForPlatform(platform: string) {
 
 function hasOneMSuffix(value: string) {
   return value.toLowerCase().endsWith("[1m]");
+}
+
+/** Strips a `[1m]` suffix so an alias can be matched against the role table. */
+function baseAlias(alias: string) {
+  return hasOneMSuffix(alias) ? alias.slice(0, -"[1m]".length) : alias;
+}
+
+/**
+ * Human-facing title for one mapping row.
+ *
+ * Shows the role name rather than the internal alias. The alias is an
+ * implementation detail, and pairing it with the upstream model produced lines
+ * like `claude-opus-alias → claude-opus-5` that read as a misconfiguration. A
+ * hand-written alias has no role and is shown verbatim — that is what the user
+ * typed.
+ */
+export function displayMappingTitle(mapping: DisplayModelMapping) {
+  const role = claudeRoleLabel(baseAlias(mapping.alias));
+  return hasOneMSuffix(mapping.alias) || mapping.oneM ? `${role} · 1M` : role;
 }
 
 export function expandDisplayModelMappings(
@@ -53,10 +73,11 @@ export function expandDisplayModelMappings(
   return expanded;
 }
 
+/// Tooltip detail: keeps the internal alias reachable for troubleshooting.
 function mappingDetail(mapping: DisplayModelMapping) {
   const label = mapping.label?.trim();
-  const oneM = mapping.oneM && !hasOneMSuffix(mapping.alias) ? " · [1m]" : "";
-  return `${mapping.alias} → ${mapping.target}${label ? ` · ${label}` : ""}${oneM}`;
+  const oneM = mapping.oneM && !hasOneMSuffix(mapping.alias) ? "[1m]" : "";
+  return `${mapping.alias}${oneM} → ${mapping.target}${label ? ` · ${label}` : ""}`;
 }
 
 export function ModelMappingSummary({
@@ -96,7 +117,9 @@ export function ModelMappingSummary({
   }, [open]);
 
   if (displayMappings.length === 0) {
-    const baselineModels = baselineModelsForPlatform(platform);
+    const baselineModels = baselineModelsForPlatform(platform).map((alias) =>
+      claudeRoleLabel(alias),
+    );
     const baselineTooltipText = baselineModels.length > 0
       ? "未配置模型映射，仅匹配基线模型：" + baselineModels.join("、")
       : "未配置模型映射，当前平台暂无预设基线模型";
@@ -129,7 +152,7 @@ export function ModelMappingSummary({
           key={`${mapping.alias}-${mapping.target}`}
           title={mappingDetail(mapping)}
         >
-          {mapping.alias}
+          {displayMappingTitle(mapping)}
         </span>
       ))}
       {remainingCount > 0 ? (
@@ -158,7 +181,7 @@ export function ModelMappingSummary({
                 key={`${mapping.alias}-${mapping.target}-${index}`}
                 title={mappingDetail(mapping)}
               >
-                {mappingDetail(mapping)}
+                {displayMappingTitle(mapping)} → {mapping.target}
               </p>
             ))}
           </div>
