@@ -1769,13 +1769,13 @@ describe("AccountsScreen", () => {
     expect(screen.getByLabelText("请求模型 5")).toHaveValue("claude-subagent");
     expect(screen.getByLabelText("请求模型 6")).toHaveValue("*");
 
-    // Only the roles with a real 1M tier offer the flag. Haiku has no such tier,
-    // and Subagent/fallback are written as plain aliases — a [1m] variant there
-    // would advertise a model id that resolves to nothing.
+    // Only Haiku lacks the flag — it has no 1M context tier. Subagent and the
+    // fallback keep it: the proxy strips the [1m] suffix before resolving a
+    // mapping, so claude-subagent[1m] matches the same entry.
     expect(screen.getByLabelText("声明支持 1M 1")).toBeInTheDocument();
     expect(screen.queryByLabelText("声明支持 1M 4")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("声明支持 1M 5")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("声明支持 1M 6")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("声明支持 1M 5")).toBeInTheDocument();
+    expect(screen.getByLabelText("声明支持 1M 6")).toBeInTheDocument();
   });
 
   it("saves the Claude subagent and fallback mappings", async () => {
@@ -1790,15 +1790,17 @@ describe("AccountsScreen", () => {
     await userEvent.selectOptions(screen.getByLabelText("接口格式"), "anthropic");
     await userEvent.type(screen.getByLabelText("上游模型 5"), "provider-haiku");
     await userEvent.type(screen.getByLabelText("上游模型 6"), "provider-sonnet");
+    // Both rows can declare 1M — the suffix is stripped before mapping lookup,
+    // and the beta marker the proxy sends is what actually enables the window.
+    await userEvent.click(screen.getByLabelText("声明支持 1M 5"));
     await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
 
     await waitFor(() =>
       expect(createApiRouteCredential).toHaveBeenCalledWith(
         expect.objectContaining({
-          // Appended after Haiku, with no label key and no 1M flag on either row:
-          // the proxy writes these two as plain aliases.
+          // Appended after Haiku, with no label key on either row.
           model_mappings_json:
-            "[{\"from\":\"claude-subagent\",\"to\":\"provider-haiku\"},{\"from\":\"*\",\"to\":\"provider-sonnet\"}]",
+            "[{\"from\":\"claude-subagent\",\"to\":\"provider-haiku\",\"supports_1m\":true},{\"from\":\"*\",\"to\":\"provider-sonnet\"}]",
         }),
       ),
     );

@@ -6,6 +6,7 @@ use crate::models::platform::{ApiDialect, CapabilityRule, PlatformId, PlatformOp
 use crate::models::route_credential::{
     is_synthetic_route_alias, normalize_anthropic_api_key_field, ModelMapping,
     RouteCredentialFailurePolicy, ANTHROPIC_API_KEY_FIELD, ANTHROPIC_AUTH_TOKEN_FIELD,
+    CLAUDE_ONE_M_SUFFIX,
 };
 use crate::models::route_pool::RouteUsageBreakdown;
 use crate::services::client_identity;
@@ -3094,6 +3095,14 @@ fn build_api_upstream_request(
             // Impersonate Claude Code so client-fingerprinting gateways
             // (e.g. agentrouter.org) don't reject us as an unknown client.
             apply_claude_code_identity(headers);
+            // Read the 1M intent from the *client's* model value: the `[1M]`
+            // suffix is stripped by the mapping lookup before the upstream body
+            // is built, so by this point only the original request still carries
+            // it. Without the beta marker the gateway answers "please enable 1m
+            // context and retry" no matter what the model name said.
+            if client_requested_one_m_context(body) {
+                apply_one_m_context_beta(headers);
+            }
             if is_messages_path(&upstream_path) {
                 target_url = ensure_query_flag(&target_url, "beta", "true");
             }
@@ -4411,6 +4420,34 @@ fn apply_claude_code_identity(headers: &mut HeaderMap) {
             continue;
         };
         headers.insert(HeaderName::from_static(name), value);
+    }
+}
+
+/// True when the client asked for the 1M context window.
+///
+/// Claude Code signals this by appending `[1M]` to the model value it sends. The
+/// mapping lookup strips that suffix (so `claude-opus-alias[1m]` still resolves
+/// to the account's upstream model), which means the intent has to be read from
+/// the inbound body before any rewriting.
+fn client_requested_one_m_context(body: &[u8]) -> bool {
+    requested_model_from_body(body).is_some_and(|model| {
+        model
+            .trim_end()
+            .to_ascii_lowercase()
+            .ends_with(&CLAUDE_ONE_M_SUFFIX.to_ascii_lowercase())
+    })
+}
+
+/// Merge the 1M-context beta marker into `anthropic-beta`, preserving whatever
+/// the client already sent.
+fn apply_one_m_context_beta(headers: &mut HeaderMap) {
+    let existing = headers
+        .get("anthropic-beta")
+        .and_then(|value| value.to_str().ok());
+    if let Some(merged) = client_identity::merge_one_m_context_beta(existing) {
+        if let Ok(value) = HeaderValue::from_str(&merged) {
+            headers.insert(HeaderName::from_static("anthropic-beta"), value);
+        }
     }
 }
 
@@ -8843,6 +8880,80 @@ data: [DONE]\n\n";
 
         assert!(headers.get("x-grok-client-version").is_none());
         assert!(headers.get("x-xai-token-auth").is_none());
+    }
+
+    fn anthropic_api_credential() -> SelectedCredential {
+        SelectedCredential {
+            id: "claude-api-1".to_string(),
+            platform: "claude".to_string(),
+            kind: "api".to_string(),
+            display_name: "Claude API".to_string(),
+            status: "ok".to_string(),
+            route_priority: 1,
+            max_concurrency: 1,
+            secret_payload_json: serde_json::json!({"api_key": "sk-test"}).to_string(),
+            config_json: serde_json::json!({
+                "base_url": "https://api.example.com",
+                "interface_format": "anthropic",
+                "model_mappings": [
+                    {"from": "claude-opus-alias", "to": "provider-opus", "supports_1m": true}
+                ]
+            })
+            .to_string(),
+        }
+    }
+
+    #[test]
+    fn the_one_m_suffix_adds_the_beta_marker_that_actually_enables_it() {
+        // Claude Code signals 1M with a `[1M]` model suffix, which the mapping
+        // lookup strips — so the suffix alone reaches the gateway as an ordinary
+        // request and it replies "please enable 1m context and retry".
+        let (_, headers, body) = build_upstream_request(
+            &anthropic_api_credential(),
+            "claude",
+            "/v1/messages",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"claude-opus-alias[1M]","max_tokens":16}"#,
+        )
+        .expect("1M request");
+
+        let beta = headers
+            .get("anthropic-beta")
+            .and_then(|value| value.to_str().ok())
+            .expect("anthropic-beta header");
+        assert!(
+            beta.contains(client_identity::ANTHROPIC_ONE_M_CONTEXT_BETA),
+            "beta header must carry the 1M marker: {beta}"
+        );
+        // The Claude Code identity marker still has to survive the merge.
+        assert!(beta.contains(client_identity::CLAUDE_CODE_BETA_MARKER));
+        // The suffix itself is stripped for the upstream body — that is exactly
+        // why the header has to carry the intent.
+        let sent: Value = serde_json::from_slice(&body).expect("body json");
+        assert_eq!(sent["model"], "provider-opus");
+    }
+
+    #[test]
+    fn a_plain_model_gets_no_one_m_marker() {
+        let (_, headers, _) = build_upstream_request(
+            &anthropic_api_credential(),
+            "claude",
+            "/v1/messages",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"claude-opus-alias","max_tokens":16}"#,
+        )
+        .expect("plain request");
+
+        let beta = headers
+            .get("anthropic-beta")
+            .and_then(|value| value.to_str().ok())
+            .expect("anthropic-beta header");
+        assert!(
+            !beta.contains(client_identity::ANTHROPIC_ONE_M_CONTEXT_BETA),
+            "a request that did not ask for 1M must not claim it: {beta}"
+        );
     }
 
     #[test]

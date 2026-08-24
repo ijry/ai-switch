@@ -24,9 +24,10 @@ export type ClaudeRole = {
   /**
    * Whether this role may advertise a `[1m]` variant.
    *
-   * Haiku has no 1M context tier. Subagent and the fallback are written as plain
-   * aliases, so a `[1m]` variant there would advertise a model id that resolves
-   * to nothing.
+   * Only Haiku is excluded: it is the small fast model with no 1M context tier.
+   * Subagent and the fallback do get the flag — the proxy strips the `[1m]`
+   * suffix before resolving a mapping, so `claude-subagent[1m]` matches the same
+   * entry as `claude-subagent`.
    */
   supportsOneM: boolean;
   /** Placeholder shown instead of an editable display name. */
@@ -80,7 +81,7 @@ export const CLAUDE_EXTRA_ROLES: readonly ClaudeRole[] = [
     alias: CLAUDE_SUBAGENT_ALIAS,
     label: "Subagent",
     editableLabel: false,
-    supportsOneM: false,
+    supportsOneM: true,
     hint: "不显示在 /model 菜单",
     keywords: [],
   },
@@ -88,7 +89,7 @@ export const CLAUDE_EXTRA_ROLES: readonly ClaudeRole[] = [
     alias: CLAUDE_FALLBACK_ALIAS,
     label: "默认兜底模型",
     editableLabel: false,
-    supportsOneM: false,
+    supportsOneM: true,
     hint: "未匹配的模型走这里",
     keywords: [],
   },
