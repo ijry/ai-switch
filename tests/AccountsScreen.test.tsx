@@ -1662,11 +1662,33 @@ describe("AccountsScreen", () => {
   });
 
   it("hides the preset select on platforms without presets", async () => {
-    renderScreen("claude");
+    // Claude and Codex both have presets now, so Gemini is what proves the
+    // select is conditional rather than always rendered.
+    renderScreen("gemini");
 
     await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
 
     expect(screen.queryByLabelText("创建 账号预设")).not.toBeInTheDocument();
+  });
+
+  it("applies the Claude preset, filling every role with one upstream model", async () => {
+    renderScreen("claude");
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.selectOptions(
+      screen.getByLabelText("创建 账号预设"),
+      "agentrouter-claude",
+    );
+
+    expect(screen.getByLabelText("Base URL")).toHaveValue("https://ps.air-outer.com");
+    expect(screen.getByLabelText("API 账号名称")).toHaveValue("AgentRouter Claude");
+    // All six role rows, including Subagent and the catch-all.
+    for (const row of [1, 2, 3, 4, 5, 6]) {
+      expect(screen.getByLabelText(`上游模型 ${row}`)).toHaveValue("claude-opus-5");
+    }
+    // 1M stays for the user to tick: an upstream without the tier answers 503.
+    expect(screen.getByLabelText("声明支持 1M 1")).not.toBeChecked();
   });
 
   it("rejects the placeholder upstream model mapping before saving", async () => {
