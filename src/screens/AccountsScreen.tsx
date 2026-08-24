@@ -1547,6 +1547,12 @@ function shellSingleQuote(value: string) {
   return "'" + value.replace(/'/g, "'\"'\"'") + "'";
 }
 
+/// PowerShell's own single-quoted string: `''` is the literal escape, and the
+/// content is never subject to the native-argument mangling below.
+function powerShellSingleQuote(value: string) {
+  return "'" + value.replace(/'/g, "''") + "'";
+}
+
 function compactJsonForCurl(value: string) {
   try {
     const compact = JSON.stringify(JSON.parse(value));
@@ -1560,6 +1566,19 @@ function joinUrl(baseUrl: string, path: string) {
   return baseUrl.replace(/\/+$/, "") + "/" + path.replace(/^\/+/, "");
 }
 
+type ModelTestCurlShell = "posix" | "powershell" | "cmd";
+
+/// Builds the copy-paste connectivity probe for one shell.
+///
+/// The three forms are genuinely different, not cosmetic variants. Windows
+/// PowerShell 5.1 — still what Win+X and the Start menu open on Windows 11 —
+/// strips quotes out of arguments it hands to a native `.exe`, so BOTH the POSIX
+/// form (`'{"a":1}'`) and the CMD form (`"{""a"":1}"`) arrive as `{a:1}` and the
+/// gateway answers `invalid character 'a' looking for beginning of object key
+/// string`. `--%` and backslash-escaping each fix 5.1 while breaking 7, so
+/// neither is usable. Assigning the body to a PowerShell single-quoted variable
+/// and piping it to `--data-binary '@-'` is the one shape verified to work on
+/// both 5.1 and 7: stdin never passes through argument parsing at all.
 function modelTestCurlCommand({
   activePlatform,
   codexEndpoint,
@@ -1575,7 +1594,7 @@ function modelTestCurlCommand({
   proxyBaseUrl: string;
   proxyKey: string;
   requestedModel: string;
-  shell?: "posix" | "windows";
+  shell?: ModelTestCurlShell;
 }) {
   const interfaceFormat =
     outcome?.interface_format ||
@@ -1587,17 +1606,39 @@ function modelTestCurlCommand({
     outcome?.request_body_json?.trim() || JSON.stringify(modelTestRequestBody(interfaceFormat, model), null, 2);
   const url = joinUrl(proxyBaseUrl.trim(), requestPath);
   const tlsOptions = url.toLowerCase().startsWith("https://") ? ["--ssl-no-revoke"] : [];
-  const quote = shell === "windows" ? windowsDoubleQuote : shellSingleQuote;
+  const body = compactJsonForCurl(requestBody);
+  const quote =
+    shell === "cmd"
+      ? windowsDoubleQuote
+      : shell === "powershell"
+        ? powerShellSingleQuote
+        : shellSingleQuote;
+  // Git Bash resolves plain `curl`; on Windows shells `curl` is a PowerShell
+  // alias for Invoke-WebRequest, so the `.exe` suffix is required there.
+  const program = shell === "posix" ? "curl" : "curl.exe";
 
-  return [
-    "curl.exe " + quote(url),
+  const request = [
+    program + " " + quote(url),
     ...tlsOptions,
     "-X POST",
     "-H " + quote("Content-Type: application/json"),
     "-H " + quote("Authorization: Bearer " + proxyKey),
     "-H " + quote("x-ai-switch-platform: " + activePlatform),
-    "--data-raw " + quote(compactJsonForCurl(requestBody)),
-  ].join(" ");
+  ];
+
+  if (shell === "powershell") {
+    // $OutputEncoding governs how the pipe encodes text for the native command;
+    // its default in 5.1 mangles non-ASCII bodies into `?`.
+    return [
+      "$OutputEncoding = [System.Text.UTF8Encoding]::new($false);",
+      "$body = " + quote(body) + ";",
+      "$body |",
+      ...request,
+      "--data-binary " + quote("@-"),
+    ].join(" ");
+  }
+
+  return [...request, "--data-raw " + quote(body)].join(" ");
 }
 
 function modelTestRouteChainItems(outcome: RoutePoolModelTestOutcome) {
@@ -1811,7 +1852,7 @@ export function AccountsScreen({
   const [refreshMenuOpen, setRefreshMenuOpen] = useState(false);
   const [modelTestMenuOpen, setModelTestMenuOpen] = useState(false);
   const [modelTestMenuCopied, setModelTestMenuCopied] = useState<
-    "curl" | "curl-cmd" | "base-url" | "sk" | null
+    "curl" | "curl-powershell" | "curl-cmd" | "base-url" | "sk" | null
   >(null);
   const [copiedCredentialId, setCopiedCredentialId] = useState<string | null>(null);
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
@@ -3504,7 +3545,7 @@ export function AccountsScreen({
     setModelTestDialogOpen(true);
   };
 
-  const copyModelTestCurl = async (shell: "posix" | "windows" = "posix") => {
+  const copyModelTestCurl = async (shell: ModelTestCurlShell = "posix") => {
     const proxyBaseUrl = routeProxyQuery.data?.base_url?.trim();
     if (!routeProxyQuery.data?.running || !proxyBaseUrl) {
       setRoutePoolFeedback({
@@ -3525,7 +3566,7 @@ export function AccountsScreen({
         shell,
       });
       await copySensitiveText(command);
-      setModelTestMenuCopied(shell === "windows" ? "curl-cmd" : "curl");
+      setModelTestMenuCopied(shell === "posix" ? "curl" : `curl-${shell}`);
       setModelTestMenuOpen(false);
       window.setTimeout(() => setModelTestMenuCopied(null), 1400);
     } catch (error) {
@@ -4043,20 +4084,33 @@ export function AccountsScreen({
                       className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
                       onClick={() => void copyModelTestCurl("posix")}
                       role="menuitem"
+                      title="Git Bash / WSL / macOS / Linux"
                       type="button"
                     >
                       <Copy aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-                      复制 curl（PowerShell / Git Bash）
+                      复制 curl（Bash）
+                    </button>
+                    <button
+                      aria-label="复制 PowerShell curl 执行语句"
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
+                      onClick={() => void copyModelTestCurl("powershell")}
+                      role="menuitem"
+                      title="Windows PowerShell 5.1 与 PowerShell 7 都适用"
+                      type="button"
+                    >
+                      <Copy aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                      复制 curl（PowerShell）
                     </button>
                     <button
                       aria-label="复制 CMD curl 执行语句"
                       className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
-                      onClick={() => void copyModelTestCurl("windows")}
+                      onClick={() => void copyModelTestCurl("cmd")}
                       role="menuitem"
+                      title="cmd.exe"
                       type="button"
                     >
                       <Copy aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-                      复制 CMD curl
+                      复制 curl（CMD）
                     </button>
                     <button
                       aria-label="复制 Base URL"

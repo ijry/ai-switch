@@ -2763,7 +2763,8 @@ describe("AccountsScreen", () => {
 
     await waitFor(() =>
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-        expect.stringContaining("curl.exe 'https://127.0.0.1:43111/responses'"),
+        // Plain `curl` in Bash; on Windows shells it is an Invoke-WebRequest alias.
+        expect.stringContaining("curl 'https://127.0.0.1:43111/responses'"),
       ),
     );
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
@@ -2786,6 +2787,21 @@ describe("AccountsScreen", () => {
         expect.stringContaining('--data-raw "{""model""'),
       ),
     );
+
+    // PowerShell 5.1 strips quotes out of native-command arguments, so neither of
+    // the two forms above survives it — the body has to reach curl over stdin.
+    await userEvent.click(screen.getByLabelText("打开算力池测试菜单"));
+    await userEvent.click(screen.getByLabelText("复制 PowerShell curl 执行语句"));
+    await waitFor(() => {
+      const command = vi.mocked(navigator.clipboard.writeText).mock.lastCall?.[0] ?? "";
+      expect(command).toContain("$body = '{\"model\"");
+      expect(command).toContain("$body | curl.exe 'https://127.0.0.1:43111/responses'");
+      expect(command).toContain("--data-binary '@-'");
+      // The 5.1 default pipe encoding turns non-ASCII bodies into `?`.
+      expect(command).toContain("$OutputEncoding = [System.Text.UTF8Encoding]::new($false);");
+      // --data-raw would put the JSON back into argument parsing, undoing the fix.
+      expect(command).not.toContain("--data-raw");
+    });
   });
 
   it("copies the running route proxy Base URL and platform sk", async () => {
