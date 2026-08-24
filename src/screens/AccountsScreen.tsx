@@ -5090,9 +5090,9 @@ export function AccountsScreen({
                       type="checkbox"
                     />
                     <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
+                      <div className="group/name flex flex-wrap items-center gap-2">
                         <p
-                          className="w-[36ch] max-w-full shrink-0 truncate text-[13px] font-semibold text-stone-950"
+                          className="max-w-full truncate text-[13px] font-semibold text-stone-950"
                           title={`P${credential.route_priority}-${credential.display_name}`}
                         >
                           <span className="text-stone-500">{`P${credential.route_priority}-`}</span>
@@ -5101,7 +5101,9 @@ export function AccountsScreen({
                         {baseUrlLink && (
                           <button
                             aria-label={`打开 ${baseUrlLink.host}`}
-                            className="shrink-0 text-stone-400 transition-colors hover:text-blue-600"
+                            // Hidden until the row is hovered or the button itself is
+                            // focused: keyboard users never lose access to it.
+                            className="-ml-1 shrink-0 text-stone-400 opacity-0 transition-opacity hover:text-blue-600 focus-visible:opacity-100 group-hover/name:opacity-100"
                             onClick={(event) => {
                               event.stopPropagation();
                               window.open(baseUrlLink.href, "_blank", "noopener,noreferrer");

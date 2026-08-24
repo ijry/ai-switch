@@ -574,6 +574,13 @@ describe("AccountsScreen", () => {
     // The API credential derives a clickable domain link from its base_url.
     const openLinkButton = screen.getByLabelText("打开 api.example.com");
     expect(openLinkButton).toHaveAttribute("title", "https://api.example.com");
+    // Kept out of the way until the row is hovered, but reachable by keyboard —
+    // opacity rather than `hidden` is what preserves that.
+    expect(openLinkButton).toHaveClass(
+      "opacity-0",
+      "group-hover/name:opacity-100",
+      "focus-visible:opacity-100",
+    );
     const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
     await userEvent.click(openLinkButton);
     expect(openSpy).toHaveBeenCalledWith(
