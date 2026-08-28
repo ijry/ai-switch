@@ -29,4 +29,13 @@ describe("Tauri desktop configuration", () => {
     expect(cargo).toMatch(/^tauri-plugin-autostart\s*=\s*"2/m);
     expect(capability.permissions).toContain("autostart:default");
   });
+
+  it("registers the autostart plugin and hidden-launch argument", () => {
+    const source = readSource("src-tauri/src/lib.rs");
+
+    expect(source).toContain("tauri_plugin_autostart::Builder::new()");
+    expect(source).toContain(".args([AUTOSTART_ARG])");
+    expect(source).toContain("is_autostart_launch(std::env::args().skip(1))");
+    expect(source).toContain("window.hide()");
+  });
 });

@@ -101,6 +101,16 @@ use tauri_plugin_deep_link::DeepLinkExt;
 use terminal_manager::TerminalManager;
 use web::event_bridge::{EventEmitter, WebEventBroadcaster};
 
+const AUTOSTART_ARG: &str = "--autostart";
+
+fn is_autostart_launch<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter().any(|arg| arg.as_ref() == AUTOSTART_ARG)
+}
+
 fn is_deeplink_url(app: &tauri::AppHandle, value: &str) -> bool {
     value.starts_with("aiswitch://")
         || (value.starts_with("ccswitch://")
@@ -237,6 +247,7 @@ pub fn run() {
             .expect("failed to open database after migration repair")
     });
 
+    let launched_from_autostart = is_autostart_launch(std::env::args().skip(1));
     let mut builder = tauri::Builder::default();
     let tray_quit_requested = Arc::new(AtomicBool::new(false));
     let close_tray_quit_requested = Arc::clone(&tray_quit_requested);
@@ -254,6 +265,12 @@ pub fn run() {
     }
 
     builder
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .args([AUTOSTART_ARG])
+                .app_name("AI Switch")
+                .build(),
+        )
         .on_window_event(move |window, event| {
             if window.label() != "main" {
                 return;
@@ -282,6 +299,14 @@ pub fn run() {
             event_broadcaster: Arc::new(WebEventBroadcaster::new()),
         })
         .setup(move |app| {
+            if launched_from_autostart {
+                if let Some(window) = app.get_webview_window("main") {
+                    if let Err(error) = window.hide() {
+                        eprintln!("failed to hide window for autostart launch: {error}");
+                    }
+                }
+            }
+
             let show_item = MenuItemBuilder::with_id("tray-show", "显示主窗口").build(app)?;
             let quit_item = MenuItemBuilder::with_id("tray-quit", "退出 AI Switch").build(app)?;
             let tray_menu = MenuBuilder::new(app)
@@ -510,4 +535,26 @@ pub fn run() {
                 state.terminals.kill_all();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_autostart_launch;
+
+    #[test]
+    fn recognizes_the_exact_autostart_argument() {
+        assert!(is_autostart_launch([
+            "ai-switch".to_string(),
+            "--autostart".to_string(),
+        ]));
+    }
+
+    #[test]
+    fn ignores_normal_and_similar_arguments() {
+        assert!(!is_autostart_launch([
+            "ai-switch".to_string(),
+            "--autostart=true".to_string(),
+            "--auto-start".to_string(),
+        ]));
+    }
 }

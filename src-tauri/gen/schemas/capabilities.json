@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default permissions for the main AI Switch window.","local":true,"windows":["main"],"permissions":["core:default","updater:default","process:allow-restart","dialog:allow-open","dialog:allow-save","shell:allow-open"]}}
+{"default":{"identifier":"default","description":"Default permissions for the main AI Switch window.","local":true,"windows":["main"],"permissions":["core:default","updater:default","autostart:default","process:allow-restart","dialog:allow-open","dialog:allow-save","shell:allow-open"]}}
