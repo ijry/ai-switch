@@ -9,6 +9,7 @@ import {
 import type { ComponentType } from "react";
 import { getSettings, saveSettings } from "../lib/api/client";
 import { normalizeLanguage, supportedLanguages, useI18n, type Language } from "../lib/i18n";
+import { AutostartSettings } from "../components/settings/autostart-settings";
 import { RouteProxyHttpsSettings } from "../components/settings/route-proxy-https-settings";
 import { WebServiceSettings } from "../components/settings/web-service-settings";
 import { useState } from "react";
@@ -147,6 +148,7 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
         <p className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] text-stone-600">
           {t("settings.dataDir", { path: settings.data_dir })}
         </p>
+        <AutostartSettings />
         <label className="flex max-w-xl items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-[12px] font-semibold text-stone-700">
           <input
             aria-label={t("settings.ccswitch.label")}
