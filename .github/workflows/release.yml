@@ -16,6 +16,8 @@ jobs:
   prepare:
     name: Prepare GitHub Release
     runs-on: ubuntu-latest
+    outputs:
+      release_notes: ${{ steps.notes.outputs.body }}
 
     steps:
       - name: Checkout
@@ -59,7 +61,27 @@ jobs:
             exit 1
           fi
 
-      - name: Create draft release and generate notes
+      - name: Collect release notes from the tag commit
+        id: notes
+        shell: bash
+        run: |
+          # The bilingual changelog is the tag commit's message (see the release
+          # rules in AGENTS.md). GitHub's generated notes are not a substitute:
+          # for a release tag they only produce a compare link, which is what the
+          # updater manifest used to ship as its entire release notes.
+          git log -1 --format=%B "$GITHUB_SHA" > release-notes.md
+          if [[ ! -s release-notes.md ]]; then
+            echo "Tag commit ${GITHUB_SHA} has an empty message; release notes would be blank." >&2
+            exit 1
+          fi
+          delimiter="release-notes-$(openssl rand -hex 8)"
+          {
+            echo "body<<${delimiter}"
+            cat release-notes.md
+            echo "${delimiter}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create draft release
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ github.ref_name }}
@@ -68,7 +90,7 @@ jobs:
           draft: true
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
           allowUpdates: true
-          generateReleaseNotes: true
+          bodyFile: release-notes.md
 
   build:
     name: Build ${{ matrix.label }}
@@ -264,17 +286,14 @@ jobs:
         with:
           path: release-assets
 
-      - name: Read generated release notes
+      - name: Restore release notes
         env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_NOTES: ${{ needs.prepare.outputs.release_notes }}
         shell: bash
         run: |
-          gh api --paginate \
-            "repos/${{ github.repository }}/releases?per_page=100" \
-            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\") | .body // empty" > release-notes.md
+          printf '%s\n' "$RELEASE_NOTES" > release-notes.md
           if [[ ! -s release-notes.md ]]; then
-            echo "Could not find generated release notes for draft release ${RELEASE_TAG}." >&2
+            echo "The prepare job produced no release notes for ${GITHUB_REF_NAME}." >&2
             exit 1
           fi
 
@@ -299,7 +318,7 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
           allowUpdates: true
-          generateReleaseNotes: false
+          bodyFile: release-notes.md
           replacesArtifacts: true
           artifactErrorsFailBuild: true
           artifacts: "release-assets/**/*.*"
