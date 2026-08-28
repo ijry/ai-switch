@@ -4,6 +4,7 @@ import { Download, RefreshCw, RotateCcw, ShieldAlert, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../../lib/i18n";
 import { isDesktop } from "../../lib/transport";
+import { ReleaseNotes } from "./ReleaseNotes";
 
 const AUTO_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
@@ -154,9 +155,9 @@ export function AutoUpdatePrompt() {
         </div>
 
         {update.body && (
-          <pre className="mt-4 max-h-36 overflow-auto whitespace-pre-wrap rounded-xl border border-stone-200 bg-stone-50 p-3 text-[12px] leading-5 text-stone-600">
-            {update.body}
-          </pre>
+          <div className="mt-4 max-h-48 overflow-auto rounded-xl border border-stone-200 bg-stone-50 p-3">
+            <ReleaseNotes notes={update.body} />
+          </div>
         )}
 
         {error && (

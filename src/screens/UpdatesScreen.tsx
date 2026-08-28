@@ -3,6 +3,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { CheckCircle2, Download, RefreshCw, RotateCcw, ShieldAlert } from "lucide-react";
 import { useState } from "react";
 import { useI18n, type Language } from "../lib/i18n";
+import { ReleaseNotes } from "../components/updates/ReleaseNotes";
 
 type DownloadState = {
   downloaded: number;
@@ -193,9 +194,9 @@ export function UpdatesScreen() {
                 )}
 
                 {update.body && (
-                  <pre className="mt-4 max-h-[280px] overflow-auto whitespace-pre-wrap rounded-xl border border-stone-200 bg-stone-50 p-3 text-[12px] leading-5 text-stone-700">
-                    {update.body}
-                  </pre>
+                  <div className="mt-4 max-h-[280px] overflow-auto rounded-xl border border-stone-200 bg-stone-50 p-3">
+                    <ReleaseNotes notes={update.body} />
+                  </div>
                 )}
               </div>
             ) : (
