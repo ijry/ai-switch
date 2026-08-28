@@ -3,7 +3,7 @@ use crate::error::{ApiError, AppError};
 use crate::models::route_proxy_https::{RouteProxyHttpsOperationOutcome, RouteProxyHttpsStatus};
 use crate::services::route_proxy_https_service::RouteProxyHttpsService;
 use tauri::{AppHandle, State};
-use tauri_plugin_shell::ShellExt;
+use tauri_plugin_opener::OpenerExt;
 
 #[tauri::command]
 pub async fn get_route_proxy_https_status(
@@ -81,10 +81,10 @@ pub async fn open_route_proxy_https_certificate_dir(
             recoverable: true,
         }));
     }
-    app.shell()
-        .open(
+    app.opener()
+        .open_path(
             state.paths.route_proxy_https_dir.to_string_lossy().as_ref(),
-            None,
+            None::<&str>,
         )
         .map_err(|error| {
             ApiError::from(AppError::Filesystem {

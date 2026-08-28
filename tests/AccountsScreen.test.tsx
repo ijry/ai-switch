@@ -39,6 +39,7 @@ import {
 import { recognizeApiKeysFromImageBlob } from "../src/lib/ocr/apiKeyOcr";
 import { CODEX_MODEL_TEST_ENDPOINT_STORAGE_KEY } from "../src/lib/codexModelTestEndpoint";
 import { MODEL_TEST_MODELS_STORAGE_KEY } from "../src/lib/modelTestModels";
+import { openExternal } from "../src/lib/openExternal";
 import { createQueryClient } from "../src/lib/query/queryClient";
 import { settingsFixture } from "../src/test/fixtures";
 import { AccountsScreen } from "../src/screens/AccountsScreen";
@@ -103,6 +104,10 @@ const transportTestState = vi.hoisted(() => ({
 vi.mock("../src/lib/transport", () => ({
   getTransport: () => transportTestState,
   isTauriRuntime: () => false,
+}));
+
+vi.mock("../src/lib/openExternal", () => ({
+  openExternal: vi.fn(async () => {}),
 }));
 
 vi.mock("../src/lib/routeProxyModels", () => ({
@@ -261,6 +266,8 @@ describe("AccountsScreen", () => {
   beforeEach(() => {
     window.localStorage.clear();
     vi.mocked(open).mockReset();
+    vi.mocked(openExternal).mockReset();
+    vi.mocked(openExternal).mockResolvedValue(undefined);
     vi.mocked(archiveRouteCredentials).mockReset();
     vi.mocked(createBatch).mockReset();
     vi.mocked(copyRouteCredential).mockReset();
@@ -581,14 +588,10 @@ describe("AccountsScreen", () => {
       "group-hover/name:opacity-100",
       "focus-visible:opacity-100",
     );
-    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    // The desktop webview swallows `window.open`, so the link has to go through
+    // the opener adapter instead.
     await userEvent.click(openLinkButton);
-    expect(openSpy).toHaveBeenCalledWith(
-      "https://api.example.com",
-      "_blank",
-      "noopener,noreferrer",
-    );
-    openSpy.mockRestore();
+    expect(openExternal).toHaveBeenCalledWith("https://api.example.com");
     expect(screen.getByText("算力中心")).toBeInTheDocument();
     expect(screen.getByText("请求 3")).toBeInTheDocument();
     expect(screen.getByText(/成功 2/)).toBeInTheDocument();

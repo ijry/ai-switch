@@ -140,6 +140,7 @@ import {
 } from "../lib/accountUserAgent";
 import { getTransport, isTauriRuntime } from "../lib/transport";
 import { fetchRouteProxyModels } from "../lib/routeProxyModels";
+import { openExternal } from "../lib/openExternal";
 import { copySensitiveText } from "../lib/routeCredentialTransfer";
 import {
   codexModelTestInterfaceFormat,
@@ -5154,7 +5155,7 @@ export function AccountsScreen({
                             className="-ml-1 shrink-0 text-stone-400 opacity-0 transition-opacity hover:text-blue-600 focus-visible:opacity-100 group-hover/name:opacity-100"
                             onClick={(event) => {
                               event.stopPropagation();
-                              window.open(baseUrlLink.href, "_blank", "noopener,noreferrer");
+                              void openExternal(baseUrlLink.href);
                             }}
                             title={baseUrlLink.href}
                             type="button"

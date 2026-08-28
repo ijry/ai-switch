@@ -8,6 +8,8 @@ import {
   startTailscaleWithAuthKey,
 } from "../../lib/api/client";
 import { useI18n } from "../../lib/i18n";
+import { openExternal } from "../../lib/openExternal";
+import { isDesktop } from "../../lib/transport";
 
 type TailscaleSettingsProps = {
   enabled: boolean;
@@ -45,13 +47,10 @@ export function TailscaleSettings({ enabled, exposureMode = "private" }: Tailsca
     mutationFn: startTailscaleLogin,
     onSuccess: (result) => {
       void statusQuery.refetch();
-      // Desktop opens the browser from Rust. Keep a web fallback only.
-      if (
-        result.loginUrl &&
-        typeof window !== "undefined" &&
-        !(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
-      ) {
-        window.open(result.loginUrl, "_blank", "noopener,noreferrer");
+      // Desktop opens the browser from Rust, so auto-opening here would show
+      // the login page twice. Web has no such hook and still needs it.
+      if (result.loginUrl && !isDesktop()) {
+        void openExternal(result.loginUrl);
       }
     },
   });
@@ -237,6 +236,13 @@ export function TailscaleSettings({ enabled, exposureMode = "private" }: Tailsca
         <a
           className="inline-flex items-center gap-1 text-[12px] font-semibold text-sky-700 hover:text-sky-800"
           href={loginMutation.data.loginUrl}
+          onClick={(event) => {
+            event.preventDefault();
+            const loginUrl = loginMutation.data?.loginUrl;
+            if (loginUrl) {
+              void openExternal(loginUrl);
+            }
+          }}
           rel="noreferrer"
           target="_blank"
         >

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tauri::State;
-use tauri_plugin_shell::ShellExt;
+use tauri_plugin_opener::OpenerExt;
 
 use crate::app_state::AppState;
 use crate::error::ApiError;
@@ -72,8 +72,7 @@ pub async fn start_tailscale_login(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        #[allow(deprecated)]
-        if let Err(error) = app.shell().open(login_url, None) {
+        if let Err(error) = app.opener().open_url(login_url, None::<&str>) {
             login.message = format!("Sign-in page ready, but browser open failed: {error}");
         }
     }

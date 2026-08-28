@@ -30,6 +30,36 @@ describe("Tauri desktop configuration", () => {
     expect(capability.permissions).toContain("autostart:default");
   });
 
+  it("declares the opener packages and scoped url permission", () => {
+    const packageJson = JSON.parse(
+      readFileSync(resolve(process.cwd(), "package.json"), "utf8"),
+    ) as { dependencies?: Record<string, string> };
+    const cargo = readSource("src-tauri/Cargo.toml");
+    const capability = JSON.parse(
+      readFileSync(resolve(process.cwd(), "src-tauri/capabilities/default.json"), "utf8"),
+    ) as { permissions?: string[] };
+
+    expect(packageJson.dependencies?.["@tauri-apps/plugin-opener"]).toBeDefined();
+    expect(cargo).toMatch(/^tauri-plugin-opener\s*=\s*"2/m);
+    expect(capability.permissions).toContain("opener:allow-open-url");
+    expect(capability.permissions).toContain("opener:allow-default-urls");
+    // The webview must not keep a blanket shell:open grant once opener owns
+    // external links.
+    expect(capability.permissions).not.toContain("shell:allow-open");
+  });
+
+  it("routes external links through the opener adapter instead of window.open", () => {
+    for (const path of [
+      "src/screens/AccountsScreen.tsx",
+      "src/screens/McpScreen.tsx",
+      "src/components/settings/tailscale-settings.tsx",
+    ]) {
+      const source = readSource(path);
+      expect(source).toMatch(/from "\.\.\/(\.\.\/)?lib\/openExternal"/);
+      expect(source).not.toContain('window.open(');
+    }
+  });
+
   it("registers the autostart plugin and hidden-launch argument", () => {
     const source = readSource("src-tauri/src/lib.rs");
 
