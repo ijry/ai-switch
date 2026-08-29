@@ -211,7 +211,7 @@ AI Switch 的核心设计目标是**一份业务逻辑，两种运行形态**。
 | 迁移 | 引入内容 |
 | --- | --- |
 | `202608080001_route_credential_failure_response.sql` | `last_failure_response_json`（保留上游原始错误体） |
-| `202608080002_route_credential_priority_concurrency.sql` | `route_priority`（1–5，**默认 3**，带 `CHECK` 约束）、`max_concurrency`（**默认 1**） |
+| `202608080002_route_credential_priority_concurrency.sql` | `route_priority`（1–5，**默认 3**，带 `CHECK` 约束）、`max_concurrency`（列默认 1；创建账号时显式写入 `DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY` = **5**） |
 | `202608130001_route_credential_semantic_failure_streak.sql` | `semantic_failure_streak_count`、`semantic_failure_streak_fingerprint`（连续语义失败识别） |
 
 调度行为的用户视角说明见[账号与算力池](/guide/accounts)与[稳定性与自动恢复](/guide/reliability)，统计字段的用法见[用量与请求统计](/guide/usage-stats)。

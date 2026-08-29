@@ -81,7 +81,7 @@ The data directory layout is described in [desktop deployment](/en/deploy/deskto
 
 ## What happens when an account runs out of quota? How does failover work?
 
-Accounts are scheduled by a **priority from 1 to 5, defaulting to 3**, with lower numbers used first. Each account also has a **concurrency limit that defaults to 1** — by default an account handles one request at a time, and a second concurrent request goes looking for the next account in the pool.
+Accounts are scheduled by a **priority from 1 to 5, defaulting to 3**, with lower numbers used first. Each account also has a **concurrency limit, 5 by default for new accounts** — once an account has that many requests in flight, the next one goes looking for the next account in the pool.
 
 When an account fails or exhausts its quota, AI Switch:
 
@@ -92,8 +92,8 @@ When an account fails or exhausts its quota, AI Switch:
 
 Recovery is driven by a background scheduler that can re-enable accounts on a schedule or after a health-check probe. See [reliability and auto recovery](/en/guide/reliability).
 
-::: tip Why does the concurrency limit default to 1?
-Most official accounts and third-party endpoints are sensitive to concurrency: parallel requests on a single account tend to trigger rate limiting, and sometimes get flagged as abnormal usage. Defaulting to 1 means AI Switch prefers to **spread concurrency across accounts** — which is the whole point of a pool — rather than pile it onto one. If you know a particular upstream tolerates more, raise that account's limit individually.
+::: tip When should I lower the concurrency limit?
+Official accounts and some third-party endpoints are sensitive to concurrency: parallel requests on a single account tend to trigger rate limiting, and sometimes get flagged as abnormal usage. For those upstreams, set the account's limit to 1 or 2 so AI Switch **spreads concurrency across accounts** — which is the whole point of a pool — rather than piling it onto one.
 :::
 
 ## Can I use it from my phone?

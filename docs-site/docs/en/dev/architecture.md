@@ -211,7 +211,7 @@ The database file lives in `~/.ai-switch/`. Debug builds deliberately use a sepa
 | Migration | What it added |
 | --- | --- |
 | `202608080001_route_credential_failure_response.sql` | `last_failure_response_json` (keeps the raw upstream error body) |
-| `202608080002_route_credential_priority_concurrency.sql` | `route_priority` (1–5, **default 3**, with a `CHECK` constraint) and `max_concurrency` (**default 1**) |
+| `202608080002_route_credential_priority_concurrency.sql` | `route_priority` (1–5, **default 3**, with a `CHECK` constraint) and `max_concurrency` (column default 1; account creation binds `DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY` = **5**) |
 | `202608130001_route_credential_semantic_failure_streak.sql` | `semantic_failure_streak_count`, `semantic_failure_streak_fingerprint` |
 
 For what this scheduling behaviour looks like from the outside, see [accounts and the pool](/en/guide/accounts) and [reliability and auto recovery](/en/guide/reliability). For how the usage columns are surfaced, see [usage and request stats](/en/guide/usage-stats).

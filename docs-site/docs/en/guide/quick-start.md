@@ -68,9 +68,9 @@ With a single account there's nothing to change. Once you have several, a reason
 
 When the primary gets rate-limited, the proxy drops to the backup with no action from you.
 
-**最大并发数** ("max concurrency") — **default 1, minimum 1**. How many requests this account may run at once.
+**最大并发数** ("max concurrency") — **default 5, minimum 1**. How many requests this account may run at once.
 
-The default of 1 is deliberately conservative. Raise it — to 4, say — if the upstream clearly supports concurrency. Note this is a **hard limit**: an account at its ceiling is skipped and the proxy tries the next account in the same tier. If every account in the pool is saturated, you get `route_pool.concurrency_exhausted`.
+Lower it if the upstream is sensitive to concurrency, as official accounts often are; 1 is the most conservative setting. Note this is a **hard limit**: an account at its ceiling is skipped and the proxy tries the next account in the same tier. If every account in the pool is saturated, you get `route_pool.concurrency_exhausted`.
 
 **失败处理策略** ("failure policy", same panel) — defaults to 2 extra retries, a 200 ms interval, and 10 consecutive identical semantic errors before the account is marked unhealthy. The defaults suit most setups; leave them for now. These rules are shared between proxy requests and model tests.
 

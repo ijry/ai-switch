@@ -2,7 +2,7 @@ use crate::error::AppError;
 use crate::models::route_credential::{
     RecoveryCandidate, ReorderRouteCredentialInput, RouteCredential, RouteCredentialFilterOption,
     RouteCredentialPage, RouteCredentialPageRequest, RouteCredentialPoolScope,
-    UpdateRouteCredentialInput,
+    UpdateRouteCredentialInput, DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY,
 };
 use crate::models::route_credential_transfer::RouteCredentialSelectionContext;
 use chrono::Utc;
@@ -292,13 +292,13 @@ async fn create_with_connection(
 
     sqlx::query(
         "INSERT INTO route_credentials (
-            id, platform, kind, display_name, email, status, sort_order, batch_id,
+            id, platform, kind, display_name, email, status, sort_order, max_concurrency, batch_id,
             secret_payload_json, config_json, preview_json,
             subscription_type, primary_remain, weekly_remain, reset_primary, reset_weekly,
             quota_remaining, quota_limit, quota_used, quota_updated_at,
             created_at, updated_at
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(platform)
@@ -307,6 +307,7 @@ async fn create_with_connection(
     .bind(email)
     .bind(status)
     .bind(sort_order)
+    .bind(DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY)
     .bind(batch_id)
     .bind(secret_payload_json)
     .bind(config_json)
@@ -2055,6 +2056,40 @@ mod tests {
         assert_eq!(listed[0].success_count, 0);
         assert_eq!(listed[0].failure_count, 0);
         assert_eq!(listed[0].success_rate, None);
+    }
+
+    #[tokio::test]
+    async fn new_credentials_start_at_the_default_max_concurrency() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let created = create_api_credential(&pool, "codex", "Default concurrency").await;
+
+        assert_eq!(
+            created.max_concurrency,
+            DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY
+        );
+
+        let mut tx = pool.begin().await.unwrap();
+        let transactional = RouteCredentialRepository::create_tx(
+            &mut tx,
+            "codex",
+            "api",
+            "Transactional concurrency",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-test"}"#,
+            r#"{"base_url":"https://example.com"}"#,
+            "{}",
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        assert_eq!(
+            transactional.max_concurrency,
+            DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY
+        );
     }
 
     #[tokio::test]

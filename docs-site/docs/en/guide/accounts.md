@@ -86,10 +86,12 @@ ALTER TABLE route_credentials
     CHECK (max_concurrency >= 1);
 ```
 
+The column default is still 1, but the account-creation write path binds 5 explicitly (`DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY`), so new accounts effectively default to 5. Existing accounts are untouched.
+
 | Parameter | Range | Default | Effect |
 | --- | --- | --- | --- |
 | `route_priority` | 1–5 | 3 | Lower wins. Accounts sharing a value form one priority group |
-| `max_concurrency` | ≥ 1 | 1 | Cap on in-flight requests for this account; when full, it is skipped this round |
+| `max_concurrency` | ≥ 1 | 5 | Cap on in-flight requests for this account; when full, it is skipped this round |
 
 ### Scheduling order
 
@@ -115,7 +117,7 @@ Its column order *is* the scheduling semantics: **pools are split by platform, o
 
 - **Primary plus standby**: primaries at 1 or 2, standbys at 4 or 5. Traffic only reaches the standbys once every primary is cooling or saturated.
 - **Flat weighting**: put everything at one priority and let round-robin spread quota consumption evenly.
-- **Match concurrency to the upstream limit**: if the upstream caps concurrency per key, set `max_concurrency` to what it allows. The default of 1 is the conservative choice — one in-flight request per account at any moment.
+- **Match concurrency to the upstream limit**: if the upstream caps concurrency per key, set `max_concurrency` to what it allows. New accounts start at 5; drop a concurrency-sensitive upstream to 1 to go back to one in-flight request per account at any moment.
 
 ## List views and batch operations
 

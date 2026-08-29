@@ -7,6 +7,11 @@ pub const ANTHROPIC_AUTH_TOKEN_FIELD: &str = "ANTHROPIC_AUTH_TOKEN";
 pub const DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT: u32 = 2;
 pub const DEFAULT_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS: u32 = 200;
 pub const DEFAULT_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD: u32 = 10;
+/// Concurrency ceiling given to a freshly created account.
+///
+/// The column default is still 1 (changing it would mean rebuilding the table),
+/// so every insert path binds this value explicitly.
+pub const DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY: i64 = 5;
 pub const MAX_ROUTE_CREDENTIAL_RETRY_COUNT: u32 = 10;
 pub const MAX_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS: u32 = 60_000;
 pub const MAX_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD: u32 = 1_000;

@@ -154,6 +154,13 @@ import {
   recognizeApiKeysFromImageBlob,
 } from "../lib/ocr/apiKeyOcr";
 
+/**
+ * Concurrency ceiling a new account is created with, mirroring
+ * `DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY` on the Rust side. Only used as a
+ * fallback when a loaded row somehow lacks the column.
+ */
+const DEFAULT_MAX_CONCURRENCY = 5;
+
 type PlatformKey = PlatformId;
 type CreateMode = "api" | "official";
 type AccountView = "in_pool" | "out_of_pool" | "archived" | "stats";
@@ -1954,7 +1961,9 @@ export function AccountsScreen({
   const [editEmail, setEditEmail] = useState("");
   const [editStatus, setEditStatus] = useState<AccountStatus>("ok");
   const [editPriority, setEditPriority] = useState(3);
-  const [editMaxConcurrency, setEditMaxConcurrency] = useState("1");
+  const [editMaxConcurrency, setEditMaxConcurrency] = useState(
+    String(DEFAULT_MAX_CONCURRENCY),
+  );
   const [editRetryCount, setEditRetryCount] = useState("2");
   const [editRetryIntervalMs, setEditRetryIntervalMs] = useState("200");
   const [editSemanticErrorThreshold, setEditSemanticErrorThreshold] = useState("10");
@@ -2496,7 +2505,9 @@ export function AccountsScreen({
     setEditEmail(editingCredential.email ?? "");
     setEditStatus(editingCredential.status);
     setEditPriority(editingCredential.route_priority ?? 3);
-    setEditMaxConcurrency(String(editingCredential.max_concurrency ?? 1));
+    setEditMaxConcurrency(
+      String(editingCredential.max_concurrency ?? DEFAULT_MAX_CONCURRENCY),
+    );
     const secret = parseJsonObject(editingCredential.secret_payload_json);
     const config = parseJsonObject(editingCredential.config_json);
     const recovery = recoveryRuleFromConfig(config);
