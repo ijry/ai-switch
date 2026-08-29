@@ -1,10 +1,20 @@
 import { render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { XtermPane } from "../../src/components/terminal/XtermPane";
+import {
+  normalizeClaudeLightDiffOutput,
+  XtermPane,
+} from "../../src/components/terminal/XtermPane";
 import type { TerminalSession } from "../../src/lib/api/types";
 
-const subscribe = vi.fn(async () => vi.fn());
 const terminalConstructorOptions = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+const terminalInstances = vi.hoisted(() => [] as Array<{ write: ReturnType<typeof vi.fn> }>);
+const outputListeners = new Map<string, (payload: unknown) => void>();
+const subscribe = vi.fn(async (eventName: string, listener: (payload: unknown) => void) => {
+  outputListeners.set(eventName, listener);
+  return () => {
+    outputListeners.delete(eventName);
+  };
+});
 
 vi.mock("../../src/lib/transport", () => ({
   getTransport: () => ({
@@ -40,6 +50,7 @@ vi.mock("@xterm/xterm", () => ({
     constructor(options: Record<string, unknown>) {
       this.options = options;
       terminalConstructorOptions.push(options);
+      terminalInstances.push(this);
     }
   },
 }));
@@ -58,6 +69,134 @@ describe("XtermPane", () => {
   afterEach(() => {
     subscribe.mockClear();
     terminalConstructorOptions.length = 0;
+    terminalInstances.length = 0;
+    outputListeners.clear();
+  });
+
+  it("changes Claude's dark diff palette to readable light diff colours", () => {
+    const output =
+      "\u001b[38;2;255;255;255;48;2;68;20;24m- removed\u001b[0m " +
+      "\u001b[38;5;15;48;5;22m+ added\u001b[0m " +
+      "\u001b[31mordinary error\u001b[0m \u001b[32mordinary success\u001b[0m";
+
+    expect(normalizeClaudeLightDiffOutput(output)).toBe(
+      "\u001b[38;2;153;27;27;48;2;254;226;226m- removed\u001b[0m " +
+        "\u001b[38;2;22;101;52;48;2;220;252;231m+ added\u001b[0m " +
+        "\u001b[31mordinary error\u001b[0m \u001b[32mordinary success\u001b[0m",
+    );
+  });
+
+  it("applies the light diff palette only to Claude light Vibe output", async () => {
+    const claudeSession: TerminalSession = {
+      ...session,
+      id: "claude-terminal",
+      platform: "claude",
+      title: "Claude",
+    };
+    render(<XtermPane session={claudeSession} themeMode="light" />);
+
+    await waitFor(() => expect(terminalInstances).toHaveLength(1));
+    outputListeners.get("terminal://output")?.({
+      sessionId: claudeSession.id,
+      data: "\u001b[48;2;18;54;30m+ added\u001b[0m",
+    });
+
+    expect(terminalInstances[0]?.write).toHaveBeenCalledWith(
+      "\u001b[38;2;22;101;52;48;2;220;252;231m+ added\u001b[0m",
+    );
+  });
+
+  it("does not change Codex output in a light Vibe pane", async () => {
+    const codexSession: TerminalSession = {
+      ...session,
+      id: "codex-light-terminal",
+    };
+    render(<XtermPane session={codexSession} themeMode="light" />);
+
+    await waitFor(() => expect(terminalInstances).toHaveLength(1));
+    outputListeners.get("terminal://output")?.({
+      sessionId: codexSession.id,
+      data: "\u001b[48;2;18;54;30m+ added\u001b[0m",
+    });
+
+    expect(terminalInstances[0]?.write).toHaveBeenCalledWith(
+      "\u001b[48;2;18;54;30m+ added\u001b[0m",
+    );
+  });
+
+  it("updates Claude diff conversion when the Vibe theme changes without rebuilding xterm", async () => {
+    const claudeSession: TerminalSession = {
+      ...session,
+      id: "claude-theme-terminal",
+      platform: "claude",
+      title: "Claude",
+    };
+    const { rerender } = render(<XtermPane session={claudeSession} themeMode="dark" />);
+
+    await waitFor(() => expect(terminalInstances).toHaveLength(1));
+    outputListeners.get("terminal://output")?.({
+      sessionId: claudeSession.id,
+      data: "\u001b[48;5;88m- removed\u001b[0m",
+    });
+    expect(terminalInstances[0]?.write).toHaveBeenLastCalledWith(
+      "\u001b[48;5;88m- removed\u001b[0m",
+    );
+
+    rerender(<XtermPane session={claudeSession} themeMode="light" />);
+    outputListeners.get("terminal://output")?.({
+      sessionId: claudeSession.id,
+      data: "\u001b[48;5;88m- removed\u001b[0m",
+    });
+
+    expect(terminalInstances).toHaveLength(1);
+    expect(terminalInstances[0]?.write).toHaveBeenLastCalledWith(
+      "\u001b[38;2;153;27;27;48;2;254;226;226m- removed\u001b[0m",
+    );
+  });
+
+  it("keeps Claude diff colours unchanged for transparent skin themes", async () => {
+    const claudeSession: TerminalSession = {
+      ...session,
+      id: "claude-skin-terminal",
+      platform: "claude",
+      title: "Claude",
+    };
+    render(<XtermPane session={claudeSession} themeMode="light" transparentSurface />);
+
+    await waitFor(() => expect(terminalInstances).toHaveLength(1));
+    outputListeners.get("terminal://output")?.({
+      sessionId: claudeSession.id,
+      data: "\u001b[48;2;134;40;48m- removed\u001b[0m",
+    });
+
+    expect(terminalInstances[0]?.write).toHaveBeenCalledWith(
+      "\u001b[48;2;134;40;48m- removed\u001b[0m",
+    );
+  });
+
+  it("normalizes a Claude diff SGR sequence split across terminal output events", async () => {
+    const claudeSession: TerminalSession = {
+      ...session,
+      id: "claude-split-terminal",
+      platform: "claude",
+      title: "Claude",
+    };
+    render(<XtermPane session={claudeSession} themeMode="light" />);
+
+    await waitFor(() => expect(terminalInstances).toHaveLength(1));
+    outputListeners.get("terminal://output")?.({
+      sessionId: claudeSession.id,
+      data: "\u001b[48;2;18;",
+    });
+    expect(terminalInstances[0]?.write).not.toHaveBeenCalled();
+
+    outputListeners.get("terminal://output")?.({
+      sessionId: claudeSession.id,
+      data: "54;30m+ added\u001b[0m",
+    });
+    expect(terminalInstances[0]?.write).toHaveBeenCalledWith(
+      "\u001b[38;2;22;101;52;48;2;220;252;231m+ added\u001b[0m",
+    );
   });
 
   it("subscribes to terminal events through the active transport", async () => {
@@ -119,5 +258,14 @@ describe("XtermPane", () => {
       scrollbarSliderBackground: "rgba(147, 161, 161, 0.42)",
       scrollbarSliderHoverBackground: "rgba(147, 161, 161, 0.55)",
     });
+  });
+
+  it("keeps long agent output and preserves content erased by terminal redraws", async () => {
+    render(<XtermPane session={session} />);
+
+    await waitFor(() => expect(terminalConstructorOptions).toHaveLength(1));
+
+    expect(terminalConstructorOptions[0]?.scrollback).toBe(10_000);
+    expect(terminalConstructorOptions[0]?.scrollOnEraseInDisplay).toBe(true);
   });
 });

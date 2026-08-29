@@ -170,6 +170,15 @@ pub fn launches_claude(input: &CreateTerminalSessionInput) -> bool {
         .starts_with("claude")
 }
 
+fn configure_launch_environment(command: &mut CommandBuilder, input: &CreateTerminalSessionInput) {
+    if launches_claude(input) {
+        // Claude's fullscreen renderer uses the alternate screen buffer, which
+        // has no xterm scrollback. Keep Vibe sessions in the normal buffer so
+        // the visible scrollbar always represents draggable terminal history.
+        command.env("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN", "1");
+    }
+}
+
 /// Codex is the only agent that exposes a reasoning-effort knob AI Switch can
 /// set at launch time (`-c model_reasoning_effort=<level>`).
 pub fn agent_supports_reasoning(platform: &str) -> bool {
@@ -284,6 +293,7 @@ impl TerminalManager {
             command.arg(arg);
         }
         command.cwd(input.cwd.trim());
+        configure_launch_environment(&mut command, &input);
 
         let mut child = pair
             .slave
@@ -693,6 +703,34 @@ mod tests {
         shell.kind = TerminalLaunchKind::Shell;
         shell.platform = Some("claude".to_string());
         assert!(!launches_claude(&shell));
+    }
+
+    #[test]
+    fn configures_claude_to_keep_scrollback_in_the_normal_screen() {
+        let mut input = base_input();
+        input.platform = Some("claude".to_string());
+        let mut command = CommandBuilder::new("claude");
+
+        configure_launch_environment(&mut command, &input);
+
+        assert_eq!(
+            command
+                .get_env("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN")
+                .and_then(|value| value.to_str()),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn does_not_change_environment_for_non_claude_launches() {
+        let input = base_input();
+        let mut command = CommandBuilder::new("codex");
+
+        configure_launch_environment(&mut command, &input);
+
+        assert!(command
+            .get_env("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN")
+            .is_none());
     }
 
     #[test]

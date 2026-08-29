@@ -21,6 +21,112 @@ type XtermPaneProps = {
   onStatusChange?: (sessionId: string, status: TerminalStatus, exitCode?: number | null) => void;
 };
 
+type ClaudeDiffTone = "added" | "removed";
+
+const CLAUDE_TRUECOLOR_DIFF_BACKGROUNDS = new Map<string, ClaudeDiffTone>([
+  ["68;20;24", "removed"],
+  ["134;40;48", "removed"],
+  ["18;54;30", "added"],
+  ["30;104;52", "added"],
+]);
+
+const CLAUDE_256_DIFF_BACKGROUNDS = new Map<string, ClaudeDiffTone>([
+  ["52", "removed"],
+  ["88", "removed"],
+  ["22", "added"],
+  ["28", "added"],
+]);
+
+const CLAUDE_LIGHT_DIFF_COLORS: Record<
+  ClaudeDiffTone,
+  { background: string[]; foreground: string[] }
+> = {
+  added: {
+    background: ["48", "2", "220", "252", "231"],
+    foreground: ["38", "2", "22", "101", "52"],
+  },
+  removed: {
+    background: ["48", "2", "254", "226", "226"],
+    foreground: ["38", "2", "153", "27", "27"],
+  },
+};
+
+function findClaudeDiffTone(parameters: string[]): ClaudeDiffTone | null {
+  for (let index = 0; index < parameters.length; index += 1) {
+    if (parameters[index] !== "48") {
+      continue;
+    }
+    if (parameters[index + 1] === "2") {
+      const color = parameters.slice(index + 2, index + 5).join(";");
+      const tone = CLAUDE_TRUECOLOR_DIFF_BACKGROUNDS.get(color);
+      if (tone) {
+        return tone;
+      }
+    } else if (parameters[index + 1] === "5") {
+      const tone = CLAUDE_256_DIFF_BACKGROUNDS.get(parameters[index + 2] ?? "");
+      if (tone) {
+        return tone;
+      }
+    }
+  }
+  return null;
+}
+
+function removeSgrColors(parameters: string[]): string[] {
+  const remaining: string[] = [];
+
+  for (let index = 0; index < parameters.length; index += 1) {
+    const value = Number(parameters[index]);
+    const colorMode = parameters[index + 1];
+    if ((parameters[index] === "38" || parameters[index] === "48") && colorMode === "2") {
+      index += 4;
+      continue;
+    }
+    if ((parameters[index] === "38" || parameters[index] === "48") && colorMode === "5") {
+      index += 2;
+      continue;
+    }
+    if (
+      (value >= 30 && value <= 39) ||
+      (value >= 40 && value <= 49) ||
+      (value >= 90 && value <= 97) ||
+      (value >= 100 && value <= 107)
+    ) {
+      continue;
+    }
+    remaining.push(parameters[index] ?? "");
+  }
+
+  return remaining;
+}
+
+export function normalizeClaudeLightDiffOutput(data: string): string {
+  return data.replace(/\u001b\[([0-9;]*)m/g, (sequence, parameterText: string) => {
+    const parameters = parameterText === "" ? [] : parameterText.split(";");
+    const tone = findClaudeDiffTone(parameters);
+    if (!tone) {
+      return sequence;
+    }
+
+    const colors = CLAUDE_LIGHT_DIFF_COLORS[tone];
+    return `\u001b[${[
+      ...removeSgrColors(parameters),
+      ...colors.foreground,
+      ...colors.background,
+    ].join(";")}m`;
+  });
+}
+
+function splitTrailingIncompleteCsi(data: string): [complete: string, pending: string] {
+  const match = data.match(/\u001b(?:\[[0-9;?]*)?$/);
+  if (!match) {
+    return [data, ""];
+  }
+
+  const pending = match[0];
+  return [data.slice(0, -pending.length), pending];
+}
+
 function createTheme(
   themeMode: "dark" | "light",
   themeOverride?: VibeTerminalTheme,
@@ -116,6 +222,12 @@ export function XtermPane({
     () => createTheme(themeMode, themeOverride, transparentSurface),
     [themeMode, themeOverride, transparentSurface],
   );
+  const normalizeClaudeDiffRef = useRef(false);
+  const pendingClaudeOutputRef = useRef("");
+  normalizeClaudeDiffRef.current =
+    session.platform?.trim().toLowerCase() === "claude" &&
+    themeMode === "light" &&
+    !transparentSurface;
   const scrollbarClass = transparentSurface
     ? "xterm-pane-scrollbar-skin"
     : themeMode === "dark"
@@ -138,6 +250,10 @@ export function XtermPane({
       // xterm sizes its custom scrollbar slider from this width (default 14px),
       // so CSS cannot make the slider thinner.
       overviewRuler: { showBottomBorder: false, showTopBorder: false, width: 8 },
+      // Agent sessions easily exceed xterm's 1000-line default. Claude also
+      // redraws with ED2, so preserve the erased viewport in scrollback.
+      scrollback: 10_000,
+      scrollOnEraseInDisplay: true,
       theme,
     });
     const fitAddon = new FitAddon();
@@ -168,7 +284,20 @@ export function XtermPane({
     const transport = getTransport();
     const outputUnlisten = transport.subscribe<TerminalOutputEvent>("terminal://output", (payload) => {
       if (payload.sessionId === session.id) {
-        terminal.write(payload.data);
+        if (!normalizeClaudeDiffRef.current) {
+          const pending = pendingClaudeOutputRef.current;
+          pendingClaudeOutputRef.current = "";
+          terminal.write(`${pending}${payload.data}`);
+          return;
+        }
+
+        const [complete, pending] = splitTrailingIncompleteCsi(
+          `${pendingClaudeOutputRef.current}${payload.data}`,
+        );
+        pendingClaudeOutputRef.current = pending;
+        if (complete) {
+          terminal.write(normalizeClaudeLightDiffOutput(complete));
+        }
       }
     });
     const exitUnlisten = transport.subscribe<TerminalExitEvent>("terminal://exit", (payload) => {
@@ -211,6 +340,7 @@ export function XtermPane({
       for (const unlisten of [outputUnlisten, exitUnlisten, errorUnlisten]) {
         void unlisten.then((cleanup) => cleanup()).catch(() => undefined);
       }
+      pendingClaudeOutputRef.current = "";
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
