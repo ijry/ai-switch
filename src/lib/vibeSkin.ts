@@ -21,6 +21,8 @@ export type VibeAppearancePreference = {
   tiledTerminals?: boolean;
   sessionListCollapsed?: boolean;
   sessionListWidth?: number;
+  tileWidth?: number;
+  tabWidthFitsContent?: boolean;
 };
 
 export type VibeSkinAudioEvent = "agentSelect" | "hologramInteract" | "radarPulse";
@@ -1613,6 +1615,12 @@ export function readStoredVibeAppearance(): VibeAppearancePreference {
         typeof source.sessionListWidth === "number" && Number.isFinite(source.sessionListWidth)
           ? source.sessionListWidth
           : undefined,
+      tileWidth:
+        typeof source.tileWidth === "number" && Number.isFinite(source.tileWidth)
+          ? source.tileWidth
+          : undefined,
+      tabWidthFitsContent:
+        typeof source.tabWidthFitsContent === "boolean" ? source.tabWidthFitsContent : undefined,
     };
   } catch {
     return {};
@@ -1638,6 +1646,12 @@ export function writeStoredVibeAppearance(preference: VibeAppearancePreference) 
   }
   if (typeof preference.sessionListWidth === "number" && Number.isFinite(preference.sessionListWidth)) {
     stored.sessionListWidth = Math.round(preference.sessionListWidth);
+  }
+  if (typeof preference.tileWidth === "number" && Number.isFinite(preference.tileWidth)) {
+    stored.tileWidth = Math.round(preference.tileWidth);
+  }
+  if (typeof preference.tabWidthFitsContent === "boolean") {
+    stored.tabWidthFitsContent = preference.tabWidthFitsContent;
   }
   window.localStorage.setItem(VIBE_APPEARANCE_STORAGE_KEY, JSON.stringify(stored));
 }

@@ -12,6 +12,7 @@ import {
   Play,
   Plus,
   SendHorizontal,
+  Settings2,
   SunMedium,
   TerminalSquare,
   Upload,
@@ -93,6 +94,17 @@ const SESSION_LIST_MAX_WIDTH = 560;
 
 function clampSessionListWidth(value: number) {
   return Math.min(Math.max(Math.round(value), SESSION_LIST_MIN_WIDTH), SESSION_LIST_MAX_WIDTH);
+}
+
+// Tiled terminals never shrink below a usable width, so the tile size is a user
+// preference exposed through a CSS variable the stylesheet reads.
+const TILE_DEFAULT_WIDTH = 448;
+const TILE_MIN_WIDTH = 320;
+const TILE_MAX_WIDTH = 960;
+const TILE_WIDTH_STEP = 16;
+
+function clampTileWidth(value: number) {
+  return Math.min(Math.max(Math.round(value), TILE_MIN_WIDTH), TILE_MAX_WIDTH);
 }
 
 type AgentPlatform = (typeof agentOptions)[number]["platform"];
@@ -558,12 +570,22 @@ function AgentIcon({ platform, className }: AgentIconProps) {
   );
 }
 
-function statusDotClass(status: TerminalStatus, isActive: boolean, isDark: boolean) {
+function statusDotClass(
+  status: TerminalStatus,
+  isActive: boolean,
+  isDark: boolean,
+  exitCode?: number | null,
+) {
   if (status === "running") {
     return isActive ? "bg-emerald-400" : isDark ? "bg-[#5eead4]" : "bg-emerald-400";
   }
   if (status === "error") {
     return isActive ? "bg-red-500" : isDark ? "bg-[#fb7185]" : "bg-red-400";
+  }
+  // A non-zero exit code is a failed run, so it gets its own colour instead of the
+  // neutral "finished cleanly" dot.
+  if (status === "exited" && typeof exitCode === "number" && exitCode !== 0) {
+    return isActive ? "bg-amber-500" : isDark ? "bg-[#fbbf24]" : "bg-amber-400";
   }
   return isActive ? "bg-slate-400" : isDark ? "bg-[#64748b]" : "bg-stone-500";
 }
@@ -1077,6 +1099,17 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const [tiledTerminals, setTiledTerminals] = useState(
     () => initialAppearance.tiledTerminals ?? false,
   );
+  const [tileWidth, setTileWidth] = useState(() =>
+    typeof initialAppearance.tileWidth === "number"
+      ? clampTileWidth(initialAppearance.tileWidth)
+      : TILE_DEFAULT_WIDTH,
+  );
+  const [tabWidthFitsContent, setTabWidthFitsContent] = useState(
+    () => initialAppearance.tabWidthFitsContent ?? false,
+  );
+  const [tabSettingsOpen, setTabSettingsOpen] = useState(false);
+  // Exit codes only exist for tabs whose process died while Vibe was mounted.
+  const [tabExitCodes, setTabExitCodes] = useState<Record<string, number>>({});
   const [tabsMenu, setTabsMenu] = useState<{ x: number; y: number } | null>(null);
   // Restored tabs are re-spawned from stored launch descriptors; persistence stays
   // paused until that pass finishes so an empty first render cannot wipe the list.
@@ -1197,13 +1230,17 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       tiledTerminals,
       sessionListCollapsed,
       sessionListWidth: sessionListWidth ?? undefined,
+      tileWidth,
+      tabWidthFitsContent,
     });
   }, [
     activeSkin.id,
     sessionListCollapsed,
     sessionListWidth,
     skinAudioEnabled,
+    tabWidthFitsContent,
     themeMode,
+    tileWidth,
     tiledTerminals,
   ]);
 
@@ -1425,6 +1462,14 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
         });
         return remaining;
       });
+      setTabExitCodes((current) => {
+        if (!(session.id in current)) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[session.id];
+        return next;
+      });
     } catch (caught) {
       setError(formatError(caught));
     } finally {
@@ -1432,11 +1477,23 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     }
   };
 
-  const updateStatus = useCallback((sessionId: string, status: TerminalStatus) => {
-    setTabs((current) =>
-      current.map((tab) => (tab.id === sessionId ? { ...tab, status } : tab)),
-    );
-  }, []);
+  const updateStatus = useCallback(
+    (sessionId: string, status: TerminalStatus, exitCode?: number | null) => {
+      setTabs((current) =>
+        current.map((tab) => (tab.id === sessionId ? { ...tab, status } : tab)),
+      );
+      setTabExitCodes((current) => {
+        const next = { ...current };
+        if (status === "exited" && typeof exitCode === "number") {
+          next[sessionId] = exitCode;
+        } else {
+          delete next[sessionId];
+        }
+        return next;
+      });
+    },
+    [],
+  );
 
   const toggleDirectory = useCallback((directory: string) => {
     setExpandedDirectories((current) => {
@@ -1519,6 +1576,17 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? null;
   const isDark = themeMode === "dark";
   const isSkin = themeMode === "skin";
+  const tabTooltip = useCallback(
+    (tab: TerminalSession) => {
+      const exitCode = tabExitCodes[tab.id];
+      const status =
+        tab.status === "exited" && typeof exitCode === "number"
+          ? `${statusLabel(tab.status, t)} · ${t("vibe.statusExitCode", { code: String(exitCode) })}`
+          : statusLabel(tab.status, t);
+      return `${tab.title} · ${status}`;
+    },
+    [t, tabExitCodes],
+  );
   const decorations = activeSkin.decorations;
   const skinVariant = skinVariantClass(isSkin ? decorations?.variant : undefined);
   const isStarshipSkin = Boolean(isSkin && decorations?.variant === "starship-cockpit");
@@ -1534,8 +1602,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       ({
         ...(skinStyle ?? {}),
         "--vibe-session-list-width": `${effectiveSessionListWidth}px`,
+        "--vibe-tile-width": `${tileWidth}px`,
       }) as CSSProperties,
-    [effectiveSessionListWidth, skinStyle],
+    [effectiveSessionListWidth, skinStyle, tileWidth],
   );
   const { dragging: sessionListResizing, startDragging: startSessionListResize } = useDragResize({
     axis: "x",
@@ -2282,7 +2351,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
             )}
             {tabs.map((tab) => (
               <div
-                className={`group relative inline-flex h-full max-w-[220px] min-w-[132px] shrink-0 items-center overflow-hidden border-r ${
+                className={`group relative inline-flex h-full max-w-[220px] shrink-0 items-center overflow-hidden border-r ${
+                  tabWidthFitsContent ? "" : "min-w-[132px]"
+                } ${
                   activeId === tab.id
                     ? isSkin
                       ? "vibe-skin-tab-active text-[var(--vibe-text)]"
@@ -2296,7 +2367,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                         : "vibe-light-tab"
                 }`}
                 key={tab.id}
-                title={`${tab.title} · ${statusLabel(tab.status, t)}`}
+                title={tabTooltip(tab)}
               >
                 {activeId === tab.id && (
                   <span
@@ -2314,7 +2385,10 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                   onClick={() => setActiveId(tab.id)}
                   type="button"
                 >
-                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDotClass(tab.status, activeId === tab.id, isDark)}`} />
+                  <span
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDotClass(tab.status, activeId === tab.id, isDark, tabExitCodes[tab.id])}`}
+                    data-testid={`vibe-tab-status-${tab.id}`}
+                  />
                   <span className="truncate">{shortTabTitle(tab.title)}</span>
                 </button>
                 <button
@@ -2333,6 +2407,31 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 </button>
               </div>
             ))}
+            {/* Sticky so the control stays reachable once the tab strip overflows. */}
+            <div
+              className={
+                isSkin
+                  ? "vibe-skin-tabbar-actions sticky right-0 ml-auto flex shrink-0 items-center pl-2"
+                  : isDark
+                    ? "vibe-dark-tabbar-actions sticky right-0 ml-auto flex shrink-0 items-center pl-2"
+                    : "vibe-light-tabbar-actions sticky right-0 ml-auto flex shrink-0 items-center pl-2"
+              }
+            >
+              <button
+                aria-label={t("vibe.tabSettings")}
+                className={
+                  isSkin
+                    ? "vibe-skin-ghost grid h-7 w-7 place-items-center rounded-lg border transition"
+                    : isDark
+                      ? "grid h-7 w-7 place-items-center rounded-lg border border-[#586e75] text-[#93a1a1] transition hover:text-[#fdf6e3]"
+                      : "grid h-7 w-7 place-items-center rounded-lg border border-stone-200 text-stone-500 transition hover:text-stone-950"
+                }
+                onClick={() => setTabSettingsOpen(true)}
+                type="button"
+              >
+                <Settings2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
 
           {tabsMenu && (
@@ -2558,7 +2657,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
             )}
             {tiledTerminals && tabs.length > 0 ? (
               <div
-                className={`vibe-scrollbar ${scrollbarThemeClass} vibe-scrollbar-horizontal vibe-tiled-terminals flex h-full min-h-0 gap-2 overflow-x-auto overflow-y-hidden`}
+                className={`vibe-scrollbar ${scrollbarThemeClass} vibe-scrollbar-active vibe-tiled-terminals flex h-full min-h-0 gap-2 overflow-x-auto overflow-y-hidden`}
                 data-testid="vibe-tiled-terminals"
               >
                 {tabs.map((tab) => (
@@ -2947,6 +3046,113 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
               <p className={isSkin ? "text-[12px] leading-5 text-[var(--vibe-muted-text)]" : isDark ? "text-[12px] leading-5 text-[#93a1a1]" : "text-[12px] leading-5 text-stone-500"}>
                 {t("vibe.appearanceHelp")}
               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tabSettingsOpen && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setTabSettingsOpen(false);
+            }
+          }}
+        >
+          <div
+            aria-labelledby="vibe-tab-settings-title"
+            aria-modal="true"
+            className={
+              isSkin
+                ? "vibe-skin-modal vibe-skin-panel-strong w-full max-w-md rounded-3xl border p-4 shadow-2xl"
+                : isDark
+                  ? "w-full max-w-md rounded-3xl border border-[#073642] bg-[#002b36] p-4 text-[#fdf6e3] shadow-2xl shadow-black/40"
+                  : "w-full max-w-md rounded-3xl border border-stone-200 bg-white p-4 text-stone-950 shadow-2xl shadow-stone-950/15"
+            }
+            role="dialog"
+          >
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h2 id="vibe-tab-settings-title" className="text-base font-semibold">
+                  {t("vibe.tabSettingsTitle")}
+                </h2>
+                <p className={isSkin ? "mt-1 text-[12px] text-[var(--vibe-muted-text)]" : isDark ? "mt-1 text-[12px] text-[#93a1a1]" : "mt-1 text-[12px] text-stone-500"}>
+                  {t("vibe.tabSettingsSubtitle")}
+                </p>
+              </div>
+              <button
+                aria-label={t("vibe.cancel")}
+                className={
+                  isSkin
+                    ? "vibe-skin-ghost grid h-8 w-8 place-items-center rounded-xl border transition"
+                    : isDark
+                      ? "grid h-8 w-8 place-items-center rounded-xl border border-[#586e75] text-[#93a1a1] transition hover:text-[#fdf6e3]"
+                      : "grid h-8 w-8 place-items-center rounded-xl border border-stone-200 text-stone-500 transition hover:text-stone-950"
+                }
+                onClick={() => setTabSettingsOpen(false)}
+                type="button"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <label className={isSkin ? "block text-[12px] font-semibold text-[var(--vibe-muted-text)]" : isDark ? "block text-[12px] font-semibold text-[#93a1a1]" : "block text-[12px] font-semibold text-stone-600"}>
+                <span className="flex items-center justify-between gap-3">
+                  <span>{t("vibe.tileWidth")}</span>
+                  <span className="tabular-nums">
+                    {t("vibe.tileWidthValue", { width: String(tileWidth) })}
+                  </span>
+                </span>
+                <input
+                  aria-label={t("vibe.tileWidth")}
+                  className={isSkin ? "mt-2 w-full accent-[var(--vibe-accent)]" : "mt-2 w-full accent-blue-500"}
+                  max={TILE_MAX_WIDTH}
+                  min={TILE_MIN_WIDTH}
+                  onChange={(event) => setTileWidth(clampTileWidth(Number(event.target.value)))}
+                  step={TILE_WIDTH_STEP}
+                  type="range"
+                  value={tileWidth}
+                />
+              </label>
+
+              <label
+                className={
+                  isSkin
+                    ? "vibe-skin-ghost flex items-center justify-between gap-3 rounded-2xl border px-3 py-2 text-[12px] font-semibold text-[var(--vibe-text)]"
+                    : isDark
+                      ? "flex items-center justify-between gap-3 rounded-2xl border border-[#586e75] px-3 py-2 text-[12px] font-semibold text-[#fdf6e3]"
+                      : "flex items-center justify-between gap-3 rounded-2xl border border-stone-200 px-3 py-2 text-[12px] font-semibold text-stone-700"
+                }
+              >
+                <span>{t("vibe.tabWidthFitsContent")}</span>
+                <input
+                  checked={tabWidthFitsContent}
+                  className={isSkin ? "h-4 w-4 accent-[var(--vibe-accent)]" : "h-4 w-4 accent-blue-500"}
+                  onChange={(event) => setTabWidthFitsContent(event.target.checked)}
+                  type="checkbox"
+                />
+              </label>
+              <p className={isSkin ? "text-[12px] leading-5 text-[var(--vibe-muted-text)]" : isDark ? "text-[12px] leading-5 text-[#93a1a1]" : "text-[12px] leading-5 text-stone-500"}>
+                {t("vibe.tabWidthFitsContentHelp")}
+              </p>
+            </div>
+
+            <div className="mt-5 flex justify-end">
+              <button
+                className={
+                  isSkin
+                    ? "vibe-skin-primary rounded-xl border px-3 py-2 text-[13px] font-semibold transition"
+                    : isDark
+                      ? "rounded-xl bg-[#268bd2] px-3 py-2 text-[13px] font-semibold text-[#002b36] transition hover:bg-[#2aa198]"
+                      : "rounded-xl bg-stone-950 px-3 py-2 text-[13px] font-semibold text-white transition hover:bg-stone-800"
+                }
+                onClick={() => setTabSettingsOpen(false)}
+                type="button"
+              >
+                {t("vibe.close")}
+              </button>
             </div>
           </div>
         </div>

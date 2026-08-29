@@ -18,7 +18,7 @@ type XtermPaneProps = {
   themeMode?: "dark" | "light";
   themeOverride?: VibeTerminalTheme;
   transparentSurface?: boolean;
-  onStatusChange?: (sessionId: string, status: TerminalStatus) => void;
+  onStatusChange?: (sessionId: string, status: TerminalStatus, exitCode?: number | null) => void;
 };
 
 function createTheme(
@@ -146,7 +146,7 @@ export function XtermPane({
     const exitUnlisten = transport.subscribe<TerminalExitEvent>("terminal://exit", (payload) => {
       if (payload.sessionId === session.id) {
         terminal.writeln(`\r\n[process exited: ${payload.exitCode ?? "unknown"}]`);
-        onStatusChange?.(session.id, "exited");
+        onStatusChange?.(session.id, "exited", payload.exitCode ?? null);
       }
     });
     const errorUnlisten = transport.subscribe<TerminalErrorEvent>("terminal://error", (payload) => {

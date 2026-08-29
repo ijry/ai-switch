@@ -522,11 +522,18 @@ button:disabled {
 .vibe-tiled-terminal {
   /* Keep each tile wide enough for real terminal output; the row scrolls instead
      of squeezing panes below a usable width. */
-  width: clamp(22rem, 42%, 34rem);
+  width: var(--vibe-tile-width, 28rem);
 }
 
 .vibe-tiled-terminal-active {
   box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.55);
+}
+
+.vibe-tiled-terminals {
+  /* The row is the only way to reach off-screen tiles, so its horizontal bar stays
+     visible instead of fading like the session list scrollbar. */
+  padding-bottom: 2px;
+  scrollbar-gutter: stable;
 }
 
 .vibe-dark-session-list {
@@ -794,6 +801,24 @@ button:disabled {
 .vibe-light-tab-close:hover {
   color: #0f3b36;
   transform: scale(1.08);
+}
+
+/* The tab-bar action cluster is sticky, so it needs its own opaque backdrop to keep
+   tabs from sliding visibly underneath it. */
+.vibe-dark-tabbar-actions {
+  background: linear-gradient(90deg, rgba(4, 21, 29, 0), rgba(4, 21, 29, 0.98) 0.75rem);
+}
+
+.vibe-light-tabbar-actions {
+  background: linear-gradient(90deg, rgba(255, 253, 244, 0), rgba(255, 253, 244, 0.98) 0.75rem);
+}
+
+.vibe-skin-tabbar-actions {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--vibe-tab-bar, var(--vibe-panel-strong, rgba(0, 0, 0, 0.4))) 0.75rem
+  );
 }
 
 .vibe-skin-tab,

@@ -1,5 +1,5 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,10 +26,12 @@ vi.mock("../src/components/terminal/XtermPane", () => ({
     session,
     themeOverride,
     transparentSurface,
+    onStatusChange,
   }: {
     session: TerminalSession;
     themeOverride?: unknown;
     transparentSurface?: boolean;
+    onStatusChange?: (sessionId: string, status: string, exitCode?: number | null) => void;
   }) => (
     <div
       data-testid={`terminal-pane-${session.id}`}
@@ -37,6 +39,16 @@ vi.mock("../src/components/terminal/XtermPane", () => ({
       data-transparent-surface={transparentSurface ? "yes" : "no"}
     >
       {session.title}
+      <button
+        data-testid={`terminal-exit-clean-${session.id}`}
+        onClick={() => onStatusChange?.(session.id, "exited", 0)}
+        type="button"
+      />
+      <button
+        data-testid={`terminal-exit-fail-${session.id}`}
+        onClick={() => onStatusChange?.(session.id, "exited", 3)}
+        type="button"
+      />
     </div>
   ),
 }));
@@ -575,6 +587,94 @@ describe("VibeScreen", () => {
     await userEvent.click(screen.getByRole("menuitem", { name: "Disable tiled layout" }));
 
     expect(screen.queryByTestId("vibe-tiled-terminals")).not.toBeInTheDocument();
+  });
+
+  it("keeps the tiled row scrollbar visible and applies the configured tile width", async () => {
+    const view = renderScreen();
+
+    await expandProjectDirectory();
+    await userEvent.click(await screen.findByRole("button", { name: /Resume Fix terminal bug/ }));
+    await screen.findByTestId("terminal-pane-term-1");
+
+    await userEvent.pointer({
+      keys: "[MouseRight]",
+      target: screen.getByRole("button", { name: "Fix terminal bug" }).parentElement
+        ?.parentElement as HTMLElement,
+    });
+    await userEvent.click(screen.getByRole("menuitem", { name: "Enable tiled layout" }));
+
+    const tiled = screen.getByTestId("vibe-tiled-terminals");
+    expect(tiled).toHaveClass("vibe-scrollbar-active");
+    expect(screen.getByRole("main").style.getPropertyValue("--vibe-tile-width")).toBe("448px");
+
+    await userEvent.click(screen.getByRole("button", { name: "Tab layout settings" }));
+    const dialog = await screen.findByRole("dialog", { name: "Tab layout" });
+    // Range inputs do not respond to typing, so the slider value is set directly.
+    fireEvent.change(screen.getByLabelText("Tiled terminal width"), {
+      target: { value: "640" },
+    });
+
+    expect(screen.getByRole("main").style.getPropertyValue("--vibe-tile-width")).toBe("640px");
+    expect(dialog).toHaveTextContent("640 px");
+
+    await waitFor(() =>
+      expect(window.localStorage.getItem(VIBE_APPEARANCE_STORAGE_KEY)).toContain(
+        '"tileWidth":640',
+      ),
+    );
+
+    view.unmount();
+    renderScreen();
+    await screen.findByTestId("vibe-tiled-terminals");
+    expect(screen.getByRole("main").style.getPropertyValue("--vibe-tile-width")).toBe("640px");
+  });
+
+  it("lets tabs size to their titles from the tab layout settings dialog", async () => {
+    renderScreen();
+
+    await expandProjectDirectory();
+    await userEvent.click(await screen.findByRole("button", { name: /Resume Fix terminal bug/ }));
+    const tab = (await screen.findByRole("button", { name: "Fix terminal bug" }))
+      .parentElement as HTMLElement;
+    expect(tab).toHaveClass("min-w-[132px]");
+
+    await userEvent.click(screen.getByRole("button", { name: "Tab layout settings" }));
+    await screen.findByRole("dialog", { name: "Tab layout" });
+    await userEvent.click(screen.getByRole("checkbox", { name: "Fit tab width to its title" }));
+    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    expect(
+      (screen.getByRole("button", { name: "Fix terminal bug" }).parentElement as HTMLElement)
+        .className,
+    ).not.toContain("min-w-[132px]");
+    await waitFor(() =>
+      expect(window.localStorage.getItem(VIBE_APPEARANCE_STORAGE_KEY)).toContain(
+        '"tabWidthFitsContent":true',
+      ),
+    );
+  });
+
+  it("colours the tab status dot from the terminal exit code", async () => {
+    renderScreen();
+
+    await expandProjectDirectory();
+    await userEvent.click(await screen.findByRole("button", { name: /Resume Fix terminal bug/ }));
+    await screen.findByTestId("terminal-pane-term-1");
+
+    const dot = screen.getByTestId("vibe-tab-status-term-1");
+    expect(dot).toHaveClass("bg-emerald-400");
+
+    await userEvent.click(screen.getByTestId("terminal-exit-fail-term-1"));
+    expect(screen.getByTestId("vibe-tab-status-term-1")).toHaveClass("bg-amber-500");
+    expect(
+      screen.getByTestId("vibe-tab-status-term-1").closest("div[title]"),
+    ).toHaveAttribute("title", "Fix terminal bug · exited · exit code 3");
+
+    await userEvent.click(screen.getByTestId("terminal-exit-clean-term-1"));
+    expect(screen.getByTestId("vibe-tab-status-term-1")).toHaveClass("bg-slate-400");
+    expect(
+      screen.getByTestId("vibe-tab-status-term-1").closest("div[title]"),
+    ).toHaveAttribute("title", "Fix terminal bug · exited · exit code 0");
   });
 
   it("renders the empty-state launch composer with agent and routing controls", async () => {
