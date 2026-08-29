@@ -2,7 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
+  Columns3,
   FolderOpen,
   MoonStar,
   Palette,
@@ -16,7 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, ReactNode } from "react";
+import type { ChangeEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { createTerminalSession, killTerminalSession, listSessions } from "../lib/api/client";
 import { useI18n } from "../lib/i18n";
 import {
@@ -257,6 +259,12 @@ function groupSessions(sessions: SessionMeta[], unknownLabel: string) {
     });
   }
   return Array.from(groups.values());
+}
+
+// Sub-agent runs and slash-command bookkeeping surface as sessions whose title is
+// a raw <local-command-*> block. They are never worth resuming from the list.
+function isBookkeepingSession(session: SessionMeta) {
+  return (session.title ?? "").toLowerCase().includes("<local-command-");
 }
 
 function formatError(error: unknown) {
@@ -1037,9 +1045,18 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const [error, setError] = useState<string | null>(null);
   const [sessionListScrolling, setSessionListScrolling] = useState(false);
   const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(() => new Set());
+  const [sessionListCollapsed, setSessionListCollapsed] = useState(
+    () => initialAppearance.sessionListCollapsed ?? false,
+  );
+  const [tiledTerminals, setTiledTerminals] = useState(
+    () => initialAppearance.tiledTerminals ?? false,
+  );
+  const [tabsMenu, setTabsMenu] = useState<{ x: number; y: number } | null>(null);
   const skinFileInputRef = useRef<HTMLInputElement | null>(null);
   const startButtonRef = useRef<HTMLButtonElement | null>(null);
   const startMenuRef = useRef<HTMLDivElement | null>(null);
+  const tabsMenuRef = useRef<HTMLDivElement | null>(null);
+  const activeTileRef = useRef<HTMLDivElement | null>(null);
   const sessionListScrollTimeout = useRef<number | null>(null);
   const ambientAudioRef = useRef<AmbientAudioHandle[]>([]);
   const closingTabIdsRef = useRef(new Set<string>());
@@ -1049,20 +1066,24 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     queryFn: () => listSessions(null),
   });
 
+  const visibleSessions = useMemo(
+    () => (sessionsQuery.data ?? []).filter((session) => !isBookkeepingSession(session)),
+    [sessionsQuery.data],
+  );
   const groupedSessions = useMemo(
-    () => groupSessions(sessionsQuery.data ?? [], t("vibe.unknownDirectory")),
-    [sessionsQuery.data, t],
+    () => groupSessions(visibleSessions, t("vibe.unknownDirectory")),
+    [visibleSessions, t],
   );
   const projectDirectories = useMemo(() => {
     const directories = new Set<string>();
-    for (const session of sessionsQuery.data ?? []) {
+    for (const session of visibleSessions) {
       const directory = session.projectDir?.trim();
       if (directory) {
         directories.add(directory);
       }
     }
     return Array.from(directories);
-  }, [sessionsQuery.data]);
+  }, [visibleSessions]);
 
   useEffect(() => {
     setCreateProjectDir((current) => current || projectDirectories[0] || "");
@@ -1084,8 +1105,14 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   }, [activeSkinId, availableSkins]);
 
   useEffect(() => {
-    writeStoredVibeAppearance({ themeMode, skinId: activeSkin.id, skinAudioEnabled });
-  }, [activeSkin.id, skinAudioEnabled, themeMode]);
+    writeStoredVibeAppearance({
+      themeMode,
+      skinId: activeSkin.id,
+      skinAudioEnabled,
+      tiledTerminals,
+      sessionListCollapsed,
+    });
+  }, [activeSkin.id, sessionListCollapsed, skinAudioEnabled, themeMode, tiledTerminals]);
 
   const openTerminal = useCallback(async (input: CreateTerminalSessionInput) => {
     setError(null);
@@ -1243,6 +1270,52 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     });
   }, []);
 
+  const openTabsMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    // The menu is absolutely positioned inside the workspace column, so translate the
+    // pointer position into that container's coordinate space.
+    const container = event.currentTarget.parentElement;
+    const bounds = container?.getBoundingClientRect();
+    setTabsMenu({
+      x: Math.max(0, event.clientX - (bounds?.left ?? 0)),
+      y: Math.max(0, event.clientY - (bounds?.top ?? 0)),
+    });
+  }, []);
+
+  const toggleTiledTerminals = useCallback(() => {
+    setTiledTerminals((current) => !current);
+    setTabsMenu(null);
+  }, []);
+
+  // Clicking a tab in tiled mode should bring that tile into view instead of
+  // swapping panes, since every terminal stays visible.
+  useEffect(() => {
+    if (!tiledTerminals) {
+      return;
+    }
+    const tile = activeTileRef.current;
+    if (typeof tile?.scrollIntoView === "function") {
+      tile.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }, [activeId, tiledTerminals]);
+
+  useEffect(() => {
+    if (!tabsMenu) {
+      return;
+    }
+
+    const closeOnOutsideMouseDown = (event: MouseEvent) => {
+      const target = event.target;
+      if (target instanceof Node && tabsMenuRef.current?.contains(target)) {
+        return;
+      }
+      setTabsMenu(null);
+    };
+
+    window.addEventListener("mousedown", closeOnOutsideMouseDown);
+    return () => window.removeEventListener("mousedown", closeOnOutsideMouseDown);
+  }, [tabsMenu]);
+
   const markSessionListScrolling = useCallback(() => {
     if (sessionListScrollTimeout.current !== null) {
       window.clearTimeout(sessionListScrollTimeout.current);
@@ -1291,8 +1364,15 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     isSkin && (skinBlocks.showcase.enabled || skinRightCards.length > 0),
   );
   const skinBodyGridClass = showSkinRightRail
-    ? "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)_260px]"
-    : "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)]";
+    ? sessionListCollapsed
+      ? "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[20px_minmax(0,1fr)_260px]"
+      : "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_20px_minmax(0,1fr)_260px]"
+    : sessionListCollapsed
+      ? "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[20px_minmax(0,1fr)]"
+      : "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_20px_minmax(0,1fr)]";
+  const plainBodyGridClass = sessionListCollapsed
+    ? "grid h-full min-h-0 grid-cols-1 lg:grid-cols-[20px_minmax(0,1fr)]"
+    : "grid h-full min-h-0 grid-cols-1 lg:grid-cols-[356px_20px_minmax(0,1fr)]";
   const activeSkinRegionKeys = isSkin
     ? VIBE_SKIN_REGION_KEYS.filter((region) => Boolean(activeSkin.regions?.[region]))
     : [];
@@ -1548,7 +1628,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       onPointerDownCapture={activateSkinAudio}
       style={skinStyle}
     >
-      <div className={isSkin ? "vibe-skin-frame flex h-full min-h-0 flex-col" : "grid h-full min-h-0 grid-cols-1 lg:grid-cols-[356px_minmax(0,1fr)]"}>
+      <div className={isSkin ? "vibe-skin-frame flex h-full min-h-0 flex-col" : plainBodyGridClass}>
         {isSkin && (
           <div className="vibe-skin-titlebar flex h-11 shrink-0 items-center justify-between gap-3 border-b px-3 text-[11px] font-semibold">
             <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
@@ -1604,6 +1684,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
               />
             </div>
           )}
+        {!sessionListCollapsed && (
         <aside
           className={
             isSkin
@@ -1872,14 +1953,44 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
             </div>
           </div>
         </aside>
+        )}
 
         <div
           className={
             isSkin
-              ? "vibe-skin-workspace flex h-full min-h-0 min-w-0 flex-col overflow-hidden shadow-xl"
+              ? "vibe-session-rail vibe-skin-session-rail hidden lg:flex"
               : isDark
-                ? "flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[#002b36] shadow-xl shadow-black/20"
-                : "flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-50 shadow-xl shadow-stone-900/5"
+                ? "vibe-session-rail vibe-dark-session-rail hidden lg:flex"
+                : "vibe-session-rail vibe-light-session-rail hidden lg:flex"
+          }
+        >
+          <button
+            aria-expanded={!sessionListCollapsed}
+            aria-label={
+              sessionListCollapsed ? t("vibe.expandSessionList") : t("vibe.collapseSessionList")
+            }
+            className="vibe-session-rail-handle"
+            onClick={() => setSessionListCollapsed((current) => !current)}
+            title={
+              sessionListCollapsed ? t("vibe.expandSessionList") : t("vibe.collapseSessionList")
+            }
+            type="button"
+          >
+            {sessionListCollapsed ? (
+              <ChevronRight className="h-3 w-3" />
+            ) : (
+              <ChevronLeft className="h-3 w-3" />
+            )}
+          </button>
+        </div>
+
+        <div
+          className={
+            isSkin
+              ? "vibe-skin-workspace relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden shadow-xl"
+              : isDark
+                ? "relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[#002b36] shadow-xl shadow-black/20"
+                : "relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-50 shadow-xl shadow-stone-900/5"
           }
         >
           <div
@@ -1890,6 +2001,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                   ? "vibe-scrollbar vibe-scrollbar-dark vibe-scrollbar-horizontal vibe-dark-tabbar flex h-10 shrink-0 items-stretch gap-1 overflow-x-auto border-b px-1"
                   : "vibe-scrollbar vibe-scrollbar-light vibe-scrollbar-horizontal vibe-light-tabbar flex h-10 shrink-0 items-stretch gap-1 overflow-x-auto border-b px-1"
             }
+            onContextMenu={openTabsMenu}
           >
             {tabs.length === 0 && (
               <p className={isSkin ? "flex items-center px-3 text-[12px] text-[var(--vibe-muted-text)]" : isDark ? "flex items-center px-3 text-[12px] text-[#9fc3cf]" : "flex items-center px-3 text-[12px] text-stone-500"}>
@@ -1950,6 +2062,38 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
               </div>
             ))}
           </div>
+
+          {tabsMenu && (
+            <div
+              aria-label={t("vibe.tabsMenu")}
+              className={
+                isSkin
+                  ? "vibe-skin-panel-strong absolute z-40 min-w-[11rem] overflow-hidden rounded-xl border p-1 shadow-xl"
+                  : isDark
+                    ? "absolute z-40 min-w-[11rem] overflow-hidden rounded-xl border border-[#586e75] bg-[#073642] p-1 text-[#fdf6e3] shadow-xl shadow-black/40"
+                    : "absolute z-40 min-w-[11rem] overflow-hidden rounded-xl border border-stone-200 bg-white p-1 text-stone-950 shadow-xl shadow-stone-900/10"
+              }
+              ref={tabsMenuRef}
+              role="menu"
+              style={{ left: tabsMenu.x, top: tabsMenu.y }}
+            >
+              <button
+                className={
+                  isSkin
+                    ? "vibe-skin-taskbar-menu-item flex w-full items-center rounded-lg px-3 py-2 text-left text-[12px] transition"
+                    : isDark
+                      ? "flex w-full items-center rounded-lg px-3 py-2 text-left text-[12px] transition hover:bg-[#002b36]"
+                      : "flex w-full items-center rounded-lg px-3 py-2 text-left text-[12px] transition hover:bg-stone-100"
+                }
+                onClick={toggleTiledTerminals}
+                role="menuitem"
+                type="button"
+              >
+                <Columns3 className="mr-2 h-3.5 w-3.5 shrink-0" />
+                {tiledTerminals ? t("vibe.disableTiled") : t("vibe.enableTiled")}
+              </button>
+            </div>
+          )}
 
           <div
             className={
@@ -2141,17 +2285,55 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 </section>
               </div>
             )}
-            {tabs.map((tab) => (
-              <XtermPane
-                active={tab.id === activeId}
-                key={tab.id}
-                onStatusChange={updateStatus}
-                session={tab}
-                themeMode={terminalThemeMode}
-                themeOverride={isSkin ? activeSkin.terminal : undefined}
-                transparentSurface={isSkin}
-              />
-            ))}
+            {tiledTerminals && tabs.length > 0 ? (
+              <div
+                className={`vibe-scrollbar ${scrollbarThemeClass} vibe-scrollbar-horizontal vibe-tiled-terminals flex h-full min-h-0 gap-2 overflow-x-auto overflow-y-hidden`}
+                data-testid="vibe-tiled-terminals"
+              >
+                {tabs.map((tab) => (
+                  <div
+                    aria-current={tab.id === activeId ? "true" : undefined}
+                    className={
+                      isSkin
+                        ? `vibe-tiled-terminal h-full min-h-0 shrink-0 overflow-hidden rounded-lg border border-[var(--vibe-border)] ${
+                            tab.id === activeId ? "vibe-tiled-terminal-active" : ""
+                          }`
+                        : isDark
+                          ? `vibe-tiled-terminal h-full min-h-0 shrink-0 overflow-hidden rounded-xl border border-[#073642] ${
+                              tab.id === activeId ? "vibe-tiled-terminal-active" : ""
+                            }`
+                          : `vibe-tiled-terminal h-full min-h-0 shrink-0 overflow-hidden rounded-xl border border-stone-200 ${
+                              tab.id === activeId ? "vibe-tiled-terminal-active" : ""
+                            }`
+                    }
+                    key={tab.id}
+                    onFocus={() => setActiveId(tab.id)}
+                    ref={tab.id === activeId ? activeTileRef : undefined}
+                  >
+                    <XtermPane
+                      active
+                      onStatusChange={updateStatus}
+                      session={tab}
+                      themeMode={terminalThemeMode}
+                      themeOverride={isSkin ? activeSkin.terminal : undefined}
+                      transparentSurface={isSkin}
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              tabs.map((tab) => (
+                <XtermPane
+                  active={tab.id === activeId}
+                  key={tab.id}
+                  onStatusChange={updateStatus}
+                  session={tab}
+                  themeMode={terminalThemeMode}
+                  themeOverride={isSkin ? activeSkin.terminal : undefined}
+                  transparentSurface={isSkin}
+                />
+              ))
+            )}
           </div>
         </div>
 

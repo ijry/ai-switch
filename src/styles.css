@@ -437,6 +437,82 @@ button:disabled {
   padding: var(--vibe-session-list-padding);
 }
 
+.vibe-session-rail {
+  align-items: center;
+  cursor: col-resize;
+  justify-content: center;
+  width: 100%;
+}
+
+.vibe-session-rail-handle {
+  align-items: center;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  height: 3.25rem;
+  justify-content: center;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+  width: 100%;
+}
+
+.vibe-dark-session-rail {
+  background: linear-gradient(180deg, rgba(6, 35, 48, 0.9), rgba(3, 20, 34, 0.9));
+  border-right: 1px solid rgba(45, 212, 191, 0.16);
+}
+
+.vibe-dark-session-rail .vibe-session-rail-handle {
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  color: #9fc3cf;
+}
+
+.vibe-dark-session-rail .vibe-session-rail-handle:hover {
+  background: rgba(14, 116, 144, 0.4);
+  color: #e6fbff;
+}
+
+.vibe-light-session-rail {
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.94), rgba(241, 245, 249, 0.9));
+  border-right: 1px solid rgba(226, 232, 240, 0.9);
+}
+
+.vibe-light-session-rail .vibe-session-rail-handle {
+  border: 1px solid rgba(214, 211, 209, 0.9);
+  color: #57534e;
+}
+
+.vibe-light-session-rail .vibe-session-rail-handle:hover {
+  background: rgba(226, 232, 240, 0.9);
+  color: #1c1917;
+}
+
+.vibe-skin-session-rail {
+  background: var(--vibe-panel-subtle, rgba(255, 255, 255, 0.12));
+  border-right: 1px solid var(--vibe-border, rgba(255, 255, 255, 0.24));
+}
+
+.vibe-skin-session-rail .vibe-session-rail-handle {
+  border: 1px solid var(--vibe-border, rgba(255, 255, 255, 0.24));
+  color: var(--vibe-muted-text, inherit);
+}
+
+.vibe-skin-session-rail .vibe-session-rail-handle:hover {
+  background: var(--vibe-panel-strong, rgba(255, 255, 255, 0.24));
+  color: var(--vibe-text, inherit);
+}
+
+.vibe-tiled-terminal {
+  /* Keep each tile wide enough for real terminal output; the row scrolls instead
+     of squeezing panes below a usable width. */
+  width: clamp(22rem, 42%, 34rem);
+}
+
+.vibe-tiled-terminal-active {
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.55);
+}
+
 .vibe-dark-session-list {
   background:
     radial-gradient(circle at 20% 0%, rgba(20, 184, 166, 0.18), transparent 12rem),

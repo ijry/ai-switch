@@ -74,11 +74,21 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [webReady, setWebReady] = useState(canSkipWebAuthGate);
   const [poolScopeFocus, setPoolScopeFocus] = useState<PoolScopeFocus | null>(null);
+  // Vibe keeps live terminals; once it has been opened we keep it mounted and only
+  // hide it so switching back and forth never drops running sessions or scrollback.
+  const [vibeMounted, setVibeMounted] = useState(false);
   const agentPlatform = platformByAgentScreen[screen];
+  const vibeActive = screen === "Vibe";
 
   useEffect(() => {
     setWebReady(canSkipWebAuthGate());
   }, []);
+
+  useEffect(() => {
+    if (vibeActive) {
+      setVibeMounted(true);
+    }
+  }, [vibeActive]);
 
   const handleWebAuthenticated = useCallback(() => {
     queryClient.clear();
@@ -124,44 +134,51 @@ export function App() {
         <AutoUpdatePrompt />
         {!webReady ? (
           <WebAuthGate onAuthenticated={handleWebAuthenticated} />
-        ) : screen === "Vibe" ? (
-          <VibeScreen onExitVibe={() => setScreen("Codex")} />
         ) : (
-          <AppLayout
-            activeScreen={screen}
-            onNavigate={navigate}
-            onOpenVibe={() => setScreen("Vibe")}
-            onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
-            sidebarCollapsed={sidebarCollapsed}
-          >
-            {agentPlatform && (
-              <AccountsScreen
-                onOpenSessions={openSessions}
-                platform={agentPlatform}
-                poolScopeFocus={poolScopeFocus}
-                onPoolScopeFocusConsumed={handlePoolScopeFocusConsumed}
-                sidebarCollapsed={sidebarCollapsed}
-              />
-            )}
-            {screen === "Dashboard" && <DashboardScreen />}
-            {screen === "Batches" && <BatchesScreen />}
-            {screen === "Providers" && <ProvidersScreen />}
-            {screen === "Imports" && <ImportsScreen />}
-            {screen === "Targets" && <TargetsScreen />}
-            {screen === "CryptoTools" && <CryptoToolsScreen />}
-            {screen === "OCR" && <OcrScreen />}
-            {screen === "Sessions" && <SessionsScreen initialPlatform={sessionPlatform} />}
-            {screen === "Updates" && <UpdatesScreen />}
-            {screen === "Settings" && <SettingsScreen onOpenFeature={navigate} />}
-            {screen === "MCP" && <McpScreen />}
-            {screen === "Skills" && <SkillsScreen />}
-            {screen === "Log" && <OperationLogScreen />}
-            {!implementedScreens.has(screen) && (
-              <div className="rounded-2xl border border-stone-200 bg-white/80 p-5 text-sm text-stone-500 shadow-sm">
-                {screen}
+          <>
+            {vibeMounted && (
+              <div aria-hidden={!vibeActive} className={vibeActive ? "contents" : "hidden"}>
+                <VibeScreen onExitVibe={() => setScreen("Codex")} />
               </div>
             )}
-          </AppLayout>
+            {!vibeActive && (
+              <AppLayout
+                activeScreen={screen}
+                onNavigate={navigate}
+                onOpenVibe={() => setScreen("Vibe")}
+                onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+                sidebarCollapsed={sidebarCollapsed}
+              >
+                {agentPlatform && (
+                  <AccountsScreen
+                    onOpenSessions={openSessions}
+                    platform={agentPlatform}
+                    poolScopeFocus={poolScopeFocus}
+                    onPoolScopeFocusConsumed={handlePoolScopeFocusConsumed}
+                    sidebarCollapsed={sidebarCollapsed}
+                  />
+                )}
+                {screen === "Dashboard" && <DashboardScreen />}
+                {screen === "Batches" && <BatchesScreen />}
+                {screen === "Providers" && <ProvidersScreen />}
+                {screen === "Imports" && <ImportsScreen />}
+                {screen === "Targets" && <TargetsScreen />}
+                {screen === "CryptoTools" && <CryptoToolsScreen />}
+                {screen === "OCR" && <OcrScreen />}
+                {screen === "Sessions" && <SessionsScreen initialPlatform={sessionPlatform} />}
+                {screen === "Updates" && <UpdatesScreen />}
+                {screen === "Settings" && <SettingsScreen onOpenFeature={navigate} />}
+                {screen === "MCP" && <McpScreen />}
+                {screen === "Skills" && <SkillsScreen />}
+                {screen === "Log" && <OperationLogScreen />}
+                {!implementedScreens.has(screen) && (
+                  <div className="rounded-2xl border border-stone-200 bg-white/80 p-5 text-sm text-stone-500 shadow-sm">
+                    {screen}
+                  </div>
+                )}
+              </AppLayout>
+            )}
+          </>
         )}
       </I18nProvider>
     </QueryClientProvider>

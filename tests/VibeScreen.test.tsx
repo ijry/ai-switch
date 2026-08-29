@@ -267,6 +267,130 @@ describe("VibeScreen", () => {
     expect(screen.queryByText("Agent accounts placeholder")).not.toBeInTheDocument();
   });
 
+  it("keeps Vibe terminals alive when switching back to the default mode", async () => {
+    render(<App />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Switch to Vibe mode" }));
+    await expandProjectDirectory();
+    await userEvent.click(await screen.findByRole("button", { name: /Resume Fix terminal bug/ }));
+    const pane = await screen.findByTestId("terminal-pane-term-1");
+
+    await userEvent.click(screen.getByRole("button", { name: "Switch to Agent mode" }));
+
+    expect(await screen.findByText("Agent accounts placeholder")).toBeInTheDocument();
+    // The Vibe subtree stays mounted (hidden) so PTY-backed panes are not recreated.
+    expect(pane).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Switch to Vibe mode" }));
+
+    expect(screen.getByTestId("terminal-pane-term-1")).toBe(pane);
+    expect(screen.getByRole("button", { name: "Fix terminal bug" })).toBeInTheDocument();
+    expect(createTerminalSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides sub-agent bookkeeping sessions from the session list", async () => {
+    vi.mocked(listSessions).mockResolvedValue([
+      ...sessions,
+      {
+        providerId: "claude",
+        sessionId: "s3",
+        title:
+          "<local-command-caveat>Caveat: The messages below were generated while running local commands.</local-command-caveat>",
+        projectDir: "D:/repo/app",
+        createdAt: 1,
+        lastActiveAt: 2,
+        sourcePath: "D:/repo/app/session-3.jsonl",
+        resumeCommand: "claude --resume s3",
+      },
+    ]);
+    renderScreen();
+
+    await expandProjectDirectory();
+
+    expect(screen.getByText("Fix terminal bug")).toBeInTheDocument();
+    expect(screen.queryByText(/local-command-caveat/)).not.toBeInTheDocument();
+  });
+
+  it("collapses and restores the session list from the rail control", async () => {
+    const view = renderScreen();
+
+    await screen.findByRole("button", { name: "Expand folder D:/repo/app" });
+    const collapse = screen.getByRole("button", { name: "Collapse session list" });
+    expect(collapse).toHaveAttribute("aria-expanded", "true");
+
+    await userEvent.click(collapse);
+
+    expect(
+      screen.queryByRole("button", { name: "Expand folder D:/repo/app" }),
+    ).not.toBeInTheDocument();
+    const expand = screen.getByRole("button", { name: "Expand session list" });
+    expect(expand).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() =>
+      expect(window.localStorage.getItem(VIBE_APPEARANCE_STORAGE_KEY)).toContain(
+        '"sessionListCollapsed":true',
+      ),
+    );
+
+    view.unmount();
+    renderScreen();
+
+    expect(
+      await screen.findByRole("button", { name: "Expand session list" }),
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Expand session list" }));
+
+    expect(
+      await screen.findByRole("button", { name: "Expand folder D:/repo/app" }),
+    ).toBeInTheDocument();
+  });
+
+  it("tiles terminals horizontally from the tab bar context menu", async () => {
+    const view = renderScreen();
+
+    await expandProjectDirectory();
+    await userEvent.click(await screen.findByRole("button", { name: /Resume Fix terminal bug/ }));
+    await screen.findByTestId("terminal-pane-term-1");
+    expect(screen.queryByTestId("vibe-tiled-terminals")).not.toBeInTheDocument();
+
+    const tabBar = screen.getByRole("button", { name: "Fix terminal bug" }).parentElement
+      ?.parentElement as HTMLElement;
+    await userEvent.pointer({ keys: "[MouseRight]", target: tabBar });
+
+    const menu = screen.getByRole("menu", { name: "Terminal tab options" });
+    await userEvent.click(
+      screen.getByRole("menuitem", { name: "Enable tiled layout" }),
+    );
+
+    expect(menu).not.toBeInTheDocument();
+    const tiled = screen.getByTestId("vibe-tiled-terminals");
+    expect(tiled).toHaveClass("overflow-x-auto");
+    expect(tiled).toContainElement(screen.getByTestId("terminal-pane-term-1"));
+    expect(screen.getByTestId("terminal-pane-term-1").parentElement).toHaveClass(
+      "vibe-tiled-terminal",
+    );
+    await waitFor(() =>
+      expect(window.localStorage.getItem(VIBE_APPEARANCE_STORAGE_KEY)).toContain(
+        '"tiledTerminals":true',
+      ),
+    );
+
+    view.unmount();
+    renderScreen();
+    await expandProjectDirectory();
+    await userEvent.click(await screen.findByRole("button", { name: /Resume Fix terminal bug/ }));
+    await screen.findByTestId("vibe-tiled-terminals");
+
+    await userEvent.pointer({
+      keys: "[MouseRight]",
+      target: screen.getByRole("button", { name: "Fix terminal bug" }).parentElement
+        ?.parentElement as HTMLElement,
+    });
+    await userEvent.click(screen.getByRole("menuitem", { name: "Disable tiled layout" }));
+
+    expect(screen.queryByTestId("vibe-tiled-terminals")).not.toBeInTheDocument();
+  });
+
   it("renders the empty-state launch composer with agent and routing controls", async () => {
     renderScreen();
 
