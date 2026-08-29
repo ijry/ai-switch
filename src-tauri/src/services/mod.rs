@@ -1,3 +1,4 @@
+pub mod agent_launch_service;
 pub mod batch_service;
 pub mod client_identity;
 pub mod codex_reasoning_cache;

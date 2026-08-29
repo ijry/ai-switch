@@ -62,8 +62,8 @@ use commands::target_commands::{
     list_config_snapshots, list_target_apps, list_target_config_statuses, rollback_config_snapshot,
 };
 use commands::terminal_commands::{
-    create_terminal_session, kill_terminal_session, list_terminal_sessions, resize_terminal,
-    write_terminal_input,
+    create_terminal_session, kill_terminal_session, list_agent_launch_options,
+    list_terminal_sessions, resize_terminal, write_terminal_input,
 };
 use commands::usage_stats_commands::{get_session_usage_stats, reload_model_price_overrides};
 use commands::web_service_commands::{
@@ -491,6 +491,7 @@ pub fn run() {
             resize_terminal,
             kill_terminal_session,
             list_terminal_sessions,
+            list_agent_launch_options,
             get_web_service_config,
             save_web_service_config,
             get_web_server_status,

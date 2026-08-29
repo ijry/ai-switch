@@ -19,7 +19,12 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
-import { createTerminalSession, killTerminalSession, listSessions } from "../lib/api/client";
+import {
+  createTerminalSession,
+  killTerminalSession,
+  listAgentLaunchOptions,
+  listSessions,
+} from "../lib/api/client";
 import { useI18n } from "../lib/i18n";
 import {
   BUILT_IN_VIBE_SKINS,
@@ -46,6 +51,7 @@ import type {
 } from "../lib/vibeSkin";
 import { AiSwitchLogo } from "../components/brand/AiSwitchLogo";
 import type {
+  AgentLaunchOption,
   CreateTerminalSessionInput,
   SessionMeta,
   TerminalSession,
@@ -64,22 +70,8 @@ const agentOptions = [
   { platform: "hermes", label: "Hermes" },
 ] as const;
 
-const launchModelOptions = [
-  { value: "auto", label: "Auto" },
-  { value: "gpt-5", label: "GPT-5" },
-  { value: "claude-sonnet-4", label: "Claude Sonnet 4" },
-  { value: "grok-3", label: "Grok 3" },
-  { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-] as const;
-
-const launchReasoningOptions = [
-  { value: "auto", label: "Auto" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-] as const;
-
 const chooseFolderOptionValue = "__choose_folder__";
+const autoLaunchOptionValue = "auto";
 
 type AgentPlatform = (typeof agentOptions)[number]["platform"];
 
@@ -1024,10 +1016,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const [createProjectDir, setCreateProjectDir] = useState("");
   const [createPlatform, setCreatePlatform] = useState<AgentPlatform>("codex");
   const [launchPrompt, setLaunchPrompt] = useState("");
-  const [launchModel, setLaunchModel] =
-    useState<(typeof launchModelOptions)[number]["value"]>("auto");
-  const [launchReasoning, setLaunchReasoning] =
-    useState<(typeof launchReasoningOptions)[number]["value"]>("auto");
+  const [launchModel, setLaunchModel] = useState<string>(autoLaunchOptionValue);
+  const [launchReasoning, setLaunchReasoning] = useState<string>(autoLaunchOptionValue);
+  const [installCommandCopied, setInstallCommandCopied] = useState(false);
   const [themeMode, setThemeMode] = useState<VibeTheme>(
     () => initialAppearance.themeMode ?? "dark",
   );
@@ -1065,6 +1056,55 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     queryKey: ["sessions"],
     queryFn: () => listSessions(null),
   });
+
+  const agentLaunchOptionsQuery = useQuery({
+    queryKey: ["agent-launch-options"],
+    queryFn: () => listAgentLaunchOptions(),
+  });
+
+  const agentLaunchOptions = agentLaunchOptionsQuery.data ?? [];
+  const activeAgentLaunchOption = useMemo(
+    () => agentLaunchOptions.find((option) => option.platform === createPlatform) ?? null,
+    [agentLaunchOptions, createPlatform],
+  );
+  const launchModelChoices = useMemo(
+    () => activeAgentLaunchOption?.models ?? [],
+    [activeAgentLaunchOption],
+  );
+  const selectedLaunchModel = useMemo(
+    () => launchModelChoices.find((model) => model.id === launchModel) ?? null,
+    [launchModel, launchModelChoices],
+  );
+  const launchReasoningChoices = useMemo(
+    () => selectedLaunchModel?.reasoningLevels ?? [],
+    [selectedLaunchModel],
+  );
+  const agentInstalled = activeAgentLaunchOption?.installed !== false;
+  const agentInstallCommand = activeAgentLaunchOption?.installCommand ?? "";
+
+  // Keep the model/reasoning selection valid whenever the agent changes or the
+  // backend catalog no longer advertises the previously chosen value.
+  useEffect(() => {
+    if (
+      launchModel !== autoLaunchOptionValue &&
+      !launchModelChoices.some((model) => model.id === launchModel)
+    ) {
+      setLaunchModel(autoLaunchOptionValue);
+    }
+  }, [launchModel, launchModelChoices]);
+
+  useEffect(() => {
+    if (
+      launchReasoning !== autoLaunchOptionValue &&
+      !launchReasoningChoices.some((level) => level.effort === launchReasoning)
+    ) {
+      setLaunchReasoning(autoLaunchOptionValue);
+    }
+  }, [launchReasoning, launchReasoningChoices]);
+
+  useEffect(() => {
+    setInstallCommandCopied(false);
+  }, [createPlatform]);
 
   const visibleSessions = useMemo(
     () => (sessionsQuery.data ?? []).filter((session) => !isBookkeepingSession(session)),
@@ -1201,6 +1241,14 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       setError(t("vibe.errorProjectRequired"));
       return;
     }
+    if (!agentInstalled) {
+      setError(
+        t("vibe.errorAgentNotInstalled", {
+          agent: activeAgentLaunchOption?.displayName ?? createPlatform,
+        }),
+      );
+      return;
+    }
 
     void openTerminal({
       kind: "agent",
@@ -1210,10 +1258,27 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       cwd,
       cols: 100,
       rows: 30,
+      model: launchModel === autoLaunchOptionValue ? null : launchModel,
+      reasoningEffort: launchReasoning === autoLaunchOptionValue ? null : launchReasoning,
     });
     setLaunchPrompt("");
     if (closeDialog) {
       setCreateDialogOpen(false);
+    }
+  };
+
+  const copyInstallCommand = async () => {
+    if (!agentInstallCommand) {
+      return;
+    }
+    try {
+      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+        throw new Error(t("vibe.errorClipboardUnavailable"));
+      }
+      await navigator.clipboard.writeText(agentInstallCommand);
+      setInstallCommandCopied(true);
+    } catch (caught) {
+      setError(formatError(caught));
     }
   };
 
@@ -1614,6 +1679,40 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     : isDark
       ? "inline-flex shrink-0 items-center gap-1 rounded-full border border-[#586e75]/50 px-3 py-1 text-[11px] font-semibold text-[#9fc3cf]"
       : "inline-flex shrink-0 items-center gap-1 rounded-full border border-stone-200 px-3 py-1 text-[11px] font-semibold text-stone-500";
+  const agentMissingNotice = activeAgentLaunchOption && !activeAgentLaunchOption.installed ? (
+    <div
+      className={
+        isSkin
+          ? "vibe-skin-agent-strip mt-1 rounded-md border p-1.5 text-[10px]"
+          : isDark
+            ? "mt-2 rounded-xl border border-[#cb4b16]/60 bg-[#cb4b16]/12 p-2 text-[12px] text-[#eee8d5]"
+            : "mt-2 rounded-xl border border-amber-300 bg-amber-50 p-2 text-[12px] text-amber-900"
+      }
+      role="status"
+    >
+      <p className="font-semibold">
+        {t("vibe.agentNotInstalled", { agent: activeAgentLaunchOption.displayName })}
+      </p>
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <code className={isSkin ? "vibe-skin-composer-addon rounded border px-1.5 py-0.5" : "rounded bg-black/10 px-2 py-1 font-mono text-[11px]"}>
+          {activeAgentLaunchOption.installCommand}
+        </code>
+        <button
+          className={
+            isSkin
+              ? "vibe-skin-ghost rounded border px-2 py-0.5 text-[10px] font-semibold transition"
+              : isDark
+                ? "rounded-lg border border-[#586e75] px-2 py-1 text-[11px] font-semibold text-[#fdf6e3] transition hover:border-[#839496]"
+                : "rounded-lg border border-amber-400 bg-white px-2 py-1 text-[11px] font-semibold text-amber-900 transition hover:border-amber-500"
+          }
+          onClick={() => void copyInstallCommand()}
+          type="button"
+        >
+          {installCommandCopied ? t("vibe.installCommandCopied") : t("vibe.copyInstallCommand")}
+        </button>
+      </div>
+    </div>
+  ) : null;
 
   return (
     <main
@@ -2205,6 +2304,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                     </div>
                   )}
 
+                  {agentMissingNotice}
+
                   <div className={composerClass}>
                     <textarea
                       aria-label={launchPlaceholder}
@@ -2239,16 +2340,14 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                         <span className={composerLabelTextClass}>{launchModelLabel}</span>
                         <select
                           className={composerControlClass}
-                          onChange={(event) =>
-                            setLaunchModel(
-                              event.target.value as (typeof launchModelOptions)[number]["value"],
-                            )
-                          }
+                          disabled={launchModelChoices.length === 0}
+                          onChange={(event) => setLaunchModel(event.target.value)}
                           value={launchModel}
                         >
-                          {launchModelOptions.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
+                          <option value={autoLaunchOptionValue}>{t("vibe.launchAuto")}</option>
+                          {launchModelChoices.map((model) => (
+                            <option key={model.id} value={model.id}>
+                              {model.id}
                             </option>
                           ))}
                         </select>
@@ -2257,23 +2356,21 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                         <span className={composerLabelTextClass}>{launchReasoningLabel}</span>
                         <select
                           className={composerControlClass}
-                          onChange={(event) =>
-                            setLaunchReasoning(
-                              event.target
-                                .value as (typeof launchReasoningOptions)[number]["value"],
-                            )
-                          }
+                          disabled={launchReasoningChoices.length === 0}
+                          onChange={(event) => setLaunchReasoning(event.target.value)}
                           value={launchReasoning}
                         >
-                          {launchReasoningOptions.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
+                          <option value={autoLaunchOptionValue}>{t("vibe.launchAuto")}</option>
+                          {launchReasoningChoices.map((level) => (
+                            <option key={level.effort} value={level.effort}>
+                              {level.effort}
                             </option>
                           ))}
                         </select>
                       </label>
                       <button
                         className={composerSendButtonClass}
+                        disabled={!agentInstalled}
                         onClick={launchFromComposer}
                         type="button"
                       >
@@ -2744,6 +2841,55 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 </select>
               </label>
 
+              {agentMissingNotice}
+
+              <label className={isSkin ? "block text-[12px] font-semibold text-[var(--vibe-muted-text)]" : isDark ? "block text-[12px] font-semibold text-[#93a1a1]" : "block text-[12px] font-semibold text-stone-600"}>
+                {t("vibe.launchModel")}
+                <select
+                  className={
+                    isSkin
+                      ? "vibe-skin-field mt-1 w-full rounded-xl border px-3 py-2 text-[13px] outline-none transition"
+                      : isDark
+                      ? "mt-1 w-full rounded-xl border border-[#586e75] bg-[#073642] px-3 py-2 text-[13px] text-[#fdf6e3] outline-none focus:border-[#268bd2]"
+                      : "mt-1 w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] text-stone-950 outline-none focus:border-blue-400"
+                  }
+                  disabled={launchModelChoices.length === 0}
+                  onChange={(event) => setLaunchModel(event.target.value)}
+                  value={launchModel}
+                >
+                  <option value={autoLaunchOptionValue}>{t("vibe.launchAuto")}</option>
+                  {launchModelChoices.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {launchReasoningChoices.length > 0 && (
+                <label className={isSkin ? "block text-[12px] font-semibold text-[var(--vibe-muted-text)]" : isDark ? "block text-[12px] font-semibold text-[#93a1a1]" : "block text-[12px] font-semibold text-stone-600"}>
+                  {t("vibe.launchReasoning")}
+                  <select
+                    className={
+                      isSkin
+                        ? "vibe-skin-field mt-1 w-full rounded-xl border px-3 py-2 text-[13px] outline-none transition"
+                        : isDark
+                        ? "mt-1 w-full rounded-xl border border-[#586e75] bg-[#073642] px-3 py-2 text-[13px] text-[#fdf6e3] outline-none focus:border-[#268bd2]"
+                        : "mt-1 w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] text-stone-950 outline-none focus:border-blue-400"
+                    }
+                    onChange={(event) => setLaunchReasoning(event.target.value)}
+                    value={launchReasoning}
+                  >
+                    <option value={autoLaunchOptionValue}>{t("vibe.launchAuto")}</option>
+                    {launchReasoningChoices.map((level) => (
+                      <option key={level.effort} value={level.effort}>
+                        {level.effort}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
               {projectDirectories.length > 0 && (
                 <label className={isSkin ? "block text-[12px] font-semibold text-[var(--vibe-muted-text)]" : isDark ? "block text-[12px] font-semibold text-[#93a1a1]" : "block text-[12px] font-semibold text-stone-600"}>
                   {t("vibe.existingFolder")}
@@ -2822,6 +2968,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                     ? "rounded-xl bg-[#b58900] px-3 py-2 text-[13px] font-semibold text-[#002b36] transition hover:bg-[#cb4b16] hover:text-white"
                     : "rounded-xl bg-stone-950 px-3 py-2 text-[13px] font-semibold text-white transition hover:bg-stone-800"
                 }
+                disabled={!agentInstalled}
                 onClick={launchNewAgent}
                 type="button"
               >

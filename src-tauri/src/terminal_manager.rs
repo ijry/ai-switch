@@ -3,7 +3,7 @@ use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, Pt
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -27,6 +27,10 @@ pub struct CreateTerminalSessionInput {
     pub cwd: String,
     pub cols: Option<u16>,
     pub rows: Option<u16>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -111,19 +115,11 @@ pub fn resolve_launch_command(
         TerminalLaunchKind::Shell => Ok(default_shell_command()),
         TerminalLaunchKind::Agent => {
             let platform = input.platform.as_deref().unwrap_or("").trim();
-            let program = match platform {
-                "codex" => "codex",
-                "claude" => "claude",
-                "grok" => "grok",
-                "gemini" => "gemini",
-                "opencode" => "opencode",
-                "openclaw" => "openclaw",
-                "hermes" => "hermes",
-                _ => return Err(format!("Unsupported terminal platform: {platform}")),
-            };
+            let program = agent_program_name(platform)
+                .ok_or_else(|| format!("Unsupported terminal platform: {platform}"))?;
             Ok(ResolvedCommand {
                 program: program.to_string(),
-                args: Vec::new(),
+                args: agent_launch_args(platform, input),
             })
         }
         TerminalLaunchKind::Resume => {
@@ -134,6 +130,110 @@ pub fn resolve_launch_command(
             Ok(shell_command(command))
         }
     }
+}
+
+/// Maps an agent platform id to the CLI entry point AI Switch spawns for it.
+pub fn agent_program_name(platform: &str) -> Option<&'static str> {
+    match platform.trim() {
+        "codex" => Some("codex"),
+        "claude" => Some("claude"),
+        "grok" => Some("grok"),
+        "gemini" => Some("gemini"),
+        "opencode" => Some("opencode"),
+        "openclaw" => Some("openclaw"),
+        "hermes" => Some("hermes"),
+        _ => None,
+    }
+}
+
+/// Only the CLIs whose `--model` flag has been verified take an explicit model
+/// argument; the rest keep whatever their own config selects.
+pub fn agent_supports_model_flag(platform: &str) -> bool {
+    matches!(platform.trim(), "codex" | "claude" | "grok" | "gemini")
+}
+
+/// Codex is the only agent that exposes a reasoning-effort knob AI Switch can
+/// set at launch time (`-c model_reasoning_effort=<level>`).
+pub fn agent_supports_reasoning(platform: &str) -> bool {
+    platform.trim() == "codex"
+}
+
+fn agent_launch_args(platform: &str, input: &CreateTerminalSessionInput) -> Vec<String> {
+    let mut args = Vec::new();
+    let model = input
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(model) = model {
+        if agent_supports_model_flag(platform) {
+            args.push("--model".to_string());
+            args.push(model.to_string());
+        }
+    }
+
+    let reasoning = input
+        .reasoning_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(reasoning) = reasoning {
+        if agent_supports_reasoning(platform) {
+            args.push("-c".to_string());
+            args.push(format!("model_reasoning_effort=\"{reasoning}\""));
+        }
+    }
+
+    args
+}
+
+/// Resolves `program` against `PATH`, honoring `PATHEXT` on Windows where the
+/// agent CLIs are shims (`codex.cmd`, `codex.ps1`) rather than bare executables.
+pub fn find_program_in_path(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let dirs = std::env::split_paths(&path).collect::<Vec<_>>();
+    let pathext = std::env::var("PATHEXT").unwrap_or_default();
+    find_program_in_dirs(&dirs, program, &pathext)
+}
+
+pub fn find_program_in_dirs(dirs: &[PathBuf], program: &str, pathext: &str) -> Option<PathBuf> {
+    let program = program.trim();
+    if program.is_empty() {
+        return None;
+    }
+
+    let extensions = executable_extensions(pathext);
+    for dir in dirs {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let base = dir.join(program);
+        if base.is_file() {
+            return Some(base);
+        }
+        for extension in &extensions {
+            let candidate = dir.join(format!("{program}{extension}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn executable_extensions(pathext: &str) -> Vec<String> {
+    pathext
+        .split(';')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            if value.starts_with('.') {
+                value.to_string()
+            } else {
+                format!(".{value}")
+            }
+        })
+        .collect()
 }
 
 impl TerminalManager {
@@ -407,6 +507,8 @@ mod tests {
                 .to_string(),
             cols: Some(100),
             rows: Some(30),
+            model: None,
+            reasoning_effort: None,
         }
     }
 
@@ -448,6 +550,91 @@ mod tests {
         let mut input = base_input();
         input.platform = Some("unknown".to_string());
         assert!(resolve_launch_command(&input).is_err());
+    }
+
+    #[test]
+    fn forwards_model_and_reasoning_to_codex() {
+        let mut input = base_input();
+        input.model = Some("gpt-5.6-sol".to_string());
+        input.reasoning_effort = Some("high".to_string());
+        let command = resolve_launch_command(&input).unwrap();
+        assert_eq!(
+            command.args,
+            vec![
+                "--model".to_string(),
+                "gpt-5.6-sol".to_string(),
+                "-c".to_string(),
+                "model_reasoning_effort=\"high\"".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn skips_reasoning_for_agents_without_the_knob() {
+        let mut input = base_input();
+        input.platform = Some("claude".to_string());
+        input.model = Some("claude-sonnet-4-6".to_string());
+        input.reasoning_effort = Some("high".to_string());
+        let command = resolve_launch_command(&input).unwrap();
+        assert_eq!(
+            command.args,
+            vec!["--model".to_string(), "claude-sonnet-4-6".to_string()]
+        );
+    }
+
+    #[test]
+    fn ignores_blank_model_and_reasoning_values() {
+        let mut input = base_input();
+        input.model = Some("  ".to_string());
+        input.reasoning_effort = Some("".to_string());
+        let command = resolve_launch_command(&input).unwrap();
+        assert!(command.args.is_empty());
+    }
+
+    #[test]
+    fn finds_windows_style_shims_through_pathext() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("codex.cmd"), "@echo off").unwrap();
+        let dirs = vec![PathBuf::new(), dir.path().to_path_buf()];
+
+        let found = find_program_in_dirs(&dirs, "codex", ".COM;.EXE;.CMD").unwrap();
+        // Windows matches paths case-insensitively, so the probe returns the
+        // candidate spelled the way PATHEXT spells it.
+        assert_eq!(found.parent(), Some(dir.path()));
+        assert_eq!(
+            found
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_ascii_lowercase),
+            Some("codex.cmd".to_string())
+        );
+        assert!(find_program_in_dirs(&dirs, "codex", ".COM;.EXE").is_none());
+        assert!(find_program_in_dirs(&dirs, "  ", ".CMD").is_none());
+    }
+
+    #[test]
+    fn finds_extensionless_programs_without_pathext() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("claude"), "#!/bin/sh\n").unwrap();
+        let dirs = vec![dir.path().to_path_buf()];
+
+        assert_eq!(
+            find_program_in_dirs(&dirs, "claude", "").unwrap(),
+            dir.path().join("claude")
+        );
+        assert!(find_program_in_dirs(&dirs, "codex", "").is_none());
+    }
+
+    #[test]
+    fn normalizes_pathext_entries_without_a_leading_dot() {
+        assert_eq!(
+            executable_extensions("COM; EXE ;;.CMD"),
+            vec![
+                ".COM".to_string(),
+                ".EXE".to_string(),
+                ".CMD".to_string()
+            ]
+        );
     }
 
     #[test]

@@ -3,6 +3,8 @@ use crate::core::terminals::{
     create_terminal_session_core, kill_terminal_session_core, list_terminal_sessions_core,
     resize_terminal_core, write_terminal_input_core,
 };
+use crate::error::ApiError;
+use crate::services::agent_launch_service::{AgentLaunchOption, AgentLaunchService};
 use crate::terminal_manager::{CreateTerminalSessionInput, TerminalSession};
 use crate::web::event_bridge::EventEmitter;
 use tauri::{AppHandle, State};
@@ -48,4 +50,13 @@ pub async fn list_terminal_sessions(
     state: State<'_, AppState>,
 ) -> Result<Vec<TerminalSession>, String> {
     Ok(list_terminal_sessions_core(&state.terminals))
+}
+
+#[tauri::command]
+pub async fn list_agent_launch_options(
+    state: State<'_, AppState>,
+) -> Result<Vec<AgentLaunchOption>, ApiError> {
+    AgentLaunchService::list_options(&state.pool)
+        .await
+        .map_err(ApiError::from)
 }

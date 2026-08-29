@@ -6,9 +6,10 @@ import { App } from "../src/App";
 import {
   createTerminalSession,
   killTerminalSession,
+  listAgentLaunchOptions,
   listSessions,
 } from "../src/lib/api/client";
-import type { SessionMeta, TerminalSession } from "../src/lib/api/types";
+import type { AgentLaunchOption, SessionMeta, TerminalSession } from "../src/lib/api/types";
 import { createQueryClient } from "../src/lib/query/queryClient";
 import { __resetTransportForTests } from "../src/lib/transport";
 import { VIBE_APPEARANCE_STORAGE_KEY, VIBE_SKIN_STORAGE_KEY } from "../src/lib/vibeSkin";
@@ -45,6 +46,7 @@ vi.mock("../src/screens/AccountsScreen", () => ({
 vi.mock("../src/lib/api/client", () => ({
   createTerminalSession: vi.fn(),
   killTerminalSession: vi.fn(),
+  listAgentLaunchOptions: vi.fn(),
   listSessions: vi.fn(),
 }));
 
@@ -85,6 +87,63 @@ const sessions: SessionMeta[] = [
     sourcePath: "D:/repo/app/session-2.jsonl",
     resumeCommand: null,
   },
+];
+
+function launchOption(overrides: Partial<AgentLaunchOption> & { platform: string }): AgentLaunchOption {
+  return {
+    displayName: overrides.platform,
+    program: overrides.platform,
+    installed: true,
+    npmPackage: `@example/${overrides.platform}`,
+    installCommand: `npm install -g @example/${overrides.platform}`,
+    supportsModelSelection: false,
+    supportsReasoning: false,
+    models: [],
+    ...overrides,
+  };
+}
+
+const agentLaunchOptions: AgentLaunchOption[] = [
+  launchOption({
+    platform: "codex",
+    displayName: "Codex",
+    npmPackage: "@openai/codex",
+    installCommand: "npm install -g @openai/codex",
+    supportsModelSelection: true,
+    supportsReasoning: true,
+    models: [
+      {
+        id: "gpt-5.6-sol",
+        reasoningLevels: [
+          { effort: "medium", description: "Balanced" },
+          { effort: "high", description: "Deep" },
+        ],
+        defaultReasoningLevel: "medium",
+      },
+      { id: "gpt-5.6-codex", reasoningLevels: [], defaultReasoningLevel: null },
+    ],
+  }),
+  launchOption({
+    platform: "claude",
+    displayName: "Claude",
+    npmPackage: "@anthropic-ai/claude-code",
+    installCommand: "npm install -g @anthropic-ai/claude-code",
+    supportsModelSelection: true,
+    models: [{ id: "claude-sonnet-4-6", reasoningLevels: [], defaultReasoningLevel: null }],
+  }),
+  launchOption({
+    platform: "grok",
+    displayName: "Grok",
+    installed: false,
+    npmPackage: "@vibe-kit/grok-cli",
+    installCommand: "npm install -g @vibe-kit/grok-cli",
+    supportsModelSelection: true,
+    models: [],
+  }),
+  launchOption({ platform: "gemini", displayName: "Gemini" }),
+  launchOption({ platform: "opencode", displayName: "OpenCode" }),
+  launchOption({ platform: "openclaw", displayName: "OpenClaw" }),
+  launchOption({ platform: "hermes", displayName: "Hermes" }),
 ];
 
 function renderScreen() {
@@ -132,7 +191,9 @@ describe("VibeScreen", () => {
     vi.mocked(createTerminalSession).mockReset();
     vi.mocked(killTerminalSession).mockReset();
     vi.mocked(listSessions).mockReset();
+    vi.mocked(listAgentLaunchOptions).mockReset();
     vi.mocked(listSessions).mockResolvedValue(sessions);
+    vi.mocked(listAgentLaunchOptions).mockResolvedValue(agentLaunchOptions);
     vi.mocked(createTerminalSession).mockResolvedValue({
       id: "term-1",
       title: "Fix terminal bug",
@@ -435,8 +496,92 @@ describe("VibeScreen", () => {
         cwd: "D:/repo/app",
         cols: 100,
         rows: 30,
+        model: null,
+        reasoningEffort: null,
       }),
     );
+  });
+
+  it("fills the composer model and reasoning selects from the agent launch catalog", async () => {
+    renderScreen();
+
+    await screen.findByPlaceholderText("Send a message...");
+    const modelSelect = screen.getByLabelText("Model") as HTMLSelectElement;
+    await screen.findByRole("option", { name: "gpt-5.6-sol" });
+    expect(Array.from(modelSelect.options).map((option) => option.value)).toEqual([
+      "auto",
+      "gpt-5.6-sol",
+      "gpt-5.6-codex",
+    ]);
+
+    const reasoningSelect = screen.getByLabelText("Reasoning") as HTMLSelectElement;
+    expect(reasoningSelect).toBeDisabled();
+
+    await userEvent.selectOptions(modelSelect, "gpt-5.6-sol");
+    expect(reasoningSelect).toBeEnabled();
+    expect(Array.from(reasoningSelect.options).map((option) => option.value)).toEqual([
+      "auto",
+      "medium",
+      "high",
+    ]);
+
+    await userEvent.selectOptions(reasoningSelect, "high");
+    await userEvent.selectOptions(screen.getByLabelText("Folder"), "D:/repo/app");
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    await waitFor(() =>
+      expect(createTerminalSession).toHaveBeenCalledWith({
+        kind: "agent",
+        platform: "codex",
+        command: null,
+        title: "codex - D:/repo/app",
+        cwd: "D:/repo/app",
+        cols: 100,
+        rows: 30,
+        model: "gpt-5.6-sol",
+        reasoningEffort: "high",
+      }),
+    );
+  });
+
+  it("resets the model selection when the chosen agent does not advertise it", async () => {
+    renderScreen();
+
+    await screen.findByPlaceholderText("Send a message...");
+    await screen.findByRole("option", { name: "gpt-5.6-sol" });
+    await userEvent.selectOptions(screen.getByLabelText("Model"), "gpt-5.6-sol");
+    await userEvent.selectOptions(screen.getByLabelText("Reasoning"), "high");
+
+    await userEvent.click(screen.getByRole("button", { name: "Claude" }));
+
+    await waitFor(() => expect(screen.getByLabelText("Model")).toHaveValue("auto"));
+    expect(screen.getByLabelText("Reasoning")).toHaveValue("auto");
+    expect(screen.getByLabelText("Reasoning")).toBeDisabled();
+  });
+
+  it("blocks launching an agent whose CLI is missing and offers the install command", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderScreen();
+
+    await screen.findByPlaceholderText("Send a message...");
+    await userEvent.click(screen.getByRole("button", { name: "Grok" }));
+
+    expect(
+      await screen.findByText("Grok CLI is not installed. Install it, then reopen this panel."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("npm install -g @vibe-kit/grok-cli")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Copy install command" }));
+    expect(writeText).toHaveBeenCalledWith("npm install -g @vibe-kit/grok-cli");
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+
+    expect(createTerminalSession).not.toHaveBeenCalled();
   });
 
   it("opens appearance settings and switches Vibe themes from the dialog", async () => {
@@ -1147,6 +1292,8 @@ describe("VibeScreen", () => {
         cwd: "D:/repo/app",
         cols: 100,
         rows: 30,
+        model: null,
+        reasoningEffort: null,
       }),
     );
   });

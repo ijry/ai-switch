@@ -741,6 +741,8 @@ export type CreateTerminalSessionInput = {
   cwd: string;
   cols?: number | null;
   rows?: number | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
 };
 
 export type TerminalSession = {
@@ -751,6 +753,29 @@ export type TerminalSession = {
   command: string;
   status: TerminalStatus;
   createdAt: number;
+};
+
+export type AgentReasoningLevel = {
+  effort: string;
+  description: string;
+};
+
+export type AgentLaunchModel = {
+  id: string;
+  reasoningLevels: AgentReasoningLevel[];
+  defaultReasoningLevel?: string | null;
+};
+
+export type AgentLaunchOption = {
+  platform: string;
+  displayName: string;
+  program: string;
+  installed: boolean;
+  npmPackage: string;
+  installCommand: string;
+  supportsModelSelection: boolean;
+  supportsReasoning: boolean;
+  models: AgentLaunchModel[];
 };
 
 export type TerminalOutputEvent = {

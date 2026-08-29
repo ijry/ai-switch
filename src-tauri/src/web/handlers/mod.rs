@@ -27,6 +27,7 @@ use crate::models::route_pool::{
     SetRoutePoolMembersInput,
 };
 use crate::models::settings::AppSettings;
+use crate::services::agent_launch_service::AgentLaunchService;
 use crate::services::batch_service::BatchService;
 use crate::services::config_write_service::ConfigWriteCoordinator;
 use crate::services::import_service::{ExampleJsonImportRequest, ImportService};
@@ -388,6 +389,9 @@ pub async fn dispatch_command(
             to_value(())
         }
         "list_terminal_sessions" => to_value(list_terminal_sessions_core(&state.terminals)),
+        "list_agent_launch_options" => {
+            to_value(AgentLaunchService::list_options(&state.pool).await?)
+        }
         "list_route_credentials" => {
             let platform = required_string_arg(&args, "platform")?;
             let activity = state.route_proxy.activity();

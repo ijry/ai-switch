@@ -1,6 +1,7 @@
 import { getTransport } from "../transport";
 import type {
   AccountStatus,
+  AgentLaunchOption,
   AppSettings,
   AppSettingsView,
   Batch,
@@ -412,6 +413,10 @@ export function killTerminalSession(sessionId: string): Promise<void> {
 
 export function listTerminalSessions(): Promise<TerminalSession[]> {
   return invoke("list_terminal_sessions");
+}
+
+export function listAgentLaunchOptions(): Promise<AgentLaunchOption[]> {
+  return invoke("list_agent_launch_options");
 }
 
 export function getWebServiceConfig(): Promise<WebServiceConfig> {
