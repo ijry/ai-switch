@@ -440,8 +440,23 @@ button:disabled {
 .vibe-session-rail {
   align-items: center;
   cursor: col-resize;
+  flex-direction: column;
   justify-content: center;
   width: 100%;
+}
+
+/* The rail doubles as a resize gutter: the collapse button keeps its clicks and
+   the strips above and below it start the drag. */
+.vibe-session-rail-drag {
+  cursor: col-resize;
+  flex: 1 1 auto;
+  min-height: 0.75rem;
+  touch-action: none;
+  width: 100%;
+}
+
+.vibe-session-rail-drag-active {
+  background: rgba(56, 189, 248, 0.35);
 }
 
 .vibe-session-rail-handle {
@@ -449,6 +464,7 @@ button:disabled {
   border-radius: 999px;
   cursor: pointer;
   display: inline-flex;
+  flex: 0 0 auto;
   height: 3.25rem;
   justify-content: center;
   transition:

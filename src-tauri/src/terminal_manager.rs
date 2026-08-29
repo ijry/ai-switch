@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
+use crate::services::claude_trust_service;
 use crate::web::event_bridge::EventEmitter;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -152,6 +153,23 @@ pub fn agent_supports_model_flag(platform: &str) -> bool {
     matches!(platform.trim(), "codex" | "claude" | "grok" | "gemini")
 }
 
+/// True when this launch will start the Claude Code CLI, either as a fresh agent
+/// run or by replaying a `claude --resume ...` command.
+pub fn launches_claude(input: &CreateTerminalSessionInput) -> bool {
+    if input.platform.as_deref().unwrap_or("").trim() == "claude" {
+        return !matches!(input.kind, TerminalLaunchKind::Shell);
+    }
+    if input.kind != TerminalLaunchKind::Resume {
+        return false;
+    }
+    input
+        .command
+        .as_deref()
+        .unwrap_or("")
+        .trim_start()
+        .starts_with("claude")
+}
+
 /// Codex is the only agent that exposes a reasoning-effort knob AI Switch can
 /// set at launch time (`-c model_reasoning_effort=<level>`).
 pub fn agent_supports_reasoning(platform: &str) -> bool {
@@ -244,6 +262,12 @@ impl TerminalManager {
     ) -> Result<TerminalSession, String> {
         validate_launch_input(&input)?;
         let resolved = resolve_launch_command(&input)?;
+        // Claude Code otherwise re-asks "do you trust this folder?" on every
+        // launch. Starting a session from AI Switch is already an explicit
+        // decision to run the agent there, so record the answer up front.
+        if launches_claude(&input) {
+            claude_trust_service::trust_project_best_effort(input.cwd.trim());
+        }
         let pty_system = native_pty_system();
         let size = PtySize {
             rows: input.rows.unwrap_or(30),
@@ -641,6 +665,34 @@ mod tests {
     fn list_sessions_starts_empty() {
         let manager = TerminalManager::default();
         assert!(manager.list_sessions().is_empty());
+    }
+
+    #[test]
+    fn detects_claude_launches_for_trust_preacceptance() {
+        let mut agent = base_input();
+        agent.platform = Some("claude".to_string());
+        assert!(launches_claude(&agent));
+
+        let mut codex = base_input();
+        codex.platform = Some("codex".to_string());
+        assert!(!launches_claude(&codex));
+
+        let mut resume = base_input();
+        resume.kind = TerminalLaunchKind::Resume;
+        resume.platform = None;
+        resume.command = Some("  claude --resume abc123".to_string());
+        assert!(launches_claude(&resume));
+
+        let mut other_resume = base_input();
+        other_resume.kind = TerminalLaunchKind::Resume;
+        other_resume.platform = None;
+        other_resume.command = Some("codex resume abc123".to_string());
+        assert!(!launches_claude(&other_resume));
+
+        let mut shell = base_input();
+        shell.kind = TerminalLaunchKind::Shell;
+        shell.platform = Some("claude".to_string());
+        assert!(!launches_claude(&shell));
     }
 
     #[test]

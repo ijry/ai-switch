@@ -18,7 +18,12 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type {
+  ChangeEvent,
+  CSSProperties,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+} from "react";
 import {
   createTerminalSession,
   killTerminalSession,
@@ -26,6 +31,7 @@ import {
   listSessions,
 } from "../lib/api/client";
 import { useI18n } from "../lib/i18n";
+import { useDragResize } from "../lib/useDragResize";
 import {
   BUILT_IN_VIBE_SKINS,
   clearStoredVibeSkin,
@@ -49,6 +55,11 @@ import type {
   VibeSkinDefinition,
   VibeSkinTaskbarMenuItem,
 } from "../lib/vibeSkin";
+import {
+  readStoredVibeTabs,
+  writeStoredVibeTabs,
+  type VibeTabDescriptor,
+} from "../lib/vibeTabs";
 import { AiSwitchLogo } from "../components/brand/AiSwitchLogo";
 import type {
   AgentLaunchOption,
@@ -72,6 +83,17 @@ const agentOptions = [
 
 const chooseFolderOptionValue = "__choose_folder__";
 const autoLaunchOptionValue = "auto";
+
+// The session list is a grid track, so its width lives in a CSS variable that both
+// the plain and skinned layouts read.
+const SESSION_LIST_DEFAULT_WIDTH = 356;
+const SESSION_LIST_SKIN_DEFAULT_WIDTH = 300;
+const SESSION_LIST_MIN_WIDTH = 220;
+const SESSION_LIST_MAX_WIDTH = 560;
+
+function clampSessionListWidth(value: number) {
+  return Math.min(Math.max(Math.round(value), SESSION_LIST_MIN_WIDTH), SESSION_LIST_MAX_WIDTH);
+}
 
 type AgentPlatform = (typeof agentOptions)[number]["platform"];
 
@@ -254,9 +276,16 @@ function groupSessions(sessions: SessionMeta[], unknownLabel: string) {
 }
 
 // Sub-agent runs and slash-command bookkeeping surface as sessions whose title is
-// a raw <local-command-*> block. They are never worth resuming from the list.
+// a raw <local-command-*> or <command-*> block. They are never worth resuming
+// from the list.
+const BOOKKEEPING_TITLE_PREFIXES = ["<command-name", "<command-message", "<command-args"];
+
 function isBookkeepingSession(session: SessionMeta) {
-  return (session.title ?? "").toLowerCase().includes("<local-command-");
+  const title = (session.title ?? "").trim().toLowerCase();
+  if (title.includes("<local-command-")) {
+    return true;
+  }
+  return BOOKKEEPING_TITLE_PREFIXES.some((prefix) => title.startsWith(prefix));
 }
 
 function formatError(error: unknown) {
@@ -1039,15 +1068,26 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const [sessionListCollapsed, setSessionListCollapsed] = useState(
     () => initialAppearance.sessionListCollapsed ?? false,
   );
+  // `null` keeps the per-theme default width until the user drags the rail.
+  const [sessionListWidth, setSessionListWidth] = useState<number | null>(() =>
+    typeof initialAppearance.sessionListWidth === "number"
+      ? clampSessionListWidth(initialAppearance.sessionListWidth)
+      : null,
+  );
   const [tiledTerminals, setTiledTerminals] = useState(
     () => initialAppearance.tiledTerminals ?? false,
   );
   const [tabsMenu, setTabsMenu] = useState<{ x: number; y: number } | null>(null);
+  // Restored tabs are re-spawned from stored launch descriptors; persistence stays
+  // paused until that pass finishes so an empty first render cannot wipe the list.
+  const [tabsRestored, setTabsRestored] = useState(false);
   const skinFileInputRef = useRef<HTMLInputElement | null>(null);
   const startButtonRef = useRef<HTMLButtonElement | null>(null);
   const startMenuRef = useRef<HTMLDivElement | null>(null);
   const tabsMenuRef = useRef<HTMLDivElement | null>(null);
   const activeTileRef = useRef<HTMLDivElement | null>(null);
+  const tabInputsRef = useRef(new Map<string, CreateTerminalSessionInput>());
+  const tabRestoreStartedRef = useRef(false);
   const sessionListScrollTimeout = useRef<number | null>(null);
   const ambientAudioRef = useRef<AmbientAudioHandle[]>([]);
   const closingTabIdsRef = useRef(new Set<string>());
@@ -1081,6 +1121,11 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   );
   const agentInstalled = activeAgentLaunchOption?.installed !== false;
   const agentInstallCommand = activeAgentLaunchOption?.installCommand ?? "";
+  // A failed catalog fetch used to leave the agent panel silently empty, which
+  // reads as a blank page. Surface it next to the agent strip instead.
+  const agentCatalogError = agentLaunchOptionsQuery.isError
+    ? t("vibe.errorAgentCatalog", { message: formatError(agentLaunchOptionsQuery.error) })
+    : null;
 
   // Keep the model/reasoning selection valid whenever the agent changes or the
   // backend catalog no longer advertises the previously chosen value.
@@ -1151,19 +1196,88 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       skinAudioEnabled,
       tiledTerminals,
       sessionListCollapsed,
+      sessionListWidth: sessionListWidth ?? undefined,
     });
-  }, [activeSkin.id, sessionListCollapsed, skinAudioEnabled, themeMode, tiledTerminals]);
+  }, [
+    activeSkin.id,
+    sessionListCollapsed,
+    sessionListWidth,
+    skinAudioEnabled,
+    themeMode,
+    tiledTerminals,
+  ]);
 
   const openTerminal = useCallback(async (input: CreateTerminalSessionInput) => {
     setError(null);
     try {
       const session = await createTerminalSession(input);
+      tabInputsRef.current.set(session.id, input);
       setTabs((current) => [...current, session]);
       setActiveId(session.id);
     } catch (caught) {
       setError(formatError(caught));
     }
   }, []);
+
+  // PTYs die with the process, so restoring a tab means re-spawning it from the
+  // stored launch descriptor. This runs once, the first time Vibe mounts.
+  useEffect(() => {
+    if (tabRestoreStartedRef.current) {
+      return;
+    }
+    tabRestoreStartedRef.current = true;
+
+    const descriptors = readStoredVibeTabs();
+    if (descriptors.length === 0) {
+      setTabsRestored(true);
+      return;
+    }
+
+    void (async () => {
+      const restored: TerminalSession[] = [];
+      let restoredActiveId: string | null = null;
+      let firstFailure: string | null = null;
+
+      for (const descriptor of descriptors) {
+        try {
+          const session = await createTerminalSession(descriptor.input);
+          tabInputsRef.current.set(session.id, descriptor.input);
+          restored.push(session);
+          if (descriptor.active) {
+            restoredActiveId = session.id;
+          }
+        } catch (caught) {
+          // A folder can disappear between runs; keep restoring the rest.
+          firstFailure = firstFailure ?? formatError(caught);
+        }
+      }
+
+      if (restored.length > 0) {
+        setTabs((current) => (current.length > 0 ? current : restored));
+        setActiveId((current) => current ?? restoredActiveId ?? restored[0].id);
+      }
+      if (firstFailure) {
+        setError(firstFailure);
+      }
+      setTabsRestored(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!tabsRestored) {
+      return;
+    }
+
+    const descriptors: VibeTabDescriptor[] = [];
+    for (const tab of tabs) {
+      const input = tabInputsRef.current.get(tab.id);
+      if (!input) {
+        continue;
+      }
+      descriptors.push({ input, active: tab.id === activeId });
+    }
+    writeStoredVibeTabs(descriptors);
+  }, [activeId, tabs, tabsRestored]);
 
   const resumeSession = (session: SessionMeta) => {
     if (!session.projectDir || !session.resumeCommand) {
@@ -1302,6 +1416,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       }
       setTabs((current) => {
         const remaining = current.filter((tab) => tab.id !== session.id);
+        tabInputsRef.current.delete(session.id);
         setActiveId((currentActive) => {
           if (currentActive !== session.id) {
             return currentActive;
@@ -1411,6 +1526,24 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     () => (isSkin ? skinToCssVariables(activeSkin) : undefined),
     [activeSkin, isSkin],
   );
+  const effectiveSessionListWidth =
+    sessionListWidth ??
+    (isSkin ? SESSION_LIST_SKIN_DEFAULT_WIDTH : SESSION_LIST_DEFAULT_WIDTH);
+  const rootStyle = useMemo(
+    () =>
+      ({
+        ...(skinStyle ?? {}),
+        "--vibe-session-list-width": `${effectiveSessionListWidth}px`,
+      }) as CSSProperties,
+    [effectiveSessionListWidth, skinStyle],
+  );
+  const { dragging: sessionListResizing, startDragging: startSessionListResize } = useDragResize({
+    axis: "x",
+    min: SESSION_LIST_MIN_WIDTH,
+    max: SESSION_LIST_MAX_WIDTH,
+    getInitialValue: () => effectiveSessionListWidth,
+    onChange: (value) => setSessionListWidth(clampSessionListWidth(value)),
+  });
   const terminalThemeMode = isDark ? "dark" : "light";
   const themeLabel =
     themeMode === "dark"
@@ -1431,13 +1564,13 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const skinBodyGridClass = showSkinRightRail
     ? sessionListCollapsed
       ? "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[20px_minmax(0,1fr)_260px]"
-      : "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_20px_minmax(0,1fr)_260px]"
+      : "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[var(--vibe-session-list-width)_20px_minmax(0,1fr)_260px]"
     : sessionListCollapsed
       ? "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[20px_minmax(0,1fr)]"
-      : "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_20px_minmax(0,1fr)]";
+      : "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[var(--vibe-session-list-width)_20px_minmax(0,1fr)]";
   const plainBodyGridClass = sessionListCollapsed
     ? "grid h-full min-h-0 grid-cols-1 lg:grid-cols-[20px_minmax(0,1fr)]"
-    : "grid h-full min-h-0 grid-cols-1 lg:grid-cols-[356px_20px_minmax(0,1fr)]";
+    : "grid h-full min-h-0 grid-cols-1 lg:grid-cols-[var(--vibe-session-list-width)_20px_minmax(0,1fr)]";
   const activeSkinRegionKeys = isSkin
     ? VIBE_SKIN_REGION_KEYS.filter((region) => Boolean(activeSkin.regions?.[region]))
     : [];
@@ -1679,6 +1812,21 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     : isDark
       ? "inline-flex shrink-0 items-center gap-1 rounded-full border border-[#586e75]/50 px-3 py-1 text-[11px] font-semibold text-[#9fc3cf]"
       : "inline-flex shrink-0 items-center gap-1 rounded-full border border-stone-200 px-3 py-1 text-[11px] font-semibold text-stone-500";
+  const agentCatalogNotice = agentCatalogError ? (
+    <div
+      className={
+        isSkin
+          ? "vibe-skin-agent-strip mt-1 rounded-md border p-1.5 text-[10px]"
+          : isDark
+            ? "mt-2 rounded-xl border border-[#dc322f]/60 bg-[#dc322f]/12 p-2 text-[12px] text-[#eee8d5]"
+            : "mt-2 rounded-xl border border-red-300 bg-red-50 p-2 text-[12px] text-red-900"
+      }
+      data-testid="vibe-agent-catalog-error"
+      role="status"
+    >
+      {agentCatalogError}
+    </div>
+  ) : null;
   const agentMissingNotice = activeAgentLaunchOption && !activeAgentLaunchOption.installed ? (
     <div
       className={
@@ -1725,7 +1873,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       }
       onKeyDownCapture={activateSkinAudio}
       onPointerDownCapture={activateSkinAudio}
-      style={skinStyle}
+      style={rootStyle}
     >
       <div className={isSkin ? "vibe-skin-frame flex h-full min-h-0 flex-col" : plainBodyGridClass}>
         {isSkin && (
@@ -2063,6 +2211,22 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 : "vibe-session-rail vibe-light-session-rail hidden lg:flex"
           }
         >
+          {!sessionListCollapsed && (
+            <div
+              aria-label={t("vibe.resizeSessionList")}
+              aria-orientation="vertical"
+              aria-valuemax={SESSION_LIST_MAX_WIDTH}
+              aria-valuemin={SESSION_LIST_MIN_WIDTH}
+              aria-valuenow={effectiveSessionListWidth}
+              className={`vibe-session-rail-drag ${
+                sessionListResizing ? "vibe-session-rail-drag-active" : ""
+              }`}
+              data-testid="vibe-session-resize-handle"
+              onPointerDown={startSessionListResize}
+              role="separator"
+              title={t("vibe.resizeSessionList")}
+            />
+          )}
           <button
             aria-expanded={!sessionListCollapsed}
             aria-label={
@@ -2081,6 +2245,15 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
               <ChevronLeft className="h-3 w-3" />
             )}
           </button>
+          {!sessionListCollapsed && (
+            <div
+              aria-hidden="true"
+              className={`vibe-session-rail-drag ${
+                sessionListResizing ? "vibe-session-rail-drag-active" : ""
+              }`}
+              onPointerDown={startSessionListResize}
+            />
+          )}
         </div>
 
         <div
@@ -2304,6 +2477,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                     </div>
                   )}
 
+                  {agentCatalogNotice}
                   {agentMissingNotice}
 
                   <div className={composerClass}>
@@ -2841,6 +3015,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                 </select>
               </label>
 
+              {agentCatalogNotice}
               {agentMissingNotice}
 
               <label className={isSkin ? "block text-[12px] font-semibold text-[var(--vibe-muted-text)]" : isDark ? "block text-[12px] font-semibold text-[#93a1a1]" : "block text-[12px] font-semibold text-stone-600"}>

@@ -20,6 +20,7 @@ export type VibeAppearancePreference = {
   skinAudioEnabled?: boolean;
   tiledTerminals?: boolean;
   sessionListCollapsed?: boolean;
+  sessionListWidth?: number;
 };
 
 export type VibeSkinAudioEvent = "agentSelect" | "hologramInteract" | "radarPulse";
@@ -1608,6 +1609,10 @@ export function readStoredVibeAppearance(): VibeAppearancePreference {
         typeof source.sessionListCollapsed === "boolean"
           ? source.sessionListCollapsed
           : undefined,
+      sessionListWidth:
+        typeof source.sessionListWidth === "number" && Number.isFinite(source.sessionListWidth)
+          ? source.sessionListWidth
+          : undefined,
     };
   } catch {
     return {};
@@ -1630,6 +1635,9 @@ export function writeStoredVibeAppearance(preference: VibeAppearancePreference) 
   }
   if (typeof preference.sessionListCollapsed === "boolean") {
     stored.sessionListCollapsed = preference.sessionListCollapsed;
+  }
+  if (typeof preference.sessionListWidth === "number" && Number.isFinite(preference.sessionListWidth)) {
+    stored.sessionListWidth = Math.round(preference.sessionListWidth);
   }
   window.localStorage.setItem(VIBE_APPEARANCE_STORAGE_KEY, JSON.stringify(stored));
 }

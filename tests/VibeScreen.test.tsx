@@ -1,6 +1,7 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/App";
 import {
@@ -13,6 +14,7 @@ import type { AgentLaunchOption, SessionMeta, TerminalSession } from "../src/lib
 import { createQueryClient } from "../src/lib/query/queryClient";
 import { __resetTransportForTests } from "../src/lib/transport";
 import { VIBE_APPEARANCE_STORAGE_KEY, VIBE_SKIN_STORAGE_KEY } from "../src/lib/vibeSkin";
+import { VIBE_TABS_STORAGE_KEY } from "../src/lib/vibeTabs";
 import { VibeScreen } from "../src/screens/VibeScreen";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -171,6 +173,27 @@ async function switchThemeFromAppearance(theme: "Solarized Dark" | "Light" | "Sk
 
 async function switchToSkinTheme() {
   await switchThemeFromAppearance("Skin");
+}
+
+function dispatchPointerEvent(
+  target: EventTarget,
+  type: "pointerdown" | "pointermove" | "pointerup",
+  {
+    button = 0,
+    clientX = 0,
+    pointerId = 1,
+  }: { button?: number; clientX?: number; pointerId?: number } = {},
+) {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    button: { configurable: true, value: button },
+    clientX: { configurable: true, value: clientX },
+    clientY: { configurable: true, value: 0 },
+    pointerId: { configurable: true, value: pointerId },
+  });
+  act(() => {
+    target.dispatchEvent(event);
+  });
 }
 
 describe("VibeScreen", () => {
@@ -349,6 +372,63 @@ describe("VibeScreen", () => {
     expect(createTerminalSession).toHaveBeenCalledTimes(1);
   });
 
+  it("restores the tabs that were open before the last shutdown", async () => {
+    window.localStorage.setItem(
+      VIBE_TABS_STORAGE_KEY,
+      JSON.stringify([
+        {
+          input: {
+            kind: "resume",
+            platform: "codex",
+            command: "codex resume s1",
+            title: "Fix terminal bug",
+            cwd: "D:/repo/app",
+            cols: 100,
+            rows: 30,
+          },
+          active: true,
+        },
+        // Unusable descriptors are dropped instead of failing the whole restore.
+        { input: { kind: "resume", cwd: "D:/repo/app" } },
+        { input: { kind: "shell", cwd: "   " } },
+      ]),
+    );
+
+    renderScreen();
+
+    expect(await screen.findByTestId("terminal-pane-term-1")).toBeInTheDocument();
+    expect(createTerminalSession).toHaveBeenCalledTimes(1);
+    expect(createTerminalSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "resume",
+        platform: "codex",
+        command: "codex resume s1",
+        cwd: "D:/repo/app",
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Fix terminal bug" })).toBeInTheDocument();
+  });
+
+  it("remembers open tabs and forgets the ones that get closed", async () => {
+    renderScreen();
+
+    await expandProjectDirectory();
+    await userEvent.click(await screen.findByRole("button", { name: /Resume Fix terminal bug/ }));
+    await screen.findByTestId("terminal-pane-term-1");
+
+    await waitFor(() => {
+      const stored = window.localStorage.getItem(VIBE_TABS_STORAGE_KEY);
+      expect(stored).toContain("codex resume s1");
+      expect(stored).toContain('"active":true');
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Close Fix terminal bug" }));
+
+    await waitFor(() =>
+      expect(window.localStorage.getItem(VIBE_TABS_STORAGE_KEY)).toBeNull(),
+    );
+  });
+
   it("hides sub-agent bookkeeping sessions from the session list", async () => {
     vi.mocked(listSessions).mockResolvedValue([
       ...sessions,
@@ -363,6 +443,16 @@ describe("VibeScreen", () => {
         sourcePath: "D:/repo/app/session-3.jsonl",
         resumeCommand: "claude --resume s3",
       },
+      {
+        providerId: "claude",
+        sessionId: "s4",
+        title: "<command-name>/clear</command-name>",
+        projectDir: "D:/repo/app",
+        createdAt: 1,
+        lastActiveAt: 2,
+        sourcePath: "D:/repo/app/session-4.jsonl",
+        resumeCommand: "claude --resume s4",
+      },
     ]);
     renderScreen();
 
@@ -370,6 +460,7 @@ describe("VibeScreen", () => {
 
     expect(screen.getByText("Fix terminal bug")).toBeInTheDocument();
     expect(screen.queryByText(/local-command-caveat/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/command-name/)).not.toBeInTheDocument();
   });
 
   it("collapses and restores the session list from the rail control", async () => {
@@ -406,6 +497,41 @@ describe("VibeScreen", () => {
     ).toBeInTheDocument();
   });
 
+  it("resizes the session list from the rail drag gutter and persists the width", async () => {
+    const view = renderScreen();
+
+    await screen.findByRole("button", { name: "Expand folder D:/repo/app" });
+    const shell = screen.getByRole("main");
+    const handle = screen.getByTestId("vibe-session-resize-handle");
+    expect(shell.style.getPropertyValue("--vibe-session-list-width")).toBe("356px");
+    expect(handle).toHaveAttribute("role", "separator");
+
+    dispatchPointerEvent(handle, "pointerdown", { clientX: 356, pointerId: 21 });
+    dispatchPointerEvent(document, "pointermove", { clientX: 420, pointerId: 21 });
+    expect(shell.style.getPropertyValue("--vibe-session-list-width")).toBe("420px");
+
+    dispatchPointerEvent(document, "pointermove", { clientX: 20, pointerId: 21 });
+    expect(shell.style.getPropertyValue("--vibe-session-list-width")).toBe("220px");
+
+    dispatchPointerEvent(document, "pointermove", { clientX: 1200, pointerId: 21 });
+    expect(shell.style.getPropertyValue("--vibe-session-list-width")).toBe("560px");
+    dispatchPointerEvent(document, "pointerup", { pointerId: 21 });
+
+    await waitFor(() =>
+      expect(window.localStorage.getItem(VIBE_APPEARANCE_STORAGE_KEY)).toContain(
+        '"sessionListWidth":560',
+      ),
+    );
+
+    view.unmount();
+    renderScreen();
+
+    await screen.findByRole("button", { name: "Expand folder D:/repo/app" });
+    expect(
+      screen.getByRole("main").style.getPropertyValue("--vibe-session-list-width"),
+    ).toBe("560px");
+  });
+
   it("tiles terminals horizontally from the tab bar context menu", async () => {
     const view = renderScreen();
 
@@ -438,8 +564,7 @@ describe("VibeScreen", () => {
 
     view.unmount();
     renderScreen();
-    await expandProjectDirectory();
-    await userEvent.click(await screen.findByRole("button", { name: /Resume Fix terminal bug/ }));
+    // The tab comes back from storage on mount, so there is nothing to resume here.
     await screen.findByTestId("vibe-tiled-terminals");
 
     await userEvent.pointer({
@@ -582,6 +707,18 @@ describe("VibeScreen", () => {
     expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
 
     expect(createTerminalSession).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a catalog failure instead of rendering an empty agent panel", async () => {
+    vi.mocked(listAgentLaunchOptions).mockRejectedValue(new Error("sidecar offline"));
+
+    renderScreen();
+
+    const notice = await screen.findByTestId("vibe-agent-catalog-error", undefined, {
+      timeout: 5000,
+    });
+    expect(notice).toHaveTextContent("Could not load the agent list: sidecar offline");
+    expect(screen.getByRole("button", { name: "Codex" })).toBeInTheDocument();
   });
 
   it("opens appearance settings and switches Vibe themes from the dialog", async () => {

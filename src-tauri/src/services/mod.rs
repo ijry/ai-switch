@@ -1,5 +1,6 @@
 pub mod agent_launch_service;
 pub mod batch_service;
+pub mod claude_trust_service;
 pub mod client_identity;
 pub mod codex_reasoning_cache;
 pub mod config_write_service;

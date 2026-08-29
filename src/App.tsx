@@ -9,6 +9,7 @@ import {
   type AgentPlatform,
 } from "./components/layout/AppLayout";
 import { WebAuthGate } from "./components/auth/WebAuthGate";
+import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 import { I18nProvider } from "./lib/i18n";
 import { createQueryClient } from "./lib/query/queryClient";
 import { isDesktop, isLocalWebDevRuntime } from "./lib/transport";
@@ -138,7 +139,9 @@ export function App() {
           <>
             {vibeMounted && (
               <div aria-hidden={!vibeActive} className={vibeActive ? "contents" : "hidden"}>
-                <VibeScreen onExitVibe={() => setScreen("Codex")} />
+                <ErrorBoundary label="Vibe">
+                  <VibeScreen onExitVibe={() => setScreen("Codex")} />
+                </ErrorBoundary>
               </div>
             )}
             {!vibeActive && (

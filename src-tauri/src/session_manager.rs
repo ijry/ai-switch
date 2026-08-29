@@ -455,8 +455,12 @@ fn is_context_blob(content: &str) -> bool {
         || lower.starts_with("# agents.md instructions")
         || lower.starts_with("<instructions>")
         // Claude Code records local slash-command bookkeeping as user messages
-        // wrapped in <local-command-*> tags. They are never a useful title.
+        // wrapped in <local-command-*> or <command-*> tags. They are never a
+        // useful title.
         || lower.contains("<local-command-")
+        || lower.starts_with("<command-name")
+        || lower.starts_with("<command-message")
+        || lower.starts_with("<command-args")
 }
 
 fn resume_command(provider_id: &str, session_id: &str) -> Option<String> {
@@ -535,6 +539,21 @@ mod tests {
         assert_eq!(
             title_from_messages(&messages),
             Some("重构会话列表".to_string())
+        );
+    }
+
+    #[test]
+    fn title_skips_claude_command_tag_bookkeeping() {
+        let messages = vec![
+            message("user", "<command-name>/clear</command-name>"),
+            message("user", "<command-message>clear</command-message>"),
+            message("user", "<command-args></command-args>"),
+            message("user", "修复平铺模式"),
+        ];
+
+        assert_eq!(
+            title_from_messages(&messages),
+            Some("修复平铺模式".to_string())
         );
     }
 
