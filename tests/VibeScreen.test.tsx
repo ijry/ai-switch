@@ -677,6 +677,43 @@ describe("VibeScreen", () => {
     ).toHaveAttribute("title", "Fix terminal bug · exited · exit code 0");
   });
 
+  it("scrolls the tab strip with the arrow buttons once the tabs overflow", async () => {
+    renderScreen();
+
+    const strip = await screen.findByTestId("vibe-tab-strip");
+    const scrollLeftArrow = screen.getByRole("button", { name: "Scroll tabs left" });
+    const scrollRightArrow = screen.getByRole("button", { name: "Scroll tabs right" });
+
+    // jsdom has no layout, so the strip metrics are stubbed to simulate overflow.
+    expect(scrollLeftArrow).toBeDisabled();
+    expect(scrollRightArrow).toBeDisabled();
+
+    Object.defineProperty(strip, "clientWidth", { configurable: true, value: 400 });
+    Object.defineProperty(strip, "scrollWidth", { configurable: true, value: 1200 });
+    const scrollBy = vi.fn();
+    Object.defineProperty(strip, "scrollBy", { configurable: true, value: scrollBy });
+    fireEvent.scroll(strip);
+
+    await waitFor(() => expect(scrollRightArrow).toBeEnabled());
+    expect(scrollLeftArrow).toBeDisabled();
+
+    await userEvent.click(scrollRightArrow);
+    expect(scrollBy).toHaveBeenCalledWith({ behavior: "smooth", left: 280 });
+    expect(strip).toHaveClass("vibe-scrollbar-active");
+
+    strip.scrollLeft = 280;
+    fireEvent.scroll(strip);
+
+    await waitFor(() => expect(scrollLeftArrow).toBeEnabled());
+    await userEvent.click(scrollLeftArrow);
+    expect(scrollBy).toHaveBeenLastCalledWith({ behavior: "smooth", left: -280 });
+
+    strip.scrollLeft = 800;
+    fireEvent.scroll(strip);
+
+    await waitFor(() => expect(scrollRightArrow).toBeDisabled());
+  });
+
   it("renders the empty-state launch composer with agent and routing controls", async () => {
     renderScreen();
 

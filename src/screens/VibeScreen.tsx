@@ -1108,6 +1108,10 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     () => initialAppearance.tabWidthFitsContent ?? false,
   );
   const [tabSettingsOpen, setTabSettingsOpen] = useState(false);
+  // The tab strip scrolls horizontally once the tabs outgrow the workspace, so the
+  // arrow buttons need to know which directions still have room.
+  const [tabStripOverflow, setTabStripOverflow] = useState({ left: false, right: false });
+  const [tabStripScrolling, setTabStripScrolling] = useState(false);
   // Exit codes only exist for tabs whose process died while Vibe was mounted.
   const [tabExitCodes, setTabExitCodes] = useState<Record<string, number>>({});
   const [tabsMenu, setTabsMenu] = useState<{ x: number; y: number } | null>(null);
@@ -1119,6 +1123,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const startMenuRef = useRef<HTMLDivElement | null>(null);
   const tabsMenuRef = useRef<HTMLDivElement | null>(null);
   const activeTileRef = useRef<HTMLDivElement | null>(null);
+  const tabStripRef = useRef<HTMLDivElement | null>(null);
+  const tabStripScrollTimeout = useRef<number | null>(null);
   const tabInputsRef = useRef(new Map<string, CreateTerminalSessionInput>());
   const tabRestoreStartedRef = useRef(false);
   const sessionListScrollTimeout = useRef<number | null>(null);
@@ -1569,6 +1575,86 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     return () => {
       if (sessionListScrollTimeout.current !== null) {
         window.clearTimeout(sessionListScrollTimeout.current);
+      }
+    };
+  }, []);
+
+  const syncTabStripOverflow = useCallback(() => {
+    const strip = tabStripRef.current;
+    if (!strip) {
+      return;
+    }
+    const maxScrollLeft = strip.scrollWidth - strip.clientWidth;
+    // Sub-pixel layout rounding can leave a fraction of a pixel behind, which would
+    // otherwise keep an arrow enabled with nothing left to scroll.
+    const next = {
+      left: strip.scrollLeft > 1,
+      right: maxScrollLeft - strip.scrollLeft > 1,
+    };
+    setTabStripOverflow((current) =>
+      current.left === next.left && current.right === next.right ? current : next,
+    );
+  }, []);
+
+  const markTabStripScrolling = useCallback(() => {
+    if (tabStripScrollTimeout.current !== null) {
+      window.clearTimeout(tabStripScrollTimeout.current);
+    }
+
+    setTabStripScrolling(true);
+    tabStripScrollTimeout.current = window.setTimeout(() => {
+      setTabStripScrolling(false);
+      tabStripScrollTimeout.current = null;
+    }, 800);
+  }, []);
+
+  const handleTabStripScroll = useCallback(() => {
+    markTabStripScrolling();
+    syncTabStripOverflow();
+  }, [markTabStripScrolling, syncTabStripOverflow]);
+
+  const scrollTabStrip = useCallback(
+    (direction: -1 | 1) => {
+      const strip = tabStripRef.current;
+      if (!strip) {
+        return;
+      }
+      const step = Math.max(160, Math.round(strip.clientWidth * 0.7));
+      const amount = step * direction;
+      if (typeof strip.scrollBy === "function") {
+        strip.scrollBy({ behavior: "smooth", left: amount });
+      } else {
+        strip.scrollLeft += amount;
+      }
+      markTabStripScrolling();
+      // Smooth scrolling settles asynchronously, so recheck once the frame lands.
+      window.requestAnimationFrame(syncTabStripOverflow);
+    },
+    [markTabStripScrolling, syncTabStripOverflow],
+  );
+
+  useEffect(() => {
+    syncTabStripOverflow();
+  }, [sessionListCollapsed, syncTabStripOverflow, tabWidthFitsContent, tabs]);
+
+  useEffect(() => {
+    const strip = tabStripRef.current;
+    window.addEventListener("resize", syncTabStripOverflow);
+    const observer =
+      typeof ResizeObserver === "undefined" || !strip
+        ? null
+        : new ResizeObserver(() => syncTabStripOverflow());
+    observer?.observe(strip as Element);
+    return () => {
+      window.removeEventListener("resize", syncTabStripOverflow);
+      observer?.disconnect();
+    };
+  }, [syncTabStripOverflow]);
+
+  useEffect(() => {
+    return () => {
+      if (tabStripScrollTimeout.current !== null) {
+        window.clearTimeout(tabStripScrollTimeout.current);
       }
     };
   }, []);
@@ -2337,12 +2423,15 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
           <div
             className={
               isSkin
-                ? `vibe-scrollbar ${scrollbarThemeClass} vibe-scrollbar-horizontal vibe-skin-tabbar flex h-10 shrink-0 items-stretch gap-0 overflow-x-auto border-b px-1`
+                ? `vibe-scrollbar ${scrollbarThemeClass} vibe-scrollbar-horizontal vibe-skin-tabbar ${tabStripScrolling ? "vibe-scrollbar-active" : ""} flex h-10 shrink-0 items-stretch gap-0 overflow-x-auto border-b px-1`
                 : isDark
-                  ? "vibe-scrollbar vibe-scrollbar-dark vibe-scrollbar-horizontal vibe-dark-tabbar flex h-10 shrink-0 items-stretch gap-1 overflow-x-auto border-b px-1"
-                  : "vibe-scrollbar vibe-scrollbar-light vibe-scrollbar-horizontal vibe-light-tabbar flex h-10 shrink-0 items-stretch gap-1 overflow-x-auto border-b px-1"
+                  ? `vibe-scrollbar vibe-scrollbar-dark vibe-scrollbar-horizontal vibe-dark-tabbar ${tabStripScrolling ? "vibe-scrollbar-active" : ""} flex h-10 shrink-0 items-stretch gap-1 overflow-x-auto border-b px-1`
+                  : `vibe-scrollbar vibe-scrollbar-light vibe-scrollbar-horizontal vibe-light-tabbar ${tabStripScrolling ? "vibe-scrollbar-active" : ""} flex h-10 shrink-0 items-stretch gap-1 overflow-x-auto border-b px-1`
             }
+            data-testid="vibe-tab-strip"
             onContextMenu={openTabsMenu}
+            onScroll={handleTabStripScroll}
+            ref={tabStripRef}
           >
             {tabs.length === 0 && (
               <p className={isSkin ? "flex items-center px-3 text-[12px] text-[var(--vibe-muted-text)]" : isDark ? "flex items-center px-3 text-[12px] text-[#9fc3cf]" : "flex items-center px-3 text-[12px] text-stone-500"}>
@@ -2417,6 +2506,36 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                     : "vibe-light-tabbar-actions sticky right-0 ml-auto flex shrink-0 items-center pl-2"
               }
             >
+              <button
+                aria-label={t("vibe.scrollTabsLeft")}
+                className={
+                  isSkin
+                    ? "vibe-skin-ghost mr-1 grid h-7 w-7 place-items-center rounded-lg border transition disabled:opacity-40"
+                    : isDark
+                      ? "mr-1 grid h-7 w-7 place-items-center rounded-lg border border-[#586e75] text-[#93a1a1] transition hover:text-[#fdf6e3] disabled:opacity-40 disabled:hover:text-[#93a1a1]"
+                      : "mr-1 grid h-7 w-7 place-items-center rounded-lg border border-stone-200 text-stone-500 transition hover:text-stone-950 disabled:opacity-40 disabled:hover:text-stone-500"
+                }
+                disabled={!tabStripOverflow.left}
+                onClick={() => scrollTabStrip(-1)}
+                type="button"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </button>
+              <button
+                aria-label={t("vibe.scrollTabsRight")}
+                className={
+                  isSkin
+                    ? "vibe-skin-ghost mr-1 grid h-7 w-7 place-items-center rounded-lg border transition disabled:opacity-40"
+                    : isDark
+                      ? "mr-1 grid h-7 w-7 place-items-center rounded-lg border border-[#586e75] text-[#93a1a1] transition hover:text-[#fdf6e3] disabled:opacity-40 disabled:hover:text-[#93a1a1]"
+                      : "mr-1 grid h-7 w-7 place-items-center rounded-lg border border-stone-200 text-stone-500 transition hover:text-stone-950 disabled:opacity-40 disabled:hover:text-stone-500"
+                }
+                disabled={!tabStripOverflow.right}
+                onClick={() => scrollTabStrip(1)}
+                type="button"
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
               <button
                 aria-label={t("vibe.tabSettings")}
                 className={

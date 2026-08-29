@@ -102,4 +102,22 @@ describe("XtermPane", () => {
 
     expect(container.querySelector(".xterm-pane-scrollbar-light")).not.toBeNull();
   });
+
+  it("thins the xterm slider through the overview ruler width and themes its colours", async () => {
+    render(<XtermPane session={session} />);
+
+    await waitFor(() => expect(terminalConstructorOptions).toHaveLength(1));
+
+    expect(terminalConstructorOptions[0]?.overviewRuler).toEqual({
+      showBottomBorder: false,
+      showTopBorder: false,
+      width: 8,
+    });
+    expect(terminalConstructorOptions[0]?.theme).toMatchObject({
+      overviewRulerBorder: "rgba(0, 0, 0, 0)",
+      scrollbarSliderActiveBackground: "rgba(147, 161, 161, 0.68)",
+      scrollbarSliderBackground: "rgba(147, 161, 161, 0.42)",
+      scrollbarSliderHoverBackground: "rgba(147, 161, 161, 0.55)",
+    });
+  });
 });

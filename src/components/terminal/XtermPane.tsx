@@ -69,9 +69,34 @@ function createTheme(
           yellow: "#b58900",
         };
 
+  // xterm draws its own scrollbar slider, so the slider colours have to travel
+  // through the theme instead of CSS. The overview ruler border would otherwise
+  // paint a 1px line next to the slider once `overviewRuler.width` is set.
+  const scrollbarTheme = transparentSurface
+    ? {
+        overviewRulerBorder: "rgba(0, 0, 0, 0)",
+        scrollbarSliderActiveBackground: "rgba(226, 232, 240, 0.7)",
+        scrollbarSliderBackground: "rgba(203, 213, 225, 0.4)",
+        scrollbarSliderHoverBackground: "rgba(226, 232, 240, 0.55)",
+      }
+    : themeMode === "light"
+      ? {
+          overviewRulerBorder: "rgba(0, 0, 0, 0)",
+          scrollbarSliderActiveBackground: "rgba(68, 64, 60, 0.6)",
+          scrollbarSliderBackground: "rgba(68, 64, 60, 0.32)",
+          scrollbarSliderHoverBackground: "rgba(68, 64, 60, 0.48)",
+        }
+      : {
+          overviewRulerBorder: "rgba(0, 0, 0, 0)",
+          scrollbarSliderActiveBackground: "rgba(147, 161, 161, 0.68)",
+          scrollbarSliderBackground: "rgba(147, 161, 161, 0.42)",
+          scrollbarSliderHoverBackground: "rgba(147, 161, 161, 0.55)",
+        };
+
   return {
     ...baseTheme,
     ...themeOverride,
+    ...scrollbarTheme,
     ...(transparentSurface ? { background: "transparent" } : {}),
   };
 }
@@ -110,6 +135,9 @@ export function XtermPane({
       cursorBlink: true,
       fontFamily: '"JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace',
       fontSize: 13,
+      // xterm sizes its custom scrollbar slider from this width (default 14px),
+      // so CSS cannot make the slider thinner.
+      overviewRuler: { showBottomBorder: false, showTopBorder: false, width: 8 },
       theme,
     });
     const fitAddon = new FitAddon();
