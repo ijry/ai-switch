@@ -1792,7 +1792,7 @@ function PresetFields({
       </select>
       {matched ? (
         <span className="text-[11px] font-medium text-stone-500">
-          已套用 AgentRouter 预设，通常只需填写 API Key。
+          已套用 {matched.provider} 预设，通常只需填写 API Key。
         </span>
       ) : null}
     </label>

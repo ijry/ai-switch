@@ -7,13 +7,14 @@ import {
 import { CLAUDE_ROLES } from "../src/lib/claude-roles";
 
 describe("accountPresets", () => {
-  it("exposes both AgentRouter lines for codex", () => {
+  it("exposes every codex line in order", () => {
     const presets = presetsForPlatform("codex");
 
-    expect(presets).toHaveLength(2);
+    expect(presets).toHaveLength(3);
     expect(presets.map((preset) => preset.baseUrl)).toEqual([
       "https://agentrouter.org/v1",
       "https://ps.air-outer.com/v1",
+      "https://kktoken.cc/v1",
     ]);
   });
 
@@ -32,6 +33,8 @@ describe("accountPresets", () => {
     expect(preset.interfaceFormat).toBe("openai");
     expect(preset.modelMappings).toEqual([
       { from: "gpt-5.6-sol", to: "gpt-5.6-sol" },
+      { from: "glm-5.3", to: "glm-5.3" },
+      { from: "deepseek-v4-flash", to: "deepseek-v4-flash" },
     ]);
   });
 
@@ -44,12 +47,38 @@ describe("accountPresets", () => {
     expect(preset.interfaceFormat).toBe("openai");
     expect(preset.modelMappings).toEqual([
       { from: "gpt-5.6-sol", to: "gpt-5.6-sol" },
+      { from: "glm-5.3", to: "glm-5.3" },
+      { from: "deepseek-v4-flash", to: "deepseek-v4-flash" },
+    ]);
+  });
+
+  it("passes every codex preset model through unchanged", () => {
+    // A rewritten upstream name would be a silent misroute: these lines serve
+    // the models under their own ids.
+    for (const preset of presetsForPlatform("codex")) {
+      for (const mapping of preset.modelMappings) {
+        expect(mapping.to).toBe(mapping.from);
+      }
+    }
+  });
+
+  it("describes the KKToken line completely", () => {
+    const preset = presetsForPlatform("codex")[2];
+
+    expect(preset.id).toBe("kktoken");
+    expect(preset.label).toBe("KKToken (kktoken.cc)");
+    expect(preset.provider).toBe("KKToken");
+    expect(preset.defaultName).toBe("KKToken");
+    expect(preset.baseUrl).toBe("https://kktoken.cc/v1");
+    expect(preset.interfaceFormat).toBe("openai");
+    expect(preset.modelMappings).toEqual([
+      { from: "claude-opus-5", to: "claude-opus-5" },
     ]);
   });
 
   it("describes the AgentRouter Claude line completely", () => {
     const presets = presetsForPlatform("claude");
-    expect(presets).toHaveLength(1);
+    expect(presets).toHaveLength(2);
     const preset = presets[0];
 
     expect(preset.label).toBe("AgentRouter (ps.air-outer.com)");
@@ -69,18 +98,36 @@ describe("accountPresets", () => {
   });
 
   it("maps every Claude role, so a role added later cannot stay unmapped", () => {
-    const preset = presetsForPlatform("claude")[0];
-    const mapped = preset.modelMappings.map((mapping) => mapping.from);
+    for (const preset of presetsForPlatform("claude")) {
+      const mapped = preset.modelMappings.map((mapping) => mapping.from);
+      expect(mapped).toEqual(CLAUDE_ROLES.map((role) => role.alias));
+    }
+  });
 
-    expect(mapped).toEqual(CLAUDE_ROLES.map((role) => role.alias));
+  it("describes the GoRouter Claude line completely", () => {
+    const preset = presetsForPlatform("claude")[1];
+
+    expect(preset.id).toBe("gorouter-claude");
+    expect(preset.label).toBe("GoRouter (gorouter.app)");
+    expect(preset.provider).toBe("GoRouter");
+    expect(preset.defaultName).toBe("GoRouter");
+    // No /v1: the proxy appends the Anthropic path, and a versioned base would
+    // make build_target_url strip the incoming /v1 as a duplicate.
+    expect(preset.baseUrl).toBe("https://gorouter.app");
+    expect(preset.interfaceFormat).toBe("anthropic");
+    expect(preset.modelMappings.every((mapping) => mapping.to === "claude-opus-5")).toBe(
+      true,
+    );
   });
 
   it("leaves 1M unticked in the Claude preset", () => {
     // The proxy only sends the context-1m beta marker when a mapping declares it,
     // and an upstream without the tier answers 503 rather than ignoring it — so
     // ticking it for the user would break requests they never opted into.
-    for (const mapping of presetsForPlatform("claude")[0].modelMappings) {
-      expect(mapping.supports_1m).toBeUndefined();
+    for (const preset of presetsForPlatform("claude")) {
+      for (const mapping of preset.modelMappings) {
+        expect(mapping.supports_1m).toBeUndefined();
+      }
     }
   });
 
@@ -111,6 +158,11 @@ describe("accountPresets", () => {
     );
   });
 
+  it("matches the KKToken line independently", () => {
+    expect(matchPresetByBaseUrl("codex", "https://kktoken.cc/v1/")?.id).toBe("kktoken");
+    expect(matchPresetByBaseUrl("codex", "https://kktoken.cc")).toBeNull();
+  });
+
   it("returns null for unknown, empty or near-miss base urls", () => {
     expect(matchPresetByBaseUrl("codex", "https://api.example.com/v1")).toBeNull();
     expect(matchPresetByBaseUrl("codex", "")).toBeNull();
@@ -122,6 +174,17 @@ describe("accountPresets", () => {
 
   it("scopes matching to the requested platform", () => {
     expect(matchPresetByBaseUrl("claude", "https://agentrouter.org/v1")).toBeNull();
+  });
+
+  it("matches the GoRouter line", () => {
+    expect(matchPresetByBaseUrl("claude", "https://gorouter.app")?.id).toBe(
+      "gorouter-claude",
+    );
+    expect(matchPresetByBaseUrl("claude", "https://gorouter.app/")?.id).toBe(
+      "gorouter-claude",
+    );
+    // A versioned base is a different endpoint and must not match.
+    expect(matchPresetByBaseUrl("claude", "https://gorouter.app/v1")).toBeNull();
   });
 
   it("keeps the two ps.air-outer.com lines apart by platform and base url", () => {

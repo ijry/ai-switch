@@ -1590,6 +1590,10 @@ describe("AccountsScreen", () => {
     expect(screen.getByLabelText("API 账号名称")).toHaveValue("AgentRouter");
     expect(screen.getByLabelText("请求模型 1")).toHaveValue("gpt-5.6-sol");
     expect(screen.getByLabelText("上游模型 1")).toHaveValue("gpt-5.6-sol");
+    expect(screen.getByLabelText("请求模型 2")).toHaveValue("glm-5.3");
+    expect(screen.getByLabelText("上游模型 2")).toHaveValue("glm-5.3");
+    expect(screen.getByLabelText("请求模型 3")).toHaveValue("deepseek-v4-flash");
+    expect(screen.getByLabelText("上游模型 3")).toHaveValue("deepseek-v4-flash");
     expect(
       screen.getByText("已套用 AgentRouter 预设，通常只需填写 API Key。"),
     ).toBeInTheDocument();
@@ -1609,6 +1613,24 @@ describe("AccountsScreen", () => {
     expect(screen.getByLabelText("Base URL")).toHaveValue("https://agentrouter.org/v1");
   });
 
+  it("applies the KKToken preset and names the provider in the hint", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.selectOptions(screen.getByLabelText("创建 账号预设"), "kktoken");
+
+    expect(screen.getByLabelText("Base URL")).toHaveValue("https://kktoken.cc/v1");
+    expect(screen.getByLabelText("接口格式")).toHaveValue("openai");
+    expect(screen.getByLabelText("API 账号名称")).toHaveValue("KKToken");
+    expect(screen.getByLabelText("请求模型 1")).toHaveValue("claude-opus-5");
+    expect(screen.getByLabelText("上游模型 1")).toHaveValue("claude-opus-5");
+    expect(screen.queryByLabelText("请求模型 2")).not.toBeInTheDocument();
+    // The hint follows the selected provider rather than hardcoding AgentRouter.
+    expect(
+      screen.getByText("已套用 KKToken 预设，通常只需填写 API Key。"),
+    ).toBeInTheDocument();
+  });
+
   it("replaces existing model mappings when applying a preset", async () => {
     renderScreen();
 
@@ -1624,7 +1646,9 @@ describe("AccountsScreen", () => {
 
     expect(screen.getByLabelText("请求模型 1")).toHaveValue("gpt-5.6-sol");
     expect(screen.getByLabelText("上游模型 1")).toHaveValue("gpt-5.6-sol");
-    expect(screen.queryByLabelText("请求模型 2")).not.toBeInTheDocument();
+    // The hand-typed row is gone rather than pushed below the preset rows.
+    expect(screen.queryByDisplayValue("foo")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("请求模型 4")).not.toBeInTheDocument();
   });
 
   it("falls back to the custom option after the base url changes", async () => {
@@ -1665,7 +1689,8 @@ describe("AccountsScreen", () => {
           api_key: "sk-agentrouter",
           base_url: "https://agentrouter.org/v1",
           interface_format: "openai",
-          model_mappings_json: "[{\"from\":\"gpt-5.6-sol\",\"to\":\"gpt-5.6-sol\"}]",
+          model_mappings_json:
+            "[{\"from\":\"gpt-5.6-sol\",\"to\":\"gpt-5.6-sol\"},{\"from\":\"glm-5.3\",\"to\":\"glm-5.3\"},{\"from\":\"deepseek-v4-flash\",\"to\":\"deepseek-v4-flash\"}]",
         }),
       ),
     );
@@ -1699,6 +1724,26 @@ describe("AccountsScreen", () => {
     }
     // 1M stays for the user to tick: an upstream without the tier answers 503.
     expect(screen.getByLabelText("声明支持 1M 1")).not.toBeChecked();
+  });
+
+  it("applies the GoRouter Claude preset to every role", async () => {
+    renderScreen("claude");
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.selectOptions(
+      screen.getByLabelText("创建 账号预设"),
+      "gorouter-claude",
+    );
+
+    expect(screen.getByLabelText("Base URL")).toHaveValue("https://gorouter.app");
+    expect(screen.getByLabelText("API 账号名称")).toHaveValue("GoRouter");
+    for (const row of [1, 2, 3, 4, 5, 6]) {
+      expect(screen.getByLabelText(`上游模型 ${row}`)).toHaveValue("claude-opus-5");
+    }
+    expect(
+      screen.getByText("已套用 GoRouter 预设，通常只需填写 API Key。"),
+    ).toBeInTheDocument();
   });
 
   it("rejects the placeholder upstream model mapping before saving", async () => {
