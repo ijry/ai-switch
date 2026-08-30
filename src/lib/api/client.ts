@@ -8,6 +8,7 @@ import type {
   BatchGroup,
   ConfigSnapshotSummary,
   ConfigWriteOutcome,
+  CopyRouteCredentialInput,
   FetchedRouteModel,
   ImportJob,
   CreateApiRouteCredentialInput,
@@ -52,6 +53,7 @@ import type {
   UpdateOfficialAccount,
   UpdateRouteCredentialInput,
   LocalMcpServer,
+  MobilePairingPayload,
   McpAppType,
   McpMarketplaceItem,
   McpMarketplaceProvider,
@@ -333,8 +335,11 @@ export function updateRouteCredential(
   return invoke("update_route_credential", { id, input });
 }
 
-export function copyRouteCredential(id: string): Promise<RouteCredential> {
-  return invoke("copy_route_credential", { id });
+export function copyRouteCredential(
+  id: string,
+  input?: CopyRouteCredentialInput,
+): Promise<RouteCredential> {
+  return invoke("copy_route_credential", input ? { id, input } : { id });
 }
 
 export function setRouteCredentialRecovery(
@@ -441,6 +446,10 @@ export function stopWebServer(): Promise<WebServerStatus> {
 
 export function getTailscaleStatus(): Promise<TailscaleStatus> {
   return invoke("get_tailscale_status");
+}
+
+export function createMobilePairing(): Promise<MobilePairingPayload> {
+  return invoke("create_mobile_pairing");
 }
 
 export function startTailscaleLogin(): Promise<TailscaleLogin> {

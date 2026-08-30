@@ -408,12 +408,47 @@ button:disabled {
   padding: var(--vibe-session-list-padding);
 }
 
+.app-sidebar-drawer {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 50;
+  width: min(var(--app-sidebar-width), calc(100vw - 3rem));
+  max-width: 100vw;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.35);
+}
+
+.app-sidebar-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(15, 23, 42, 0.42);
+}
+
 .vibe-session-rail {
   align-items: center;
-  cursor: col-resize;
   flex-direction: column;
   justify-content: center;
   width: 100%;
+}
+
+/* Narrow windows drop the session-list grid track, so the list floats above the
+   workspace instead of stacking on top of it. */
+.vibe-session-drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 45;
+  width: min(var(--vibe-session-list-width), calc(100vw - 3rem));
+  max-width: 100vw;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.35);
+}
+
+.vibe-session-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 44;
+  background: rgba(15, 23, 42, 0.42);
 }
 
 /* The rail doubles as a resize gutter: the collapse button keeps its clicks and

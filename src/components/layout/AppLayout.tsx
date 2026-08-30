@@ -63,6 +63,7 @@ const SIDEBAR_DEFAULT_WIDTH = 216;
 const SIDEBAR_MIN_WIDTH = 180;
 const SIDEBAR_MAX_WIDTH = 320;
 const SIDEBAR_WIDTH_STORAGE_KEY = "ai-switch.sidebar-width";
+const SIDEBAR_DRAWER_BREAKPOINT = 600;
 
 function clampSidebarWidth(value: number) {
   return Math.min(Math.max(value, SIDEBAR_MIN_WIDTH), SIDEBAR_MAX_WIDTH);
@@ -139,10 +140,9 @@ function NavButton({
   onClick: () => void;
   variant?: "primary" | "standard";
 }) {
-  const baseClasses =
-    `group flex w-full items-center justify-between rounded-xl border px-3 py-2 text-left text-[13px] transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 max-[599px]:justify-center max-[599px]:px-0 ${
-      collapsed ? "min-[600px]:justify-center min-[600px]:px-0" : ""
-    }`;
+  const baseClasses = `group flex w-full items-center rounded-xl border py-2 text-left text-[13px] transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
+    collapsed ? "justify-center px-0" : "justify-between px-3"
+  }`;
   const activeClasses =
     variant === "primary"
       ? "border-stone-300 bg-white text-stone-950 shadow-sm"
@@ -155,15 +155,17 @@ function NavButton({
 
   return (
     <button
-    aria-current={active ? "page" : undefined}
-    className={`${baseClasses} ${active ? activeClasses : idleClasses}`}
-    onClick={onClick}
-    title={label}
-    type="button"
-  >
-      <span className={`flex min-w-0 items-center gap-2 max-[599px]:justify-center max-[599px]:gap-0 ${collapsed ? "min-[600px]:justify-center min-[600px]:gap-0" : ""}`}>
+      aria-current={active ? "page" : undefined}
+      className={`${baseClasses} ${active ? activeClasses : idleClasses}`}
+      onClick={onClick}
+      title={label}
+      type="button"
+    >
+      <span
+        className={`flex min-w-0 items-center ${collapsed ? "justify-center gap-0" : "gap-2"}`}
+      >
         <span
-          className={`h-1.5 w-1.5 shrink-0 rounded-full max-[599px]:hidden ${collapsed ? "min-[600px]:hidden" : ""} ${
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${collapsed ? "hidden" : ""} ${
             active ? "bg-amber-500" : "bg-stone-300 group-hover:bg-stone-400"
           }`}
         />
@@ -174,9 +176,14 @@ function NavButton({
             <LucideIconComponent aria-hidden="true" className={`h-4 w-4 shrink-0 ${active ? "text-amber-600" : "text-stone-500"}`} />
           ) : null
         )}
-        <span className={`truncate font-medium max-[599px]:sr-only ${collapsed ? "min-[600px]:sr-only" : ""}`}>{label}</span>
+        <span className={`truncate font-medium ${collapsed ? "sr-only" : ""}`}>{label}</span>
       </span>
-      <span aria-hidden="true" className={`max-[599px]:hidden ${collapsed ? "min-[600px]:hidden" : ""} ${active ? "text-stone-400" : "text-transparent"}`}>
+      <span
+        aria-hidden="true"
+        className={`${collapsed ? "hidden" : ""} ${
+          active ? "text-stone-400" : "text-transparent"
+        }`}
+      >
         /
       </span>
     </button>
@@ -196,8 +203,14 @@ export function AppLayout({
   const { language, setLanguage, t } = useI18n();
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth);
+  const [narrowLayout, setNarrowLayout] = useState(
+    () => typeof window !== "undefined" && window.innerWidth < SIDEBAR_DRAWER_BREAKPOINT,
+  );
+  const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
   const settingsActive = isSettingsArea(activeScreen);
   const accountWorkspaceActive = agentItems.some((item) => item.screen === activeScreen);
+  const sidebarDrawerVisible = narrowLayout && sidebarDrawerOpen;
+  const sidebarContentCollapsed = narrowLayout ? !sidebarDrawerOpen : sidebarCollapsed;
   const desktopGridClass = sidebarCollapsed
     ? "min-[600px]:grid-cols-[56px_minmax(0,1fr)]"
     : "min-[600px]:grid-cols-[var(--app-sidebar-width)_minmax(0,1fr)]";
@@ -221,6 +234,32 @@ export function AppLayout({
     }
   }, [sidebarWidth]);
 
+  useEffect(() => {
+    const syncNarrowLayout = () => {
+      const nextNarrowLayout = window.innerWidth < SIDEBAR_DRAWER_BREAKPOINT;
+      setNarrowLayout(nextNarrowLayout);
+      if (!nextNarrowLayout) {
+        setSidebarDrawerOpen(false);
+      }
+    };
+    syncNarrowLayout();
+    window.addEventListener("resize", syncNarrowLayout);
+    return () => window.removeEventListener("resize", syncNarrowLayout);
+  }, []);
+
+  useEffect(() => {
+    if (!sidebarDrawerVisible) {
+      return;
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSidebarDrawerOpen(false);
+      }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [sidebarDrawerVisible]);
+
   const handleLanguageChange = (nextLanguage: Language) => {
     if (onLanguageChange) {
       onLanguageChange(nextLanguage);
@@ -230,41 +269,91 @@ export function AppLayout({
     setLanguage(nextLanguage);
   };
 
+  const handleToggleSidebar = () => {
+    if (narrowLayout) {
+      setSidebarDrawerOpen((current) => !current);
+      return;
+    }
+    onToggleSidebar();
+  };
+
+  const handleNavigate = (nextScreen: string) => {
+    setSidebarDrawerOpen(false);
+    onNavigate(nextScreen);
+  };
+
+  const handleOpenVibe = () => {
+    setSidebarDrawerOpen(false);
+    onOpenVibe?.();
+  };
+
   return (
     <main className="box-border h-screen max-h-[100dvh] overflow-hidden text-stone-950">
       <div
         className={`box-border grid h-full min-h-0 grid-cols-[56px_minmax(0,1fr)] ${desktopGridClass}`}
         data-testid="app-shell"
         ref={appShellRef}
-        style={{ "--app-sidebar-width": `${sidebarCollapsed ? 56 : sidebarWidth}px` } as CSSProperties}
+        style={
+          {
+            "--app-sidebar-width": `${sidebarContentCollapsed ? 56 : sidebarWidth}px`,
+          } as CSSProperties
+        }
       >
+        {sidebarDrawerVisible && (
+          <div
+            aria-hidden="true"
+            className="app-sidebar-drawer-backdrop"
+            data-testid="app-sidebar-drawer-backdrop"
+            onClick={() => setSidebarDrawerOpen(false)}
+          />
+        )}
         <aside
-          className={`relative flex h-full min-h-0 flex-col overflow-hidden border-b border-white/70 bg-gradient-to-br from-slate-50/92 via-emerald-50/74 to-amber-50/70 p-3 shadow-xl shadow-stone-900/5 backdrop-blur-2xl min-[600px]:border-b-0 min-[600px]:border-r min-[600px]:border-white/80 max-[599px]:p-2 ${
-            sidebarCollapsed ? "min-[600px]:p-2" : ""
+          className={`${
+            sidebarDrawerVisible ? "app-sidebar-drawer" : "relative"
+          } flex h-full min-h-0 flex-col overflow-hidden border-r border-white/80 bg-gradient-to-br from-slate-50/92 via-emerald-50/74 to-amber-50/70 shadow-xl shadow-stone-900/5 backdrop-blur-2xl ${
+            sidebarContentCollapsed ? "p-2" : "p-3"
           }`}
           data-testid="app-sidebar"
         >
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_15%,rgba(16,185,129,0.18),transparent_34%),radial-gradient(circle_at_88%_8%,rgba(245,158,11,0.16),transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.72),rgba(255,255,255,0.38))]" />
           <div className="relative flex min-h-0 flex-1 flex-col">
             <div
-              className={`mb-5 flex items-start justify-between gap-3 rounded-2xl border border-white/80 bg-white/56 p-3 shadow-sm backdrop-blur-xl max-[599px]:mb-4 max-[599px]:flex-col max-[599px]:items-center max-[599px]:gap-2 max-[599px]:p-1 ${
-                sidebarCollapsed ? "min-[600px]:mb-4 min-[600px]:flex-col min-[600px]:items-center min-[600px]:gap-2 min-[600px]:p-1" : ""
+              className={`flex justify-between rounded-2xl border border-white/80 bg-white/56 shadow-sm backdrop-blur-xl ${
+                sidebarContentCollapsed
+                  ? "mb-4 flex-col items-center gap-2 p-1"
+                  : "mb-5 items-start gap-3 p-3"
               }`}
             >
-              <div className={`flex min-w-0 items-center gap-2 max-[599px]:hidden ${sidebarCollapsed ? "min-[600px]:hidden" : ""}`}>
+              <div
+                className={`min-w-0 items-center gap-2 ${
+                  sidebarContentCollapsed ? "hidden" : "flex"
+                }`}
+              >
                 <AiSwitchLogo className="h-9 w-9 shrink-0 rounded-2xl shadow-sm" />
                 <div className="min-w-0">
                   <p className="truncate text-[13px] font-semibold text-stone-950">AI Switch</p>
                   <p className="truncate text-[11px] text-stone-500">{t("layout.brandBadge")}</p>
                 </div>
               </div>
-              <div className={`flex items-center gap-2 max-[599px]:flex-col ${sidebarCollapsed ? "min-[600px]:flex-col" : ""}`}>
+              <div
+                className={`flex items-center gap-2 ${
+                  sidebarContentCollapsed ? "flex-col" : ""
+                }`}
+              >
                 <button
-                  aria-expanded={!sidebarCollapsed}
-                  aria-label={sidebarCollapsed ? t("layout.expandSidebar") : t("layout.collapseSidebar")}
+                  aria-expanded={!sidebarContentCollapsed}
+                  aria-label={
+                    sidebarContentCollapsed
+                      ? t("layout.expandSidebar")
+                      : t("layout.collapseSidebar")
+                  }
                   className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-stone-200 bg-white/70 text-stone-600 shadow-sm transition-colors hover:border-stone-300 hover:bg-white hover:text-stone-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
-                  onClick={onToggleSidebar}
-                  title={sidebarCollapsed ? t("layout.expandSidebar") : t("layout.collapseSidebar")}
+                  onClick={handleToggleSidebar}
+                  title={
+                    sidebarContentCollapsed
+                      ? t("layout.expandSidebar")
+                      : t("layout.collapseSidebar")
+                  }
                   type="button"
                 >
                   <Menu aria-hidden="true" className="h-4 w-4" />
@@ -272,7 +361,7 @@ export function AppLayout({
                 <button
                   aria-label={t("layout.switchToVibe")}
                   className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-stone-200 bg-white/70 text-stone-600 shadow-sm transition-colors hover:border-stone-300 hover:bg-white hover:text-stone-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
-                  onClick={onOpenVibe}
+                  onClick={handleOpenVibe}
                   title={t("layout.switchToVibe")}
                   type="button"
                 >
@@ -281,37 +370,45 @@ export function AppLayout({
               </div>
             </div>
 
-            <label className={`mb-5 flex items-center justify-between gap-2 rounded-2xl border border-white/70 bg-white/50 px-3 py-2 text-[12px] font-medium text-stone-500 backdrop-blur-xl max-[599px]:hidden ${sidebarCollapsed ? "min-[600px]:hidden" : ""}`}>
-            <span>{t("layout.language")}</span>
-            <select
-              aria-label={t("layout.language")}
-              className="rounded-lg border border-stone-200 bg-white/80 px-2 py-1 text-[12px] font-medium text-stone-800 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-200"
-              disabled={languageSaving}
-              onChange={(event) => handleLanguageChange(event.target.value as Language)}
-              value={language}
+            <label
+              className={`mb-5 items-center justify-between gap-2 rounded-2xl border border-white/70 bg-white/50 px-3 py-2 text-[12px] font-medium text-stone-500 backdrop-blur-xl ${
+                sidebarContentCollapsed ? "hidden" : "flex"
+              }`}
             >
-              {supportedLanguages.map((option) => (
-                <option key={option.code} value={option.code}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+              <span>{t("layout.language")}</span>
+              <select
+                aria-label={t("layout.language")}
+                className="rounded-lg border border-stone-200 bg-white/80 px-2 py-1 text-[12px] font-medium text-stone-800 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-200"
+                disabled={languageSaving}
+                onChange={(event) => handleLanguageChange(event.target.value as Language)}
+                value={language}
+              >
+                {supportedLanguages.map((option) => (
+                  <option key={option.code} value={option.code}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </label>
 
             <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-0.5">
               <section>
-                <p className={`px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-stone-400 max-[599px]:hidden ${sidebarCollapsed ? "min-[600px]:hidden" : ""}`}>
+                <p
+                  className={`px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-stone-400 ${
+                    sidebarContentCollapsed ? "hidden" : ""
+                  }`}
+                >
                   {t("layout.agents")}
                 </p>
                 <div className="space-y-1">
                   {agentItems.map((item) => (
                     <NavButton
                       active={activeScreen === item.screen}
-                      collapsed={sidebarCollapsed}
+                      collapsed={sidebarContentCollapsed}
                       icon={item.icon}
                       key={item.screen}
                       label={t(item.labelKey)}
-                      onClick={() => onNavigate(item.screen)}
+                      onClick={() => handleNavigate(item.screen)}
                       variant="primary"
                     />
                   ))}
@@ -319,55 +416,59 @@ export function AppLayout({
               </section>
 
               <section>
-                <p className={`px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-stone-400 max-[599px]:hidden ${sidebarCollapsed ? "min-[600px]:hidden" : ""}`}>
+                <p
+                  className={`px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-stone-400 ${
+                    sidebarContentCollapsed ? "hidden" : ""
+                  }`}
+                >
                   {t("layout.system")}
                 </p>
                 <NavButton
                   active={activeScreen === "CryptoTools"}
-                  collapsed={sidebarCollapsed}
+                  collapsed={sidebarContentCollapsed}
                   icon={KeyRound}
                   label={t("nav.cryptoTools")}
-                  onClick={() => onNavigate("CryptoTools")}
+                  onClick={() => handleNavigate("CryptoTools")}
                 />
                 <NavButton
                   active={activeScreen === "OCR"}
-                  collapsed={sidebarCollapsed}
+                  collapsed={sidebarContentCollapsed}
                   icon={ScanText}
                   label={t("nav.ocr")}
-                  onClick={() => onNavigate("OCR")}
+                  onClick={() => handleNavigate("OCR")}
                 />
                 <NavButton
                   active={activeScreen === "MCP"}
-                  collapsed={sidebarCollapsed}
+                  collapsed={sidebarContentCollapsed}
                   icon={PlugZap}
                   label={t("nav.mcp")}
-                  onClick={() => onNavigate("MCP")}
+                  onClick={() => handleNavigate("MCP")}
                 />
                 <NavButton
                   active={activeScreen === "Skills"}
-                  collapsed={sidebarCollapsed}
+                  collapsed={sidebarContentCollapsed}
                   icon={Sparkles}
                   label={t("nav.skills")}
-                  onClick={() => onNavigate("Skills")}
+                  onClick={() => handleNavigate("Skills")}
                 />
                 <NavButton
                   active={settingsActive}
-                  collapsed={sidebarCollapsed}
+                  collapsed={sidebarContentCollapsed}
                   icon={Settings2}
                   label={t("nav.settings")}
-                  onClick={() => onNavigate("Settings")}
+                  onClick={() => handleNavigate("Settings")}
                 />
               </section>
             </div>
           </div>
-          {!sidebarCollapsed && (
+          {!narrowLayout && !sidebarCollapsed && (
             <div
               aria-label={t("layout.resizeSidebar")}
               aria-orientation="vertical"
               aria-valuemax={SIDEBAR_MAX_WIDTH}
               aria-valuemin={SIDEBAR_MIN_WIDTH}
               aria-valuenow={sidebarWidth}
-              className={`absolute inset-y-0 right-0 z-20 w-1.5 touch-none select-none cursor-col-resize bg-transparent transition-colors hover:bg-stone-300/70 max-[599px]:hidden ${
+              className={`absolute inset-y-0 right-0 z-20 w-1.5 touch-none select-none cursor-col-resize bg-transparent transition-colors hover:bg-stone-300/70 ${
                 sidebarResizing ? "bg-blue-400/70" : ""
               }`}
               data-testid="sidebar-resize-handle"
@@ -379,7 +480,7 @@ export function AppLayout({
         </aside>
 
         <section
-          className={`box-border h-full min-h-0 min-w-0 bg-stone-100 ${
+          className={`col-start-2 box-border h-full min-h-0 min-w-0 bg-stone-100 ${
             accountWorkspaceActive ? "overflow-hidden p-0" : "overflow-y-auto p-2 sm:p-3"
           }`}
         >

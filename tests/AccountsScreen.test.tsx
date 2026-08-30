@@ -991,12 +991,90 @@ describe("AccountsScreen", () => {
     expect(screen.getByText("API Account")).toBeInTheDocument();
   });
 
-  it("duplicates an account from the account list with a dated name", async () => {
+  it("opens a same-platform-only copy dialog for official accounts", async () => {
     renderScreen();
 
     await userEvent.click(await screen.findByLabelText("复制 Team Account"));
-    await waitFor(() => expect(copyRouteCredential).toHaveBeenCalledWith("cred-official-1"));
+    const dialog = screen.getByRole("dialog", { name: "复制账号" });
+    const targetSelect = within(dialog).getByLabelText("复制目标");
+    expect(targetSelect).toHaveValue("codex");
+    expect(within(targetSelect).getAllByRole("option")).toHaveLength(1);
+    expect(within(dialog).getByText("官方账号仅支持复制到当前智能体。")).toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("新 API Key（可选）")).not.toBeInTheDocument();
+    expect(copyRouteCredential).not.toHaveBeenCalled();
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "确认复制" }));
+    await waitFor(() =>
+      expect(copyRouteCredential).toHaveBeenCalledWith("cred-official-1", {
+        target_platform: "codex",
+      }),
+    );
     expect(screen.getByLabelText("复制 Team Account")).toHaveTextContent("已复制");
+  });
+
+  it("copies an API account to another agent with a compatibility warning and optional key", async () => {
+    vi.mocked(copyRouteCredential).mockResolvedValueOnce({
+      ...credentialsFixture[1],
+      id: "cred-api-claude-copy",
+      platform: "claude",
+      display_name: "API Account 2026-08-31",
+      secret_payload_json: '{"api_key":"sk-override"}',
+      config_json: '{"base_url":"https://api.example.com","interface_format":"anthropic"}',
+    });
+    renderScreen();
+
+    await userEvent.click(await screen.findByLabelText("复制 API Account"));
+    const dialog = screen.getByRole("dialog", { name: "复制账号" });
+    expect(within(dialog).getByText("API Account")).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("复制目标")).toHaveValue("codex");
+    expect(within(dialog).getByLabelText("新 API Key（可选）")).toHaveAttribute(
+      "placeholder",
+      "不填则复制原 API Key",
+    );
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+
+    await userEvent.selectOptions(within(dialog).getByLabelText("复制目标"), "claude");
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(
+      "复制到其他智能体不会保留模型映射、已获取模型等不兼容配置",
+    );
+    await userEvent.type(within(dialog).getByLabelText("新 API Key（可选）"), "sk-override");
+    await userEvent.click(within(dialog).getByRole("button", { name: "确认复制" }));
+
+    await waitFor(() =>
+      expect(copyRouteCredential).toHaveBeenCalledWith("cred-api-1", {
+        target_platform: "claude",
+        api_key: "sk-override",
+      }),
+    );
+    expect(screen.queryByRole("dialog", { name: "复制账号" })).not.toBeInTheDocument();
+    expect(screen.queryByText("API Account 2026-08-31")).not.toBeInTheDocument();
+  });
+
+  it("keeps the original API key when the optional copy field is blank", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByLabelText("复制 API Account"));
+    const dialog = screen.getByRole("dialog", { name: "复制账号" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "确认复制" }));
+
+    await waitFor(() =>
+      expect(copyRouteCredential).toHaveBeenCalledWith("cred-api-1", {
+        target_platform: "codex",
+      }),
+    );
+  });
+
+  it("keeps the copy dialog open and reports API errors", async () => {
+    vi.mocked(copyRouteCredential).mockRejectedValueOnce(new Error("copy request failed"));
+    renderScreen();
+
+    await userEvent.click(await screen.findByLabelText("复制 API Account"));
+    const dialog = screen.getByRole("dialog", { name: "复制账号" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "确认复制" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("copy request failed");
+    expect(screen.getByRole("dialog", { name: "复制账号" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "确认复制" })).toBeEnabled();
   });
 
   it("keeps a copied account visible in the compute pool", async () => {
@@ -1019,6 +1097,11 @@ describe("AccountsScreen", () => {
     renderScreen("codex", "in_pool");
 
     await userEvent.click(await screen.findByLabelText("复制 Team Account"));
+    await userEvent.click(
+      within(screen.getByRole("dialog", { name: "复制账号" })).getByRole("button", {
+        name: "确认复制",
+      }),
+    );
 
     expect(await screen.findByText("Team Account 2026-07-25")).toBeInTheDocument();
     expect(setRoutePoolMembers).not.toHaveBeenCalled();

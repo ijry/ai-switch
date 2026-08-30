@@ -228,6 +228,11 @@ export type CreateApiRouteCredentialInput = {
   user_agent?: string | null;
 };
 
+export type CopyRouteCredentialInput = {
+  target_platform: PlatformId;
+  api_key?: string | null;
+};
+
 export type UpdateRouteCredentialInput = {
   display_name: string;
   email?: string | null;
@@ -608,6 +613,19 @@ export type TailscaleStatus = {
 export type TailscaleLogin = {
   loginUrl?: string | null;
   message: string;
+};
+
+export type MobilePairingPayload = {
+  v: 1;
+  publicUrl?: string | null;
+  privateUrl?: string | null;
+  pairingCode: string;
+  expiresAt: number;
+};
+
+export type MobilePairingRedeemResponse = {
+  token: string;
+  expiresAt: number;
 };
 
 export type ConfigWriteOutcome = {

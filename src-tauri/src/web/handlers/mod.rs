@@ -16,8 +16,9 @@ use crate::database::repositories::config_snapshot_repository::ConfigSnapshotRep
 use crate::error::{ApiError, AppError};
 use crate::models::batch::NewBatch;
 use crate::models::route_credential::{
-    CreateApiRouteCredentialInput, ImportOfficialFilesInput, ImportOfficialTextInput,
-    ReorderRouteCredentialInput, RouteCredentialPageRequest, UpdateRouteCredentialInput,
+    CopyRouteCredentialInput, CreateApiRouteCredentialInput, ImportOfficialFilesInput,
+    ImportOfficialTextInput, ReorderRouteCredentialInput, RouteCredentialPageRequest,
+    UpdateRouteCredentialInput,
 };
 use crate::models::route_credential_transfer::{
     ExportRouteCredentialsInput, ImportRouteCredentialsInput, PreviewRouteCredentialImportInput,
@@ -470,8 +471,16 @@ pub async fn dispatch_command(
         }
         "copy_route_credential" => {
             let id = required_string_arg(&args, "id")?;
+            let input = args
+                .get("input")
+                .filter(|value| !value.is_null())
+                .cloned()
+                .map(serde_json::from_value::<CopyRouteCredentialInput>)
+                .transpose()
+                .map_err(|error| invalid_argument("input", Some(error.to_string())))?
+                .unwrap_or_default();
             to_value(
-                RouteCredentialService::copy(&state.pool, id)
+                RouteCredentialService::copy_with_options(&state.pool, id, input)
                     .await
                     .map_err(to_error)?,
             )
@@ -1122,6 +1131,61 @@ mod tests {
 
         assert_eq!(config["recovery"]["mode"], "scheduled");
         assert_eq!(config["recovery"]["times"], json!(["03:00", "15:00"]));
+    }
+
+    #[tokio::test]
+    async fn dispatches_route_credential_copy_options_and_keeps_legacy_calls_working() {
+        let fixture = test_state().await;
+        let credential = dispatch_command(
+            Arc::clone(&fixture.state),
+            "create_api_route_credential",
+            json!({
+                "input": {
+                    "platform": "claude",
+                    "display_name": "Claude API",
+                    "api_key": "sk-source",
+                    "base_url": "https://api.example.com",
+                    "interface_format": "anthropic",
+                    "model_mappings_json": "[]"
+                }
+            }),
+        )
+        .await
+        .expect("create credential");
+        let id = credential["id"].as_str().expect("credential id");
+
+        let copied = dispatch_command(
+            Arc::clone(&fixture.state),
+            "copy_route_credential",
+            json!({
+                "id": id,
+                "input": {
+                    "target_platform": "codex",
+                    "api_key": "sk-override"
+                }
+            }),
+        )
+        .await
+        .expect("copy credential");
+        let copied_config: Value =
+            serde_json::from_str(copied["config_json"].as_str().expect("config json"))
+                .expect("config value");
+        let copied_secret: Value = serde_json::from_str(
+            copied["secret_payload_json"]
+                .as_str()
+                .expect("secret payload json"),
+        )
+        .expect("secret value");
+
+        assert_eq!(copied["platform"], "codex");
+        assert_eq!(copied_config["base_url"], "https://api.example.com/v1");
+        assert_eq!(copied_secret["api_key"], "sk-override");
+
+        let legacy_copy =
+            dispatch_command(fixture.state, "copy_route_credential", json!({ "id": id }))
+                .await
+                .expect("legacy copy");
+        assert_eq!(legacy_copy["platform"], "claude");
     }
 
     #[tokio::test]

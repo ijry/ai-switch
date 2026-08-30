@@ -44,6 +44,7 @@ import {
 import { PlatformSupportBadge } from "../components/platform/PlatformSupportBadge";
 import { baselineModelsForPlatform, expandDisplayModelMappings, ModelMappingSummary } from "../components/accounts/ModelMappingSummary";
 import { RouteCredentialExportDialog } from "../components/accounts/RouteCredentialExportDialog";
+import { CopyRouteCredentialDialog } from "../components/accounts/CopyRouteCredentialDialog";
 import { neighborsForDrop } from "../lib/accountReorder";
 import {
   claudeAliasSupportsOneM,
@@ -93,6 +94,7 @@ import type {
   AccountStatus,
   AnthropicApiKeyField,
   ConfigWriteOutcome,
+  CopyRouteCredentialInput,
   FetchedRouteModel,
   InterfaceFormat,
   ModelMapping,
@@ -1901,6 +1903,7 @@ export function AccountsScreen({
     "curl" | "curl-powershell" | "curl-cmd" | "base-url" | "sk" | null
   >(null);
   const [copiedCredentialId, setCopiedCredentialId] = useState<string | null>(null);
+  const [copyingCredential, setCopyingCredential] = useState<RouteCredential | null>(null);
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   const [compactRowActions, setCompactRowActions] = useState(false);
   const accountListResizeRef = useRef<ResizeObserver | null>(null);
@@ -3338,16 +3341,27 @@ export function AccountsScreen({
     },
   });
   const copyCredentialMutation = useMutation({
-    mutationFn: (id: string) => copyRouteCredential(id),
-    onSuccess: async (credential, sourceId) => {
-      mergeCredentialsIntoCache([credential]);
+    mutationFn: ({
+      credential,
+      input,
+    }: {
+      credential: RouteCredential;
+      input: CopyRouteCredentialInput;
+    }) => copyRouteCredential(credential.id, input),
+    onSuccess: async (credential, variables) => {
+      const sourceId = variables.credential.id;
+      const copiedToCurrentPlatform = credential.platform === activePlatform;
+      setCopyingCredential(null);
+      if (copiedToCurrentPlatform) {
+        mergeCredentialsIntoCache([credential]);
+      }
       setCopiedCredentialId(sourceId);
       window.setTimeout(() => {
         setCopiedCredentialId((current) => (current === sourceId ? null : current));
       }, 1400);
       // Backend mirrors the source's pool membership onto the copy; keep the
       // local draft in sync so the copy shows up in the current segment.
-      if (draftPoolIds.has(sourceId)) {
+      if (copiedToCurrentPlatform && draftPoolIds.has(sourceId)) {
         setDraftPoolIds((current) => {
           const next = new Set(current);
           next.add(credential.id);
@@ -3355,6 +3369,19 @@ export function AccountsScreen({
         });
       }
       await invalidateAccountData();
+      if (!copiedToCurrentPlatform) {
+        await Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: ["route-credential-page", credential.platform],
+          }),
+          queryClient.invalidateQueries({
+            queryKey: ["route-credentials-all", credential.platform],
+          }),
+          queryClient.invalidateQueries({
+            queryKey: ["route-pool", credential.platform],
+          }),
+        ]);
+      }
     },
   });
 
@@ -3508,7 +3535,8 @@ export function AccountsScreen({
     if (copyCredentialMutation.isPending) {
       return;
     }
-    copyCredentialMutation.mutate(credential.id);
+    copyCredentialMutation.reset();
+    setCopyingCredential(credential);
   };
 
   const applyPoolMembership = (
@@ -5015,7 +5043,8 @@ export function AccountsScreen({
                   const modelMappings = parseModelMappingsFromConfig(credential.config_json);
                   const baseUrlLink = credentialBaseUrlLink(credential);
                   const isCopyingCredential =
-                    copyCredentialMutation.isPending && copyCredentialMutation.variables === credential.id;
+                    copyCredentialMutation.isPending &&
+                    copyCredentialMutation.variables?.credential.id === credential.id;
                   const testAllowed = credentialKindAllowed(modelTestRule, credential.kind);
                   const rowActions: RowAction[] = [];
                   if (credential.kind === "official" && !credential.archived_at) {
@@ -5876,6 +5905,28 @@ export function AccountsScreen({
           credential_ids={exportRequest.credential_ids}
           onClose={() => setExportRequest(null)}
           selection_context={exportRequest.selection_context}
+        />
+      ) : null}
+
+      {copyingCredential ? (
+        <CopyRouteCredentialDialog
+          credential={copyingCredential}
+          error={
+            copyCredentialMutation.isError
+              ? formatApiError(copyCredentialMutation.error, "复制账号失败。")
+              : null
+          }
+          loading={copyCredentialMutation.isPending}
+          onClose={() => {
+            if (!copyCredentialMutation.isPending) {
+              copyCredentialMutation.reset();
+              setCopyingCredential(null);
+            }
+          }}
+          onSubmit={(input) => {
+            copyCredentialMutation.mutate({ credential: copyingCredential, input });
+          }}
+          sourcePlatform={activePlatform}
         />
       ) : null}
 

@@ -12,6 +12,7 @@ pub const DEFAULT_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD: u32 = 10;
 /// The column default is still 1 (changing it would mean rebuilding the table),
 /// so every insert path binds this value explicitly.
 pub const DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY: i64 = 5;
+pub const DEFAULT_ROUTE_CREDENTIAL_PRIORITY: i64 = 3;
 pub const MAX_ROUTE_CREDENTIAL_RETRY_COUNT: u32 = 10;
 pub const MAX_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS: u32 = 60_000;
 pub const MAX_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD: u32 = 1_000;
@@ -158,6 +159,14 @@ pub struct CreateApiRouteCredentialInput {
     pub responses_custom_tool_compat: Option<bool>,
     #[serde(default)]
     pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CopyRouteCredentialInput {
+    #[serde(default)]
+    pub target_platform: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

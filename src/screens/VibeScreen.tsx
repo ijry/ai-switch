@@ -96,6 +96,10 @@ function clampSessionListWidth(value: number) {
   return Math.min(Math.max(Math.round(value), SESSION_LIST_MIN_WIDTH), SESSION_LIST_MAX_WIDTH);
 }
 
+// Below this width the session list stops being a grid track: it hides and only
+// reappears as a fixed drawer, so the workspace keeps the full window height.
+const SESSION_LIST_DRAWER_BREAKPOINT = 1024;
+
 // Tiled terminals never shrink below a usable width, so the tile size is a user
 // preference exposed through a CSS variable the stylesheet reads.
 const TILE_DEFAULT_WIDTH = 448;
@@ -1090,6 +1094,13 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const [sessionListCollapsed, setSessionListCollapsed] = useState(
     () => initialAppearance.sessionListCollapsed ?? false,
   );
+  // Narrow windows swap the sidebar track for a floating drawer; that visibility is
+  // transient so it must not overwrite the persisted wide-layout preference.
+  const [narrowLayout, setNarrowLayout] = useState(
+    () =>
+      typeof window !== "undefined" && window.innerWidth < SESSION_LIST_DRAWER_BREAKPOINT,
+  );
+  const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
   // `null` keeps the per-theme default width until the user drags the rail.
   const [sessionListWidth, setSessionListWidth] = useState<number | null>(() =>
     typeof initialAppearance.sessionListWidth === "number"
@@ -1252,6 +1263,8 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
 
   const openTerminal = useCallback(async (input: CreateTerminalSessionInput) => {
     setError(null);
+    // The drawer covers the workspace, so opening a tab from it should reveal the terminal.
+    setSessionDrawerOpen(false);
     try {
       const session = await createTerminalSession(input);
       tabInputsRef.current.set(session.id, input);
@@ -1635,7 +1648,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
 
   useEffect(() => {
     syncTabStripOverflow();
-  }, [sessionListCollapsed, syncTabStripOverflow, tabWidthFitsContent, tabs]);
+  }, [narrowLayout, sessionListCollapsed, syncTabStripOverflow, tabWidthFitsContent, tabs]);
 
   useEffect(() => {
     const strip = tabStripRef.current;
@@ -1658,6 +1671,33 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       }
     };
   }, []);
+
+  useEffect(() => {
+    const syncNarrowLayout = () =>
+      setNarrowLayout(window.innerWidth < SESSION_LIST_DRAWER_BREAKPOINT);
+    syncNarrowLayout();
+    window.addEventListener("resize", syncNarrowLayout);
+    return () => window.removeEventListener("resize", syncNarrowLayout);
+  }, []);
+
+  useEffect(() => {
+    if (!narrowLayout && sessionDrawerOpen) {
+      setSessionDrawerOpen(false);
+    }
+  }, [narrowLayout, sessionDrawerOpen]);
+
+  useEffect(() => {
+    if (!sessionDrawerOpen) {
+      return;
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSessionDrawerOpen(false);
+      }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [sessionDrawerOpen]);
 
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? null;
   const isDark = themeMode === "dark";
@@ -1716,16 +1756,22 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   const showSkinRightRail = Boolean(
     isSkin && (skinBlocks.showcase.enabled || skinRightCards.length > 0),
   );
-  const skinBodyGridClass = showSkinRightRail
-    ? sessionListCollapsed
-      ? "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[20px_minmax(0,1fr)_260px]"
-      : "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[var(--vibe-session-list-width)_20px_minmax(0,1fr)_260px]"
-    : sessionListCollapsed
-      ? "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[20px_minmax(0,1fr)]"
-      : "vibe-skin-body grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[var(--vibe-session-list-width)_20px_minmax(0,1fr)]";
-  const plainBodyGridClass = sessionListCollapsed
-    ? "grid h-full min-h-0 grid-cols-1 lg:grid-cols-[20px_minmax(0,1fr)]"
-    : "grid h-full min-h-0 grid-cols-1 lg:grid-cols-[var(--vibe-session-list-width)_20px_minmax(0,1fr)]";
+  // The session list only owns a grid track on wide windows. Narrow windows keep the
+  // rail plus workspace columns and render the list as an out-of-flow drawer, which
+  // avoids the old single-column fallback that stacked the list above the terminal.
+  const sessionListInTrack = !narrowLayout && !sessionListCollapsed;
+  const sessionDrawerVisible = narrowLayout && sessionDrawerOpen;
+  const sessionListVisible = sessionListInTrack || sessionDrawerVisible;
+  const bodyGridColumnsClass =
+    showSkinRightRail && !narrowLayout
+      ? sessionListInTrack
+        ? "grid-cols-[var(--vibe-session-list-width)_20px_minmax(0,1fr)_260px]"
+        : "grid-cols-[20px_minmax(0,1fr)_260px]"
+      : sessionListInTrack
+        ? "grid-cols-[var(--vibe-session-list-width)_20px_minmax(0,1fr)]"
+        : "grid-cols-[20px_minmax(0,1fr)]";
+  const skinBodyGridClass = `vibe-skin-body grid min-h-0 flex-1 ${bodyGridColumnsClass}`;
+  const plainBodyGridClass = `grid h-full min-h-0 ${bodyGridColumnsClass}`;
   const activeSkinRegionKeys = isSkin
     ? VIBE_SKIN_REGION_KEYS.filter((region) => Boolean(activeSkin.regions?.[region]))
     : [];
@@ -2030,7 +2076,10 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
       onPointerDownCapture={activateSkinAudio}
       style={rootStyle}
     >
-      <div className={isSkin ? "vibe-skin-frame flex h-full min-h-0 flex-col" : plainBodyGridClass}>
+      <div
+        className={isSkin ? "vibe-skin-frame flex h-full min-h-0 flex-col" : plainBodyGridClass}
+        data-testid={isSkin ? undefined : "vibe-body-grid"}
+      >
         {isSkin && (
           <div className="vibe-skin-titlebar flex h-11 shrink-0 items-center justify-between gap-3 border-b px-3 text-[11px] font-semibold">
             <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
@@ -2086,15 +2135,24 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
               />
             </div>
           )}
-        {!sessionListCollapsed && (
+        {sessionDrawerVisible && (
+          <div
+            aria-hidden="true"
+            className="vibe-session-drawer-backdrop"
+            data-testid="vibe-session-drawer-backdrop"
+            onClick={() => setSessionDrawerOpen(false)}
+          />
+        )}
+        {sessionListVisible && (
         <aside
-          className={
+          className={`${
             isSkin
-              ? "vibe-skin-sidebar relative flex h-full min-h-0 flex-col overflow-hidden border-b p-3 shadow-2xl lg:border-b-0 lg:border-r"
+              ? "vibe-skin-sidebar relative flex h-full min-h-0 flex-col overflow-hidden border-r p-3 shadow-2xl"
               : isDark
-              ? "relative flex h-full min-h-0 flex-col overflow-hidden border-b border-[#073642] bg-[#002b36] p-3 shadow-2xl shadow-black/25 lg:border-b-0 lg:border-r lg:border-[#073642]"
-              : "relative flex h-full min-h-0 flex-col overflow-hidden border-b border-white/70 bg-gradient-to-br from-slate-50/92 via-emerald-50/74 to-amber-50/70 p-3 shadow-xl shadow-stone-900/5 backdrop-blur-2xl lg:border-b-0 lg:border-r lg:border-white/80"
-          }
+              ? "relative flex h-full min-h-0 flex-col overflow-hidden border-r border-[#073642] bg-[#002b36] p-3 shadow-2xl shadow-black/25"
+              : "relative flex h-full min-h-0 flex-col overflow-hidden border-r border-white/70 bg-gradient-to-br from-slate-50/92 via-emerald-50/74 to-amber-50/70 p-3 shadow-xl shadow-stone-900/5 backdrop-blur-2xl"
+          }${sessionDrawerVisible ? " vibe-session-drawer" : ""}`}
+          data-testid="vibe-session-list"
         >
           <div
             className={
@@ -2360,13 +2418,13 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
         <div
           className={
             isSkin
-              ? "vibe-session-rail vibe-skin-session-rail hidden lg:flex"
+              ? "vibe-session-rail vibe-skin-session-rail flex"
               : isDark
-                ? "vibe-session-rail vibe-dark-session-rail hidden lg:flex"
-                : "vibe-session-rail vibe-light-session-rail hidden lg:flex"
+                ? "vibe-session-rail vibe-dark-session-rail flex"
+                : "vibe-session-rail vibe-light-session-rail flex"
           }
         >
-          {!sessionListCollapsed && (
+          {sessionListInTrack && (
             <div
               aria-label={t("vibe.resizeSessionList")}
               aria-orientation="vertical"
@@ -2383,24 +2441,30 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
             />
           )}
           <button
-            aria-expanded={!sessionListCollapsed}
+            aria-expanded={sessionListVisible}
             aria-label={
-              sessionListCollapsed ? t("vibe.expandSessionList") : t("vibe.collapseSessionList")
+              sessionListVisible ? t("vibe.collapseSessionList") : t("vibe.expandSessionList")
             }
             className="vibe-session-rail-handle"
-            onClick={() => setSessionListCollapsed((current) => !current)}
+            onClick={() => {
+              if (narrowLayout) {
+                setSessionDrawerOpen((current) => !current);
+                return;
+              }
+              setSessionListCollapsed((current) => !current);
+            }}
             title={
-              sessionListCollapsed ? t("vibe.expandSessionList") : t("vibe.collapseSessionList")
+              sessionListVisible ? t("vibe.collapseSessionList") : t("vibe.expandSessionList")
             }
             type="button"
           >
-            {sessionListCollapsed ? (
-              <ChevronRight className="h-3 w-3" />
-            ) : (
+            {sessionListVisible ? (
               <ChevronLeft className="h-3 w-3" />
+            ) : (
+              <ChevronRight className="h-3 w-3" />
             )}
           </button>
-          {!sessionListCollapsed && (
+          {sessionListInTrack && (
             <div
               aria-hidden="true"
               className={`vibe-session-rail-drag ${

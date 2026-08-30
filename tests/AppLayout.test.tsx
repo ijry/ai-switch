@@ -26,9 +26,17 @@ function dispatchPointerEvent(
   });
 }
 
+function setViewportWidth(width: number) {
+  act(() => {
+    (window as Window & { innerWidth: number }).innerWidth = width;
+    window.dispatchEvent(new Event("resize"));
+  });
+}
+
 describe("AppLayout", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    (window as Window & { innerWidth: number }).innerWidth = 1024;
   });
 
   it("renders system utility nav entries and navigates to their screens", async () => {
@@ -110,9 +118,58 @@ describe("AppLayout", () => {
     expect(screen.getByTestId("app-shell")).toHaveClass("min-[600px]:grid-cols-[56px_minmax(0,1fr)]");
     expect(screen.getByRole("button", { name: "Codex" })).toHaveAttribute("title", "Codex");
     expect(screen.getByRole("button", { name: "Codex" }).querySelector("svg")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Codex" }).querySelector("span.font-medium")).toHaveClass("min-[600px]:sr-only");
-    expect(screen.getByRole("combobox", { name: "语言" }).parentElement).toHaveClass("min-[600px]:hidden");
-    expect(screen.getByText("智能体")).toHaveClass("max-[599px]:hidden");
+    expect(screen.getByRole("button", { name: "Codex" }).querySelector("span.font-medium")).toHaveClass("sr-only");
+    expect(screen.getByRole("combobox", { name: "语言" }).parentElement).toHaveClass("hidden");
+    expect(screen.getByText("智能体")).toHaveClass("hidden");
+  });
+
+  it("opens the full sidebar as a fixed drawer on narrow windows", async () => {
+    setViewportWidth(500);
+    const onNavigate = vi.fn();
+    const onToggleSidebar = vi.fn();
+
+    render(
+      <I18nProvider initialLanguage="zh-CN">
+        <AppLayout
+          activeScreen="Codex"
+          onNavigate={onNavigate}
+          onToggleSidebar={onToggleSidebar}
+          sidebarCollapsed={false}
+        >
+          <div>content</div>
+        </AppLayout>
+      </I18nProvider>,
+    );
+
+    const sidebar = screen.getByTestId("app-sidebar");
+    const expand = screen.getByRole("button", { name: "展开侧栏" });
+    expect(expand).toHaveAttribute("aria-expanded", "false");
+    expect(sidebar).not.toHaveClass("app-sidebar-drawer");
+    expect(screen.queryByTestId("app-sidebar-drawer-backdrop")).not.toBeInTheDocument();
+
+    await userEvent.click(expand);
+
+    expect(onToggleSidebar).not.toHaveBeenCalled();
+    expect(sidebar).toHaveClass("app-sidebar-drawer");
+    expect(screen.getByTestId("app-sidebar-drawer-backdrop")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "收起侧栏" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByText("智能体")).not.toHaveClass("hidden");
+    expect(screen.getByText("content").parentElement).toHaveClass("col-start-2");
+
+    await userEvent.click(screen.getByTestId("app-sidebar-drawer-backdrop"));
+    expect(sidebar).not.toHaveClass("app-sidebar-drawer");
+
+    await userEvent.click(screen.getByRole("button", { name: "展开侧栏" }));
+    await userEvent.keyboard("{Escape}");
+    expect(sidebar).not.toHaveClass("app-sidebar-drawer");
+
+    await userEvent.click(screen.getByRole("button", { name: "展开侧栏" }));
+    await userEvent.click(screen.getByRole("button", { name: /OCR识别/ }));
+    expect(onNavigate).toHaveBeenCalledWith("OCR");
+    expect(sidebar).not.toHaveClass("app-sidebar-drawer");
   });
 
   it("defaults to a compact expanded width and resizes within bounds", () => {

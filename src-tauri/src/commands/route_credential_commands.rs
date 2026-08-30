@@ -1,9 +1,10 @@
 use crate::app_state::AppState;
 use crate::error::ApiError;
 use crate::models::route_credential::{
-    CreateApiRouteCredentialInput, ImportOfficialFilesInput, ImportOfficialTextInput,
-    ReorderRouteCredentialInput, RouteCredential, RouteCredentialImportResult, RouteCredentialPage,
-    RouteCredentialPageRequest, UpdateRouteCredentialInput,
+    CopyRouteCredentialInput, CreateApiRouteCredentialInput, ImportOfficialFilesInput,
+    ImportOfficialTextInput, ReorderRouteCredentialInput, RouteCredential,
+    RouteCredentialImportResult, RouteCredentialPage, RouteCredentialPageRequest,
+    UpdateRouteCredentialInput,
 };
 use crate::services::route_credential_service::RouteCredentialService;
 use crate::services::route_quota_service::{QuotaRefreshOutcome, RouteQuotaService};
@@ -98,8 +99,9 @@ pub async fn update_route_credential(
 pub async fn copy_route_credential(
     state: State<'_, AppState>,
     id: String,
+    input: Option<CopyRouteCredentialInput>,
 ) -> Result<RouteCredential, ApiError> {
-    RouteCredentialService::copy(&state.pool, id)
+    RouteCredentialService::copy_with_options(&state.pool, id, input.unwrap_or_default())
         .await
         .map_err(ApiError::from)
 }

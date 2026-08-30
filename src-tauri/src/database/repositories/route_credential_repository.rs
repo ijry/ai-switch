@@ -3,6 +3,7 @@ use crate::models::route_credential::{
     RecoveryCandidate, ReorderRouteCredentialInput, RouteCredential, RouteCredentialFilterOption,
     RouteCredentialPage, RouteCredentialPageRequest, RouteCredentialPoolScope,
     UpdateRouteCredentialInput, DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY,
+    DEFAULT_ROUTE_CREDENTIAL_PRIORITY,
 };
 use crate::models::route_credential_transfer::RouteCredentialSelectionContext;
 use chrono::Utc;
@@ -271,6 +272,8 @@ async fn create_with_connection(
     secret_payload_json: &str,
     config_json: &str,
     preview_json: &str,
+    route_priority: i64,
+    max_concurrency: i64,
 ) -> Result<RouteCredential, AppError> {
     let now = Utc::now().to_rfc3339();
     let id = Uuid::new_v4().to_string();
@@ -292,13 +295,17 @@ async fn create_with_connection(
 
     sqlx::query(
         "INSERT INTO route_credentials (
-            id, platform, kind, display_name, email, status, sort_order, max_concurrency, batch_id,
+            id, platform, kind, display_name, email, status, sort_order, route_priority,
+            max_concurrency, batch_id,
             secret_payload_json, config_json, preview_json,
             subscription_type, primary_remain, weekly_remain, reset_primary, reset_weekly,
             quota_remaining, quota_limit, quota_used, quota_updated_at,
             created_at, updated_at
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (
+             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+         )",
     )
     .bind(&id)
     .bind(platform)
@@ -307,7 +314,8 @@ async fn create_with_connection(
     .bind(email)
     .bind(status)
     .bind(sort_order)
-    .bind(DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY)
+    .bind(route_priority)
+    .bind(max_concurrency)
     .bind(batch_id)
     .bind(secret_payload_json)
     .bind(config_json)
@@ -394,6 +402,37 @@ impl RouteCredentialRepository {
         config_json: &str,
         preview_json: &str,
     ) -> Result<RouteCredential, AppError> {
+        Self::create_with_routing_settings(
+            pool,
+            platform,
+            kind,
+            display_name,
+            email,
+            status,
+            batch_id,
+            secret_payload_json,
+            config_json,
+            preview_json,
+            DEFAULT_ROUTE_CREDENTIAL_PRIORITY,
+            DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY,
+        )
+        .await
+    }
+
+    pub(crate) async fn create_with_routing_settings(
+        pool: &SqlitePool,
+        platform: &str,
+        kind: &str,
+        display_name: &str,
+        email: Option<String>,
+        status: &str,
+        batch_id: Option<String>,
+        secret_payload_json: &str,
+        config_json: &str,
+        preview_json: &str,
+        route_priority: i64,
+        max_concurrency: i64,
+    ) -> Result<RouteCredential, AppError> {
         let mut tx = pool.begin().await.map_err(|err| AppError::Database {
             code: "database.route_credential_create_tx",
             message: "Could not start route credential create transaction".to_string(),
@@ -411,6 +450,8 @@ impl RouteCredentialRepository {
             secret_payload_json,
             config_json,
             preview_json,
+            route_priority,
+            max_concurrency,
         )
         .await?;
 
@@ -447,6 +488,8 @@ impl RouteCredentialRepository {
             secret_payload_json,
             config_json,
             preview_json,
+            DEFAULT_ROUTE_CREDENTIAL_PRIORITY,
+            DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY,
         )
         .await
     }

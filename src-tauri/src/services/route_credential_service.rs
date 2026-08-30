@@ -4,12 +4,13 @@ use crate::database::repositories::route_credential_repository::RouteCredentialR
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::error::AppError;
 use crate::models::batch::NewBatch;
-use crate::models::platform::{PlatformId, PlatformOperation};
+use crate::models::platform::{ApiDialect, PlatformId, PlatformOperation};
 use crate::models::route_credential::{
-    normalize_anthropic_api_key_field, CreateApiRouteCredentialInput, ImportOfficialFilesInput,
-    ImportOfficialTextInput, ModelMapping, ReorderRouteCredentialInput, RouteCredential,
-    RouteCredentialFailurePolicy, RouteCredentialImportFailure, RouteCredentialImportResult,
-    RouteCredentialPage, RouteCredentialPageRequest, UpdateRouteCredentialInput,
+    normalize_anthropic_api_key_field, CopyRouteCredentialInput, CreateApiRouteCredentialInput,
+    ImportOfficialFilesInput, ImportOfficialTextInput, ModelMapping, ReorderRouteCredentialInput,
+    RouteCredential, RouteCredentialFailurePolicy, RouteCredentialImportFailure,
+    RouteCredentialImportResult, RouteCredentialPage, RouteCredentialPageRequest,
+    UpdateRouteCredentialInput,
 };
 use crate::models::route_credential_transfer::TransferPlatformChoice;
 use crate::models::route_pool::FetchedRouteModel;
@@ -23,6 +24,7 @@ use crate::services::route_preview_service::RoutePreviewService;
 use chrono::Utc;
 use serde_json::{json, Map, Value};
 use sqlx::SqlitePool;
+use url::Url;
 
 #[path = "sub2api_import_service.rs"]
 mod sub2api_import_service;
@@ -242,38 +244,98 @@ impl RouteCredentialService {
     }
 
     pub async fn copy(pool: &SqlitePool, id: String) -> Result<RouteCredential, AppError> {
+        Self::copy_with_options(pool, id, CopyRouteCredentialInput::default()).await
+    }
+
+    pub async fn copy_with_options(
+        pool: &SqlitePool,
+        id: String,
+        input: CopyRouteCredentialInput,
+    ) -> Result<RouteCredential, AppError> {
         let source = RouteCredentialRepository::get(pool, &id).await?;
+        let source_platform = PlatformId::parse(&source.platform)?;
+        let target_platform = input
+            .target_platform
+            .as_deref()
+            .map(PlatformId::parse)
+            .transpose()?
+            .unwrap_or(source_platform);
+        PlatformCapabilityService::require(target_platform, PlatformOperation::RouteCredentials)?;
+        let cross_platform = target_platform != source_platform;
+        let api_key_override = input
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+
+        if source.kind != "api" && cross_platform {
+            return Err(AppError::Validation {
+                code: "validation.official_cross_platform_copy",
+                message: "Official accounts can only be copied within the same platform"
+                    .to_string(),
+                details: Some(format!(
+                    "{} -> {}",
+                    source_platform.as_str(),
+                    target_platform.as_str()
+                )),
+                recoverable: true,
+            });
+        }
+        if source.kind != "api" && api_key_override.is_some() {
+            return Err(AppError::Validation {
+                code: "validation.copy_api_key_unsupported",
+                message: "API Key override is only supported for API accounts".to_string(),
+                details: Some(source.kind.clone()),
+                recoverable: true,
+            });
+        }
+
+        let (secret_payload_json, config_json, preview_json) = if source.kind == "api" {
+            copied_api_payload(&source, target_platform, cross_platform, api_key_override)?
+        } else {
+            (
+                source.secret_payload_json.clone(),
+                source.config_json.clone(),
+                source.preview_json.clone(),
+            )
+        };
         let display_name = duplicated_display_name(&source.display_name);
-        let created = RouteCredentialRepository::create(
+        let created = RouteCredentialRepository::create_with_routing_settings(
             pool,
-            &source.platform,
+            target_platform.as_str(),
             &source.kind,
             &display_name,
-            source.email.clone(),
+            (!cross_platform).then_some(source.email.clone()).flatten(),
             "ok",
-            source.batch_id.clone(),
-            &source.secret_payload_json,
-            &source.config_json,
-            &source.preview_json,
+            (!cross_platform)
+                .then_some(source.batch_id.clone())
+                .flatten(),
+            &secret_payload_json,
+            &config_json,
+            &preview_json,
+            source.route_priority,
+            source.max_concurrency,
         )
         .await?;
 
         // Preserve the source's compute-pool membership: a copy made from the
         // "算力池" view should stay in the pool rather than dropping to "未入池".
-        let source_in_pool = RoutePoolRepository::pool_membership_map(
-            pool,
-            &source.platform,
-            std::slice::from_ref(&source.id),
-        )
-        .await?
-        .contains(&source.id);
-        if source_in_pool {
-            RoutePoolRepository::append_members(
+        if !cross_platform {
+            let source_in_pool = RoutePoolRepository::pool_membership_map(
                 pool,
                 &source.platform,
-                std::slice::from_ref(&created.id),
+                std::slice::from_ref(&source.id),
             )
-            .await?;
+            .await?
+            .contains(&source.id);
+            if source_in_pool {
+                RoutePoolRepository::append_members(
+                    pool,
+                    target_platform.as_str(),
+                    std::slice::from_ref(&created.id),
+                )
+                .await?;
+            }
         }
 
         Ok(created)
@@ -307,6 +369,153 @@ fn duplicated_display_name(name: &str) -> String {
         format!("copy {stamp}")
     } else {
         format!("{base} {stamp}")
+    }
+}
+
+fn copied_api_payload(
+    source: &RouteCredential,
+    target_platform: PlatformId,
+    cross_platform: bool,
+    api_key_override: Option<&str>,
+) -> Result<(String, String, String), AppError> {
+    if !cross_platform && api_key_override.is_none() {
+        return Ok((
+            source.secret_payload_json.clone(),
+            source.config_json.clone(),
+            source.preview_json.clone(),
+        ));
+    }
+
+    let source_secret = parse_copy_object(&source.secret_payload_json, "secret_payload_json")?;
+    let api_key = api_key_override
+        .or_else(|| source_secret.get("api_key").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| copy_source_error("api_key", "API account has no API Key"))?;
+
+    if !cross_platform {
+        let mut secret = source_secret;
+        secret.insert("api_key".to_string(), json!(&api_key));
+        let secret_payload_json = Value::Object(secret).to_string();
+        let preview_json = RoutePreviewService::generate(
+            target_platform.as_str(),
+            "api",
+            &secret_payload_json,
+            &source.config_json,
+        );
+        return Ok((
+            secret_payload_json,
+            source.config_json.clone(),
+            preview_json,
+        ));
+    }
+
+    let source_config = parse_copy_object(&source.config_json, "config_json")?;
+    let source_interface_format = source_config
+        .get("interface_format")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            copy_source_error("interface_format", "API account has no interface format")
+        })?;
+    let source_dialect = ApiDialect::parse(source_interface_format)?;
+    let target_default_dialect = target_platform.default_api_credential_dialect();
+    let target_dialect = target_default_dialect.unwrap_or(source_dialect);
+    let source_base_url = source_config
+        .get("base_url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| copy_source_error("base_url", "API account has no Base URL"))?;
+    let base_url = match target_default_dialect {
+        Some(dialect) => convert_copy_base_url(source_base_url, dialect)?,
+        None => source_base_url.trim().to_string(),
+    };
+
+    let mut config = Map::from_iter([
+        ("base_url".to_string(), json!(base_url)),
+        (
+            "interface_format".to_string(),
+            json!(target_dialect.as_str()),
+        ),
+    ]);
+    for key in ["headers", "failure_policy", "recovery"] {
+        if let Some(value) = source_config.get(key) {
+            config.insert(key.to_string(), value.clone());
+        }
+    }
+
+    let secret_payload_json = json!({ "api_key": api_key }).to_string();
+    let config_json = Value::Object(config).to_string();
+    let preview_json = RoutePreviewService::generate(
+        target_platform.as_str(),
+        "api",
+        &secret_payload_json,
+        &config_json,
+    );
+    Ok((secret_payload_json, config_json, preview_json))
+}
+
+fn parse_copy_object(value: &str, field: &'static str) -> Result<Map<String, Value>, AppError> {
+    serde_json::from_str::<Value>(value)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .ok_or_else(|| copy_source_error(field, "Account data is not a JSON object"))
+}
+
+fn copy_source_error(field: &'static str, message: &'static str) -> AppError {
+    AppError::Validation {
+        code: "validation.copy_source",
+        message: message.to_string(),
+        details: Some(field.to_string()),
+        recoverable: true,
+    }
+}
+
+fn convert_copy_base_url(value: &str, target_dialect: ApiDialect) -> Result<String, AppError> {
+    let trimmed = value.trim();
+    if matches!(target_dialect, ApiDialect::Gemini) {
+        return Ok(trimmed.to_string());
+    }
+
+    let mut url = Url::parse(trimmed).map_err(|error| AppError::Validation {
+        code: "validation.copy_base_url",
+        message: "Base URL cannot be converted for the target platform".to_string(),
+        details: Some(error.to_string()),
+        recoverable: true,
+    })?;
+    let current_path = url.path().trim_end_matches('/');
+    let path = match target_dialect {
+        ApiDialect::Anthropic => {
+            if current_path
+                .rsplit('/')
+                .next()
+                .is_some_and(|segment| segment.eq_ignore_ascii_case("v1"))
+            {
+                current_path[..current_path.len() - "/v1".len()].to_string()
+            } else {
+                current_path.to_string()
+            }
+        }
+        ApiDialect::OpenAi | ApiDialect::OpenAiResponses => {
+            if current_path
+                .rsplit('/')
+                .next()
+                .is_some_and(|segment| segment.eq_ignore_ascii_case("v1"))
+            {
+                current_path.to_string()
+            } else if current_path.is_empty() {
+                "/v1".to_string()
+            } else {
+                format!("{current_path}/v1")
+            }
+        }
+        ApiDialect::Gemini => unreachable!(),
+    };
+    url.set_path(if path.is_empty() { "/" } else { &path });
+    let rendered = url.to_string();
+    if path.is_empty() && url.query().is_none() && url.fragment().is_none() {
+        Ok(rendered.trim_end_matches('/').to_string())
+    } else {
+        Ok(rendered)
     }
 }
 
@@ -1146,6 +1355,339 @@ mod tests {
             copied.display_name
         );
         assert_eq!(copied.display_name.len(), "Team Account YYYY-MM-DD".len());
+    }
+
+    #[tokio::test]
+    async fn copy_api_credential_within_platform_without_options_preserves_legacy_payloads() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let source = RouteCredentialRepository::create(
+            &pool,
+            "codex",
+            "api",
+            "Legacy API",
+            None,
+            "ok",
+            None,
+            r#"{"key":"legacy-secret"}"#,
+            r#"not-json"#,
+            r#"legacy-preview"#,
+        )
+        .await
+        .expect("create legacy credential");
+
+        let copied = RouteCredentialService::copy_with_options(
+            &pool,
+            source.id,
+            CopyRouteCredentialInput::default(),
+        )
+        .await
+        .expect("legacy copy");
+
+        assert_eq!(copied.secret_payload_json, "{\"key\":\"legacy-secret\"}");
+        assert_eq!(copied.config_json, "not-json");
+        assert_eq!(copied.preview_json, "legacy-preview");
+    }
+
+    #[tokio::test]
+    async fn copy_api_credential_to_claude_converts_compatible_fields() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+
+        let source = RouteCredentialService::create_api(
+            &pool,
+            CreateApiRouteCredentialInput {
+                platform: "codex".into(),
+                display_name: "Cross-platform API".into(),
+                api_key: "sk-source".into(),
+                base_url: "https://api.example.com/v1/".into(),
+                interface_format: "openai".into(),
+                model_mappings_json: r#"[{"from":"gpt-5","to":"vendor-gpt-5"}]"#.into(),
+                fetched_models_json: Some(r#"[{"id":"gpt-5"}]"#.into()),
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: Some(true),
+                user_agent: Some("shared-client/1.0".into()),
+            },
+        )
+        .await
+        .expect("create");
+        let mut source_config: Value =
+            serde_json::from_str(&source.config_json).expect("source config");
+        source_config["failure_policy"] = json!({
+            "retry_count": 4,
+            "retry_interval_ms": 500,
+            "semantic_error_threshold": 20,
+        });
+        source_config["recovery"] = json!({
+            "mode": "scheduled",
+            "times": ["08:00"],
+        });
+        source_config["turn_reminder"] = json!(true);
+        sqlx::query("UPDATE route_credentials SET config_json = ? WHERE id = ?")
+            .bind(source_config.to_string())
+            .bind(&source.id)
+            .execute(&pool)
+            .await
+            .expect("seed source config");
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&source.id))
+            .await
+            .expect("seed source pool");
+
+        let copied = RouteCredentialService::copy_with_options(
+            &pool,
+            source.id,
+            CopyRouteCredentialInput {
+                target_platform: Some("claude".into()),
+                api_key: Some("sk-override".into()),
+            },
+        )
+        .await
+        .expect("cross-platform copy");
+
+        assert_eq!(copied.platform, "claude");
+        assert_eq!(copied.kind, "api");
+        assert_eq!(
+            serde_json::from_str::<Value>(&copied.secret_payload_json).expect("copied secret"),
+            json!({ "api_key": "sk-override" })
+        );
+        let config: Value = serde_json::from_str(&copied.config_json).expect("copied config");
+        assert_eq!(config["base_url"], "https://api.example.com");
+        assert_eq!(config["interface_format"], "anthropic");
+        assert_eq!(config["headers"], source_config["headers"]);
+        assert_eq!(config["failure_policy"], source_config["failure_policy"]);
+        assert_eq!(config["recovery"], source_config["recovery"]);
+        assert!(config.get("model_mappings").is_none());
+        assert!(config.get("fetched_models").is_none());
+        assert!(config.get("responses_custom_tool_compat").is_none());
+        assert!(config.get("turn_reminder").is_none());
+        assert!(!RoutePoolRepository::list_member_ids(&pool, "claude")
+            .await
+            .expect("target pool")
+            .contains(&copied.id));
+    }
+
+    #[tokio::test]
+    async fn copy_api_credential_to_codex_adds_v1_and_keeps_original_key() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let source = RouteCredentialService::create_api(
+            &pool,
+            CreateApiRouteCredentialInput {
+                platform: "claude".into(),
+                display_name: "Claude API".into(),
+                api_key: "sk-source".into(),
+                base_url: "https://api.example.com".into(),
+                interface_format: "anthropic".into(),
+                model_mappings_json: "[]".into(),
+                fetched_models_json: None,
+                api_key_field: Some("ANTHROPIC_AUTH_TOKEN".into()),
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: None,
+                user_agent: None,
+            },
+        )
+        .await
+        .expect("create");
+
+        let copied = RouteCredentialService::copy_with_options(
+            &pool,
+            source.id,
+            CopyRouteCredentialInput {
+                target_platform: Some("codex".into()),
+                api_key: Some("   ".into()),
+            },
+        )
+        .await
+        .expect("cross-platform copy");
+
+        let secret: Value =
+            serde_json::from_str(&copied.secret_payload_json).expect("copied secret");
+        let config: Value = serde_json::from_str(&copied.config_json).expect("copied config");
+        assert_eq!(secret["api_key"], "sk-source");
+        assert_eq!(config["base_url"], "https://api.example.com/v1");
+        assert_eq!(config["interface_format"], "openai");
+        assert!(config.get("api_key_field").is_none());
+    }
+
+    #[tokio::test]
+    async fn copy_api_credential_within_platform_can_override_api_key() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let source = RouteCredentialService::create_api(
+            &pool,
+            CreateApiRouteCredentialInput {
+                platform: "codex".into(),
+                display_name: "Same-platform API".into(),
+                api_key: "sk-source".into(),
+                base_url: "https://api.example.com/v1".into(),
+                interface_format: "openai".into(),
+                model_mappings_json: r#"[{"from":"gpt-5","to":"vendor-gpt-5"}]"#.into(),
+                fetched_models_json: None,
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: None,
+                user_agent: None,
+            },
+        )
+        .await
+        .expect("create");
+
+        let copied = RouteCredentialService::copy_with_options(
+            &pool,
+            source.id,
+            CopyRouteCredentialInput {
+                target_platform: Some("codex".into()),
+                api_key: Some("sk-override".into()),
+            },
+        )
+        .await
+        .expect("same-platform copy");
+
+        let secret: Value =
+            serde_json::from_str(&copied.secret_payload_json).expect("copied secret");
+        assert_eq!(secret["api_key"], "sk-override");
+        assert_eq!(copied.config_json, source.config_json);
+        assert!(copied.preview_json.contains("sk-override"));
+    }
+
+    #[tokio::test]
+    async fn copy_route_credential_preserves_compatible_routing_settings() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let source = RouteCredentialService::create_api(
+            &pool,
+            CreateApiRouteCredentialInput {
+                platform: "codex".into(),
+                display_name: "Configured API".into(),
+                api_key: "sk-source".into(),
+                base_url: "https://api.example.com/v1".into(),
+                interface_format: "openai".into(),
+                model_mappings_json: "[]".into(),
+                fetched_models_json: None,
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: None,
+                user_agent: None,
+            },
+        )
+        .await
+        .expect("create");
+        sqlx::query(
+            "UPDATE route_credentials
+             SET route_priority = ?, max_concurrency = ?
+             WHERE id = ?",
+        )
+        .bind(1_i64)
+        .bind(7_i64)
+        .bind(&source.id)
+        .execute(&pool)
+        .await
+        .expect("configure routing settings");
+
+        let copied = RouteCredentialService::copy(&pool, source.id)
+            .await
+            .expect("copy");
+
+        assert_eq!(copied.route_priority, 1);
+        assert_eq!(copied.max_concurrency, 7);
+    }
+
+    #[tokio::test]
+    async fn copy_api_credential_to_platform_without_default_dialect_keeps_source_shape() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let source = RouteCredentialService::create_api(
+            &pool,
+            CreateApiRouteCredentialInput {
+                platform: "codex".into(),
+                display_name: "Custom API".into(),
+                api_key: "sk-source".into(),
+                base_url: "https://api.example.com/custom".into(),
+                interface_format: "openai-responses".into(),
+                model_mappings_json: "[]".into(),
+                fetched_models_json: None,
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: Some(true),
+                user_agent: None,
+            },
+        )
+        .await
+        .expect("create");
+
+        let copied = RouteCredentialService::copy_with_options(
+            &pool,
+            source.id,
+            CopyRouteCredentialInput {
+                target_platform: Some("opencode".into()),
+                api_key: None,
+            },
+        )
+        .await
+        .expect("cross-platform copy");
+
+        let config: Value = serde_json::from_str(&copied.config_json).expect("copied config");
+        assert_eq!(config["base_url"], "https://api.example.com/custom");
+        assert_eq!(config["interface_format"], "openai-responses");
+    }
+
+    #[tokio::test]
+    async fn copy_official_credential_to_another_platform_is_rejected() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let source = RouteCredentialRepository::create(
+            &pool,
+            "codex",
+            "official",
+            "Official Account",
+            Some("team@example.com".into()),
+            "ok",
+            None,
+            r#"{"access_token":"at"}"#,
+            r#"{"type":"codex"}"#,
+            "{}",
+        )
+        .await
+        .expect("create official");
+
+        let error = RouteCredentialService::copy_with_options(
+            &pool,
+            source.id,
+            CopyRouteCredentialInput {
+                target_platform: Some("claude".into()),
+                api_key: None,
+            },
+        )
+        .await
+        .expect_err("official cross-platform copy must fail");
+
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "validation.official_cross_platform_copy",
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

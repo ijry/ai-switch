@@ -208,9 +208,17 @@ function dispatchPointerEvent(
   });
 }
 
+function setViewportWidth(width: number) {
+  act(() => {
+    (window as Window & { innerWidth: number }).innerWidth = width;
+    window.dispatchEvent(new Event("resize"));
+  });
+}
+
 describe("VibeScreen", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    (window as Window & { innerWidth: number }).innerWidth = 1024;
     (window as Window & {
       __TAURI_INTERNALS__?: {
         invoke?: ReturnType<typeof vi.fn>;
@@ -542,6 +550,73 @@ describe("VibeScreen", () => {
     expect(
       screen.getByRole("main").style.getPropertyValue("--vibe-session-list-width"),
     ).toBe("560px");
+  });
+
+  it("floats the session list as a drawer when the window gets narrow", async () => {
+    renderScreen();
+
+    await screen.findByRole("button", { name: "Expand folder D:/repo/app" });
+    expect(screen.getByTestId("vibe-session-list")).not.toHaveClass("vibe-session-drawer");
+    expect(screen.getByTestId("vibe-body-grid")).toHaveClass(
+      "grid-cols-[var(--vibe-session-list-width)_20px_minmax(0,1fr)]",
+    );
+
+    setViewportWidth(880);
+
+    expect(screen.queryByTestId("vibe-session-list")).not.toBeInTheDocument();
+    expect(screen.getByTestId("vibe-body-grid")).toHaveClass("grid-cols-[20px_minmax(0,1fr)]");
+    const expand = screen.getByRole("button", { name: "Expand session list" });
+    expect(expand).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("vibe-session-resize-handle")).not.toBeInTheDocument();
+
+    await userEvent.click(expand);
+
+    const drawer = screen.getByTestId("vibe-session-list");
+    expect(drawer).toHaveClass("vibe-session-drawer");
+    expect(screen.getByRole("button", { name: "Expand folder D:/repo/app" })).toBeInTheDocument();
+    // The floating drawer must not rewrite the wide-layout collapse preference.
+    expect(window.localStorage.getItem(VIBE_APPEARANCE_STORAGE_KEY)).toContain(
+      '"sessionListCollapsed":false',
+    );
+
+    await userEvent.click(screen.getByTestId("vibe-session-drawer-backdrop"));
+
+    expect(screen.queryByTestId("vibe-session-list")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Expand session list" }));
+    expect(screen.getByTestId("vibe-session-list")).toBeInTheDocument();
+
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByTestId("vibe-session-list")).not.toBeInTheDocument();
+
+    // Resuming from the drawer must uncover the workspace it floats over.
+    await userEvent.click(screen.getByRole("button", { name: "Expand session list" }));
+    await expandProjectDirectory();
+    await userEvent.click(await screen.findByRole("button", { name: /Resume Fix terminal bug/ }));
+    await screen.findByTestId("terminal-pane-term-1");
+    expect(screen.queryByTestId("vibe-session-list")).not.toBeInTheDocument();
+
+    setViewportWidth(1280);
+
+    const restored = screen.getByTestId("vibe-session-list");
+    expect(restored).not.toHaveClass("vibe-session-drawer");
+    expect(screen.queryByTestId("vibe-session-drawer-backdrop")).not.toBeInTheDocument();
+  });
+
+  it("keeps the collapsed wide layout when the window widens again", async () => {
+    renderScreen();
+
+    await screen.findByRole("button", { name: "Expand folder D:/repo/app" });
+    await userEvent.click(screen.getByRole("button", { name: "Collapse session list" }));
+
+    setViewportWidth(880);
+    await userEvent.click(screen.getByRole("button", { name: "Expand session list" }));
+    expect(screen.getByTestId("vibe-session-list")).toHaveClass("vibe-session-drawer");
+
+    setViewportWidth(1280);
+
+    expect(screen.queryByTestId("vibe-session-list")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand session list" })).toBeInTheDocument();
   });
 
   it("tiles terminals horizontally from the tab bar context menu", async () => {
