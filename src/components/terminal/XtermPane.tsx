@@ -23,6 +23,15 @@ type XtermPaneProps = {
 
 type ClaudeDiffTone = "added" | "removed";
 
+// Dragging the tile-width slider fires a ResizeObserver callback per pointer
+// move. Each PTY resize makes the agent repaint at that intermediate width, so
+// coalesce the drag and only tell the backend about the size it settled on.
+const PTY_RESIZE_SETTLE_MS = 120;
+
+// How long the agent is given to finish its post-resize repaint before erased
+// screens are archived into scrollback again.
+const RESIZE_REPAINT_WINDOW_MS = 500;
+
 const CLAUDE_TRUECOLOR_DIFF_BACKGROUNDS = new Map<string, ClaudeDiffTone>([
   ["68;20;24", "removed"],
   ["134;40;48", "removed"],
@@ -222,7 +231,7 @@ export function XtermPane({
 }: XtermPaneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
-  const fitAddonRef = useRef<FitAddon | null>(null);
+  const fitAndResizeRef = useRef<() => void>(() => undefined);
   const theme = useMemo(
     () => createTheme(themeMode, themeOverride, transparentSurface),
     [themeMode, themeOverride, transparentSurface],
@@ -265,7 +274,6 @@ export function XtermPane({
     terminal.loadAddon(fitAddon);
     terminal.open(host);
     terminalRef.current = terminal;
-    fitAddonRef.current = fitAddon;
 
     if (session.platform?.trim().toLowerCase() === "claude") {
       // Claude can still emit terminal controls from its renderer even when its
@@ -285,16 +293,60 @@ export function XtermPane({
       }
     }
 
+    let ptyResizeTimeout: number | null = null;
+    let repaintWindowTimeout: number | null = null;
+    let lastNotifiedSize = { cols: 0, rows: 0 };
+
+    const endResizeRepaintWindow = () => {
+      repaintWindowTimeout = null;
+      terminal.options.scrollOnEraseInDisplay = true;
+    };
+
+    const notifyPtyResize = () => {
+      ptyResizeTimeout = null;
+      if (terminal.cols === lastNotifiedSize.cols && terminal.rows === lastNotifiedSize.rows) {
+        return;
+      }
+      lastNotifiedSize = { cols: terminal.cols, rows: terminal.rows };
+
+      // Agents answer the SIGWINCH with a full-screen repaint: erase the screen,
+      // then draw the same content at the new width. Archiving those erased
+      // frames would stack old-width copies of the current screen on top of the
+      // real history, which is what made scrollback look stuck at the previous
+      // tile width. Pause the archive until the repaint lands.
+      terminal.options.scrollOnEraseInDisplay = false;
+      if (repaintWindowTimeout !== null) {
+        window.clearTimeout(repaintWindowTimeout);
+      }
+      repaintWindowTimeout = window.setTimeout(endResizeRepaintWindow, RESIZE_REPAINT_WINDOW_MS);
+
+      void resizeTerminal(session.id, terminal.cols, terminal.rows).catch((error) => {
+        terminal.writeln(`\r\n[resize failed] ${String(error)}`);
+      });
+    };
+
     const fitAndResize = () => {
       try {
         fitAddon.fit();
-        void resizeTerminal(session.id, terminal.cols, terminal.rows).catch((error) => {
-          terminal.writeln(`\r\n[resize failed] ${String(error)}`);
-        });
       } catch {
         // Hidden panes can have zero dimensions; they are fitted again when activated.
+        return;
       }
+
+      // A SIGWINCH makes the agent repaint, and Claude's repaint lands in the
+      // scrollback we keep. Only notify the PTY when the grid really changed and
+      // only once the size stopped moving, so a width drag leaves one repaint at
+      // the final width instead of one stale copy per intermediate width.
+      if (terminal.cols === lastNotifiedSize.cols && terminal.rows === lastNotifiedSize.rows) {
+        return;
+      }
+      if (ptyResizeTimeout !== null) {
+        window.clearTimeout(ptyResizeTimeout);
+      }
+      ptyResizeTimeout = window.setTimeout(notifyPtyResize, PTY_RESIZE_SETTLE_MS);
     };
+
+    fitAndResizeRef.current = fitAndResize;
 
     const inputDisposable = terminal.onData((data) => {
       void writeTerminalInput(session.id, data).catch((error) => {
@@ -356,6 +408,12 @@ export function XtermPane({
 
     return () => {
       disposed = true;
+      if (ptyResizeTimeout !== null) {
+        window.clearTimeout(ptyResizeTimeout);
+      }
+      if (repaintWindowTimeout !== null) {
+        window.clearTimeout(repaintWindowTimeout);
+      }
       window.cancelAnimationFrame(frame);
       window.removeEventListener("resize", fitAndResize);
       resizeObserver?.disconnect();
@@ -366,7 +424,7 @@ export function XtermPane({
       pendingClaudeOutputRef.current = "";
       terminal.dispose();
       terminalRef.current = null;
-      fitAddonRef.current = null;
+      fitAndResizeRef.current = () => undefined;
     };
   }, [onStatusChange, session.id]);
 
@@ -384,11 +442,9 @@ export function XtermPane({
       return;
     }
     window.requestAnimationFrame(() => {
-      try {
-        fitAddonRef.current?.fit();
-      } catch {
-        // The pane may still be calculating layout.
-      }
+      // Re-fitting can change the grid, so route it through the same path that
+      // keeps the PTY in sync instead of fitting xterm alone.
+      fitAndResizeRef.current();
       terminalRef.current?.focus();
     });
   }, [active]);

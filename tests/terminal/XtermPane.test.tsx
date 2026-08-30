@@ -4,17 +4,24 @@ import {
   normalizeClaudeLightDiffOutput,
   XtermPane,
 } from "../../src/components/terminal/XtermPane";
+import { resizeTerminal } from "../../src/lib/api/client";
 import type { TerminalSession } from "../../src/lib/api/types";
 
 const terminalConstructorOptions = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 const terminalInstances = vi.hoisted(
   () =>
     [] as Array<{
+      cols: number;
+      rows: number;
+      options: Record<string, unknown>;
       write: ReturnType<typeof vi.fn>;
       parser: {
         registerCsiHandler: ReturnType<typeof vi.fn>;
       };
     }>,
+);
+const fitAddonInstances = vi.hoisted(
+  () => [] as Array<{ fit: ReturnType<typeof vi.fn> }>,
 );
 const outputListeners = new Map<string, (payload: unknown) => void>();
 const subscribe = vi.fn(async (eventName: string, listener: (payload: unknown) => void) => {
@@ -38,6 +45,10 @@ vi.mock("../../src/lib/api/client", () => ({
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: class {
     fit = vi.fn();
+
+    constructor() {
+      fitAddonInstances.push(this);
+    }
   },
 }));
 
@@ -77,10 +88,51 @@ const session: TerminalSession = {
 };
 
 describe("XtermPane", () => {
+  // The pane fits itself from a `requestAnimationFrame` callback, so the frame
+  // clock has to be faked alongside the timers that debounce the PTY resize.
+  const useResizeTimers = () =>
+    vi.useFakeTimers({
+      toFake: [
+        "setTimeout",
+        "clearTimeout",
+        "requestAnimationFrame",
+        "cancelAnimationFrame",
+      ],
+    });
+
+  // Returns the observer callbacks so a test can replay the burst of size
+  // notifications a width drag produces.
+  const stubResizeObserver = () => {
+    const observers: Array<() => void> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: () => void) {
+          observers.push(callback);
+        }
+
+        disconnect() {}
+
+        observe() {}
+
+        unobserve() {}
+      },
+    );
+    return () => {
+      for (const notify of observers) {
+        notify();
+      }
+    };
+  };
+
   afterEach(() => {
     subscribe.mockClear();
+    vi.mocked(resizeTerminal).mockClear();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
     terminalConstructorOptions.length = 0;
     terminalInstances.length = 0;
+    fitAddonInstances.length = 0;
     outputListeners.clear();
   });
 
@@ -325,5 +377,76 @@ describe("XtermPane", () => {
     await waitFor(() => expect(terminalInstances).toHaveLength(1));
 
     expect(terminalInstances[0]?.parser.registerCsiHandler).not.toHaveBeenCalled();
+  });
+
+  it("only resizes the PTY once a tile width change settles", () => {
+    const notifyResize = stubResizeObserver();
+    useResizeTimers();
+
+    render(<XtermPane session={session} />);
+
+    // The mount fit reports the initial grid so the agent starts at the real size.
+    vi.advanceTimersByTime(300);
+    expect(resizeTerminal).toHaveBeenCalledTimes(1);
+    expect(resizeTerminal).toHaveBeenLastCalledWith(session.id, 80, 24);
+
+    // Dragging the width slider fires an observer callback per pointer move; the
+    // agent should only repaint at the width the user stopped on.
+    for (const cols of [90, 100, 110, 120]) {
+      const terminal = terminalInstances[0];
+      if (terminal) {
+        terminal.cols = cols;
+      }
+      notifyResize();
+      vi.advanceTimersByTime(40);
+    }
+
+    expect(resizeTerminal).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(300);
+    expect(resizeTerminal).toHaveBeenCalledTimes(2);
+    expect(resizeTerminal).toHaveBeenLastCalledWith(session.id, 120, 24);
+  });
+
+  it("does not resize the PTY when a layout change keeps the same grid", () => {
+    const notifyResize = stubResizeObserver();
+    useResizeTimers();
+
+    render(<XtermPane session={session} />);
+    vi.advanceTimersByTime(300);
+    expect(resizeTerminal).toHaveBeenCalledTimes(1);
+
+    notifyResize();
+    vi.advanceTimersByTime(300);
+
+    expect(resizeTerminal).toHaveBeenCalledTimes(1);
+    expect(fitAddonInstances[0]?.fit).toHaveBeenCalled();
+  });
+
+  it("keeps the resize repaint out of scrollback so history reflows to the new width", () => {
+    const notifyResize = stubResizeObserver();
+    useResizeTimers();
+
+    render(<XtermPane session={session} />);
+    const terminal = terminalInstances[0];
+
+    // Let the mount fit finish reporting the initial grid and its repaint window
+    // expire, so the assertions below only observe the width change.
+    vi.advanceTimersByTime(800);
+    expect(terminal?.options.scrollOnEraseInDisplay).toBe(true);
+
+    if (terminal) {
+      terminal.cols = 140;
+    }
+    notifyResize();
+    vi.advanceTimersByTime(300);
+
+    // The agent answers the resize by erasing and redrawing the screen; archiving
+    // that erase would pin an old-width copy of the screen into scrollback.
+    expect(resizeTerminal).toHaveBeenLastCalledWith(session.id, 140, 24);
+    expect(terminal?.options.scrollOnEraseInDisplay).toBe(false);
+
+    vi.advanceTimersByTime(600);
+    expect(terminal?.options.scrollOnEraseInDisplay).toBe(true);
   });
 });
