@@ -173,9 +173,13 @@ pub fn launches_claude(input: &CreateTerminalSessionInput) -> bool {
 fn configure_launch_environment(command: &mut CommandBuilder, input: &CreateTerminalSessionInput) {
     if launches_claude(input) {
         // Claude's fullscreen renderer uses the alternate screen buffer, which
-        // has no xterm scrollback. Keep Vibe sessions in the normal buffer so
-        // the visible scrollbar always represents draggable terminal history.
+        // has no xterm scrollback. Its virtual transcript and mouse tracking can
+        // also consume history and wheel events before xterm sees them. Keep
+        // embedded Vibe sessions in the normal terminal buffer and let xterm own
+        // the scrollable history.
         command.env("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN", "1");
+        command.env("CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL", "1");
+        command.env("CLAUDE_CODE_DISABLE_MOUSE", "1");
     }
 }
 
@@ -713,12 +717,17 @@ mod tests {
 
         configure_launch_environment(&mut command, &input);
 
-        assert_eq!(
-            command
-                .get_env("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN")
-                .and_then(|value| value.to_str()),
-            Some("1")
-        );
+        for variable in [
+            "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN",
+            "CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL",
+            "CLAUDE_CODE_DISABLE_MOUSE",
+        ] {
+            assert_eq!(
+                command.get_env(variable).and_then(|value| value.to_str()),
+                Some("1"),
+                "{variable} should be enabled for embedded Claude terminals"
+            );
+        }
     }
 
     #[test]
@@ -728,9 +737,16 @@ mod tests {
 
         configure_launch_environment(&mut command, &input);
 
-        assert!(command
-            .get_env("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN")
-            .is_none());
+        for variable in [
+            "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN",
+            "CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL",
+            "CLAUDE_CODE_DISABLE_MOUSE",
+        ] {
+            assert!(
+                command.get_env(variable).is_none(),
+                "{variable} should not be set for non-Claude launches"
+            );
+        }
     }
 
     #[test]
