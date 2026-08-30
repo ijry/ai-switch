@@ -62,6 +62,16 @@ pub fn is_sensitive_command(command: &str) -> bool {
             | "skills_save"
             | "skills_delete"
             | "skills_install_package"
+            | "create_mobile_pairing"
+            | "get_web_service_config"
+            | "save_web_service_config"
+            | "get_web_server_status"
+            | "start_web_server"
+            | "stop_web_server"
+            | "get_tailscale_status"
+            | "start_tailscale_login"
+            | "start_tailscale_with_auth_key"
+            | "disconnect_tailscale"
     )
 }
 
@@ -795,6 +805,11 @@ pub async fn dispatch_command(
                 .await
                 .map_err(to_error)?,
         ),
+        "create_mobile_pairing" => to_value(
+            WebService::create_mobile_pairing(state.as_ref())
+                .await
+                .map_err(to_error)?,
+        ),
         "start_tailscale_login" => to_value(
             WebService::start_tailscale_login(state.as_ref())
                 .await
@@ -1054,6 +1069,7 @@ mod tests {
             "mcp_remove_server",
             "skills_save",
             "skills_delete",
+            "create_mobile_pairing",
         ] {
             assert!(is_sensitive_command(command), "{command} must require auth");
         }

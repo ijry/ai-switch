@@ -67,7 +67,7 @@ use commands::terminal_commands::{
 };
 use commands::usage_stats_commands::{get_session_usage_stats, reload_model_price_overrides};
 use commands::web_service_commands::{
-    disconnect_tailscale, get_tailscale_status, get_web_server_status, get_web_service_config,
+    create_mobile_pairing, disconnect_tailscale, get_tailscale_status, get_web_server_status, get_web_service_config,
     save_web_service_config, start_tailscale_login, start_tailscale_with_auth_key,
     start_web_server, stop_web_server,
 };
@@ -498,6 +498,7 @@ pub fn run() {
             start_web_server,
             stop_web_server,
             get_tailscale_status,
+            create_mobile_pairing,
             start_tailscale_login,
             start_tailscale_with_auth_key,
             disconnect_tailscale,

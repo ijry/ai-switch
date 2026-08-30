@@ -74,6 +74,7 @@ export function WebServiceSettings() {
       queryClient.setQueryData(["web-service-config"], saved);
       const status = await startWebServer();
       queryClient.setQueryData(["web-server-status"], status);
+      await queryClient.invalidateQueries({ queryKey: ["tailscale-status"] });
       return status;
     },
   });
@@ -82,6 +83,7 @@ export function WebServiceSettings() {
     mutationFn: async () => {
       const status = await stopWebServer();
       queryClient.setQueryData(["web-server-status"], status);
+      await queryClient.invalidateQueries({ queryKey: ["tailscale-status"] });
       return status;
     },
   });

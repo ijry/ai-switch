@@ -9,12 +9,15 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::app_state::AppState;
 use crate::error::ApiError;
-use crate::web::auth::authorize_api_request;
+use crate::services::mobile_pairing::MobileTokenRegistry;
+use crate::services::web_service::WebService;
+use crate::web::auth::{authorize_api_request, ApiAuthState};
 use crate::web::handlers::{dispatch_command, is_sensitive_command};
 use crate::web::static_assets::resolve_static_file;
 use crate::web::ws::events_socket;
@@ -23,6 +26,7 @@ use crate::web::ws::events_socket;
 pub struct WebServerContext {
     pub state: Arc<AppState>,
     pub token: Arc<String>,
+    pub mobile_tokens: MobileTokenRegistry,
     pub static_dir: PathBuf,
     pub sensitive_command_gate: Arc<AtomicBool>,
 }
@@ -61,6 +65,7 @@ pub(crate) fn build_router_with_sensitive_command_gate(
     sensitive_command_gate: Arc<AtomicBool>,
 ) -> Router {
     let context = WebServerContext {
+        mobile_tokens: WebService::mobile_token_registry(&state.web_service),
         state,
         token: Arc::new(token),
         static_dir,
@@ -74,13 +79,20 @@ pub(crate) fn build_router_with_sensitive_command_gate(
             gate_sensitive_commands,
         ))
         .layer(middleware::from_fn_with_state(
-            Arc::clone(&context.token),
+            Arc::new(ApiAuthState {
+                primary_token: Arc::clone(&context.token),
+                mobile_tokens: Arc::clone(&context.mobile_tokens),
+            }),
             authorize_api_request,
         ))
         .layer(middleware::from_fn(disable_api_caching));
 
     Router::new()
         .route("/health", get(health))
+        .route(
+            "/pairing/redeem",
+            post(redeem_mobile_pairing).layer(middleware::from_fn(disable_api_caching)),
+        )
         .route("/ws/events", get(events_socket))
         .nest("/api", api_router)
         .fallback(static_fallback)
@@ -90,6 +102,22 @@ pub(crate) fn build_router_with_sensitive_command_gate(
 
 async fn health() -> Json<Value> {
     Json(json!({ "ok": true }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RedeemMobilePairingRequest {
+    code: String,
+}
+
+async fn redeem_mobile_pairing(
+    State(context): State<WebServerContext>,
+    Json(input): Json<RedeemMobilePairingRequest>,
+) -> Response {
+    match WebService::redeem_mobile_pairing(&context.state, input.code).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error_response(StatusCode::BAD_REQUEST, error.into()),
+    }
 }
 
 async fn api_command(
@@ -211,12 +239,13 @@ mod tests {
     use crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime;
     use crate::services::route_proxy_service::RouteProxyRuntimeState;
     use crate::services::tailscale_service::TailscaleRuntimeState;
-    use crate::services::web_service::WebServiceRuntimeState;
+    use crate::services::web_service::{WebService, WebServiceConfig, WebServiceRuntimeState};
     use crate::terminal_manager::TerminalManager;
     use crate::web::event_bridge::WebEventBroadcaster;
     use axum::body::to_bytes;
     use std::net::SocketAddr;
-    use tempfile::tempdir;
+    use std::time::{Duration, SystemTime};
+    use tempfile::{tempdir, TempDir};
 
     async fn spawn_test_router(
         sensitive_commands_enabled: bool,
@@ -262,6 +291,38 @@ mod tests {
             axum::serve(listener, router).await.unwrap();
         });
         (address, handle)
+    }
+
+    async fn spawn_test_router_with_state(
+        sensitive_command_gate: Arc<AtomicBool>,
+        token: &str,
+    ) -> (SocketAddr, tokio::task::JoinHandle<()>, Arc<AppState>, TempDir) {
+        let temp = tempdir().unwrap();
+        let pool = create_memory_pool().await.unwrap();
+        run_migrations(&pool).await.unwrap();
+        let state = Arc::new(AppState {
+            paths: crate::paths::AppPaths::from_data_dir(temp.path().join("app-data")),
+            pool,
+            config_writes: ConfigWriteRuntimeState::default(),
+            deeplink_protocols: DeepLinkProtocolRuntime::default(),
+            route_proxy: RouteProxyRuntimeState::default(),
+            web_service: WebServiceRuntimeState::default(),
+            tailscale: TailscaleRuntimeState::default(),
+            terminals: TerminalManager::default(),
+            event_broadcaster: Arc::new(WebEventBroadcaster::default()),
+        });
+        let router = build_router_with_sensitive_command_gate(
+            Arc::clone(&state),
+            token.to_string(),
+            temp.path().to_path_buf(),
+            sensitive_command_gate,
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (address, handle, state, temp)
     }
 
     fn assert_sensitive_cache_headers(response: &reqwest::Response) {
@@ -646,6 +707,198 @@ mod tests {
             .unwrap();
         assert_eq!(disabled.status(), StatusCode::NOT_FOUND);
         assert_sensitive_cache_headers(&disabled);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn pairing_route_redeems_once_without_leaking_primary_token_and_sets_no_store_headers() {
+        let gate = Arc::new(AtomicBool::new(true));
+        let (address, server, state, _temp) =
+            spawn_test_router_with_state(Arc::clone(&gate), "primary-secret").await;
+        WebService::save_config(
+            &state.paths,
+            &WebServiceConfig {
+                token: Some("primary-secret".to_string()),
+                ..WebServiceConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        let pairing_store = WebService::mobile_pairing_store_for_test(&state.web_service);
+        let payload = pairing_store
+            .create(
+                Some("https://public.example".to_string()),
+                None,
+                SystemTime::now(),
+                Duration::from_secs(300),
+            )
+            .await
+            .unwrap();
+        let client = reqwest::Client::new();
+
+        let first = client
+            .post(format!("http://{address}/pairing/redeem"))
+            .json(&json!({ "code": payload.pairing_code }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(
+            first
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+        assert_eq!(
+            first
+                .headers()
+                .get(header::PRAGMA)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache")
+        );
+        let first_body = first.text().await.unwrap();
+        assert!(!first_body.contains("primary-secret"));
+        let first_value: Value = serde_json::from_str(&first_body).unwrap();
+        let mobile_token = first_value["token"].as_str().unwrap().to_string();
+        assert!(mobile_token.starts_with("ms_"));
+
+        let second = client
+            .post(format!("http://{address}/pairing/redeem"))
+            .json(&json!({ "code": payload.pairing_code }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            second
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+        assert_eq!(
+            second
+                .headers()
+                .get(header::PRAGMA)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache")
+        );
+
+        let ordinary = client
+            .post(format!("http://{address}/api/list_platform_capabilities"))
+            .bearer_auth(&mobile_token)
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ordinary.status(), StatusCode::OK);
+
+        for (command, body) in [
+            ("get_web_service_config", json!({})),
+            ("save_web_service_config", json!({})),
+            ("get_web_server_status", json!({})),
+            ("start_web_server", json!({})),
+            ("stop_web_server", json!({})),
+            ("get_tailscale_status", json!({})),
+            ("start_tailscale_login", json!({})),
+            (
+                "start_tailscale_with_auth_key",
+                json!({ "authKey": "tskey-auth-test" }),
+            ),
+            ("disconnect_tailscale", json!({})),
+            ("create_mobile_pairing", json!({})),
+        ] {
+            let response = client
+                .post(format!("http://{address}/api/{command}"))
+                .bearer_auth(&mobile_token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{command}");
+            let response_body = response.text().await.unwrap();
+            assert!(!response_body.contains("primary-secret"), "{command}");
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn mobile_pairing_token_cannot_open_the_event_stream() {
+        let gate = Arc::new(AtomicBool::new(true));
+        let (address, server, state, _temp) =
+            spawn_test_router_with_state(gate, "primary-secret").await;
+        let pairing_store = WebService::mobile_pairing_store_for_test(&state.web_service);
+        let payload = pairing_store
+            .create(
+                Some("https://public.example".to_string()),
+                None,
+                SystemTime::now(),
+                Duration::from_secs(300),
+            )
+            .await
+            .unwrap();
+        let redeemed = pairing_store
+            .redeem(&payload.pairing_code, SystemTime::now())
+            .await
+            .unwrap();
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}/ws/events"))
+            .bearer_auth(redeemed.token)
+            .header(header::CONNECTION, "Upgrade")
+            .header(header::UPGRADE, "websocket")
+            .header(header::SEC_WEBSOCKET_VERSION, "13")
+            .header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn primary_token_can_open_the_event_stream_with_header_or_query_auth() {
+        let gate = Arc::new(AtomicBool::new(true));
+        let (address, server, _state, _temp) =
+            spawn_test_router_with_state(gate, "primary-secret").await;
+        let client = reqwest::Client::new();
+        for request in [
+            client
+                .get(format!("http://{address}/ws/events"))
+                .bearer_auth("primary-secret")
+                .header(header::CONNECTION, "Upgrade")
+                .header(header::UPGRADE, "websocket")
+                .header(header::SEC_WEBSOCKET_VERSION, "13")
+                .header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ=="),
+            client
+                .get(format!("http://{address}/ws/events?token=primary-secret"))
+                .header(header::CONNECTION, "Upgrade")
+                .header(header::UPGRADE, "websocket")
+                .header(header::SEC_WEBSOCKET_VERSION, "13")
+                .header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ=="),
+        ] {
+            let response = request.send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn malformed_pairing_json_is_not_cacheable() {
+        let gate = Arc::new(AtomicBool::new(true));
+        let (address, server, _state, _temp) =
+            spawn_test_router_with_state(gate, "primary-secret").await;
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/pairing/redeem"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body("{")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_sensitive_cache_headers(&response);
         server.abort();
     }
 }

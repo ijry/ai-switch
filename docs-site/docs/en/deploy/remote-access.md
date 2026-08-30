@@ -21,9 +21,11 @@ Different ports, different certificate stories. Do not conflate them.
 
 Neither route changes AI Switch's own authentication: **the access token is still required**. Tailscale solves reachability and channel encryption; it is not a substitute for application-level authorisation.
 
+Use **public HTTPS** as the cross-platform baseline: H5 needs CORS, and a mini-program needs the hostname on its allowed request-domain list. Reserve the private endpoint for the native App.
+
 ## Tailscale private network
 
-AI Switch ships a Go sidecar (`ai-switch-tsnet`, built on Tailscale's `tsnet` library). It joins your tailnet in userspace, outside the app process — no system Tailscale client to install and no administrator privileges required.
+AI Switch ships a Go sidecar (`ai-switch-tsnet`, built on Tailscale's `tsnet` library). The desktop sidecar joins your tailnet in userspace, outside the app process. The desktop does not need a system Tailscale client; **the phone App still needs the official Tailscale App, signed in to the same tailnet**. The uni-app client does not embed a Tailscale SDK.
 
 ### Turning it on
 
@@ -32,14 +34,13 @@ AI Switch ships a Go sidecar (`ai-switch-tsnet`, built on Tailscale's `tsnet` li
 3. Save and start the service.
 4. In the **secure network** area, click **Sign in with OAuth**. A browser opens the Tailscale authorisation page; complete it and return to the app.
 
-After sign-in the UI shows the reachable addresses, in this shape:
+After sign-in the UI shows a MagicDNS HTTPS address for private mode, in this shape:
 
 ```text
-http://100.x.y.z:3090
-http://ai-switch.<your-tailnet>.ts.net:3090
+https://ai-switch.<your-tailnet>.ts.net:3090
 ```
 
-The first is the tailnet IP, the second the MagicDNS name. The sidecar uses the hostname `ai-switch` by default and keeps its state in `~/.ai-switch/tailscale/`.
+Do not enter the `100.x.y.z` address in the mobile client: Tailscale HTTPS certificates are issued for the MagicDNS hostname, so an IP URL fails hostname verification. Enable **MagicDNS** and **HTTPS certificates** in the Tailscale admin console first. The sidecar uses the hostname `ai-switch` by default and keeps its state in `~/.ai-switch/tailscale/`.
 
 ### The other sign-in path: auth keys
 
@@ -56,6 +57,12 @@ Worth stressing: **the app does not sign in to Tailscale at startup.**
 Startup recovery only attempts a reconnect if one of these exists: a saved auth key, or previously persisted tsnet login state in the sidecar directory. With neither, the UI reports that the secure network is waiting for sign-in and waits for you to click.
 
 In other words, installing the app does not join you to any network. You have to perform an explicit authorisation step.
+
+### Pairing a phone with a QR code
+
+In the desktop secure-network panel, choose **Show mobile pairing QR**, then choose **Scan import** while adding or editing a real instance in the mobile App. The QR contains the remote URL, a short-lived single-use pairing code, and its expiry; **it never contains the long-lived Web Service token**. Redeeming the code returns an independent mobile token.
+
+Scanning only fills the form. The mobile App still lets you edit the public/private URLs and enter or replace a token manually. Pairing codes are single-use and expire; generate a new one when needed. Before using a private URL, sign the official Tailscale App into the same tailnet. H5 and mini-program builds should use the public HTTPS URL.
 
 ## Tailscale Funnel (public)
 
@@ -176,6 +183,7 @@ The proxy HTTPS status endpoint returns the certificate directory, the root cert
 - **Think harder before enabling Funnel.** That is a public address, and the token is the only door. Prefer private mode unless you truly need otherwise.
 - **The token is equivalent to shell access.** The web API includes terminal session commands, so a leaked token costs more than config disclosure.
 - **The self-signed root is for this machine only.** Its SANs are just `localhost` and `127.0.0.1`. Never copy the root private key to another machine, and never use it to issue certificates for remote access.
+- **Mobile token storage is platform-aware.** The App can inject an iOS Keychain / Android Keystore adapter; H5 and mini-program builds fall back to `uni` local storage for compatibility. In either case, never put the token in a QR code or a log.
 - **Clean up when you are done.** After disabling local HTTPS, use the panel's uninstall and delete actions to remove the root certificate from the system trust store rather than leaving an unused root sitting there.
 :::
 

@@ -18,6 +18,21 @@ type TsnetNode struct {
 	request StartRequest
 }
 
+// tsnetListenerServer keeps the exposure decision testable while preserving
+// the concrete tsnet.Server at the process boundary.
+type tsnetListenerServer interface {
+	Listen(network, addr string) (net.Listener, error)
+	ListenTLS(network, addr string) (net.Listener, error)
+	ListenFunnel(network, addr string, opts ...tsnet.FunnelOption) (net.Listener, error)
+}
+
+func listenOnTsnet(server tsnetListenerServer, network, addr string, public bool) (net.Listener, error) {
+	if public {
+		return server.ListenFunnel(network, addr)
+	}
+	return server.ListenTLS(network, addr)
+}
+
 func NewTsnetNode() *TsnetNode {
 	return &TsnetNode{}
 }
@@ -167,15 +182,7 @@ func (n *TsnetNode) Listen(ctx context.Context, network, addr string, public boo
 	if srv == nil {
 		return nil, errors.New("secure network is not started")
 	}
-	var (
-		ln  net.Listener
-		err error
-	)
-	if public {
-		ln, err = srv.ListenFunnel(network, addr)
-	} else {
-		ln, err = srv.Listen(network, addr)
-	}
+	ln, err := listenOnTsnet(srv, network, addr, public)
 	if err != nil {
 		return nil, err
 	}

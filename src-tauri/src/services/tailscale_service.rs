@@ -410,11 +410,11 @@ impl TailscaleService {
                     }
                 } else {
                     status.public_port = None;
-                    if let Some(ip) = status.tailnet_ip.as_deref() {
-                        access_urls.push(format!("http://{ip}:{port}"));
-                    }
                     if let Some(name) = status.magic_dns_name.as_deref() {
-                        access_urls.push(format!("http://{name}:{port}"));
+                        // ListenTLS obtains a certificate for the MagicDNS name.
+                        // Advertising the raw tailnet IP would make clients fail
+                        // hostname verification even though the node is reachable.
+                        access_urls.push(format!("https://{name}:{port}"));
                     }
                 }
                 status.access_urls = access_urls;
@@ -540,14 +540,10 @@ mod tests {
         .expect("auth key connect");
 
         assert_eq!(status.state, "connected");
-        assert!(status
-            .access_urls
-            .iter()
-            .any(|url| url == "http://100.64.0.12:3090"));
-        assert!(status
-            .access_urls
-            .iter()
-            .any(|url| url == "http://ai-switch.tailnet.ts.net:3090"));
+        assert_eq!(
+            status.access_urls,
+            vec!["https://ai-switch.tailnet.ts.net:3090".to_string()]
+        );
         assert!(status.serving);
         assert!(config.tailscale_auth_key_present);
         assert!(paths.tailscale_dir.join("auth-key").exists());
@@ -632,10 +628,10 @@ mod tests {
 
         assert!(!status.public);
         assert_eq!(status.exposure_mode.as_deref(), Some("private"));
-        assert!(status
-            .access_urls
-            .iter()
-            .all(|url| !url.starts_with("https://")));
+        assert_eq!(
+            status.access_urls,
+            vec!["https://ai-switch.tailnet.ts.net:3090".to_string()]
+        );
     }
 
     #[tokio::test]

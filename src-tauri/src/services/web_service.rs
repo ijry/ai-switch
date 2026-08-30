@@ -6,6 +6,9 @@ use crate::server::{
     validate_sensitive_web_transport,
 };
 use crate::services::tailscale_service::{TailscaleLogin, TailscaleService, TailscaleStatus};
+use crate::services::mobile_pairing::{
+    MobilePairingPayload, MobilePairingRedeemResponse, MobilePairingStore, MobileTokenRegistry,
+};
 use crate::web::router::build_router_with_sensitive_command_gate;
 use crate::web::static_assets::resolve_static_dir;
 use serde::{Deserialize, Serialize};
@@ -14,10 +17,13 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::SystemTime;
 use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
 use url::Url;
 use uuid::Uuid;
+
+const MOBILE_TOKEN_REGISTRY_FILE: &str = "mobile-tokens.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +61,7 @@ pub struct WebServerStatus {
 pub struct WebServiceRuntimeState {
     inner: Arc<Mutex<WebServiceRuntimeInner>>,
     config_reconciliation_lock: Arc<Mutex<()>>,
+    mobile_pairing: MobilePairingStore,
 }
 
 #[derive(Default)]
@@ -79,6 +86,108 @@ fn normalize_exposure_mode(value: &str) -> String {
 pub struct WebService;
 
 impl WebService {
+    pub fn mobile_token_registry(runtime: &WebServiceRuntimeState) -> MobileTokenRegistry {
+        runtime.mobile_pairing.mobile_token_registry()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mobile_pairing_store_for_test(
+        runtime: &WebServiceRuntimeState,
+    ) -> MobilePairingStore {
+        runtime.mobile_pairing.clone()
+    }
+
+    pub async fn create_mobile_pairing(
+        state: &AppState,
+    ) -> Result<MobilePairingPayload, AppError> {
+        let _guard = state.web_service.config_reconciliation_lock.lock().await;
+        let config = Self::load_config(&state.paths).await?;
+        let web_status = Self::status(&state.web_service, &config).await;
+        if !web_status.running {
+            return Err(AppError::Validation {
+                code: "mobile_pairing.web_service_not_running",
+                message: "Start the Web Service before creating a mobile pairing code".to_string(),
+                details: None,
+                recoverable: true,
+            });
+        }
+        let tailscale = TailscaleService::status(
+            &state.tailscale,
+            &state.paths,
+            &config,
+            Some(&web_status),
+        )
+        .await;
+        if tailscale.state != "connected" || !tailscale.serving {
+            return Err(AppError::Validation {
+                code: "mobile_pairing.remote_access_not_ready",
+                message: "Secure network remote access is not ready".to_string(),
+                details: tailscale.message.clone(),
+                recoverable: true,
+            });
+        }
+        let access_url = preferred_access_url(&tailscale.access_urls).ok_or_else(|| {
+            AppError::Validation {
+                code: "mobile_pairing.remote_url_missing",
+                message: "No remote access URL is available".to_string(),
+                details: None,
+                recoverable: true,
+            }
+        })?;
+        let (public_url, private_url) = if tailscale.public {
+            (Some(access_url), None)
+        } else {
+            (None, Some(access_url))
+        };
+        state
+            .web_service
+            .mobile_pairing
+            .create(
+                public_url,
+                private_url,
+                SystemTime::now(),
+                Duration::from_secs(5 * 60),
+            )
+            .await
+            .map_err(|message| AppError::Validation {
+                code: "mobile_pairing.create_failed",
+                message,
+                details: None,
+                recoverable: true,
+            })
+    }
+
+    pub async fn redeem_mobile_pairing(
+        state: &AppState,
+        code: String,
+    ) -> Result<MobilePairingRedeemResponse, AppError> {
+        let _guard = state.web_service.config_reconciliation_lock.lock().await;
+        let now = SystemTime::now();
+        let response = state
+            .web_service
+            .mobile_pairing
+            .redeem(&code, now)
+            .await
+            .map_err(|message| AppError::Validation {
+                code: "mobile_pairing.invalid_code",
+                message,
+                details: None,
+                recoverable: true,
+            })?;
+        // The response already contains the usable token. A persistence error
+        // must not discard it after consuming the one-time pairing code; the
+        // in-memory registry remains authoritative for the current process.
+        if let Err(error) = state
+            .web_service
+            .mobile_pairing
+            .persist_tokens(&mobile_token_registry_path(&state.paths), now)
+            .await
+        {
+            eprintln!("failed to persist mobile token registry: {error}");
+        }
+        Ok(response)
+    }
+
     pub async fn load_config(paths: &AppPaths) -> Result<WebServiceConfig, AppError> {
         paths.ensure().await?;
         if !paths.web_service_file.exists() {
@@ -159,6 +268,17 @@ impl WebService {
         }
 
         let token = config.token.clone().unwrap_or_default();
+        if let Err(error) = state
+            .web_service
+            .mobile_pairing
+            .load_tokens(&mobile_token_registry_path(&state.paths), SystemTime::now())
+            .await
+        {
+            // A corrupt registry must not prevent the primary-token web
+            // service from starting; ignoring it fails closed for mobile
+            // tokens while preserving local recovery.
+            eprintln!("failed to load mobile token registry: {error}");
+        }
         let static_dir = resolve_static_dir();
         let sensitive_command_gate = Arc::new(AtomicBool::new(false));
         let router = build_router_with_sensitive_command_gate(
@@ -520,6 +640,18 @@ fn normalize_optional_path(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn preferred_access_url(urls: &[String]) -> Option<String> {
+    urls.iter()
+        .map(String::as_str)
+        .find(|url| url.contains(".ts.net"))
+        .or_else(|| urls.iter().map(String::as_str).find(|url| !url.trim().is_empty()))
+        .map(|url| url.trim_end_matches('/').to_string())
+}
+
+fn mobile_token_registry_path(paths: &AppPaths) -> PathBuf {
+    paths.data_dir.join(MOBILE_TOKEN_REGISTRY_FILE)
+}
+
 fn validate_enabled_tls_paths(
     config: &WebServiceConfig,
 ) -> Result<Option<(PathBuf, PathBuf)>, AppError> {
@@ -574,16 +706,13 @@ fn sensitive_commands_enabled_for_runtime(
         return false;
     };
     if config.tailscale_enabled {
-        return config
-            .tailscale_exposure_mode
-            .eq_ignore_ascii_case("public")
-            && tailscale_status.state == "connected"
+        return tailscale_status.state == "connected"
             && tailscale_status.serving
-            && (tailscale_status.public
-                || tailscale_status
-                    .exposure_mode
-                    .as_deref()
-                    .is_some_and(|mode| mode.eq_ignore_ascii_case("public")));
+            && tailscale_status.access_urls.iter().any(|url| {
+                Url::parse(url)
+                    .ok()
+                    .is_some_and(|parsed| parsed.scheme().eq_ignore_ascii_case("https"))
+            });
     }
 
     !tailscale_status.serving && matches!(tailscale_status.state.as_str(), "disabled" | "stopped")
@@ -631,6 +760,7 @@ mod tests {
     use crate::database::{create_memory_pool, run_migrations};
     use crate::services::config_write_service::ConfigWriteRuntimeState;
     use crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime;
+    use crate::services::mobile_pairing::MobilePairingStore;
     use crate::services::route_proxy_service::RouteProxyRuntimeState;
     use crate::services::tailscale_service::{TailscaleRuntimeState, TailscaleStatus};
     use crate::services::tailscale_sidecar::SidecarControlClient;
@@ -643,8 +773,87 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use std::time::Duration;
+    use std::time::SystemTime;
     use tempfile::tempdir;
     use tokio::sync::Notify;
+
+    #[tokio::test]
+    async fn mobile_pairing_codes_are_hashed_expiring_and_single_use() {
+        let store = MobilePairingStore::default();
+        let payload = store
+            .create(
+                Some("https://public.example".to_string()),
+                None,
+                SystemTime::UNIX_EPOCH + Duration::from_secs(1_000),
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+        assert_eq!(payload.version, 1);
+        assert!(!payload.pairing_code.is_empty());
+        assert!(store.debug_contains_plaintext_code(&payload.pairing_code).await == false);
+
+        let redeemed = store
+            .redeem(&payload.pairing_code, SystemTime::UNIX_EPOCH + Duration::from_secs(1_001))
+            .await
+            .unwrap();
+        assert!(redeemed.token.starts_with("ms_"));
+        assert!(store
+            .redeem(&payload.pairing_code, SystemTime::UNIX_EPOCH + Duration::from_secs(1_002))
+            .await
+            .is_err());
+        assert!(store
+            .is_mobile_token_valid(&redeemed.token, SystemTime::UNIX_EPOCH + Duration::from_secs(1_002))
+            .await);
+    }
+
+    #[tokio::test]
+    async fn mobile_pairing_rejects_expired_codes() {
+        let store = MobilePairingStore::default();
+        let payload = store
+            .create(
+                None,
+                Some("https://private.example".to_string()),
+                SystemTime::UNIX_EPOCH + Duration::from_secs(2_000),
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+        assert!(store
+            .redeem(&payload.pairing_code, SystemTime::UNIX_EPOCH + Duration::from_secs(2_001))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn redeemed_mobile_tokens_are_persisted_for_a_new_runtime() {
+        let (_temp, state) = concurrency_test_state().await;
+        let store = WebService::mobile_pairing_store_for_test(&state.web_service);
+        let payload = store
+            .create(
+                Some("https://public.example".to_string()),
+                None,
+                SystemTime::now(),
+                Duration::from_secs(300),
+            )
+            .await
+            .unwrap();
+        let redeemed = WebService::redeem_mobile_pairing(state.as_ref(), payload.pairing_code)
+            .await
+            .unwrap();
+
+        let restored = MobilePairingStore::default();
+        restored
+            .load_tokens(
+                &state.paths.data_dir.join("mobile-tokens.json"),
+                SystemTime::now(),
+            )
+            .await
+            .unwrap();
+        assert!(restored
+            .is_mobile_token_valid(&redeemed.token, SystemTime::now())
+            .await);
+    }
 
     struct ControlledSidecarClient {
         status: TailscaleStatus,
@@ -845,24 +1054,62 @@ mod tests {
             port: Some(3090),
             base_url: Some("http://127.0.0.1:3090".to_string()),
         };
-        let public_status = TailscaleStatus {
+        let private_http_status = TailscaleStatus {
             state: "connected".to_string(),
             serving: true,
+            public: false,
+            exposure_mode: Some("private".to_string()),
+            access_urls: vec!["http://ai-switch.tailnet.ts.net:3090".to_string()],
+            ..TailscaleStatus::disabled()
+        };
+        let public_status = TailscaleStatus {
+            access_urls: vec!["https://ai-switch.tailnet.ts.net".to_string()],
             public: true,
             exposure_mode: Some("public".to_string()),
-            ..TailscaleStatus::disabled()
+            ..private_http_status.clone()
         };
 
         validate_start_config(&private).unwrap();
         assert!(!sensitive_commands_enabled_for_runtime(
             &private,
             &web_status,
-            Some(&public_status),
+            Some(&private_http_status),
         ));
         assert!(sensitive_commands_enabled_for_runtime(
             &public,
             &web_status,
             Some(&public_status),
+        ));
+    }
+
+    #[test]
+    fn private_tailnet_https_registers_sensitive_commands() {
+        let config = WebServiceConfig {
+            host: "127.0.0.1".to_string(),
+            tls_enabled: false,
+            tailscale_enabled: true,
+            tailscale_exposure_mode: "private".to_string(),
+            ..WebServiceConfig::default()
+        };
+        let web_status = WebServerStatus {
+            running: true,
+            host: "127.0.0.1".to_string(),
+            port: Some(3090),
+            base_url: Some("http://127.0.0.1:3090".to_string()),
+        };
+        let status = TailscaleStatus {
+            state: "connected".to_string(),
+            serving: true,
+            public: false,
+            exposure_mode: Some("private".to_string()),
+            access_urls: vec!["https://ai-switch.tailnet.ts.net:3090".to_string()],
+            ..TailscaleStatus::disabled()
+        };
+
+        assert!(sensitive_commands_enabled_for_runtime(
+            &config,
+            &web_status,
+            Some(&status),
         ));
     }
 
@@ -887,6 +1134,7 @@ mod tests {
             serving: true,
             public: true,
             exposure_mode: Some("public".to_string()),
+            access_urls: vec!["https://ai-switch.tailnet.ts.net".to_string()],
             ..TailscaleStatus::disabled()
         };
 

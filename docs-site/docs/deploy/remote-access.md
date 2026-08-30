@@ -21,9 +21,11 @@ description: 通过 Tailscale 私网或 Funnel 公网访问 AI Switch，以及�
 
 两种方式都不改变 AI Switch 自身的鉴权：**访问令牌照样要带**。Tailscale 只解决"链路能不能通、通道是否加密"，不代替应用层的授权。
 
+跨端连接建议把**公网 HTTPS**作为默认入口：H5 需要 CORS，小程序需要把域名加入合法请求域名。私网入口只给原生 App 使用。
+
 ## Tailscale 私网
 
-AI Switch 内置了一个 Go 编写的 sidecar（`ai-switch-tsnet`，基于 Tailscale 的 `tsnet` 库），它在应用进程之外以用户态方式加入你的 tailnet，不需要在系统里安装 Tailscale 客户端、也不需要管理员权限。
+AI Switch 内置了一个 Go 编写的 sidecar（`ai-switch-tsnet`，基于 Tailscale 的 `tsnet` 库），它在桌面应用进程之外以用户态方式加入你的 tailnet。桌面端不需要安装系统 Tailscale 客户端；**手机 App 仍需安装官方 Tailscale App，并登录同一个 tailnet**。uni-app 本身不集成 Tailscale SDK。
 
 ### 启用步骤
 
@@ -32,14 +34,13 @@ AI Switch 内置了一个 Go 编写的 sidecar（`ai-switch-tsnet`，基于 Tail
 3. 保存并启动服务。
 4. 在**安全网络**区域点击**使用 OAuth 登录**，浏览器会打开 Tailscale 授权页面，完成授权后回到应用。
 
-登录成功后界面会给出可用的访问地址，形如：
+登录成功后界面会给出可用的访问地址。私网只发布带 MagicDNS 名称的 HTTPS 地址，形如：
 
 ```text
-http://100.x.y.z:3090
-http://ai-switch.<your-tailnet>.ts.net:3090
+https://ai-switch.<your-tailnet>.ts.net:3090
 ```
 
-前者是 tailnet 内网 IP，后者是 MagicDNS 名称。sidecar 默认使用主机名 `ai-switch`，状态数据保存在 `~/.ai-switch/tailscale/`。
+不要把 `100.x.y.z` 直接填入移动端：Tailscale HTTPS 证书按 MagicDNS 主机名签发，使用 IP 会导致证书主机名校验失败。请先在 Tailscale 管理后台启用 **MagicDNS** 和 **HTTPS certificates**。sidecar 默认使用主机名 `ai-switch`，状态数据保存在 `~/.ai-switch/tailscale/`。
 
 ### 另一种登录方式：授权密钥
 
@@ -56,6 +57,12 @@ http://ai-switch.<your-tailnet>.ts.net:3090
 启动时的恢复逻辑只在满足下列条件之一时才会尝试重连：本地存在已保存的授权密钥、或 sidecar 目录里存在此前持久化的 tsnet 登录状态。都不满足时，界面会显示"安全网络正在等待登录"，等你手动点登录。
 
 也就是说，装上应用不等于加入了某个网络，你必须显式做一次授权动作。
+
+### 手机扫码配对
+
+在桌面端安全网络区域点击**显示移动端配对二维码**，再在移动端添加或编辑真实实例时点击**扫码导入**。二维码只包含远程 URL、短期一次性配对码和过期时间，**不包含 Web Service 长期访问令牌**；配对码兑换成功后，服务端返回独立的移动端令牌。
+
+扫码只是回填地址和配对码，移动端仍然允许手动修改公网/私网 URL、手动输入或替换 Token。配对码只能使用一次，过期后需要重新生成。App 使用私网 URL 前必须已经在官方 Tailscale App 中登录同一 tailnet；H5 和小程序应选择公网 HTTPS URL。
 
 ## Tailscale Funnel（公网）
 
@@ -176,6 +183,7 @@ NSS 库里的昵称必须与根证书 CN 一致，也就是 `AI Switch Route Pro
 - **启用 Funnel 之前更要想清楚。** 那是一个公网地址，令牌是唯一的门。除非确有必要，优先用私网模式。
 - **令牌等价于 shell 权限。** Web API 包含终端会话命令，令牌泄露的后果不止于配置被读取。
 - **自签根证书只为本机服务。** 它的 SAN 只有 `localhost` 与 `127.0.0.1`；不要把根证书私钥拷到别的机器，也不要用它去为远程访问签发证书。
+- **移动端令牌的存储按平台降级。** App 可注入 iOS Keychain / Android Keystore 适配器；H5 和小程序没有这些原生能力时使用 `uni` 本地存储以保持兼容。无论使用哪种存储，都不要把令牌放进二维码或日志。
 - **不再需要时记得清理。** 关闭本地 HTTPS 后，用面板的卸载与删除动作把根证书从系统信任库里移除，别让一个不再使用的根证书长期留在信任库中。
 :::
 

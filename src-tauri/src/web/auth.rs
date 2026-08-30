@@ -4,6 +4,8 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
+use crate::services::mobile_pairing::MobileTokenRegistry;
+use std::time::SystemTime;
 use std::sync::Arc;
 
 use crate::web::handlers::is_sensitive_command;
@@ -16,6 +18,12 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         difference |= usize::from(left_byte ^ right_byte);
     }
     difference == 0
+}
+
+#[derive(Clone)]
+pub struct ApiAuthState {
+    pub primary_token: Arc<String>,
+    pub mobile_tokens: MobileTokenRegistry,
 }
 
 pub fn is_authorized(headers: &HeaderMap, token: &str) -> bool {
@@ -42,8 +50,37 @@ pub fn is_query_token_authorized(query: Option<&str>, token: &str) -> bool {
         .any(|(key, value)| key == "token" && constant_time_eq(value.as_bytes(), token.as_bytes()))
 }
 
+pub async fn is_mobile_token_authorized(
+    headers: &HeaderMap,
+    mobile_tokens: &MobileTokenRegistry,
+) -> bool {
+    let Some(value) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+    else {
+        return false;
+    };
+    let token = value.trim();
+    if token.is_empty() {
+        return false;
+    }
+    let digest = mobile_token_digest(token);
+    let mut registry = mobile_tokens.lock().await;
+    let now = SystemTime::now();
+    registry.retain(|_, expires_at| *expires_at > now);
+    registry.contains_key(&digest)
+}
+
+fn mobile_token_digest(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
 pub async fn authorize_api_request(
-    State(token): State<Arc<String>>,
+    State(auth): State<Arc<ApiAuthState>>,
     path_params: RawPathParams,
     request: Request,
     next: Next,
@@ -52,7 +89,10 @@ pub async fn authorize_api_request(
         .iter()
         .find_map(|(key, value)| (key == "command").then_some(value))
         .is_some_and(is_sensitive_command);
-    if (!sensitive || !token.is_empty()) && is_authorized(request.headers(), &token) {
+    let primary_authorized = !auth.primary_token.is_empty()
+        && is_authorized(request.headers(), &auth.primary_token);
+    let mobile_authorized = is_mobile_token_authorized(request.headers(), &auth.mobile_tokens).await;
+    if primary_authorized || (!sensitive && (auth.primary_token.is_empty() || mobile_authorized)) {
         return next.run(request).await;
     }
 

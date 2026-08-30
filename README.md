@@ -14,7 +14,7 @@ Current foundation includes:
 - Account, session, terminal, and route-proxy workflows
 - Settings stored in `~/.ai-switch/settings.json`
 - Web Service settings with token-protected HTTP access
-- Tailscale login entry for private remote access
+- Tailscale login entry for private remote access, with MagicDNS HTTPS and mobile pairing
 
 ## Platform Support
 
@@ -117,9 +117,13 @@ Desktop and browser share one React UI. Desktop uses Tauri IPC. Browser mode use
 2. Choose **Web Service**
 3. Set host, port, and access token
 4. Start the service
-5. Optionally enable Tailscale and click **Login with Tailscale**
+5. Optionally enable Tailscale, choose private or public access, and click **Login with Tailscale**
 
 Default bind is `127.0.0.1:3090`. Binding to `0.0.0.0` must be explicit.
+
+For private access, the desktop publishes `https://<magicdns-name>:<port>` through Tailscale `ListenTLS`. Enable MagicDNS and HTTPS certificates in the Tailscale admin console; do not use the `100.x.y.z` IP as the mobile URL because the certificate is issued for the MagicDNS name. The phone must have the official Tailscale App signed in to the same tailnet. The uni-app client does not embed a Tailscale SDK.
+
+For H5 and mini-program clients, use the public HTTPS URL as the default cross-platform endpoint. H5 needs CORS and a mini-program needs the hostname on its allowed request-domain list. The secure-network panel can show a short-lived, single-use mobile pairing QR: it contains the URL and pairing code, never the long-lived Web Service token. Scanning fills the form only; mobile users can still enter or edit the URL and token manually.
 
 ### Standalone server
 
@@ -161,6 +165,7 @@ Installed desktop builds ship web assets next to the executable under web/. Stan
 - Every `/api/*` and `/ws/events` request requires the access token
 - Tailscale login is manual; the app does not auto-login on startup
 - Web access still requires the AI Switch token even over Tailscale
+- Mobile pairing creates an independent mobile token; pairing codes are single-use and expire
 
 ## Clean-Room Boundary
 

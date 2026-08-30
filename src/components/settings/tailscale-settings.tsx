@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, ExternalLink, KeyRound, RefreshCcw, Unplug } from "lucide-react";
+import QRCode from "qrcode";
+import { Copy, ExternalLink, KeyRound, QrCode, RefreshCcw, Unplug } from "lucide-react";
 import {
+  createMobilePairing,
   disconnectTailscale,
   getTailscaleStatus,
   startTailscaleLogin,
@@ -37,6 +39,8 @@ export function TailscaleSettings({ enabled, exposureMode = "private" }: Tailsca
   const { t } = useI18n();
   const [authKey, setAuthKey] = useState("");
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+  const [pairingPayload, setPairingPayload] = useState<Awaited<ReturnType<typeof createMobilePairing>> | null>(null);
+  const [pairingQr, setPairingQr] = useState("");
 
   const statusQuery = useQuery({
     queryKey: ["tailscale-status"],
@@ -70,10 +74,37 @@ export function TailscaleSettings({ enabled, exposureMode = "private" }: Tailsca
     },
   });
 
+  const pairingMutation = useMutation({
+    mutationFn: createMobilePairing,
+    onSuccess: (payload) => setPairingPayload(payload),
+  });
+
+  useEffect(() => {
+    let active = true;
+    if (!pairingPayload) {
+      setPairingQr("");
+      return () => {
+        active = false;
+      };
+    }
+    void QRCode.toDataURL(JSON.stringify(pairingPayload), {
+      errorCorrectionLevel: "M",
+      margin: 2,
+      width: 240,
+    }).then((value) => {
+      if (active) setPairingQr(value);
+    }).catch(() => {
+      if (active) setPairingQr("");
+    });
+    return () => {
+      active = false;
+    };
+  }, [pairingPayload]);
+
   const status = statusQuery.data;
   const accessUrls = status?.accessUrls?.filter(Boolean) ?? [];
   const busy =
-    loginMutation.isPending || authKeyMutation.isPending || disconnectMutation.isPending;
+    loginMutation.isPending || authKeyMutation.isPending || disconnectMutation.isPending || pairingMutation.isPending;
 
   const copyUrl = async (url: string) => {
     if (typeof navigator === "undefined" || !navigator.clipboard) {
@@ -155,7 +186,18 @@ export function TailscaleSettings({ enabled, exposureMode = "private" }: Tailsca
 
       {enabled && accessUrls.length > 0 ? (
         <div className="space-y-2 rounded-xl border border-stone-200 bg-white px-3 py-2">
-          <p className="text-[12px] font-semibold text-stone-800">{t("settings.tailscale.remoteAccess")}</p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[12px] font-semibold text-stone-800">{t("settings.tailscale.remoteAccess")}</p>
+            <button
+              className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-stone-200 bg-white px-2 py-1 text-[11px] font-semibold text-stone-700 hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={busy}
+              onClick={() => pairingMutation.mutate()}
+              type="button"
+            >
+              <QrCode className="h-3 w-3" />
+              {t("settings.tailscale.showPairingQr")}
+            </button>
+          </div>
           <ul className="space-y-1.5">
             {accessUrls.map((url) => (
               <li
@@ -174,6 +216,37 @@ export function TailscaleSettings({ enabled, exposureMode = "private" }: Tailsca
               </li>
             ))}
           </ul>
+          {pairingMutation.isError ? (
+            <p className="text-[12px] text-red-700">{t("settings.tailscale.pairingError")}</p>
+          ) : null}
+          {pairingPayload ? (
+            <div className="flex flex-wrap items-start gap-3 rounded-lg border border-sky-100 bg-sky-50/60 p-2.5">
+              {pairingQr ? (
+                <img
+                  alt={t("settings.tailscale.pairingQrAlt")}
+                  className="h-40 w-40 rounded-lg bg-white p-1"
+                  src={pairingQr}
+                />
+              ) : (
+                <div className="grid h-40 w-40 place-items-center rounded-lg bg-white text-[11px] text-stone-500">
+                  {t("settings.tailscale.pairingQrLoading")}
+                </div>
+              )}
+              <div className="min-w-[180px] flex-1 space-y-1 text-[12px] text-stone-700">
+                <p className="font-semibold text-stone-900">{t("settings.tailscale.pairingTitle")}</p>
+                <p>{t("settings.tailscale.pairingCode", { value: pairingPayload.pairingCode })}</p>
+                <p>{t("settings.tailscale.pairingExpires", { value: new Date(pairingPayload.expiresAt).toLocaleTimeString() })}</p>
+                <p className="text-stone-500">{t("settings.tailscale.pairingHint")}</p>
+                <button
+                  className="mt-1 inline-flex items-center gap-1 rounded-lg border border-stone-200 bg-white px-2 py-1 text-[11px] font-semibold text-stone-700 hover:border-stone-300"
+                  onClick={() => setPairingPayload(null)}
+                  type="button"
+                >
+                  {t("settings.tailscale.closePairing")}
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
 

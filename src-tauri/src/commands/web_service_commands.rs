@@ -58,6 +58,15 @@ pub async fn get_tailscale_status(state: State<'_, AppState>) -> Result<Tailscal
 }
 
 #[tauri::command]
+pub async fn create_mobile_pairing(
+    state: State<'_, AppState>,
+) -> Result<crate::services::mobile_pairing::MobilePairingPayload, ApiError> {
+    WebService::create_mobile_pairing(state.inner())
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
 pub async fn start_tailscale_login(
     app: tauri::AppHandle,
     state: State<'_, AppState>,

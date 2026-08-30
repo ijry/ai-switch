@@ -11,6 +11,7 @@ pub mod deeplink_service;
 pub mod http_client;
 pub mod import_service;
 pub mod model_pricing;
+pub mod mobile_pairing;
 pub mod official_agent_identity_service;
 pub mod platform_capability_service;
 pub mod response_failure_service;

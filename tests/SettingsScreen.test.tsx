@@ -3,6 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  createMobilePairing,
   disableRouteProxyHttps,
   deleteRouteProxyHttpsCertificates,
   disconnectTailscale,
@@ -30,6 +31,7 @@ import { SettingsScreen } from "../src/screens/SettingsScreen";
 import { settingsFixture } from "../src/test/fixtures";
 
 vi.mock("../src/lib/api/client", () => ({
+  createMobilePairing: vi.fn(),
   getSettings: vi.fn(),
   saveSettings: vi.fn(),
   getWebServiceConfig: vi.fn(),
@@ -88,6 +90,7 @@ const httpsOutcomeFixture = {
 describe("SettingsScreen", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    vi.mocked(createMobilePairing).mockReset();
     vi.mocked(getSettings).mockReset();
     vi.mocked(saveSettings).mockReset();
     vi.mocked(getWebServiceConfig).mockReset();
@@ -108,6 +111,13 @@ describe("SettingsScreen", () => {
     vi.mocked(uninstallRouteProxyRootCa).mockReset();
     vi.mocked(deleteRouteProxyHttpsCertificates).mockReset();
     vi.mocked(openRouteProxyHttpsCertificateDirectory).mockReset();
+    vi.mocked(createMobilePairing).mockResolvedValue({
+      v: 1,
+      publicUrl: "https://public.example",
+      privateUrl: null,
+      pairingCode: "pair_test",
+      expiresAt: Date.now() + 300000,
+    });
     vi.mocked(getWebServiceConfig).mockResolvedValue({
       host: "127.0.0.1",
       port: 3090,
@@ -366,5 +376,25 @@ describe("SettingsScreen", () => {
       tlsCertPath: "C:/secure/web-cert.pem",
       tlsKeyPath: "C:/secure/web-key.pem",
     });
+  });
+
+  it("refreshes secure-network status after starting and stopping Web Service", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settingsFixture);
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <I18nProvider initialLanguage="en">
+          <SettingsScreen />
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Start service" }));
+    await waitFor(() => expect(startWebServer).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getTailscaleStatus).toHaveBeenCalledTimes(2));
+
+    await userEvent.click(await screen.findByRole("button", { name: "Stop service" }));
+    await waitFor(() => expect(stopWebServer).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getTailscaleStatus).toHaveBeenCalledTimes(3));
   });
 });
