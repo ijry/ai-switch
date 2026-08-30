@@ -140,7 +140,7 @@ function createTheme(
   const baseTheme =
     themeMode === "light"
       ? {
-          background: "#f8fafc",
+          background: "#f4f4f5",
           black: "#334155",
           blue: "#2563eb",
           brightBlack: "#64748b",

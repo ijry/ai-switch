@@ -253,6 +253,16 @@ describe("XtermPane", () => {
     expect(container.querySelector(".xterm-pane-scrollbar-light")).not.toBeNull();
   });
 
+  it("uses a neutral light-gray background for light terminal panes", async () => {
+    render(<XtermPane session={session} themeMode="light" />);
+
+    await waitFor(() => expect(terminalConstructorOptions).toHaveLength(1));
+
+    expect(terminalConstructorOptions[0]?.theme).toMatchObject({
+      background: "#f4f4f5",
+    });
+  });
+
   it("thins the xterm slider through the overview ruler width and themes its colours", async () => {
     render(<XtermPane session={session} />);
 

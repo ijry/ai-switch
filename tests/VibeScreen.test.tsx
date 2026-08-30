@@ -880,6 +880,7 @@ describe("VibeScreen", () => {
     expect(lightFolderToggle).toHaveClass("vibe-light-list-trigger");
     expect(lightFolderToggle.parentElement).toHaveClass("vibe-light-group-panel");
     expect(screen.getByText("No terminal tabs yet.").parentElement).toHaveClass("vibe-light-tabbar");
+    expect(screen.getByTestId("vibe-tab-strip").parentElement).toHaveClass("vibe-light-workspace");
     expect(screen.getByText("Start or resume a session")).toHaveClass("text-stone-900");
 
     await userEvent.click(screen.getByRole("button", { name: "Skin" }));
@@ -945,6 +946,7 @@ describe("VibeScreen", () => {
     await switchThemeFromAppearance("Light");
 
     expect(screen.getByText("No terminal tabs yet.").parentElement).toHaveClass("vibe-light-tabbar");
+    expect(screen.getByTestId("vibe-tab-strip").parentElement).toHaveClass("vibe-light-workspace");
 
     const folderToggle = await screen.findByRole("button", {
       name: "Expand folder D:/repo/app",

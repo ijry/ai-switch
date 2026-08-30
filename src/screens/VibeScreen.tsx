@@ -2417,7 +2417,7 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
               ? "vibe-skin-workspace relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden shadow-xl"
               : isDark
                 ? "relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[#002b36] shadow-xl shadow-black/20"
-                : "relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-50 shadow-xl shadow-stone-900/5"
+                : "vibe-light-workspace relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-zinc-100 shadow-xl shadow-stone-900/5"
           }
         >
           <div
