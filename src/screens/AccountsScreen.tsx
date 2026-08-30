@@ -2481,10 +2481,15 @@ export function AccountsScreen({
     }
   }, [routePoolQuery.data]);
 
-  useEffect(() => {
+  const resetCreateForm = useCallback(() => {
     const nextInterfaceFormat = defaultInterfaceFormat(activePlatform);
     setOfficialText(defaultOfficialJson(activePlatform));
     setOfficialFilePaths([]);
+    setOfficialBatchName("");
+    setApiName("");
+    setApiKey("");
+    setApiKeyDecodeError(null);
+    setApiKeyOcrError(null);
     setApiInterfaceFormat(nextInterfaceFormat);
     setApiResponsesCustomToolCompat(false);
     setApiUserAgent("");
@@ -2494,8 +2499,13 @@ export function AccountsScreen({
     setApiMappingsError(null);
     setApiFetchedModels([]);
     setApiFetchModelsError(null);
-    setModelTestOutcome(null);
+    setApiPreviewJson("");
   }, [activePlatform]);
+
+  useEffect(() => {
+    resetCreateForm();
+    setModelTestOutcome(null);
+  }, [activePlatform, resetCreateForm]);
 
   useEffect(() => {
     if (!editingCredential) {
@@ -4781,6 +4791,7 @@ export function AccountsScreen({
               aria-label="新增账号"
               className="grid h-7 w-7 place-items-center border border-stone-700 bg-stone-800 text-white transition-colors hover:bg-stone-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-400"
               onClick={() => {
+                resetCreateForm();
                 setJoinPoolOnCreate(true);
                 setCreateOpen(true);
               }}
