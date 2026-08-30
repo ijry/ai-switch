@@ -127,6 +127,11 @@ function splitTrailingIncompleteCsi(data: string): [complete: string, pending: s
   return [data.slice(0, -pending.length), pending];
 }
 
+function firstCsiParameter(parameters: (number | number[])[]): number {
+  const first = parameters[0];
+  return Array.isArray(first) ? (first[0] ?? 0) : (first ?? 0);
+}
+
 function createTheme(
   themeMode: "dark" | "light",
   themeOverride?: VibeTerminalTheme,
@@ -261,6 +266,24 @@ export function XtermPane({
     terminal.open(host);
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
+
+    if (session.platform?.trim().toLowerCase() === "claude") {
+      // Claude can still emit terminal controls from its renderer even when its
+      // alternate screen is disabled. Keep those controls from destroying the
+      // normal xterm scrollback that Vibe exposes to the user.
+      terminal.parser.registerCsiHandler(
+        { final: "J" },
+        (parameters) => firstCsiParameter(parameters) === 3,
+      );
+      const consumeClaudeBufferSwitch = (parameters: (number | number[])[]) =>
+        [47, 1047, 1049].includes(firstCsiParameter(parameters));
+      for (const final of ["h", "l"] as const) {
+        terminal.parser.registerCsiHandler(
+          { final, prefix: "?" },
+          consumeClaudeBufferSwitch,
+        );
+      }
+    }
 
     const fitAndResize = () => {
       try {

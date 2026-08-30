@@ -7,7 +7,15 @@ import {
 import type { TerminalSession } from "../../src/lib/api/types";
 
 const terminalConstructorOptions = vi.hoisted(() => [] as Array<Record<string, unknown>>);
-const terminalInstances = vi.hoisted(() => [] as Array<{ write: ReturnType<typeof vi.fn> }>);
+const terminalInstances = vi.hoisted(
+  () =>
+    [] as Array<{
+      write: ReturnType<typeof vi.fn>;
+      parser: {
+        registerCsiHandler: ReturnType<typeof vi.fn>;
+      };
+    }>,
+);
 const outputListeners = new Map<string, (payload: unknown) => void>();
 const subscribe = vi.fn(async (eventName: string, listener: (payload: unknown) => void) => {
   outputListeners.set(eventName, listener);
@@ -45,6 +53,9 @@ vi.mock("@xterm/xterm", () => ({
     refresh = vi.fn();
     write = vi.fn();
     writeln = vi.fn();
+    parser = {
+      registerCsiHandler: vi.fn(() => ({ dispose: vi.fn() })),
+    };
     onData = vi.fn(() => ({ dispose: vi.fn() }));
 
     constructor(options: Record<string, unknown>) {
@@ -267,5 +278,42 @@ describe("XtermPane", () => {
 
     expect(terminalConstructorOptions[0]?.scrollback).toBe(10_000);
     expect(terminalConstructorOptions[0]?.scrollOnEraseInDisplay).toBe(true);
+  });
+
+  it("protects Claude scrollback from buffer switches and scrollback clears", async () => {
+    const claudeSession: TerminalSession = {
+      ...session,
+      id: "claude-scrollback-terminal",
+      platform: "claude",
+      title: "Claude",
+    };
+    render(<XtermPane session={claudeSession} />);
+
+    await waitFor(() => expect(terminalInstances).toHaveLength(1));
+
+    const handlers = terminalInstances[0]?.parser.registerCsiHandler.mock.calls as Array<
+      [{ final: string; prefix?: string }, (params: number[]) => boolean]
+    >;
+    const privateModeHandler = handlers.find(
+      ([identifier]) => identifier.prefix === "?" && identifier.final === "h",
+    )?.[1];
+    const eraseDisplayHandler = handlers.find(
+      ([identifier]) => !identifier.prefix && identifier.final === "J",
+    )?.[1];
+
+    expect(privateModeHandler?.([1049])).toBe(true);
+    expect(privateModeHandler?.([1047])).toBe(true);
+    expect(privateModeHandler?.([47])).toBe(true);
+    expect(privateModeHandler?.([25])).toBe(false);
+    expect(eraseDisplayHandler?.([3])).toBe(true);
+    expect(eraseDisplayHandler?.([2])).toBe(false);
+  });
+
+  it("does not install Claude scrollback guards for other agents", async () => {
+    render(<XtermPane session={session} />);
+
+    await waitFor(() => expect(terminalInstances).toHaveLength(1));
+
+    expect(terminalInstances[0]?.parser.registerCsiHandler).not.toHaveBeenCalled();
   });
 });
