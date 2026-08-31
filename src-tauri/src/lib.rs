@@ -120,13 +120,93 @@ fn is_deeplink_url(app: &tauri::AppHandle, value: &str) -> bool {
                 .ccswitch_enabled())
 }
 
+/// Runtime mirror of the `close_to_tray` setting (kept in sync on save) plus
+/// the macOS Dock-icon state we own, so the close button never needs disk I/O.
+pub struct CloseToTrayState {
+    pub enabled: AtomicBool,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub dock_icon_hidden: AtomicBool,
+}
+
 fn focus_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     }
+    restore_dock_icon(app);
 }
+
+/// Hides the Dock icon while the app is minimized to the tray. Idempotent.
+#[cfg(target_os = "macos")]
+fn hide_dock_icon(app: &tauri::AppHandle) {
+    let hidden = &app.state::<CloseToTrayState>().dock_icon_hidden;
+    if hidden.load(Ordering::SeqCst) {
+        return;
+    }
+    apply_dock_visibility(app, false);
+    hidden.store(true, Ordering::SeqCst);
+}
+
+/// Restores the Dock icon when the main window comes back. Idempotent.
+#[cfg(target_os = "macos")]
+fn restore_dock_icon(app: &tauri::AppHandle) {
+    let hidden = &app.state::<CloseToTrayState>().dock_icon_hidden;
+    if !hidden.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    apply_dock_visibility(app, true);
+}
+
+/// Runs `f` with the shared `NSApplication`, dispatching to the main thread
+/// first when called from a background thread.
+#[cfg(target_os = "macos")]
+fn on_main_thread_ns_application<F>(app: &tauri::AppHandle, f: F)
+where
+    F: FnOnce(&objc2_app_kit::NSApplication, objc2::MainThreadMarker) + Send + 'static,
+{
+    use objc2_app_kit::NSApplication;
+    use objc2::MainThreadMarker;
+
+    if let Some(mtm) = MainThreadMarker::new() {
+        f(&NSApplication::sharedApplication(mtm), mtm);
+        return;
+    }
+    if let Err(error) = app.run_on_main_thread(move || {
+        if let Some(mtm) = MainThreadMarker::new() {
+            f(&NSApplication::sharedApplication(mtm), mtm);
+        }
+    }) {
+        eprintln!("failed to dispatch AppKit call to the main thread: {error}");
+    }
+}
+
+/// Toggles the Dock icon via the activation policy. This intentionally does
+/// NOT use Tauri's `set_dock_visibility`: it goes through tao's
+/// `TransformProcessType`, whose one-second show/hide debounce silently skips
+/// a hide right after a tray round-trip and can leave a stale generic Dock
+/// tile behind. `setActivationPolicy` has neither quirk.
+#[cfg(target_os = "macos")]
+fn apply_dock_visibility(app: &tauri::AppHandle, visible: bool) {
+    use objc2_app_kit::NSApplicationActivationPolicy;
+
+    on_main_thread_ns_application(app, move |ns_app, _mtm| {
+        let policy = if visible {
+            NSApplicationActivationPolicy::Regular
+        } else {
+            NSApplicationActivationPolicy::Accessory
+        };
+        if !ns_app.setActivationPolicy(policy) {
+            eprintln!("failed to set activation policy (visible={visible})");
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn hide_dock_icon(_app: &tauri::AppHandle) {}
+
+#[cfg(not(target_os = "macos"))]
+fn restore_dock_icon(_app: &tauri::AppHandle) {}
 
 fn handle_deeplink_url(app: &tauri::AppHandle, url_str: &str, source: &str) -> bool {
     if !is_deeplink_url(app, url_str) {
@@ -248,6 +328,11 @@ pub fn run() {
     });
 
     let launched_from_autostart = is_autostart_launch(std::env::args().skip(1));
+    let close_to_tray_default = tauri::async_runtime::block_on(
+        services::settings_service::SettingsService::load(&paths),
+    )
+    .map(|settings| settings.close_to_tray)
+    .unwrap_or(true);
     let mut builder = tauri::Builder::default();
     let tray_quit_requested = Arc::new(AtomicBool::new(false));
     let close_tray_quit_requested = Arc::clone(&tray_quit_requested);
@@ -276,9 +361,20 @@ pub fn run() {
                 return;
             }
             if let WindowEvent::CloseRequested { api, .. } = event {
-                if !close_tray_quit_requested.load(Ordering::SeqCst) {
+                if close_tray_quit_requested.load(Ordering::SeqCst) {
+                    return;
+                }
+                let app = window.app_handle();
+                if app.state::<CloseToTrayState>().enabled.load(Ordering::SeqCst) {
                     api.prevent_close();
                     let _ = window.hide();
+                    hide_dock_icon(&app);
+                } else {
+                    // Close button quits the app. Route through the same exit
+                    // path the tray quit uses so child processes get cleaned
+                    // up; the flag also lets the window actually close.
+                    close_tray_quit_requested.store(true, Ordering::SeqCst);
+                    app.exit(0);
                 }
             }
         })
@@ -287,6 +383,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
+        .manage(CloseToTrayState {
+            enabled: AtomicBool::new(close_to_tray_default),
+            dock_icon_hidden: AtomicBool::new(false),
+        })
         .manage(AppState {
             paths,
             pool,
@@ -304,6 +404,11 @@ pub fn run() {
                     if let Err(error) = window.hide() {
                         eprintln!("failed to hide window for autostart launch: {error}");
                     }
+                }
+                // An autostart launch starts minimized to the tray; the Dock
+                // icon follows the window per the close-to-tray setting.
+                if app.state::<CloseToTrayState>().enabled.load(Ordering::SeqCst) {
+                    hide_dock_icon(app.handle());
                 }
             }
 
