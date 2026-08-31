@@ -629,6 +629,7 @@ mod tests {
         assert!(command.args.is_empty());
     }
 
+    #[cfg(windows)]
     #[test]
     fn finds_windows_style_shims_through_pathext() {
         let dir = tempfile::tempdir().unwrap();

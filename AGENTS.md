@@ -3,6 +3,12 @@
 - Work directly on `main` by default. Do not create or switch to feature branches/worktrees unless the user explicitly asks for a separate branch, worktree, or isolation.
 - `docs/superpowers/specs` 和 `docs/superpowers/plans` 中的文档默认使用中文撰写，除非用户明确要求其他语言。
 
+## 构建目录约束
+
+- 仓库内只允许使用两个 Rust/Cargo 构建目录：`src-tauri/target/` 仅用于本地 dev 运行（包括 `pnpm tauri:dev`），`src-tauri/target-codex/` 仅用于 AI 调试、测试和验证。
+- AI 调试或验证命令必须复用 `src-tauri/target-codex/`；在 `src-tauri` 工作目录执行时使用 `CARGO_TARGET_DIR=target-codex`。禁止创建根目录 `target/`、`target-*`、`src-tauri/target-codex-test/`、`src-tauri/target-codex-pairing/` 或 `.codex-run/**/target` 等其他 target 目录。
+- 不得为并行任务或临时检查新建第三个 target。任务结束后清理临时构建产物；若既有 target 被进程占用，先停止对应的 dev/调试进程，再复用或清理该目录。
+
 ## 发布新版规则
 
 当用户说“发布新版”时，按以下顺序执行：
