@@ -2487,6 +2487,7 @@ describe("AccountsScreen", () => {
     expect(screen.getByLabelText("额外重试次数")).toHaveValue(2);
     expect(screen.getByLabelText("重试间隔（毫秒）")).toHaveValue(200);
     expect(screen.getByLabelText("异常触发次数")).toHaveValue(10);
+    expect(screen.getByLabelText("失败冷却（秒）")).toHaveValue(10);
     expect(screen.getByText(/网络连接失败、请求超时、响应读取失败/)).toBeInTheDocument();
     expect(screen.getByText(/相同且连续达到设定次数后/)).toBeInTheDocument();
     expect(screen.getByText(/HTTP 401 \/ 403/)).toBeInTheDocument();
@@ -2630,13 +2631,57 @@ describe("AccountsScreen", () => {
 
     await userEvent.click(cooldownToggle);
     await userEvent.click(errorStatusToggle);
+    fireEvent.change(screen.getByLabelText("失败冷却（秒）"), { target: { value: "25" } });
     await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
 
     await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
     const payload = vi.mocked(updateRouteCredential).mock.calls[0][1];
     const config = JSON.parse(payload.config_json);
     expect(config.failure_policy.cooldown_enabled).toBe(true);
+    expect(config.failure_policy.cooldown_seconds).toBe(25);
     expect(config.failure_policy.error_status_enabled).toBe(false);
+  });
+
+  it("rejects a failure cooldown outside the supported range", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+    fireEvent.change(screen.getByLabelText("失败冷却（秒）"), { target: { value: "0" } });
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    expect(
+      (await screen.findAllByText("失败冷却需在 1 到 86400 秒之间。")).length,
+    ).toBeGreaterThan(0);
+    expect(updateRouteCredential).not.toHaveBeenCalled();
+  });
+
+  it("shows the transient failure count as its own status tag until a request succeeds", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      { ...credentialsFixture[0], transient_failure_count: 3 },
+      { ...credentialsFixture[1], transient_failure_count: 0 },
+    ]);
+
+    renderScreen();
+
+    const failingRow = await screen.findByLabelText("放置在 Team Account 前");
+    expect(within(failingRow).getByText("错误 3 次")).toBeInTheDocument();
+    expect(within(failingRow).queryByText("正常")).not.toBeInTheDocument();
+
+    const healthyRow = screen.getByLabelText("放置在 API Account 前");
+    expect(within(healthyRow).getByText("正常")).toBeInTheDocument();
+    expect(within(healthyRow).queryByText(/错误 \d+ 次/)).not.toBeInTheDocument();
+  });
+
+  it("keeps a revoked account's status tag even while transient failures are counted", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      { ...credentialsFixture[0], status: "revoked", transient_failure_count: 2 },
+    ]);
+
+    renderScreen();
+
+    const row = await screen.findByLabelText("放置在 Team Account 前");
+    expect(within(row).getByText("已失效")).toBeInTheDocument();
+    expect(within(row).queryByText("错误 2 次")).not.toBeInTheDocument();
   });
 
   it("saves official account User-Agent into config headers", async () => {

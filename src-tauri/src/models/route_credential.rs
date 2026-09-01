@@ -10,6 +10,10 @@ pub const DEFAULT_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD: u32 = 10;
 /// Transient-failure backoff is opt-in: a failing account stays immediately
 /// selectable unless the user turns cooldown on for it.
 pub const DEFAULT_ROUTE_CREDENTIAL_COOLDOWN_ENABLED: bool = false;
+/// How long a failing account waits before it may be selected again. Kept
+/// short on purpose: a single hiccup should cost seconds, not minutes, and
+/// accounts that are really down keep re-triggering the same short window.
+pub const DEFAULT_ROUTE_CREDENTIAL_COOLDOWN_SECONDS: u32 = 10;
 /// Flipping an account to `error` stays on by default — the streak conditions
 /// are strict enough that reaching them usually means the account is dead.
 pub const DEFAULT_ROUTE_CREDENTIAL_ERROR_STATUS_ENABLED: bool = true;
@@ -22,6 +26,7 @@ pub const DEFAULT_ROUTE_CREDENTIAL_PRIORITY: i64 = 3;
 pub const MAX_ROUTE_CREDENTIAL_RETRY_COUNT: u32 = 10;
 pub const MAX_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS: u32 = 60_000;
 pub const MAX_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD: u32 = 1_000;
+pub const MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS: u32 = 86_400;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -30,6 +35,7 @@ pub struct RouteCredentialFailurePolicy {
     pub retry_interval_ms: u32,
     pub semantic_error_threshold: u32,
     pub cooldown_enabled: bool,
+    pub cooldown_seconds: u32,
     pub error_status_enabled: bool,
 }
 
@@ -40,6 +46,7 @@ impl Default for RouteCredentialFailurePolicy {
             retry_interval_ms: DEFAULT_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS,
             semantic_error_threshold: DEFAULT_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD,
             cooldown_enabled: DEFAULT_ROUTE_CREDENTIAL_COOLDOWN_ENABLED,
+            cooldown_seconds: DEFAULT_ROUTE_CREDENTIAL_COOLDOWN_SECONDS,
             error_status_enabled: DEFAULT_ROUTE_CREDENTIAL_ERROR_STATUS_ENABLED,
         }
     }
@@ -72,6 +79,13 @@ impl RouteCredentialFailurePolicy {
         if self.retry_interval_ms > MAX_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS {
             return Err(format!(
                 "retry_interval_ms must be between 0 and {MAX_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS}"
+            ));
+        }
+        if self.cooldown_seconds == 0
+            || self.cooldown_seconds > MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS
+        {
+            return Err(format!(
+                "cooldown_seconds must be between 1 and {MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS}"
             ));
         }
         if self.semantic_error_threshold == 0
@@ -387,9 +401,9 @@ pub fn normalize_anthropic_api_key_field(value: Option<&str>) -> Result<&'static
 #[cfg(test)]
 mod tests {
     use super::{
-        RouteCredentialFailurePolicy, DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT,
-        DEFAULT_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS,
-        DEFAULT_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD,
+        RouteCredentialFailurePolicy, DEFAULT_ROUTE_CREDENTIAL_COOLDOWN_SECONDS,
+        DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT, DEFAULT_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS,
+        DEFAULT_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD, MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS,
     };
     use serde_json::json;
 
@@ -418,6 +432,44 @@ mod tests {
             DEFAULT_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD
         );
         assert_ne!(policy.retry_count, DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT);
+    }
+
+    #[test]
+    fn failure_policy_cooldown_seconds_defaults_to_ten_for_existing_configs() {
+        let policy = RouteCredentialFailurePolicy::from_config_json(
+            r#"{"failure_policy":{"retry_count":1}}"#,
+        );
+
+        assert_eq!(policy.cooldown_seconds, 10);
+        assert_eq!(
+            policy.cooldown_seconds,
+            DEFAULT_ROUTE_CREDENTIAL_COOLDOWN_SECONDS
+        );
+    }
+
+    #[test]
+    fn failure_policy_keeps_configured_cooldown_seconds() {
+        let policy = RouteCredentialFailurePolicy::from_config_value(&json!({
+            "failure_policy": { "cooldown_seconds": 45 }
+        }))
+        .expect("policy");
+
+        assert_eq!(policy.cooldown_seconds, 45);
+    }
+
+    #[test]
+    fn failure_policy_rejects_cooldown_seconds_outside_safe_bounds() {
+        let zero = RouteCredentialFailurePolicy::from_config_value(&json!({
+            "failure_policy": { "cooldown_seconds": 0 }
+        }))
+        .expect_err("zero cooldown");
+        assert!(zero.contains("cooldown_seconds"));
+
+        let too_long = RouteCredentialFailurePolicy::from_config_value(&json!({
+            "failure_policy": { "cooldown_seconds": MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS + 1 }
+        }))
+        .expect_err("cooldown above ceiling");
+        assert!(too_long.contains("cooldown_seconds"));
     }
 
     #[test]

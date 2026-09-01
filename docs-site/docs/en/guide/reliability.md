@@ -1,6 +1,6 @@
 ---
 title: Reliability and Auto Recovery
-description: The exact rules behind AI Switch failure classification, exponential backoff, and cooldown windows — how accounts return to the pool, and how to configure scheduled versus healthcheck recovery.
+description: The exact rules behind AI Switch failure classification and configurable cooldown windows — how accounts return to the pool, and how to configure scheduled versus healthcheck recovery.
 ---
 
 # Reliability and Auto Recovery
@@ -29,7 +29,7 @@ ALTER TABLE route_credentials ADD COLUMN semantic_failure_streak_fingerprint TEX
 
 | Column | Purpose |
 | --- | --- |
-| `transient_failure_count` | Consecutive transient failures; picks the backoff tier |
+| `transient_failure_count` | Consecutive transient failures; drives the 错误 N 次 status tag |
 | `next_retry_at` | The earliest moment a retry is allowed |
 | `cooldown_until` | When the cooldown expires |
 | `last_failure_kind` | Failure classification label, see below |
@@ -136,7 +136,7 @@ With no deadline, forwarding never receives an `Err` in that case, so same-accou
 | Connect timeout | 20 seconds | The TCP/TLS handshake. If it cannot connect, there is nothing to wait for |
 | Read timeout | 180 seconds | The maximum gap between successful reads, **reset after each read** |
 
-When one fires it becomes an ordinary transport-layer transient failure: logged as `transport`, then same-account retry or failover according to `failure_policy`, then the 30/120/600-second backoff ladder. The failure message names which ceiling fired and how it was configured, so a stall is distinguishable from a refused connection.
+When one fires it becomes an ordinary transport-layer transient failure: logged as `transport`, then same-account retry or failover according to `failure_policy`, then the account's configured failure cooldown window. The failure message names which ceiling fired and how it was configured, so a stall is distinguishable from a refused connection.
 
 ::: tip Why there is no total deadline
 A legitimately long answer can take minutes either way: buffered forwarding waits for the whole body to arrive, and streaming passthrough waits for the upstream to finish talking. A total "connect until fully read" deadline would kill valid generations.
@@ -170,7 +170,7 @@ The streaming path does not hand the response over as soon as the headers arrive
 
 ### After the first chunk, truncation is recorded but not retried
 
-Once bytes are with the client they cannot be recalled, so a failure exposed after that point can no longer trigger failover. Account health is still charged, though: if the stream ends having sent data frames but never a terminal event (`response.completed` / `[DONE]` / `message_stop` / `finish_reason: stop` / `finishReason: STOP`), it is recorded as a `semantic_response_transient` failure and enters the backoff ladder.
+Once bytes are with the client they cannot be recalled, so a failure exposed after that point can no longer trigger failover. Account health is still charged, though: if the stream ends having sent data frames but never a terminal event (`response.completed` / `[DONE]` / `message_stop` / `finish_reason: stop` / `finishReason: STOP`), it is recorded as a `semantic_response_transient` failure and enters the account's configured failure cooldown window.
 
 The terminal markers are byte-identical to the buffered path's `stream_disconnected_before_completion`, so the two paths never reach different verdicts. Only the disposition differs: the buffered path can retry, the streaming path can only record — and recording is what makes the next selection avoid a chronically truncating upstream.
 
@@ -183,49 +183,33 @@ Tokens and cost are settled when the stream ends, including when the client disc
 Handling a transient failure is a very short piece of code, worth reading as written:
 
 ```rust
+let policy = RouteCredentialFailurePolicy::from_config_json(&config_json);
 let failure_count = current.saturating_add(1);
-let base_seconds = match failure_count {
-    1 => 30,
-    2 => 120,
-    _ => 600,
+let (retry_at, cooldown_until) = if policy.cooldown_enabled {
+    let cooldown_until =
+        (Utc::now() + chrono::Duration::seconds(i64::from(policy.cooldown_seconds))).to_rfc3339();
+    (Some(cooldown_until.clone()), Some(cooldown_until))
+} else {
+    (None, None)
 };
-let jitter_seconds = jitter_seconds(id, failure_count, base_seconds);
-let retry_at = Utc::now() + chrono::Duration::seconds(jitter_seconds);
-let cooldown_until = if failure_count >= 3 { Some(retry_at.clone()) } else { None };
 ```
 
-| Consecutive transient failure | Base backoff | Cooldown set? |
-| --- | --- | --- |
-| 1st | 30 seconds | No |
-| 2nd | 120 seconds (2 minutes) | No |
-| 3rd and beyond | 600 seconds (10 minutes) | **Yes**, `cooldown_until` equals `next_retry_at` |
+Cooldown is **per account** and off by default, and its length is **configured per account** too: edit it under the account's failure policy panel as 失败冷却（秒） ("failure cooldown, seconds"). The default is **10 seconds**, and the accepted range is 1-86400 seconds.
+
+| Account setting | Effect of each transient failure |
+| --- | --- |
+| Failure cooldown off | Only `transient_failure_count` increments; neither `next_retry_at` nor `cooldown_until` is written, so the account stays immediately selectable |
+| Failure cooldown on | Both `next_retry_at` and `cooldown_until` are set to `now + configured seconds` |
 
 Three things to note:
 
-- **The ladder tops out at the 3rd failure** — it does not double forever. An account that keeps failing is retried roughly every 10 minutes.
-- **The first two failures set only `next_retry_at`, not `cooldown_until`.** Both fields behave identically for scheduling (each must be expired for the account to be usable), but only `cooldown_until` renders as "cooling" in the UI.
+- **The cooldown window is fixed; it no longer escalates.** The old ladder charged roughly 30 seconds, then 2 minutes, then 10 minutes from the 3rd failure on. Now every trigger waits only the configured short window, so a single hiccup costs seconds instead of minutes. An account that keeps failing keeps re-triggering the same short cooldown rather than being pushed further and further out.
+- **Both timestamps are written together.** They behave identically for scheduling (each must be expired for the account to be usable); writing both means the UI can show "cooling" and the remaining time from the very first failure.
 - **Every transient failure clears the semantic streak counter** (`semantic_failure_streak_count = 0`, fingerprint nulled). The two counters never stack.
 
-### The jitter is deterministic
+### The failure count in the UI
 
-Backoff is not exactly 30/120/600 seconds; it is multiplied by a factor between 80% and 120%:
-
-```rust
-fn jitter_seconds(id: &str, failure_count: i64, base_seconds: i64) -> i64 {
-    let seed = id.bytes().fold(failure_count as u64, |value, byte| {
-        value.wrapping_mul(31).wrapping_add(byte as u64)
-    });
-    let jitter_percent = 80 + (seed % 41) as i64;
-    (base_seconds * jitter_percent / 100).max(1)
-}
-```
-
-The seed is computed from **the account ID plus the failure count** — no random numbers. That gives two properties:
-
-- **Different accounts get different backoff durations**, even if they fail in the same second. This avoids the thundering herd of "the whole pool cools down together and thaws together", making it far less likely the upstream gets slammed all at once.
-- **The same account at the same tier produces a reproducible duration**, which makes debugging and testing tractable.
-
-The actual ranges: 24–36 seconds on the 1st failure, 96–144 seconds on the 2nd, 480–720 seconds from the 3rd on.
+Whenever `transient_failure_count` is above 0, the account's status tag renders as 错误 N 次 ("N errors"). The moment the latest request succeeds the counter is cleared and the tag returns to the normal status text. Terminal states — revoked, error, paused — keep their own labels and are never masked by the failure count.
 
 ## Failure classification labels
 
@@ -402,21 +386,19 @@ The read side is forgiving: a `recovery` key that fails to parse, or content tha
 Suppose a primary account's upstream starts returning 429:
 
 ```text
-T+0s     Request #1 gets 429 → same-account retry (200 ms interval) → still 429
-         → retries exhausted → transient failure #1 recorded
-         → next_retry_at = T+24s ~ T+36s (no cooldown)
-         → switch to the next account in the same priority group; the client gets a normal response
+T+0s     Request #1 gets 429 -> same-account retry (200 ms interval) -> still 429
+         -> retries exhausted -> transient failure #1 recorded
+         -> next_retry_at = cooldown_until = T+10s (this account has cooldown on, at the default 10 seconds)
+         -> the UI shows "1 error" and "cooling"
+         -> switch to the next account in the same priority group; the client gets a normal response
 
-T+30s    Backoff expires, the primary re-enters the candidate set
-         → 429 again → transient failure #2 → next_retry_at = T+126s ~ T+174s
+T+10s    Cooldown expires, the primary re-enters the candidate set
+         -> 429 again -> transient failure #2 -> next_retry_at = cooldown_until = T+20s
+         -> the UI shows "2 errors"
 
-T+150s   Try again → 429 again → transient failure #3
-         → next_retry_at = cooldown_until = T+630s ~ T+870s
-         → the UI shows "cooling"
-
-T+700s   Cooldown expires, try again → this time it succeeds
-         → transient_failure_count / next_retry_at / cooldown_until cleared
-         → the primary is fully recovered and traffic returns to it
+T+20s    Try again -> this time it succeeds
+         -> transient_failure_count / next_retry_at / cooldown_until cleared
+         -> the status tag returns to "ok"; the primary is fully recovered and traffic returns to it
 ```
 
 Throughout, **the client perceives no failure at all** — every backoff came with an account switch, so long as the pool still had another usable account. That is the whole point of a multi-account pool.

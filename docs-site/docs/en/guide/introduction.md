@@ -35,7 +35,7 @@ Each account carries its own routing parameters:
 
 - **Route priority**, 1-5, default 3 — lower numbers win
 - **Max concurrency**, default 5, minimum 1
-- **Failure policy**: extra retry count, retry interval, error threshold
+- **Failure policy**: extra retry count, retry interval, error threshold, failure cooldown seconds
 - **Model mappings**: map the model name the client asks for onto a model the upstream actually serves
 - **Auto recovery**: off, daily schedule, or health-check probing
 

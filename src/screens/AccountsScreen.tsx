@@ -188,11 +188,15 @@ type RoutePoolMutationInput = {
   affectedCount: number;
 };
 
+const DEFAULT_ROUTE_CREDENTIAL_COOLDOWN_SECONDS = 10;
+const MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS = 86_400;
+
 const defaultRouteCredentialFailurePolicy: RouteCredentialFailurePolicy = {
   retry_count: 2,
   retry_interval_ms: 200,
   semantic_error_threshold: 10,
   cooldown_enabled: false,
+  cooldown_seconds: DEFAULT_ROUTE_CREDENTIAL_COOLDOWN_SECONDS,
   error_status_enabled: true,
 };
 
@@ -238,7 +242,7 @@ function accountStatusLabel(status: string): string {
     case "error":
       return "异常";
     case "revoked":
-      return "revoked";
+      return "已失效";
     case "paused":
       return "暂停";
     default:
@@ -261,6 +265,24 @@ function accountStatusClass(status: string): string {
     default:
       return "bg-stone-100 text-stone-600";
   }
+}
+
+// Terminal statuses describe a durable account state, so they keep their own
+// label even while transient retry failures are being counted.
+const terminalAccountStatuses = new Set(["error", "revoked", "paused"]);
+
+function transientFailureTag(
+  status: string,
+  transientFailureCount: number | null | undefined,
+): { label: string; className: string } | null {
+  const count = transientFailureCount ?? 0;
+  if (count <= 0 || terminalAccountStatuses.has(status)) {
+    return null;
+  }
+  return {
+    label: `错误 ${count} 次`,
+    className: "bg-orange-50 text-orange-800 ring-1 ring-orange-200",
+  };
 }
 
 const routeStatsPeriods = [
@@ -1056,7 +1078,11 @@ function failurePolicyFromConfig(config: Record<string, unknown>): RouteCredenti
   }
   const record = raw as Record<string, unknown>;
   const integerOrDefault = (
-    key: "retry_count" | "retry_interval_ms" | "semantic_error_threshold",
+    key:
+      | "retry_count"
+      | "retry_interval_ms"
+      | "semantic_error_threshold"
+      | "cooldown_seconds",
   ) => {
     const value = record[key];
     return typeof value === "number" && Number.isInteger(value)
@@ -1072,6 +1098,7 @@ function failurePolicyFromConfig(config: Record<string, unknown>): RouteCredenti
     retry_interval_ms: integerOrDefault("retry_interval_ms"),
     semantic_error_threshold: integerOrDefault("semantic_error_threshold"),
     cooldown_enabled: booleanOrDefault("cooldown_enabled"),
+    cooldown_seconds: integerOrDefault("cooldown_seconds"),
     error_status_enabled: booleanOrDefault("error_status_enabled"),
   };
 }
@@ -2044,6 +2071,9 @@ export function AccountsScreen({
   const [editRetryIntervalMs, setEditRetryIntervalMs] = useState("200");
   const [editSemanticErrorThreshold, setEditSemanticErrorThreshold] = useState("10");
   const [editCooldownEnabled, setEditCooldownEnabled] = useState(false);
+  const [editCooldownSeconds, setEditCooldownSeconds] = useState(
+    String(DEFAULT_ROUTE_CREDENTIAL_COOLDOWN_SECONDS),
+  );
   const [editErrorStatusEnabled, setEditErrorStatusEnabled] = useState(true);
   const [editFailurePolicyError, setEditFailurePolicyError] = useState<string | null>(null);
   const [editRecoveryMode, setEditRecoveryMode] = useState<RecoveryMode>("off");
@@ -2600,6 +2630,7 @@ export function AccountsScreen({
     setEditRetryIntervalMs(String(failurePolicy.retry_interval_ms));
     setEditSemanticErrorThreshold(String(failurePolicy.semantic_error_threshold));
     setEditCooldownEnabled(failurePolicy.cooldown_enabled);
+    setEditCooldownSeconds(String(failurePolicy.cooldown_seconds));
     setEditErrorStatusEnabled(failurePolicy.error_status_enabled);
     setEditFailurePolicyError(null);
     setEditSecretJson(parseJsonPreview(editingCredential.secret_payload_json, editingCredential.secret_payload_json));
@@ -3327,6 +3358,7 @@ export function AccountsScreen({
       const retryCount = Number(editRetryCount);
       const retryIntervalMs = Number(editRetryIntervalMs);
       const semanticErrorThreshold = Number(editSemanticErrorThreshold);
+      const cooldownSeconds = Number(editCooldownSeconds);
       let failurePolicyError: string | null = null;
       if (!Number.isInteger(retryCount) || retryCount < 0 || retryCount > 10) {
         failurePolicyError = "额外重试次数必须是 0-10 的整数";
@@ -3342,6 +3374,12 @@ export function AccountsScreen({
         semanticErrorThreshold > 1_000
       ) {
         failurePolicyError = "异常触发次数必须是 1-1000 的整数";
+      } else if (
+        !Number.isInteger(cooldownSeconds) ||
+        cooldownSeconds < 1 ||
+        cooldownSeconds > MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS
+      ) {
+        failurePolicyError = `失败冷却需在 1 到 ${MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS} 秒之间。`;
       }
       if (failurePolicyError) {
         setEditFailurePolicyError(failurePolicyError);
@@ -3352,6 +3390,7 @@ export function AccountsScreen({
         retry_interval_ms: retryIntervalMs,
         semantic_error_threshold: semanticErrorThreshold,
         cooldown_enabled: editCooldownEnabled,
+        cooldown_seconds: cooldownSeconds,
         error_status_enabled: editErrorStatusEnabled,
       };
       setEditFailurePolicyError(null);
@@ -5018,7 +5057,7 @@ export function AccountsScreen({
                       <option value="paused">暂停</option>
                       <option value="warning">警告</option>
                       <option value="error">异常</option>
-                      <option value="revoked">revoked</option>
+                      <option value="revoked">已失效</option>
                     </select>
                     {batchStatus && (
                       <button
@@ -5131,6 +5170,10 @@ export function AccountsScreen({
                   const latestReset = officialLatestResetLabel(credential);
                   const retryLabel = credentialRetryLabel(credential);
                   const cooldownState = credentialCooldownState(credential, cooldownNow);
+                  const failureTag = transientFailureTag(
+                    credential.status,
+                    credential.transient_failure_count,
+                  );
                   const modelMappings = parseModelMappingsFromConfig(credential.config_json);
                   const baseUrlLink = credentialBaseUrlLink(credential);
                   const isCopyingCredential =
@@ -5304,10 +5347,10 @@ export function AccountsScreen({
                         )}
                         <CredentialFailureTooltip credential={credential}>
                           <span
-                            className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${accountStatusClass(credential.status)}`}
-                            title={credential.status}
+                            className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${failureTag?.className ?? accountStatusClass(credential.status)}`}
+                            title={failureTag ? `${accountStatusLabel(credential.status)} · ${failureTag.label}` : credential.status}
                           >
-                            {accountStatusLabel(credential.status)}
+                            {failureTag?.label ?? accountStatusLabel(credential.status)}
                           </span>
                         </CredentialFailureTooltip>
                         {(credential.active_request_count ?? 0) > 0 && (
@@ -6491,7 +6534,7 @@ export function AccountsScreen({
                   <option value="ok">正常 (ok)</option>
                   <option value="warning">警告 (warning)</option>
                   <option value="error">异常 (error)</option>
-                  <option value="revoked">revoked</option>
+                  <option value="revoked">已失效 (revoked)</option>
                   <option value="paused">暂停 (paused)</option>
                 </select>
               </label>
@@ -6539,7 +6582,7 @@ export function AccountsScreen({
                     按账号生效
                   </span>
                 </div>
-                <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                   <label className={labelClass}>
                     额外重试次数
                     <input
@@ -6588,6 +6631,22 @@ export function AccountsScreen({
                       value={editSemanticErrorThreshold}
                     />
                   </label>
+                  <label className={labelClass}>
+                    失败冷却（秒）
+                    <input
+                      aria-label="失败冷却（秒）"
+                      className={fieldClass}
+                      max={MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS}
+                      min={1}
+                      onChange={(event) => {
+                        setEditCooldownSeconds(event.target.value);
+                        setEditFailurePolicyError(null);
+                      }}
+                      step={1}
+                      type="number"
+                      value={editCooldownSeconds}
+                    />
+                  </label>
                 </div>
                 {editFailurePolicyError && (
                   <p className="mt-2 text-[12px] font-semibold text-red-700">
@@ -6606,8 +6665,8 @@ export function AccountsScreen({
                     <span>
                       <span className="font-semibold">启用失败冷却</span>
                       <span className="block text-[11px] text-stone-600">
-                        开启后临时失败会让账号退避一段时间（第 1 / 2 次约 30 秒 / 2 分钟，第 3 次起约 10
-                        分钟）暂不参与路由。默认关闭，即失败后立刻仍可被选中。
+                        开启后每次临时失败都会让账号冷却「失败冷却（秒）」设定的时长（默认 10
+                        秒）暂不参与路由，冷却结束后自动恢复。默认关闭，即失败后立刻仍可被选中。
                       </span>
                     </span>
                   </label>

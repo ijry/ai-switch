@@ -1,6 +1,6 @@
 ---
 title: 稳定性与自动恢复
-description: AI Switch 的失败分类、指数退避与冷却窗口的精确规则，账号如何自动恢复进算力池，以及定时恢复与健康探测两种恢复模式怎么配。
+description: AI Switch 的失败分类、可配置冷却窗口的精确规则，账号如何自动恢复进算力池，以及定时恢复与健康探测两种恢复模式怎么配。
 ---
 
 # 稳定性与自动恢复
@@ -29,7 +29,7 @@ ALTER TABLE route_credentials ADD COLUMN semantic_failure_streak_fingerprint TEX
 
 | 列 | 作用 |
 | --- | --- |
-| `transient_failure_count` | 连续瞬时失败次数，决定退避档位 |
+| `transient_failure_count` | 连续瞬时失败次数，界面据此显示 `错误 N 次` |
 | `next_retry_at` | 下次可以再试的时间点 |
 | `cooldown_until` | 冷却截止时间点 |
 | `last_failure_kind` | 失败分类标签，见下文 |
@@ -134,7 +134,7 @@ fn semantic_failure_fingerprint(response_status: Option<u16>, message: &str) -> 
 | 连接超时 | 20 秒 | TCP/TLS 握手阶段。握不上手就没什么可等的 |
 | 读取间隔超时 | 180 秒 | 两次成功读取之间的最大间隔，**每次读到数据后重置** |
 
-触发之后就是一次普通的传输层瞬时失败：记 `transport`，按 `failure_policy` 决定同号重试还是换号，进 30/120/600 秒退避阶梯。失败消息里会明确写出是哪个上限、设的是多少秒，方便和"连接被拒绝"区分开。
+触发之后就是一次普通的传输层瞬时失败：记 `transport`，按 `failure_policy` 决定同号重试还是换号，并按账号配置的失败冷却窗口退避。失败消息里会明确写出是哪个上限、设的是多少秒，方便和"连接被拒绝"区分开。
 
 ::: tip 为什么不设总时限
 一次正常的长回答本身就可能耗时数分钟：缓冲转发要等整个响应体到齐，流式透传则要等上游把话说完。如果设一个"从连接到读完"的总时限，就会把正常生成误杀掉。
@@ -168,7 +168,7 @@ fn semantic_failure_fingerprint(response_status: Option<u16>, message: &str) -> 
 
 ### 首包之后的截断只记账，不重试
 
-字节一旦发给客户端就收不回来，所以此后暴露的失败无法再换号。但**账号健康度照记**：流结束时如果发现"有数据帧却始终没有终止事件"（`response.completed` / `[DONE]` / `message_stop` / `finish_reason: stop` / `finishReason: STOP`），就按 `semantic_response_transient` 记一次失败，进退避阶梯。
+字节一旦发给客户端就收不回来，所以此后暴露的失败无法再换号。但**账号健康度照记**：流结束时如果发现"有数据帧却始终没有终止事件"（`response.completed` / `[DONE]` / `message_stop` / `finish_reason: stop` / `finishReason: STOP`），就按 `semantic_response_transient` 记一次失败，并按账号配置的失败冷却窗口退避。
 
 判定用的终止标记与缓冲路径的 `stream_disconnected_before_completion` 逐字节一致，两条路的结论不会分叉。差别只在处置：缓冲路径能重试，流式路径只能记账——而这恰好会让下一次选号避开长期截断的上游。
 
@@ -181,49 +181,33 @@ token 与费用是在流结束时结算的，客户端提前断开也一样会�
 瞬时失败的处理是一段很短的代码，值得原样看：
 
 ```rust
+let policy = RouteCredentialFailurePolicy::from_config_json(&config_json);
 let failure_count = current.saturating_add(1);
-let base_seconds = match failure_count {
-    1 => 30,
-    2 => 120,
-    _ => 600,
+let (retry_at, cooldown_until) = if policy.cooldown_enabled {
+    let cooldown_until =
+        (Utc::now() + chrono::Duration::seconds(i64::from(policy.cooldown_seconds))).to_rfc3339();
+    (Some(cooldown_until.clone()), Some(cooldown_until))
+} else {
+    (None, None)
 };
-let jitter_seconds = jitter_seconds(id, failure_count, base_seconds);
-let retry_at = Utc::now() + chrono::Duration::seconds(jitter_seconds);
-let cooldown_until = if failure_count >= 3 { Some(retry_at.clone()) } else { None };
 ```
 
-| 连续第几次瞬时失败 | 基础退避 | 是否设冷却 |
-| --- | --- | --- |
-| 第 1 次 | 30 秒 | 否 |
-| 第 2 次 | 120 秒（2 分钟） | 否 |
-| 第 3 次及以后 | 600 秒（10 分钟） | **是**，冷却截止时间等于 `next_retry_at` |
+冷却是**按账号开关**的（默认关闭），时长也**按账号配置**，在账号编辑面板的「失败处理策略 → 失败冷却（秒）」里改，默认 **10 秒**，取值范围 1–86400 秒。
+
+| 账号配置 | 每次瞬时失败的效果 |
+| --- | --- |
+| 未开启「启用失败冷却」 | 只累加 `transient_failure_count`，不写 `next_retry_at` / `cooldown_until`，账号立刻还能被选中 |
+| 已开启「启用失败冷却」 | `next_retry_at` 和 `cooldown_until` 都设为 `现在 + 失败冷却（秒）` |
 
 三点要注意：
 
-- **退避阶梯到第 3 次就到顶了**，不会无限翻倍。持续坏下去也就是每 10 分钟被试一次。
-- **前两次只设 `next_retry_at`，不设 `cooldown_until`。** 两个字段在调度时的效果一样（都要求已经过期才可用），但只有 `cooldown_until` 会被界面呈现成"冷却中"。
+- **冷却时长是固定的，不再阶梯式增长。** 以前是第 1 / 2 次约 30 秒 / 2 分钟、第 3 次起 10 分钟；现在每次触发都只等配置的那个短窗口，一次抖动的代价是秒级而不是分钟级。持续坏下去的账号会反复触发同一个短冷却，而不是被越推越远。
+- **两个时间戳一起写。** 它们在调度时效果相同（都要求已过期才可用），一起写入是为了界面第一次失败就能显示"冷却中"和剩余时间。
 - **每次瞬时失败都会清空语义连击计数**（`semantic_failure_streak_count = 0`、指纹置空），两套计数互不叠加。
 
-### 抖动是确定性的
+### 界面上的失败计数
 
-退避时长不是精确的 30/120/600 秒，而是乘上一个 80%–120% 的系数：
-
-```rust
-fn jitter_seconds(id: &str, failure_count: i64, base_seconds: i64) -> i64 {
-    let seed = id.bytes().fold(failure_count as u64, |value, byte| {
-        value.wrapping_mul(31).wrapping_add(byte as u64)
-    });
-    let jitter_percent = 80 + (seed % 41) as i64;
-    (base_seconds * jitter_percent / 100).max(1)
-}
-```
-
-种子由**账号 ID 加失败次数**算出，不用随机数。这带来两个性质：
-
-- **不同账号的退避时长不同**，即使它们在同一秒一起失败。这避免了"整池账号同时冷却、同时解冻"的惊群效应——上游被瞬间打满的可能性小了很多。
-- **同一账号同一档位的退避时长是可复现的**，方便排查与写测试。
-
-实际范围：第 1 次 24–36 秒，第 2 次 96–144 秒，第 3 次及以后 480–720 秒。
+只要 `transient_failure_count` 大于 0，账号列表的状态标签就会显示成 `错误 N 次`；最近一次请求成功后计数清零，标签立刻回到原来的状态文案。已失效、异常、暂停这类状态会保留自己的标签，不被失败计数覆盖。
 
 ## 失败分类标签
 
@@ -402,19 +386,17 @@ fn needs_recovery(status: &str, next_retry_at: Option<&str>, cooldown_until: Opt
 ```text
 T+0s     第 1 次请求 429 → 同号重试（间隔 200 ms）→ 仍 429
          → 重试次数用尽 → 记瞬时失败 #1
-         → next_retry_at = T+24s ~ T+36s（无冷却）
+         → next_retry_at = cooldown_until = T+10s（该号开了失败冷却，时长为默认 10 秒）
+         → 界面显示「错误 1 次」和「冷却中」
          → 换到同优先级组的下一个号，客户端正常拿到响应
 
-T+30s    退避过期，主力号重新进入候选
-         → 又 429 → 记瞬时失败 #2 → next_retry_at = T+126s ~ T+174s
+T+10s    冷却过期，主力号重新进入候选
+         → 又 429 → 记瞬时失败 #2 → next_retry_at = cooldown_until = T+20s
+         → 界面显示「错误 2 次」
 
-T+150s   再试 → 又 429 → 记瞬时失败 #3
-         → next_retry_at = cooldown_until = T+630s ~ T+870s
-         → 界面显示「冷却中」
-
-T+700s   冷却过期，再试 → 这次成功
+T+20s    再试 → 这次成功
          → 清空 transient_failure_count / next_retry_at / cooldown_until
-         → 主力号完全恢复，流量回到它身上
+         → 状态标签回到「正常」，主力号完全恢复，流量回到它身上
 ```
 
 整个过程里客户端**没有感知到任何失败**——每一次退避都伴随一次换号，只要池里还有别的可用号。这就是多号池的意义。

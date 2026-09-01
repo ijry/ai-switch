@@ -1372,20 +1372,16 @@ impl RouteCredentialRepository {
                 recoverable: true,
             });
         };
-        let cooldown_enabled =
-            RouteCredentialFailurePolicy::from_config_json(&config_json).cooldown_enabled;
+        let policy = RouteCredentialFailurePolicy::from_config_json(&config_json);
 
         let failure_count = current.saturating_add(1);
-        let (retry_at, cooldown_until) = if cooldown_enabled {
-            let base_seconds = match failure_count {
-                1 => 30,
-                2 => 120,
-                _ => 600,
-            };
-            let jitter_seconds = jitter_seconds(id, failure_count, base_seconds);
-            let retry_at = (Utc::now() + chrono::Duration::seconds(jitter_seconds)).to_rfc3339();
-            let cooldown_until = (failure_count >= 3).then(|| retry_at.clone());
-            (Some(retry_at), cooldown_until)
+        // Every trigger uses the same account-configured window, so a flaky
+        // account recovers predictably instead of sliding into a long backoff.
+        let (retry_at, cooldown_until) = if policy.cooldown_enabled {
+            let cooldown_until = (Utc::now()
+                + chrono::Duration::seconds(i64::from(policy.cooldown_seconds)))
+            .to_rfc3339();
+            (Some(cooldown_until.clone()), Some(cooldown_until))
         } else {
             (None, None)
         };
@@ -1795,18 +1791,11 @@ fn truncate_failure_response(response_body: Option<&[u8]>) -> Option<String> {
     Some(response)
 }
 
-fn jitter_seconds(id: &str, failure_count: i64, base_seconds: i64) -> i64 {
-    let seed = id.bytes().fold(failure_count as u64, |value, byte| {
-        value.wrapping_mul(31).wrapping_add(byte as u64)
-    });
-    let jitter_percent = 80 + (seed % 41) as i64;
-    (base_seconds * jitter_percent / 100).max(1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::route_credential_transfer::RouteCredentialSelectionContext;
+    use chrono::DateTime;
 
     async fn create_api_credential(
         pool: &SqlitePool,
@@ -2614,12 +2603,13 @@ mod tests {
             "ok",
             None,
             r#"{"api_key":"sk-test"}"#,
-            r#"{"base_url":"https://example.com","interface_format":"openai","model_mappings":[],"failure_policy":{"cooldown_enabled":true}}"#,
+            r#"{"base_url":"https://example.com","interface_format":"openai","model_mappings":[],"failure_policy":{"cooldown_enabled":true,"cooldown_seconds":30}}"#,
             "{}",
         )
         .await
         .unwrap();
 
+        let before_first = Utc::now();
         let first = RouteCredentialRepository::record_transient_failure(
             &pool,
             &created.id,
@@ -2630,7 +2620,12 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(first.failure_count, 1);
-        assert!(first.cooldown_until.is_none());
+        // Every trigger uses the same configured cooldown, so the very first
+        // failure already parks the account instead of only counting it.
+        assert_eq!(first.next_retry_at, first.cooldown_until);
+        assert_cooldown_within(&first, before_first, 30);
+
+        let before_second = Utc::now();
         let second = RouteCredentialRepository::record_transient_failure(
             &pool,
             &created.id,
@@ -2641,6 +2636,9 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(second.failure_count, 2);
+        assert_cooldown_within(&second, before_second, 30);
+
+        let before_third = Utc::now();
         let third = RouteCredentialRepository::record_transient_failure(
             &pool,
             &created.id,
@@ -2652,6 +2650,9 @@ mod tests {
         .unwrap();
         assert_eq!(third.failure_count, 3);
         assert_eq!(third.next_retry_at, third.cooldown_until);
+        // The old schedule jumped to 10 minutes here; a repeated failure must
+        // not stretch beyond the configured window any more.
+        assert_cooldown_within(&third, before_third, 30);
 
         let stored = RouteCredentialRepository::get(&pool, &created.id)
             .await
@@ -2676,6 +2677,58 @@ mod tests {
         assert!(cleared.last_failure_kind.is_none());
         assert!(cleared.last_failure_message.is_none());
         assert!(cleared.last_failure_response_json.is_none());
+    }
+
+    /// A cooldown deadline is "correct" when it lands inside the configured
+    /// window measured from just before the call, allowing for clock movement
+    /// during the write.
+    fn assert_cooldown_within(state: &RetryState, started: DateTime<Utc>, seconds: i64) {
+        let cooldown_until = state
+            .cooldown_until
+            .as_deref()
+            .expect("cooldown deadline is set");
+        let deadline = DateTime::parse_from_rfc3339(cooldown_until)
+            .expect("cooldown deadline parses")
+            .with_timezone(&Utc);
+        let elapsed = (deadline - started).num_milliseconds();
+        assert!(
+            elapsed > (seconds - 1) * 1_000 && elapsed <= (seconds + 5) * 1_000,
+            "cooldown {cooldown_until} should be about {seconds}s after {started}, got {elapsed}ms"
+        );
+    }
+
+    #[tokio::test]
+    async fn transient_failure_cooldown_defaults_to_ten_seconds() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let created = RouteCredentialRepository::create(
+            &pool,
+            "codex",
+            "api",
+            "Default Cooldown",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-test"}"#,
+            r#"{"base_url":"https://example.com","failure_policy":{"cooldown_enabled":true}}"#,
+            "{}",
+        )
+        .await
+        .unwrap();
+
+        let started = Utc::now();
+        let state = RouteCredentialRepository::record_transient_failure(
+            &pool,
+            &created.id,
+            "transport",
+            "temporary",
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(state.failure_count, 1);
+        assert_cooldown_within(&state, started, 10);
     }
 
     #[tokio::test]

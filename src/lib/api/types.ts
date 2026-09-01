@@ -25,6 +25,7 @@ export type RouteCredentialFailurePolicy = {
   retry_interval_ms: number;
   semantic_error_threshold: number;
   cooldown_enabled: boolean;
+  cooldown_seconds: number;
   error_status_enabled: boolean;
 };
 
