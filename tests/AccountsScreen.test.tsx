@@ -1335,6 +1335,38 @@ describe("AccountsScreen", () => {
     expect(within(thirdRow).queryByText(/失败类型：/)).not.toBeInTheDocument();
   });
 
+  it("keeps the failure tooltip hoverable so its text can be selected", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      {
+        ...credentialsFixture[0],
+        status: "error",
+        last_failure_kind: "semantic_response_failed",
+        last_failure_message: "upstream rejected the request",
+        last_failure_response_json: '{"error":{"message":"bad key"}}',
+      },
+      credentialsFixture[1],
+    ]);
+
+    renderScreen();
+
+    const firstRow = await screen.findByLabelText("放置在 Team Account 前");
+    // The row also renders ModelMappingSummary's baseline tooltip, so reach the
+    // failure one through its payload rather than by role.
+    const panel = within(firstRow).getByText(/bad key/).closest("pre")
+      ?.parentElement as HTMLElement;
+    const tooltip = panel.parentElement as HTMLElement;
+    expect(tooltip).toHaveAttribute("role", "tooltip");
+
+    // pointer-events-none would make the panel unhittable, so the pointer could
+    // never enter it to drag-select the upstream error payload.
+    expect(tooltip.className).not.toContain("pointer-events-none");
+    expect(panel.className).not.toContain("pointer-events-none");
+    expect(panel.className).toContain("select-text");
+    // Padding, not margin: a margin gap drops :hover before the pointer arrives.
+    expect(tooltip.className).toContain("pt-1");
+    expect(tooltip.className).not.toContain("mt-1");
+  });
+
   it("reports route pool membership errors, rolls back, and refreshes account state", async () => {
     vi.mocked(listRouteCredentials)
       .mockResolvedValueOnce(credentialsFixture)
@@ -2565,6 +2597,28 @@ describe("AccountsScreen", () => {
         probe_interval_minutes: null,
       }),
     );
+  });
+
+  it("saves the failure cooldown and error status toggles into the failure policy", async () => {
+    vi.mocked(updateRouteCredential).mockResolvedValue(credentialsFixture[0]);
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+
+    const cooldownToggle = screen.getByLabelText("启用失败冷却");
+    const errorStatusToggle = screen.getByLabelText("启用异常状态标记");
+    expect(cooldownToggle).not.toBeChecked();
+    expect(errorStatusToggle).toBeChecked();
+
+    await userEvent.click(cooldownToggle);
+    await userEvent.click(errorStatusToggle);
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const payload = vi.mocked(updateRouteCredential).mock.calls[0][1];
+    const config = JSON.parse(payload.config_json);
+    expect(config.failure_policy.cooldown_enabled).toBe(true);
+    expect(config.failure_policy.error_status_enabled).toBe(false);
   });
 
   it("saves official account User-Agent into config headers", async () => {

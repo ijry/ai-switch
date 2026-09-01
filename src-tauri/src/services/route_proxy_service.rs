@@ -6069,7 +6069,8 @@ mod tests {
             .expect("failed account");
         assert_eq!(failed.status, "ok");
         assert_eq!(failed.transient_failure_count, 1);
-        assert!(failed.next_retry_at.is_some());
+        // Cooldown is opt-in, so the failure counts but schedules no backoff.
+        assert!(failed.next_retry_at.is_none());
         assert_eq!(
             RouteCredentialRepository::get(&pool, &healthy_id)
                 .await
@@ -6199,7 +6200,8 @@ mod tests {
             .expect("stalled account");
         assert_eq!(stalled.transient_failure_count, 1);
         assert_eq!(stalled.last_failure_kind.as_deref(), Some("transport"));
-        assert!(stalled.next_retry_at.is_some());
+        // Cooldown is opt-in, so the failure counts but schedules no backoff.
+        assert!(stalled.next_retry_at.is_none());
         assert!(stalled
             .last_failure_message
             .as_deref()

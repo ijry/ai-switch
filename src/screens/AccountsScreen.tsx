@@ -192,6 +192,8 @@ const defaultRouteCredentialFailurePolicy: RouteCredentialFailurePolicy = {
   retry_count: 2,
   retry_interval_ms: 200,
   semantic_error_threshold: 10,
+  cooldown_enabled: false,
+  error_status_enabled: true,
 };
 
 function formatApiError(error: unknown, fallback: string): string {
@@ -1053,16 +1055,24 @@ function failurePolicyFromConfig(config: Record<string, unknown>): RouteCredenti
     return { ...defaultRouteCredentialFailurePolicy };
   }
   const record = raw as Record<string, unknown>;
-  const integerOrDefault = (key: keyof RouteCredentialFailurePolicy) => {
+  const integerOrDefault = (
+    key: "retry_count" | "retry_interval_ms" | "semantic_error_threshold",
+  ) => {
     const value = record[key];
     return typeof value === "number" && Number.isInteger(value)
       ? value
       : defaultRouteCredentialFailurePolicy[key];
   };
+  const booleanOrDefault = (key: "cooldown_enabled" | "error_status_enabled") => {
+    const value = record[key];
+    return typeof value === "boolean" ? value : defaultRouteCredentialFailurePolicy[key];
+  };
   return {
     retry_count: integerOrDefault("retry_count"),
     retry_interval_ms: integerOrDefault("retry_interval_ms"),
     semantic_error_threshold: integerOrDefault("semantic_error_threshold"),
+    cooldown_enabled: booleanOrDefault("cooldown_enabled"),
+    error_status_enabled: booleanOrDefault("error_status_enabled"),
   };
 }
 
@@ -1178,6 +1188,65 @@ function credentialRetryLabel(credential: RouteCredential): string | null {
     return null;
   }
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatCooldownRemaining(milliseconds: number): string {
+  const totalSeconds = Math.ceil(milliseconds / 1000);
+  if (totalSeconds < 60) {
+    return `${totalSeconds} 秒`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) {
+    return seconds > 0 ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes > 0 ? `${hours} 小时 ${remainingMinutes} 分` : `${hours} 小时`;
+}
+
+// Ticks every second while an account is cooling down, so the countdown stays
+// live between query refetches instead of freezing at the last fetched value.
+function useCooldownCountdown(credentials: RouteCredential[]) {
+  const nextDeadline = useMemo(() => {
+    const deadlines = credentials
+      .map((credential) => credential.cooldown_until || credential.next_retry_at)
+      .filter((raw): raw is string => Boolean(raw))
+      .map((raw) => new Date(raw).getTime())
+      .filter((time) => Number.isFinite(time));
+    return deadlines.length > 0 ? Math.max(...deadlines) : null;
+  }, [credentials]);
+
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (nextDeadline === null || nextDeadline <= Date.now()) {
+      return;
+    }
+    setNow(Date.now());
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [nextDeadline]);
+
+  return now;
+}
+
+function credentialCooldownState(credential: RouteCredential, now: number) {
+  const raw = credential.cooldown_until || credential.next_retry_at;
+  if (!raw) {
+    return null;
+  }
+  const deadline = new Date(raw).getTime();
+  if (!Number.isFinite(deadline)) {
+    return null;
+  }
+  const remaining = deadline - now;
+  if (remaining <= 0) {
+    return { active: false as const, deadline };
+  }
+  return { active: true as const, deadline, remaining };
 }
 
 function credentialRequestStats(credential: RouteCredential) {
@@ -1736,22 +1805,26 @@ function CredentialFailureTooltip({
       tabIndex={0}
     >
       {children}
+      {/* pt-1 instead of mt-1: a margin gap would drop :hover mid-travel and
+          close the panel before the pointer could reach it to select text. */}
       <span
-        className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden max-h-80 w-[min(36rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] overflow-auto whitespace-normal break-words rounded-lg border border-stone-700 bg-stone-900 px-3 py-2 text-left text-[11px] font-medium leading-5 text-white shadow-xl group-hover:block group-focus-within:block"
+        className="absolute left-0 top-full z-50 hidden pt-1 group-hover:block group-focus-within:block"
         id={tooltipId}
         role="tooltip"
       >
-        <span className="block text-stone-300">
-          失败类型：{credential.last_failure_kind?.trim() || "未知"}
-        </span>
-        {credential.last_failure_message?.trim() ? (
-          <span className="mt-1 block break-words">
-            失败消息：{credential.last_failure_message.trim()}
+        <span className="block max-h-80 w-[min(36rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] select-text overflow-auto whitespace-normal break-words rounded-lg border border-stone-700 bg-stone-900 px-3 py-2 text-left text-[11px] font-medium leading-5 text-white shadow-xl">
+          <span className="block text-stone-300">
+            失败类型：{credential.last_failure_kind?.trim() || "未知"}
           </span>
-        ) : null}
-        <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-[10px] leading-4 text-stone-100">
-          {prettyJsonOrText(response)}
-        </pre>
+          {credential.last_failure_message?.trim() ? (
+            <span className="mt-1 block break-words">
+              失败消息：{credential.last_failure_message.trim()}
+            </span>
+          ) : null}
+          <pre className="mt-2 select-text whitespace-pre-wrap break-words font-mono text-[10px] leading-4 text-stone-100">
+            {prettyJsonOrText(response)}
+          </pre>
+        </span>
       </span>
     </span>
   );
@@ -1970,6 +2043,8 @@ export function AccountsScreen({
   const [editRetryCount, setEditRetryCount] = useState("2");
   const [editRetryIntervalMs, setEditRetryIntervalMs] = useState("200");
   const [editSemanticErrorThreshold, setEditSemanticErrorThreshold] = useState("10");
+  const [editCooldownEnabled, setEditCooldownEnabled] = useState(false);
+  const [editErrorStatusEnabled, setEditErrorStatusEnabled] = useState(true);
   const [editFailurePolicyError, setEditFailurePolicyError] = useState<string | null>(null);
   const [editRecoveryMode, setEditRecoveryMode] = useState<RecoveryMode>("off");
   const [editRecoveryTimes, setEditRecoveryTimes] = useState<string[]>([]);
@@ -2521,6 +2596,8 @@ export function AccountsScreen({
     setEditRetryCount(String(failurePolicy.retry_count));
     setEditRetryIntervalMs(String(failurePolicy.retry_interval_ms));
     setEditSemanticErrorThreshold(String(failurePolicy.semantic_error_threshold));
+    setEditCooldownEnabled(failurePolicy.cooldown_enabled);
+    setEditErrorStatusEnabled(failurePolicy.error_status_enabled);
     setEditFailurePolicyError(null);
     setEditSecretJson(parseJsonPreview(editingCredential.secret_payload_json, editingCredential.secret_payload_json));
     setEditConfigJson(parseJsonPreview(editingCredential.config_json, editingCredential.config_json));
@@ -2586,6 +2663,7 @@ export function AccountsScreen({
 
   const accountPageData = credentialsQuery.data;
   const credentials = accountPageData?.items ?? [];
+  const cooldownNow = useCooldownCountdown(credentials);
   const modelTestCredentials = allCredentialsQuery.data ?? credentials;
   const poolModelMappingTargets = useMemo(() => {
     const targetsByAlias = new Map<string, Set<string>>();
@@ -3270,6 +3348,8 @@ export function AccountsScreen({
         retry_count: retryCount,
         retry_interval_ms: retryIntervalMs,
         semantic_error_threshold: semanticErrorThreshold,
+        cooldown_enabled: editCooldownEnabled,
+        error_status_enabled: editErrorStatusEnabled,
       };
       setEditFailurePolicyError(null);
       setEditModelMappingsError(null);
@@ -5040,6 +5120,7 @@ export function AccountsScreen({
                   const weeklyRemain = officialWeeklyRemain(credential);
                   const latestReset = officialLatestResetLabel(credential);
                   const retryLabel = credentialRetryLabel(credential);
+                  const cooldownState = credentialCooldownState(credential, cooldownNow);
                   const modelMappings = parseModelMappingsFromConfig(credential.config_json);
                   const baseUrlLink = credentialBaseUrlLink(credential);
                   const isCopyingCredential =
@@ -5230,13 +5311,14 @@ export function AccountsScreen({
                           </span>
                         )}
                         <ModelMappingSummary platform={activePlatform} mappings={modelMappings} />
-                        {retryLabel && (
+                        {cooldownState?.active && retryLabel && (
                           <CredentialFailureTooltip credential={credential}>
                             <span
                               className="rounded-full bg-orange-50 px-2 py-0.5 text-[11px] font-semibold text-orange-800"
-                              title="临时失败退避时间"
+                              data-testid={`credential-cooldown-${credential.id}`}
+                              title={`临时失败退避中，冷却至 ${retryLabel}`}
                             >
-                              冷却至 {retryLabel}
+                              冷却 {formatCooldownRemaining(cooldownState.remaining)}
                             </span>
                           </CredentialFailureTooltip>
                         )}
@@ -6457,6 +6539,39 @@ export function AccountsScreen({
                     {editFailurePolicyError}
                   </p>
                 )}
+                <div className="mt-3 grid gap-2">
+                  <label className="flex items-start gap-2 text-[12px] leading-5 text-stone-700">
+                    <input
+                      aria-label="启用失败冷却"
+                      checked={editCooldownEnabled}
+                      className="mt-0.5"
+                      onChange={(event) => setEditCooldownEnabled(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>
+                      <span className="font-semibold">启用失败冷却</span>
+                      <span className="block text-[11px] text-stone-600">
+                        开启后临时失败会让账号退避一段时间（第 1 / 2 次约 30 秒 / 2 分钟，第 3 次起约 10
+                        分钟）暂不参与路由。默认关闭，即失败后立刻仍可被选中。
+                      </span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-2 text-[12px] leading-5 text-stone-700">
+                    <input
+                      aria-label="启用异常状态标记"
+                      checked={editErrorStatusEnabled}
+                      className="mt-0.5"
+                      onChange={(event) => setEditErrorStatusEnabled(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>
+                      <span className="font-semibold">启用异常状态标记</span>
+                      <span className="block text-[11px] text-stone-600">
+                        开启后连续同类语义错误达到上面的次数时，账号会被标记为异常并停止参与路由。默认开启，因为触发条件严格，通常意味着账号确实不可用。
+                      </span>
+                    </span>
+                  </label>
+                </div>
                 <div className="mt-3 grid gap-2 text-[11px] leading-5 text-stone-600">
                   <p>
                     <span className="font-semibold text-emerald-700">会自动重试：</span>
@@ -6464,7 +6579,7 @@ export function AccountsScreen({
                   </p>
                   <p>
                     <span className="font-semibold text-amber-700">会累计为异常：</span>
-                    不可重试的永久语义错误，在 HTTP 状态和规范化错误消息相同且连续达到设定次数后，账号才会标记为异常；成功、临时错误或错误变化会清零。
+                    不可重试的永久语义错误，在 HTTP 状态和规范化错误消息相同且连续达到设定次数后，账号才会标记为异常；成功、临时错误或错误变化会清零。关闭「启用异常状态标记」后仍会累计次数，但不再改变账号状态。
                   </p>
                   <p>
                     <span className="font-semibold text-red-700">不会同账号重试：</span>

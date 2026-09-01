@@ -2988,7 +2988,8 @@ mod tests {
             .expect("credential");
         assert_eq!(credential.status, "ok");
         assert_eq!(credential.transient_failure_count, 1);
-        assert!(credential.next_retry_at.is_some());
+        // Cooldown is opt-in, so the failure counts but schedules no backoff.
+        assert!(credential.next_retry_at.is_none());
     }
 
     #[tokio::test]

@@ -7,6 +7,12 @@ pub const ANTHROPIC_AUTH_TOKEN_FIELD: &str = "ANTHROPIC_AUTH_TOKEN";
 pub const DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT: u32 = 2;
 pub const DEFAULT_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS: u32 = 200;
 pub const DEFAULT_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD: u32 = 10;
+/// Transient-failure backoff is opt-in: a failing account stays immediately
+/// selectable unless the user turns cooldown on for it.
+pub const DEFAULT_ROUTE_CREDENTIAL_COOLDOWN_ENABLED: bool = false;
+/// Flipping an account to `error` stays on by default — the streak conditions
+/// are strict enough that reaching them usually means the account is dead.
+pub const DEFAULT_ROUTE_CREDENTIAL_ERROR_STATUS_ENABLED: bool = true;
 /// Concurrency ceiling given to a freshly created account.
 ///
 /// The column default is still 1 (changing it would mean rebuilding the table),
@@ -23,6 +29,8 @@ pub struct RouteCredentialFailurePolicy {
     pub retry_count: u32,
     pub retry_interval_ms: u32,
     pub semantic_error_threshold: u32,
+    pub cooldown_enabled: bool,
+    pub error_status_enabled: bool,
 }
 
 impl Default for RouteCredentialFailurePolicy {
@@ -31,6 +39,8 @@ impl Default for RouteCredentialFailurePolicy {
             retry_count: DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT,
             retry_interval_ms: DEFAULT_ROUTE_CREDENTIAL_RETRY_INTERVAL_MS,
             semantic_error_threshold: DEFAULT_ROUTE_CREDENTIAL_SEMANTIC_ERROR_THRESHOLD,
+            cooldown_enabled: DEFAULT_ROUTE_CREDENTIAL_COOLDOWN_ENABLED,
+            error_status_enabled: DEFAULT_ROUTE_CREDENTIAL_ERROR_STATUS_ENABLED,
         }
     }
 }

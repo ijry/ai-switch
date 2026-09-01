@@ -1,8 +1,9 @@
 use crate::error::AppError;
 use crate::models::route_credential::{
-    RecoveryCandidate, ReorderRouteCredentialInput, RouteCredential, RouteCredentialFilterOption,
-    RouteCredentialPage, RouteCredentialPageRequest, RouteCredentialPoolScope,
-    UpdateRouteCredentialInput, DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY,
+    RecoveryCandidate, ReorderRouteCredentialInput, RouteCredential, RouteCredentialFailurePolicy,
+    RouteCredentialFilterOption, RouteCredentialPage, RouteCredentialPageRequest,
+    RouteCredentialPoolScope, UpdateRouteCredentialInput,
+    DEFAULT_ROUTE_CREDENTIAL_ERROR_STATUS_ENABLED, DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY,
     DEFAULT_ROUTE_CREDENTIAL_PRIORITY,
 };
 use crate::models::route_credential_transfer::RouteCredentialSelectionContext;
@@ -1351,8 +1352,8 @@ impl RouteCredentialRepository {
             details: Some(err.to_string()),
             recoverable: true,
         })?;
-        let current = sqlx::query_scalar::<_, i64>(
-            "SELECT transient_failure_count FROM route_credentials WHERE id = ?",
+        let current = sqlx::query_as::<_, (i64, String)>(
+            "SELECT transient_failure_count, config_json FROM route_credentials WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(&mut *tx)
@@ -1363,7 +1364,7 @@ impl RouteCredentialRepository {
             details: Some(err.to_string()),
             recoverable: true,
         })?;
-        let Some(current) = current else {
+        let Some((current, config_json)) = current else {
             return Err(AppError::Validation {
                 code: "validation.route_credential_not_found",
                 message: "Route credential does not exist".to_string(),
@@ -1371,20 +1372,22 @@ impl RouteCredentialRepository {
                 recoverable: true,
             });
         };
+        let cooldown_enabled =
+            RouteCredentialFailurePolicy::from_config_json(&config_json).cooldown_enabled;
 
         let failure_count = current.saturating_add(1);
-        let base_seconds = match failure_count {
-            1 => 30,
-            2 => 120,
-            _ => 600,
-        };
-        let jitter_seconds = jitter_seconds(id, failure_count, base_seconds);
-        let retry_at = Utc::now() + chrono::Duration::seconds(jitter_seconds);
-        let retry_at = retry_at.to_rfc3339();
-        let cooldown_until = if failure_count >= 3 {
-            Some(retry_at.clone())
+        let (retry_at, cooldown_until) = if cooldown_enabled {
+            let base_seconds = match failure_count {
+                1 => 30,
+                2 => 120,
+                _ => 600,
+            };
+            let jitter_seconds = jitter_seconds(id, failure_count, base_seconds);
+            let retry_at = (Utc::now() + chrono::Duration::seconds(jitter_seconds)).to_rfc3339();
+            let cooldown_until = (failure_count >= 3).then(|| retry_at.clone());
+            (Some(retry_at), cooldown_until)
         } else {
-            None
+            (None, None)
         };
         let message = truncate_failure_message(message);
         let response = truncate_failure_response(response_body);
@@ -1397,8 +1400,8 @@ impl RouteCredentialRepository {
              WHERE id = ?",
         )
         .bind(failure_count)
-        .bind(&retry_at)
-        .bind(&cooldown_until)
+        .bind(retry_at.as_deref())
+        .bind(cooldown_until.as_deref())
         .bind(kind)
         .bind(&message)
         .bind(&response)
@@ -1421,7 +1424,7 @@ impl RouteCredentialRepository {
 
         Ok(RetryState {
             failure_count,
-            next_retry_at: Some(retry_at),
+            next_retry_at: retry_at,
             cooldown_until,
         })
     }
@@ -1469,10 +1472,14 @@ impl RouteCredentialRepository {
         let error_threshold = error_threshold.max(1);
         let fingerprint = semantic_failure_fingerprint(response_status, message);
         let response = truncate_failure_response(response_body);
+        let error_status_enabled = Self::error_status_enabled(pool, id).await?;
+        // The streak keeps counting even when the toggle is off, so turning it
+        // back on judges the account on its real history rather than from zero.
         let result = sqlx::query(
             "UPDATE route_credentials
              SET status = CASE
                      WHEN status IN ('revoked', 'paused') THEN status
+                     WHEN NOT ? THEN status
                      WHEN CASE
                          WHEN semantic_failure_streak_fingerprint = ?
                              THEN MIN(semantic_failure_streak_count + 1, ?)
@@ -1492,6 +1499,7 @@ impl RouteCredentialRepository {
                  last_failure_message = ?, last_failure_response_json = ?, updated_at = ?
              WHERE id = ?",
         )
+        .bind(error_status_enabled)
         .bind(&fingerprint)
         .bind(error_threshold)
         .bind(error_threshold)
@@ -1520,6 +1528,30 @@ impl RouteCredentialRepository {
             });
         }
         Ok(())
+    }
+
+    /// Whether this account may be flipped to `error` by a failure streak.
+    /// Missing rows return the default so callers keep their existing
+    /// not-found handling instead of failing here.
+    async fn error_status_enabled(pool: &SqlitePool, id: &str) -> Result<bool, AppError> {
+        let config_json = sqlx::query_scalar::<_, String>(
+            "SELECT config_json FROM route_credentials WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|err| {
+            database_error(
+                "database.route_credential_failure_policy_read",
+                "Could not read route credential failure policy",
+                err,
+            )
+        })?;
+        Ok(config_json
+            .map(|config| {
+                RouteCredentialFailurePolicy::from_config_json(&config).error_status_enabled
+            })
+            .unwrap_or(DEFAULT_ROUTE_CREDENTIAL_ERROR_STATUS_ENABLED))
     }
 
     pub async fn recover_after_explicit_test(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
@@ -2582,7 +2614,7 @@ mod tests {
             "ok",
             None,
             r#"{"api_key":"sk-test"}"#,
-            r#"{"base_url":"https://example.com","interface_format":"openai","model_mappings":[]}"#,
+            r#"{"base_url":"https://example.com","interface_format":"openai","model_mappings":[],"failure_policy":{"cooldown_enabled":true}}"#,
             "{}",
         )
         .await
@@ -2644,6 +2676,83 @@ mod tests {
         assert!(cleared.last_failure_kind.is_none());
         assert!(cleared.last_failure_message.is_none());
         assert!(cleared.last_failure_response_json.is_none());
+    }
+
+    #[tokio::test]
+    async fn transient_failure_skips_backoff_when_cooldown_is_disabled_by_default() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let created = create_api_credential(&pool, "codex", "No Cooldown").await;
+
+        for expected in 1..=3 {
+            let state = RouteCredentialRepository::record_transient_failure(
+                &pool,
+                &created.id,
+                "transport",
+                "temporary",
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(state.failure_count, expected);
+            assert!(state.next_retry_at.is_none());
+            assert!(state.cooldown_until.is_none());
+        }
+
+        let stored = RouteCredentialRepository::get(&pool, &created.id)
+            .await
+            .unwrap();
+        assert_eq!(stored.transient_failure_count, 3);
+        assert!(stored.next_retry_at.is_none());
+        assert!(stored.cooldown_until.is_none());
+        assert_eq!(stored.last_failure_message.as_deref(), Some("temporary"));
+    }
+
+    #[tokio::test]
+    async fn semantic_failure_keeps_status_ok_but_counts_streak_when_error_status_disabled() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let created = RouteCredentialRepository::create(
+            &pool,
+            "codex",
+            "api",
+            "No Error Flag",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-test"}"#,
+            r#"{"base_url":"https://example.com","interface_format":"openai","model_mappings":[],"failure_policy":{"retry_count":2,"retry_interval_ms":200,"semantic_error_threshold":2,"error_status_enabled":false}}"#,
+            "{}",
+        )
+        .await
+        .unwrap();
+
+        for _ in 0..4 {
+            RouteCredentialRepository::record_semantic_failure_with_status(
+                &pool,
+                &created.id,
+                Some(400),
+                2,
+                "permanent",
+                None,
+            )
+            .await
+            .unwrap();
+        }
+
+        let stored = RouteCredentialRepository::get(&pool, &created.id)
+            .await
+            .unwrap();
+        assert_eq!(stored.status, "ok");
+        // The streak still accrues, so re-enabling the toggle judges real history.
+        let streak_count: i64 = sqlx::query_scalar(
+            "SELECT semantic_failure_streak_count FROM route_credentials WHERE id = ?",
+        )
+        .bind(&created.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(streak_count, 2);
     }
 
     #[tokio::test]
