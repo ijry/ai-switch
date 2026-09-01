@@ -2092,6 +2092,9 @@ export function AccountsScreen({
   const [modelTestOutcome, setModelTestOutcome] = useState<RoutePoolModelTestOutcome | null>(null);
   const [configWriteOutcomes, setConfigWriteOutcomes] = useState<ConfigWriteOutcome[]>([]);
   const [configWriteError, setConfigWriteError] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<
+    { kind: "single"; id: string; name: string } | { kind: "batch"; count: number } | null
+  >(null);
   const [clientConfigOpen, setClientConfigOpen] = useState(false);
   const [clientConfigDraft, setClientConfigDraft] = useState("");
   const [clientConfigError, setClientConfigError] = useState<string | null>(null);
@@ -3688,6 +3691,13 @@ export function AccountsScreen({
     clearAccountSelection();
   };
 
+  const requestDeleteSelectedAccounts = () => {
+    if (selectedAccountIds.size === 0 || batchDeleteMutation.isPending) {
+      return;
+    }
+    setPendingDelete({ kind: "batch", count: selectedAccountIds.size });
+  };
+
   const deleteSelectedAccounts = () => {
     if (selectedAccountIds.size === 0 || batchDeleteMutation.isPending) {
       return;
@@ -5075,7 +5085,7 @@ export function AccountsScreen({
                   aria-label="批量删除账号"
                   className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50"
                   disabled={batchDeleteMutation.isPending}
-                  onClick={deleteSelectedAccounts}
+                  onClick={requestDeleteSelectedAccounts}
                   type="button"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
@@ -5598,6 +5608,51 @@ export function AccountsScreen({
         </footer>
 
         </div>
+
+      {pendingDelete && (
+        <div className="fixed inset-0 z-[80] grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">
+          <div
+            aria-label="删除确认弹窗"
+            aria-modal="true"
+            className="w-full max-w-sm rounded-2xl border border-stone-200 bg-white p-4 shadow-2xl"
+            role="dialog"
+          >
+            <h3 className="text-lg font-semibold text-stone-950">
+              {pendingDelete.kind === "batch" ? "确认批量删除账号" : "确认删除账号"}
+            </h3>
+            <p className="mt-2 text-[13px] leading-6 text-stone-600">
+              {pendingDelete.kind === "batch"
+                ? `将删除已选中的 ${pendingDelete.count} 个账号，删除后无法恢复。`
+                : `将删除账号「${pendingDelete.name}」，删除后无法恢复。`}
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                className={secondaryButtonClass}
+                onClick={() => setPendingDelete(null)}
+                type="button"
+              >
+                取消
+              </button>
+              <button
+                aria-label="确认删除"
+                className="rounded-xl border border-red-700 bg-red-600 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+                disabled={deleteMutation.isPending || batchDeleteMutation.isPending}
+                onClick={() => {
+                  if (pendingDelete.kind === "batch") {
+                    deleteSelectedAccounts();
+                  } else {
+                    deleteMutation.mutate(pendingDelete.id);
+                  }
+                  setPendingDelete(null);
+                }}
+                type="button"
+              >
+                删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {clientConfigOpen && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">
@@ -6928,7 +6983,13 @@ export function AccountsScreen({
               <button
                 className="inline-flex items-center gap-1.5 rounded-xl border border-red-200 bg-white px-3 py-2 text-[13px] font-semibold text-red-700 transition-colors hover:bg-red-50"
                 disabled={deleteMutation.isPending}
-                onClick={() => deleteMutation.mutate(editingCredential.id)}
+                onClick={() =>
+                  setPendingDelete({
+                    kind: "single",
+                    id: editingCredential.id,
+                    name: editingCredential.display_name,
+                  })
+                }
                 type="button"
               >
                 <Trash2 className="h-3.5 w-3.5" />

@@ -1138,6 +1138,8 @@ describe("AccountsScreen", () => {
     await userEvent.click(screen.getByLabelText("选择 API Account"));
     expect(screen.getByText("已选 1 个账号")).toBeInTheDocument();
     await userEvent.click(screen.getByLabelText("批量删除账号"));
+    expect(deleteRouteCredential).not.toHaveBeenCalled();
+    await userEvent.click(await screen.findByLabelText("确认删除"));
 
     await waitFor(() => {
       expect(deleteRouteCredential).toHaveBeenCalledTimes(1);
@@ -1147,6 +1149,22 @@ describe("AccountsScreen", () => {
       const lastCall = vi.mocked(setRoutePoolMembers).mock.calls.at(-1)?.[0];
       expect(lastCall?.account_ids).toEqual([]);
     });
+  });
+
+  it("keeps selected accounts when batch delete confirmation is cancelled", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByLabelText("选择 Team Account"));
+    await userEvent.click(screen.getByLabelText("批量删除账号"));
+
+    expect(await screen.findByLabelText("删除确认弹窗")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "取消" }));
+
+    await waitFor(() =>
+      expect(screen.queryByLabelText("删除确认弹窗")).not.toBeInTheDocument(),
+    );
+    expect(deleteRouteCredential).not.toHaveBeenCalled();
+    expect(screen.getByText("已选 1 个账号")).toBeInTheDocument();
   });
 
   it("archives selected active accounts in one batch", async () => {
