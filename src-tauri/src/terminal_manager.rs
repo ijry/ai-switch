@@ -272,7 +272,7 @@ impl TerminalManager {
     pub fn create_session(
         &self,
         emitter: EventEmitter,
-        _hub: Arc<TerminalHub>,
+        hub: Arc<TerminalHub>,
         input: CreateTerminalSessionInput,
     ) -> Result<TerminalSession, String> {
         validate_launch_input(&input)?;
@@ -354,6 +354,7 @@ impl TerminalManager {
             },
         );
 
+        let output_hub = Arc::clone(&hub);
         let output_emitter = emitter.clone();
         let output_id = id.clone();
         std::thread::spawn(move || {
@@ -363,6 +364,7 @@ impl TerminalManager {
                     Ok(0) => break,
                     Ok(count) => {
                         let data = String::from_utf8_lossy(&buffer[..count]).to_string();
+                        output_hub.publish(&output_id, &data);
                         output_emitter.emit(
                             "terminal://output",
                             &TerminalOutputEvent {
@@ -386,6 +388,7 @@ impl TerminalManager {
         });
 
         let exit_emitter = emitter;
+        let exit_hub = Arc::clone(&hub);
         let exit_id = id.clone();
         let sessions = Arc::clone(&self.sessions);
         std::thread::spawn(move || match child.wait() {
@@ -396,10 +399,11 @@ impl TerminalManager {
                 exit_emitter.emit(
                     "terminal://exit",
                     &TerminalExitEvent {
-                        session_id: exit_id,
+                        session_id: exit_id.clone(),
                         exit_code: Some(status.exit_code() as i32),
                     },
                 );
+                exit_hub.close(&exit_id);
             }
             Err(error) => {
                 if let Some(process) = sessions.lock().unwrap().get_mut(&exit_id) {
@@ -408,10 +412,11 @@ impl TerminalManager {
                 exit_emitter.emit(
                     "terminal://error",
                     &TerminalErrorEvent {
-                        session_id: exit_id,
+                        session_id: exit_id.clone(),
                         message: format!("Failed to wait for terminal exit: {error}"),
                     },
                 );
+                exit_hub.close(&exit_id);
             }
         });
 
@@ -783,5 +788,114 @@ mod tests {
         assert!(is_missing_process_error(
             &std::io::Error::from_raw_os_error(3,)
         ));
+    }
+}
+
+#[cfg(test)]
+mod hub_fanout_tests {
+    use super::*;
+    use crate::web::terminal_hub::{TerminalHub, TerminalMessage};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    fn wait_for_buffer(hub: &Arc<TerminalHub>, session_id: &str, needle: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let replay = hub.subscribe(session_id, None);
+            let text = match replay.messages.as_slice() {
+                [TerminalMessage::Reset { data, .. }] => data.clone(),
+                _ => String::new(),
+            };
+            if text.contains(needle) {
+                return text;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {needle:?} in terminal buffer, got {text:?}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn shell_input(title: &str) -> CreateTerminalSessionInput {
+        CreateTerminalSessionInput {
+            kind: TerminalLaunchKind::Shell,
+            platform: None,
+            command: None,
+            title: Some(title.to_string()),
+            cwd: std::env::temp_dir().to_string_lossy().to_string(),
+            cols: Some(100),
+            rows: Some(30),
+            model: None,
+            reasoning_effort: None,
+        }
+    }
+
+    fn line(command: &str) -> String {
+        if cfg!(windows) {
+            format!("{command}\r\n")
+        } else {
+            format!("{command}\n")
+        }
+    }
+
+    #[test]
+    fn shell_output_is_published_to_the_hub() {
+        let manager = TerminalManager::default();
+        let hub = Arc::new(TerminalHub::default());
+        let session = manager
+            .create_session(
+                EventEmitter::Noop,
+                Arc::clone(&hub),
+                shell_input("hub-fanout"),
+            )
+            .expect("create shell session");
+
+        manager
+            .write_input(&session.id, &line("echo hub-marker"))
+            .expect("write input");
+        let buffered = wait_for_buffer(&hub, &session.id, "hub-marker");
+        assert!(buffered.contains("hub-marker"));
+
+        manager.kill(&session.id).ok();
+    }
+
+    #[test]
+    fn concurrent_writes_are_serialized_without_splitting_a_payload() {
+        let manager = Arc::new(TerminalManager::default());
+        let hub = Arc::new(TerminalHub::default());
+        let session = manager
+            .create_session(
+                EventEmitter::Noop,
+                Arc::clone(&hub),
+                shell_input("hub-concurrent"),
+            )
+            .expect("create shell session");
+
+        let writers: Vec<_> = ["echo desk-marker", "echo phone-marker"]
+            .into_iter()
+            .map(|command| {
+                let manager = Arc::clone(&manager);
+                let session_id = session.id.clone();
+                let payload = line(command);
+                std::thread::spawn(move || {
+                    manager
+                        .write_input(&session_id, &payload)
+                        .expect("write input");
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().expect("writer thread");
+        }
+
+        wait_for_buffer(&hub, &session.id, "desk-marker");
+        let buffered = wait_for_buffer(&hub, &session.id, "phone-marker");
+        // Serialized writes keep each payload contiguous, so neither command
+        // can appear with the other spliced into the middle of it.
+        assert!(buffered.contains("echo desk-marker"));
+        assert!(buffered.contains("echo phone-marker"));
+
+        manager.kill(&session.id).ok();
     }
 }
