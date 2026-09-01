@@ -320,22 +320,20 @@ impl RouteCredentialService {
 
         // Preserve the source's compute-pool membership: a copy made from the
         // "算力池" view should stay in the pool rather than dropping to "未入池".
-        if !cross_platform {
-            let source_in_pool = RoutePoolRepository::pool_membership_map(
+        let source_in_pool = RoutePoolRepository::pool_membership_map(
+            pool,
+            &source.platform,
+            std::slice::from_ref(&source.id),
+        )
+        .await?
+        .contains(&source.id);
+        if source_in_pool {
+            RoutePoolRepository::append_members(
                 pool,
-                &source.platform,
-                std::slice::from_ref(&source.id),
+                target_platform.as_str(),
+                std::slice::from_ref(&created.id),
             )
-            .await?
-            .contains(&source.id);
-            if source_in_pool {
-                RoutePoolRepository::append_members(
-                    pool,
-                    target_platform.as_str(),
-                    std::slice::from_ref(&created.id),
-                )
-                .await?;
-            }
+            .await?;
         }
 
         Ok(created)
@@ -1466,7 +1464,7 @@ mod tests {
         assert!(config.get("fetched_models").is_none());
         assert!(config.get("responses_custom_tool_compat").is_none());
         assert!(config.get("turn_reminder").is_none());
-        assert!(!RoutePoolRepository::list_member_ids(&pool, "claude")
+        assert!(RoutePoolRepository::list_member_ids(&pool, "claude")
             .await
             .expect("target pool")
             .contains(&copied.id));
