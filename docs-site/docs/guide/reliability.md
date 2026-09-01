@@ -209,6 +209,14 @@ let (retry_at, cooldown_until) = if policy.cooldown_enabled {
 
 只要 `transient_failure_count` 大于 0，账号列表的状态标签就会显示成 `错误 N 次`；最近一次请求成功后计数清零，标签立刻回到原来的状态文案。已失效、异常、暂停这类状态会保留自己的标签，不被失败计数覆盖。
 
+### 敏感词检测提醒
+
+如果 `last_failure_response_json` 或 `last_failure_message` 里出现 `sensitive_words_detected` 这个错误码，状态标签的悬停提示里会多出一条友情提醒：
+
+> 友情提醒：当前中转站似乎对项目存在关键词检测，您的项目可能存在敏感词，也不排除是中转站误判。
+
+这类错误来自中转站自己的关键词过滤，不是账号坏了。看到提醒可以先检查提示词与代码里有没有触发词，也可以换一个中转站验证是否误判。
+
 ## 失败分类标签
 
 `last_failure_kind` 记的是失败发生在链路哪一步，界面上和排错时都用得到：

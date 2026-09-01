@@ -1812,6 +1812,8 @@ function prettyJsonOrText(value: string) {
   }
 }
 
+const SENSITIVE_WORDS_ERROR_CODE = "sensitive_words_detected";
+
 function CredentialFailureTooltip({
   credential,
   children,
@@ -1824,6 +1826,9 @@ function CredentialFailureTooltip({
   if (!response) {
     return <>{children}</>;
   }
+  const sensitiveWords = [response, credential.last_failure_message].some((value) =>
+    value?.includes(SENSITIVE_WORDS_ERROR_CODE),
+  );
 
   return (
     <span
@@ -1846,6 +1851,14 @@ function CredentialFailureTooltip({
           {credential.last_failure_message?.trim() ? (
             <span className="mt-1 block break-words">
               失败消息：{credential.last_failure_message.trim()}
+            </span>
+          ) : null}
+          {sensitiveWords ? (
+            <span
+              className="mt-2 block rounded-md border border-amber-400/60 bg-amber-500/15 px-2 py-1.5 text-amber-100"
+              data-testid={`credential-sensitive-words-hint-${credential.id}`}
+            >
+              友情提醒：当前中转站似乎对项目存在关键词检测，您的项目可能存在敏感词，也不排除是中转站误判。
             </span>
           ) : null}
           <pre className="mt-2 select-text whitespace-pre-wrap break-words font-mono text-[10px] leading-4 text-stone-100">

@@ -211,6 +211,14 @@ Three things to note:
 
 Whenever `transient_failure_count` is above 0, the account's status tag renders as 错误 N 次 ("N errors"). The moment the latest request succeeds the counter is cleared and the tag returns to the normal status text. Terminal states — revoked, error, paused — keep their own labels and are never masked by the failure count.
 
+### The sensitive-word reminder
+
+When `sensitive_words_detected` shows up in `last_failure_response_json` or `last_failure_message`, the status tag's hover panel gains one extra line:
+
+> 友情提醒：当前中转站似乎对项目存在关键词检测，您的项目可能存在敏感词，也不排除是中转站误判。 ("Heads-up: this relay appears to run keyword detection against your project. Your project may contain a flagged word, though a relay false positive is also possible.")
+
+This class of error comes from the relay's own keyword filter, not from a broken account. When you see the reminder, check your prompts and code for trigger words, or try another relay to see whether it was a false positive.
+
 ## Failure classification labels
 
 `last_failure_kind` records which step of the chain the failure occurred in, and it is used both in the UI and while debugging:

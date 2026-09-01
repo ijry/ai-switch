@@ -1353,6 +1353,37 @@ describe("AccountsScreen", () => {
     expect(within(thirdRow).queryByText(/失败类型：/)).not.toBeInTheDocument();
   });
 
+  it("adds a sensitive-word hint when the upstream reports sensitive_words_detected", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      {
+        ...credentialsFixture[0],
+        status: "error",
+        last_failure_kind: "upstream_status",
+        last_failure_message: "upstream returned 400",
+        last_failure_response_json:
+          '{"error":{"code":"sensitive_words_detected","message":"sensitive words detected (request id: 20260829114519886186250zsjglFr21CX8y)","type":"new_api_error"}}',
+      },
+      {
+        ...credentialsFixture[1],
+        status: "error",
+        last_failure_kind: "upstream_status",
+        last_failure_message: "upstream returned 429",
+        last_failure_response_json: '{"error":{"message":"rate limited"}}',
+      },
+    ]);
+
+    renderScreen();
+
+    const firstRow = await screen.findByLabelText("放置在 Team Account 前");
+    const secondRow = screen.getByLabelText("放置在 API Account 前");
+    expect(
+      within(firstRow).getByText(
+        /当前中转站似乎对项目存在关键词检测，您的项目可能存在敏感词，也不排除是中转站误判。/,
+      ),
+    ).toBeInTheDocument();
+    expect(within(secondRow).queryByText(/关键词检测/)).not.toBeInTheDocument();
+  });
+
   it("keeps the failure tooltip hoverable so its text can be selected", async () => {
     vi.mocked(listRouteCredentials).mockResolvedValue([
       {
