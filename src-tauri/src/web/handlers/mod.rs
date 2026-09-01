@@ -1010,6 +1010,7 @@ mod tests {
                 web_service: WebServiceRuntimeState::default(),
                 tailscale: TailscaleRuntimeState::default(),
                 terminals: TerminalManager::default(),
+                terminal_hub: Arc::new(crate::web::terminal_hub::TerminalHub::default()),
                 event_broadcaster: Arc::new(WebEventBroadcaster::default()),
             }),
             _temp: temp,

@@ -241,6 +241,7 @@ pub async fn run_from_env() -> Result<(), String> {
         web_service: WebServiceRuntimeState::default(),
         tailscale: TailscaleRuntimeState::default(),
         terminals: TerminalManager::default(),
+        terminal_hub: Arc::new(crate::web::terminal_hub::TerminalHub::default()),
         event_broadcaster: Arc::new(WebEventBroadcaster::new()),
     });
     state

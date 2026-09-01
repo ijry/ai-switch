@@ -21,6 +21,7 @@ use crate::web::auth::{authorize_api_request, ApiAuthState};
 use crate::web::handlers::{dispatch_command, is_sensitive_command};
 use crate::web::static_assets::resolve_static_file;
 use crate::web::ws::events_socket;
+use crate::web::terminal_ws::terminal_socket;
 
 #[derive(Clone)]
 pub struct WebServerContext {
@@ -94,6 +95,7 @@ pub(crate) fn build_router_with_sensitive_command_gate(
             post(redeem_mobile_pairing).layer(middleware::from_fn(disable_api_caching)),
         )
         .route("/ws/events", get(events_socket))
+        .route("/ws/terminal/:session_id", get(terminal_socket))
         .nest("/api", api_router)
         .fallback(static_fallback)
         .with_state(context)
@@ -277,6 +279,7 @@ mod tests {
             web_service: WebServiceRuntimeState::default(),
             tailscale: TailscaleRuntimeState::default(),
             terminals: TerminalManager::default(),
+            terminal_hub: Arc::new(crate::web::terminal_hub::TerminalHub::default()),
             event_broadcaster: Arc::new(WebEventBroadcaster::default()),
         });
         let router = build_router_with_sensitive_command_gate(
@@ -309,6 +312,7 @@ mod tests {
             web_service: WebServiceRuntimeState::default(),
             tailscale: TailscaleRuntimeState::default(),
             terminals: TerminalManager::default(),
+            terminal_hub: Arc::new(crate::web::terminal_hub::TerminalHub::default()),
             event_broadcaster: Arc::new(WebEventBroadcaster::default()),
         });
         let router = build_router_with_sensitive_command_gate(
@@ -854,6 +858,79 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn mobile_pairing_token_can_open_the_terminal_stream() {
+        let gate = Arc::new(AtomicBool::new(true));
+        let (address, server, state, _temp) =
+            spawn_test_router_with_state(gate, "primary-secret").await;
+        let pairing_store = WebService::mobile_pairing_store_for_test(&state.web_service);
+        let payload = pairing_store
+            .create(
+                Some("https://public.example".to_string()),
+                None,
+                SystemTime::now(),
+                Duration::from_secs(300),
+            )
+            .await
+            .unwrap();
+        let redeemed = pairing_store
+            .redeem(&payload.pairing_code, SystemTime::now())
+            .await
+            .unwrap();
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}/ws/terminal/session-1"))
+            .bearer_auth(redeemed.token)
+            .header(header::CONNECTION, "Upgrade")
+            .header(header::UPGRADE, "websocket")
+            .header(header::SEC_WEBSOCKET_VERSION, "13")
+            .header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unknown_token_cannot_open_the_terminal_stream() {
+        let gate = Arc::new(AtomicBool::new(true));
+        let (address, server) = spawn_test_router_with_gate(gate, "primary-secret").await;
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}/ws/terminal/session-1"))
+            .bearer_auth("not-a-token")
+            .header(header::CONNECTION, "Upgrade")
+            .header(header::UPGRADE, "websocket")
+            .header(header::SEC_WEBSOCKET_VERSION, "13")
+            .header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn terminal_stream_accepts_query_token_auth() {
+        let gate = Arc::new(AtomicBool::new(true));
+        let (address, server) = spawn_test_router_with_gate(gate, "primary-secret").await;
+        let response = reqwest::Client::new()
+            .get(format!(
+                "http://{address}/ws/terminal/session-1?token=primary-secret&since=7"
+            ))
+            .header(header::CONNECTION, "Upgrade")
+            .header(header::UPGRADE, "websocket")
+            .header(header::SEC_WEBSOCKET_VERSION, "13")
+            .header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
         server.abort();
     }
 

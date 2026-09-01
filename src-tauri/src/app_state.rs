@@ -6,6 +6,7 @@ use crate::services::tailscale_service::TailscaleRuntimeState;
 use crate::services::web_service::WebServiceRuntimeState;
 use crate::terminal_manager::TerminalManager;
 use crate::web::event_bridge::WebEventBroadcaster;
+use crate::web::terminal_hub::TerminalHub;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
@@ -19,5 +20,6 @@ pub struct AppState {
     pub web_service: WebServiceRuntimeState,
     pub tailscale: TailscaleRuntimeState,
     pub terminals: TerminalManager,
+    pub terminal_hub: Arc<TerminalHub>,
     pub event_broadcaster: Arc<WebEventBroadcaster>,
 }

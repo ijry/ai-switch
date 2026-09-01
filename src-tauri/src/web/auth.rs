@@ -54,17 +54,36 @@ pub async fn is_mobile_token_authorized(
     headers: &HeaderMap,
     mobile_tokens: &MobileTokenRegistry,
 ) -> bool {
-    let Some(value) = headers
+    let token = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-    else {
+        .and_then(|value| value.strip_prefix("Bearer "));
+    is_mobile_token_candidate_authorized(token, mobile_tokens).await
+}
+
+/// Browser WebSocket clients cannot set an Authorization header, so the
+/// terminal stream also accepts the short-lived mobile token in its query
+/// string. This helper deliberately remains separate from the API middleware:
+/// mobile tokens are still denied on `/ws/events` and on sensitive commands.
+pub async fn is_mobile_token_query_authorized(
+    query: Option<&str>,
+    mobile_tokens: &MobileTokenRegistry,
+) -> bool {
+    let token = query
+        .unwrap_or_default()
+        .split('&')
+        .filter_map(|part| part.split_once('='))
+        .find_map(|(key, value)| (key == "token").then_some(value));
+    is_mobile_token_candidate_authorized(token, mobile_tokens).await
+}
+
+async fn is_mobile_token_candidate_authorized(
+    token: Option<&str>,
+    mobile_tokens: &MobileTokenRegistry,
+) -> bool {
+    let Some(token) = token.map(str::trim).filter(|token| !token.is_empty()) else {
         return false;
     };
-    let token = value.trim();
-    if token.is_empty() {
-        return false;
-    }
     let digest = mobile_token_digest(token);
     let mut registry = mobile_tokens.lock().await;
     let now = SystemTime::now();
