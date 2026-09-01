@@ -81,7 +81,10 @@ impl SessionState {
     }
 
     fn buffered_text(&self) -> String {
-        self.frames.iter().map(|frame| frame.data.as_str()).collect()
+        self.frames
+            .iter()
+            .map(|frame| frame.data.as_str())
+            .collect()
     }
 
     /// 从队首丢弃数据直到不超过容量。截断点右移到 UTF-8 字符边界，

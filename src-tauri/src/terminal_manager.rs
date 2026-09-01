@@ -675,11 +675,7 @@ mod tests {
     fn normalizes_pathext_entries_without_a_leading_dot() {
         assert_eq!(
             executable_extensions("COM; EXE ;;.CMD"),
-            vec![
-                ".COM".to_string(),
-                ".EXE".to_string(),
-                ".CMD".to_string()
-            ]
+            vec![".COM".to_string(), ".EXE".to_string(), ".CMD".to_string()]
         );
     }
 

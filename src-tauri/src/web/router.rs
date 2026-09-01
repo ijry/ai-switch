@@ -20,8 +20,8 @@ use crate::services::web_service::WebService;
 use crate::web::auth::{authorize_api_request, ApiAuthState};
 use crate::web::handlers::{dispatch_command, is_sensitive_command};
 use crate::web::static_assets::resolve_static_file;
-use crate::web::ws::events_socket;
 use crate::web::terminal_ws::terminal_socket;
+use crate::web::ws::events_socket;
 
 #[derive(Clone)]
 pub struct WebServerContext {
@@ -299,7 +299,12 @@ mod tests {
     async fn spawn_test_router_with_state(
         sensitive_command_gate: Arc<AtomicBool>,
         token: &str,
-    ) -> (SocketAddr, tokio::task::JoinHandle<()>, Arc<AppState>, TempDir) {
+    ) -> (
+        SocketAddr,
+        tokio::task::JoinHandle<()>,
+        Arc<AppState>,
+        TempDir,
+    ) {
         let temp = tempdir().unwrap();
         let pool = create_memory_pool().await.unwrap();
         run_migrations(&pool).await.unwrap();

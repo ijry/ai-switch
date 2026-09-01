@@ -63,12 +63,7 @@ pub fn trust_project_at(config_path: &Path, cwd: &str) -> Result<bool, String> {
     let raw = match std::fs::read_to_string(config_path) {
         Ok(value) => value,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => {
-            return Err(format!(
-                "Could not read {}: {error}",
-                config_path.display()
-            ))
-        }
+        Err(error) => return Err(format!("Could not read {}: {error}", config_path.display())),
     };
 
     let mut root: Value = serde_json::from_str(&raw)
@@ -189,7 +184,10 @@ mod tests {
         let root = read_json(&config);
         assert_eq!(root["numStartups"], Value::from(3));
         let key = project_key(&cwd).unwrap();
-        assert_eq!(root["projects"][&key]["hasTrustDialogAccepted"], Value::Bool(true));
+        assert_eq!(
+            root["projects"][&key]["hasTrustDialogAccepted"],
+            Value::Bool(true)
+        );
     }
 
     #[test]
@@ -214,8 +212,14 @@ mod tests {
         assert!(trust_project_at(&config, &cwd).unwrap());
 
         let root = read_json(&config);
-        assert_eq!(root["projects"][&key]["hasTrustDialogAccepted"], Value::Bool(true));
-        assert_eq!(root["projects"][&key]["allowedTools"][0], Value::from("Bash"));
+        assert_eq!(
+            root["projects"][&key]["hasTrustDialogAccepted"],
+            Value::Bool(true)
+        );
+        assert_eq!(
+            root["projects"][&key]["allowedTools"][0],
+            Value::from("Bash")
+        );
         assert_eq!(root["projects"][&key]["lastSessionId"], Value::from("abc"));
     }
 

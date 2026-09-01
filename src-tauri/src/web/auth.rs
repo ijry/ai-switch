@@ -1,12 +1,12 @@
+use crate::services::mobile_pairing::MobileTokenRegistry;
 use axum::extract::{RawPathParams, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
-use crate::services::mobile_pairing::MobileTokenRegistry;
-use std::time::SystemTime;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use crate::web::handlers::is_sensitive_command;
 
@@ -108,9 +108,10 @@ pub async fn authorize_api_request(
         .iter()
         .find_map(|(key, value)| (key == "command").then_some(value))
         .is_some_and(is_sensitive_command);
-    let primary_authorized = !auth.primary_token.is_empty()
-        && is_authorized(request.headers(), &auth.primary_token);
-    let mobile_authorized = is_mobile_token_authorized(request.headers(), &auth.mobile_tokens).await;
+    let primary_authorized =
+        !auth.primary_token.is_empty() && is_authorized(request.headers(), &auth.primary_token);
+    let mobile_authorized =
+        is_mobile_token_authorized(request.headers(), &auth.mobile_tokens).await;
     if primary_authorized || (!sensitive && (auth.primary_token.is_empty() || mobile_authorized)) {
         return next.run(request).await;
     }

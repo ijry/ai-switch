@@ -69,10 +69,7 @@ impl MobilePairingStore {
         let expires_at = now
             .checked_add(ttl)
             .ok_or_else(|| "pairing expiration is out of range".to_string())?;
-        let grant = PairingGrant {
-            token,
-            expires_at,
-        };
+        let grant = PairingGrant { token, expires_at };
         self.grants
             .lock()
             .await
@@ -180,9 +177,9 @@ impl MobilePairingStore {
         let parent = path
             .parent()
             .ok_or_else(|| "mobile token registry path has no parent".to_string())?;
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|error| format!("could not create mobile token registry directory: {error}"))?;
+        tokio::fs::create_dir_all(parent).await.map_err(|error| {
+            format!("could not create mobile token registry directory: {error}")
+        })?;
 
         let temp_path = parent.join(format!(".mobile-tokens-{}.tmp", Uuid::new_v4().simple()));
         if let Err(error) = tokio::fs::write(&temp_path, serialized).await {
@@ -242,7 +239,8 @@ fn normalize_optional_url(value: Option<String>) -> Result<Option<String>, Strin
     if value.is_empty() {
         return Ok(None);
     }
-    let parsed = Url::parse(&value).map_err(|_| "pairing URL must be a valid HTTPS URL".to_string())?;
+    let parsed =
+        Url::parse(&value).map_err(|_| "pairing URL must be a valid HTTPS URL".to_string())?;
     if parsed.scheme() != "https"
         || parsed.host_str().is_none()
         || !parsed.username().is_empty()
@@ -296,10 +294,15 @@ mod tests {
         assert!(contents.contains(&digest(&redeemed.token)));
 
         let restored = MobilePairingStore::default();
-        restored.load_tokens(&path, now + Duration::from_secs(2)).await.unwrap();
-        assert!(restored
-            .is_mobile_token_valid(&redeemed.token, now + Duration::from_secs(2))
-            .await);
+        restored
+            .load_tokens(&path, now + Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert!(
+            restored
+                .is_mobile_token_valid(&redeemed.token, now + Duration::from_secs(2))
+                .await
+        );
     }
 
     #[tokio::test]

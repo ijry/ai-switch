@@ -5,10 +5,10 @@ use crate::server::{
     advertised_web_host, format_web_base_url, is_loopback_host, normalize_tls_paths,
     validate_sensitive_web_transport,
 };
-use crate::services::tailscale_service::{TailscaleLogin, TailscaleService, TailscaleStatus};
 use crate::services::mobile_pairing::{
     MobilePairingPayload, MobilePairingRedeemResponse, MobilePairingStore, MobileTokenRegistry,
 };
+use crate::services::tailscale_service::{TailscaleLogin, TailscaleService, TailscaleStatus};
 use crate::web::router::build_router_with_sensitive_command_gate;
 use crate::web::static_assets::resolve_static_dir;
 use serde::{Deserialize, Serialize};
@@ -97,9 +97,7 @@ impl WebService {
         runtime.mobile_pairing.clone()
     }
 
-    pub async fn create_mobile_pairing(
-        state: &AppState,
-    ) -> Result<MobilePairingPayload, AppError> {
+    pub async fn create_mobile_pairing(state: &AppState) -> Result<MobilePairingPayload, AppError> {
         let _guard = state.web_service.config_reconciliation_lock.lock().await;
         let config = Self::load_config(&state.paths).await?;
         let web_status = Self::status(&state.web_service, &config).await;
@@ -111,13 +109,9 @@ impl WebService {
                 recoverable: true,
             });
         }
-        let tailscale = TailscaleService::status(
-            &state.tailscale,
-            &state.paths,
-            &config,
-            Some(&web_status),
-        )
-        .await;
+        let tailscale =
+            TailscaleService::status(&state.tailscale, &state.paths, &config, Some(&web_status))
+                .await;
         if tailscale.state != "connected" || !tailscale.serving {
             return Err(AppError::Validation {
                 code: "mobile_pairing.remote_access_not_ready",
@@ -126,14 +120,13 @@ impl WebService {
                 recoverable: true,
             });
         }
-        let access_url = preferred_access_url(&tailscale.access_urls).ok_or_else(|| {
-            AppError::Validation {
+        let access_url =
+            preferred_access_url(&tailscale.access_urls).ok_or_else(|| AppError::Validation {
                 code: "mobile_pairing.remote_url_missing",
                 message: "No remote access URL is available".to_string(),
                 details: None,
                 recoverable: true,
-            }
-        })?;
+            })?;
         let (public_url, private_url) = if tailscale.public {
             (Some(access_url), None)
         } else {
@@ -644,7 +637,11 @@ fn preferred_access_url(urls: &[String]) -> Option<String> {
     urls.iter()
         .map(String::as_str)
         .find(|url| url.contains(".ts.net"))
-        .or_else(|| urls.iter().map(String::as_str).find(|url| !url.trim().is_empty()))
+        .or_else(|| {
+            urls.iter()
+                .map(String::as_str)
+                .find(|url| !url.trim().is_empty())
+        })
         .map(|url| url.trim_end_matches('/').to_string())
 }
 
@@ -791,20 +788,36 @@ mod tests {
             .unwrap();
         assert_eq!(payload.version, 1);
         assert!(!payload.pairing_code.is_empty());
-        assert!(store.debug_contains_plaintext_code(&payload.pairing_code).await == false);
+        assert!(
+            store
+                .debug_contains_plaintext_code(&payload.pairing_code)
+                .await
+                == false
+        );
 
         let redeemed = store
-            .redeem(&payload.pairing_code, SystemTime::UNIX_EPOCH + Duration::from_secs(1_001))
+            .redeem(
+                &payload.pairing_code,
+                SystemTime::UNIX_EPOCH + Duration::from_secs(1_001),
+            )
             .await
             .unwrap();
         assert!(redeemed.token.starts_with("ms_"));
         assert!(store
-            .redeem(&payload.pairing_code, SystemTime::UNIX_EPOCH + Duration::from_secs(1_002))
+            .redeem(
+                &payload.pairing_code,
+                SystemTime::UNIX_EPOCH + Duration::from_secs(1_002)
+            )
             .await
             .is_err());
-        assert!(store
-            .is_mobile_token_valid(&redeemed.token, SystemTime::UNIX_EPOCH + Duration::from_secs(1_002))
-            .await);
+        assert!(
+            store
+                .is_mobile_token_valid(
+                    &redeemed.token,
+                    SystemTime::UNIX_EPOCH + Duration::from_secs(1_002)
+                )
+                .await
+        );
     }
 
     #[tokio::test]
@@ -820,7 +833,10 @@ mod tests {
             .await
             .unwrap();
         assert!(store
-            .redeem(&payload.pairing_code, SystemTime::UNIX_EPOCH + Duration::from_secs(2_001))
+            .redeem(
+                &payload.pairing_code,
+                SystemTime::UNIX_EPOCH + Duration::from_secs(2_001)
+            )
             .await
             .is_err());
     }
@@ -850,9 +866,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(restored
-            .is_mobile_token_valid(&redeemed.token, SystemTime::now())
-            .await);
+        assert!(
+            restored
+                .is_mobile_token_valid(&redeemed.token, SystemTime::now())
+                .await
+        );
     }
 
     struct ControlledSidecarClient {

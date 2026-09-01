@@ -67,9 +67,9 @@ use commands::terminal_commands::{
 };
 use commands::usage_stats_commands::{get_session_usage_stats, reload_model_price_overrides};
 use commands::web_service_commands::{
-    create_mobile_pairing, disconnect_tailscale, get_tailscale_status, get_web_server_status, get_web_service_config,
-    save_web_service_config, start_tailscale_login, start_tailscale_with_auth_key,
-    start_web_server, stop_web_server,
+    create_mobile_pairing, disconnect_tailscale, get_tailscale_status, get_web_server_status,
+    get_web_service_config, save_web_service_config, start_tailscale_login,
+    start_tailscale_with_auth_key, start_web_server, stop_web_server,
 };
 use database::open_migrated_pool;
 use mcp::command::{
