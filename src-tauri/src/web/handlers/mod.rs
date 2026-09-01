@@ -9,7 +9,7 @@ use crate::core::sessions::{get_session_messages_core, list_sessions_core};
 use crate::core::settings::{get_settings_core, save_settings_core};
 use crate::core::terminals::{
     create_terminal_session_core, kill_terminal_session_core, list_terminal_sessions_core,
-    resize_terminal_core, write_terminal_input_core,
+    resize_terminal_core, resume_session_terminal_core, write_terminal_input_core,
 };
 use crate::core::usage_stats::{get_session_usage_stats_core, reload_model_price_overrides_core};
 use crate::database::repositories::config_snapshot_repository::ConfigSnapshotRepository;
@@ -63,6 +63,7 @@ pub fn is_sensitive_command(command: &str) -> bool {
             | "skills_delete"
             | "skills_install_package"
             | "create_mobile_pairing"
+            | "create_terminal_session"
             | "get_web_service_config"
             | "save_web_service_config"
             | "get_web_server_status"
@@ -373,13 +374,32 @@ pub async fn dispatch_command(
                 create_terminal_session_core(
                     &state.terminals,
                     EventEmitter::Web(Arc::clone(&state.event_broadcaster)),
+                    Arc::clone(&state.terminal_hub),
                     input,
                 )
                 .map_err(|message| command_error("web.terminal_create", message))?,
             )
         }
+        "resume_session_terminal" => {
+            let session_id = required_string_arg(&args, "sessionId")?;
+            let cols = required_u16_arg(&args, "cols")?;
+            let rows = required_u16_arg(&args, "rows")?;
+            to_value(
+                resume_session_terminal_core(
+                    &state.terminals,
+                    EventEmitter::Web(Arc::clone(&state.event_broadcaster)),
+                    Arc::clone(&state.terminal_hub),
+                    &session_id,
+                    cols,
+                    rows,
+                )
+                .await
+                .map_err(|message| command_error("web.terminal_resume", message))?,
+            )
+        }
         "write_terminal_input" => {
             let session_id = required_string_arg(&args, "sessionId")?;
+            require_terminal_subscriber(&state, &session_id)?;
             let data = required_raw_string_arg(&args, "data")?;
             write_terminal_input_core(&state.terminals, &session_id, &data)
                 .map_err(|message| command_error("web.terminal_write", message))?;
@@ -387,6 +407,7 @@ pub async fn dispatch_command(
         }
         "resize_terminal" => {
             let session_id = required_string_arg(&args, "sessionId")?;
+            require_terminal_subscriber(&state, &session_id)?;
             let cols = required_u16_arg(&args, "cols")?;
             let rows = required_u16_arg(&args, "rows")?;
             resize_terminal_core(&state.terminals, &session_id, cols, rows)
@@ -395,6 +416,7 @@ pub async fn dispatch_command(
         }
         "kill_terminal_session" => {
             let session_id = required_string_arg(&args, "sessionId")?;
+            require_terminal_subscriber(&state, &session_id)?;
             kill_terminal_session_core(&state.terminals, &session_id)
                 .map_err(|message| command_error("web.terminal_kill", message))?;
             to_value(())
@@ -846,6 +868,16 @@ fn command_error(code: &'static str, message: String) -> ApiError {
     })
 }
 
+fn require_terminal_subscriber(state: &Arc<AppState>, session_id: &str) -> Result<(), ApiError> {
+    if state.terminal_hub.has_subscriber(session_id) {
+        return Ok(());
+    }
+    Err(command_error(
+        "web.terminal_not_subscribed",
+        format!("No active terminal subscription for session {session_id}."),
+    ))
+}
+
 fn to_error(error: AppError) -> ApiError {
     ApiError::from(error)
 }
@@ -1076,6 +1108,46 @@ mod tests {
         }
         assert!(!is_sensitive_command("mcp_scan_local"));
         assert!(!is_sensitive_command("skills_list"));
+    }
+
+    #[test]
+    fn creating_terminal_sessions_is_a_sensitive_web_command() {
+        assert!(is_sensitive_command("create_terminal_session"));
+    }
+
+    #[test]
+    fn resuming_session_terminals_is_not_a_sensitive_web_command() {
+        assert!(!is_sensitive_command("resume_session_terminal"));
+        assert!(!is_sensitive_command("write_terminal_input"));
+        assert!(!is_sensitive_command("resize_terminal"));
+        assert!(!is_sensitive_command("kill_terminal_session"));
+    }
+
+    #[tokio::test]
+    async fn terminal_writes_require_an_active_subscriber() {
+        let fixture = test_state().await;
+        let error = dispatch_command(
+            Arc::clone(&fixture.state),
+            "write_terminal_input",
+            json!({ "sessionId": "unsubscribed-session", "data": "ls\n" }),
+        )
+        .await
+        .expect_err("write without subscriber must fail");
+        assert_eq!(error.code, "web.terminal_not_subscribed");
+    }
+
+    #[tokio::test]
+    async fn resuming_an_unknown_session_reports_a_resume_error() {
+        let fixture = test_state().await;
+        let error = dispatch_command(
+            Arc::clone(&fixture.state),
+            "resume_session_terminal",
+            json!({ "sessionId": "missing-session", "cols": 100, "rows": 30 }),
+        )
+        .await
+        .expect_err("unknown session must fail");
+        assert_eq!(error.code, "web.terminal_resume");
+        assert!(error.message.contains("missing-session"));
     }
 
     #[tokio::test]

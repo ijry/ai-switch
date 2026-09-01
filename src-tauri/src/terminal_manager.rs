@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::services::claude_trust_service;
 use crate::web::event_bridge::EventEmitter;
+use crate::web::terminal_hub::TerminalHub;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -271,6 +272,7 @@ impl TerminalManager {
     pub fn create_session(
         &self,
         emitter: EventEmitter,
+        _hub: Arc<TerminalHub>,
         input: CreateTerminalSessionInput,
     ) -> Result<TerminalSession, String> {
         validate_launch_input(&input)?;

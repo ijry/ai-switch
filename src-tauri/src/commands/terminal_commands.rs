@@ -15,7 +15,12 @@ pub async fn create_terminal_session(
     state: State<'_, AppState>,
     input: CreateTerminalSessionInput,
 ) -> Result<TerminalSession, String> {
-    create_terminal_session_core(&state.terminals, EventEmitter::Tauri(app), input)
+    create_terminal_session_core(
+        &state.terminals,
+        EventEmitter::Tauri(app),
+        std::sync::Arc::clone(&state.terminal_hub),
+        input,
+    )
 }
 
 #[tauri::command]

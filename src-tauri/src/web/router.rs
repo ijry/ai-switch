@@ -812,6 +812,15 @@ mod tests {
             ),
             ("disconnect_tailscale", json!({})),
             ("create_mobile_pairing", json!({})),
+            (
+                "create_terminal_session",
+                json!({
+                    "input": {
+                        "kind": "shell",
+                        "cwd": "C:\\"
+                    }
+                }),
+            ),
         ] {
             let response = client
                 .post(format!("http://{address}/api/{command}"))
