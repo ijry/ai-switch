@@ -90,6 +90,28 @@ mod tests {
     }
 
     #[test]
+    fn forwards_metadata_so_claude_code_gated_relays_accept_the_request() {
+        // Relays gating on the Claude Code signature parse `metadata.user_id` and
+        // reject the request when it is missing, so dropping the field during
+        // conversion breaks Codex against those upstreams.
+        let body = serde_json::json!({
+            "model": "claude-sonnet-4-20250514",
+            "input": "hi",
+            "metadata": {"user_id": "{\"device_id\":\"abc\",\"session_id\":\"s\"}"}
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &responses_request_to_anthropic(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            converted["metadata"]["user_id"],
+            "{\"device_id\":\"abc\",\"session_id\":\"s\"}"
+        );
+    }
+
+    #[test]
     fn converts_responses_input_image_to_anthropic_image_block() {
         let body = serde_json::json!({
             "model": "claude-sonnet-4-20250514",
@@ -328,7 +350,13 @@ pub(super) fn responses_request_to_anthropic(body: &[u8]) -> Result<Vec<u8>, Str
             json!({"type": "enabled", "budget_tokens": effort}),
         );
     }
-    copy_fields(object, &mut result, &["temperature", "top_p", "stream"]);
+    // `metadata` rides along because relays gating on the Claude Code signature
+    // parse `metadata.user_id` and reject the request when it is absent.
+    copy_fields(
+        object,
+        &mut result,
+        &["temperature", "top_p", "stream", "metadata"],
+    );
     if result.get("thinking").is_some() {
         // Extended thinking rejects temperature outright and constrains top_p to
         // 0.95-1, so drop both rather than risk a 400 on the caller's value.

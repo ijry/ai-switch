@@ -8,6 +8,7 @@ use crate::models::route_credential::{
 use crate::models::route_pool::{
     RoutePoolModelTestOutcome, RoutePoolModelTestRequest, RouteUsageBreakdown,
 };
+use crate::services::client_identity;
 use crate::services::http_client::{
     build_outbound_http_client, build_outbound_http_client_with_root_certificate,
 };
@@ -602,20 +603,11 @@ pub fn build_model_test_request(
     let (request_path, request_body) = match platform {
         "codex" => (
             "/responses".to_string(),
-            json!({
-                "model": model,
-                "input": MODEL_TEST_PROMPT,
-                "temperature": 0,
-                "max_output_tokens": 16
-            }),
+            codex_probe_body(&model, &credential.id, &interface_format),
         ),
         "claude" => (
             "/v1/messages".to_string(),
-            json!({
-                "model": model,
-                "messages": [{"role": "user", "content": MODEL_TEST_PROMPT}],
-                "max_tokens": 16
-            }),
+            anthropic_probe_body(&model, &credential.id),
         ),
         "gemini" => (
             format!(
@@ -654,11 +646,7 @@ pub fn build_model_test_request(
             ),
             "anthropic" => (
                 "/v1/messages".to_string(),
-                json!({
-                    "model": model,
-                    "messages": [{"role": "user", "content": MODEL_TEST_PROMPT}],
-                    "max_tokens": 16
-                }),
+                anthropic_probe_body(&model, &credential.id),
             ),
             "gemini" => (
                 format!(
@@ -688,6 +676,54 @@ pub fn build_model_test_request(
         request_body_json: serde_json::to_string_pretty(&request_body)
             .map_err(|err| format!("Could not serialize test request body: {err}"))?,
     })
+}
+
+/// Probe body for the Anthropic dialect, shaped like a real Claude Code request.
+///
+/// The bare `model`/`messages`/`max_tokens` triple is a valid Anthropic request
+/// but reads as a non-CLI client to relays that gate on the Claude Code
+/// signature (sub2api's `claude_code_only` group flag). Those relays require a
+/// `system` block scoring against Claude Code's own prompt *and* a parseable
+/// `metadata.user_id`, so a probe without both fails with `this group only
+/// allows Claude Code clients` while the same account works from the real CLI.
+fn anthropic_probe_body(model: &str, credential_id: &str) -> Value {
+    json!({
+        "model": model,
+        "system": [{
+            "type": "text",
+            "text": client_identity::CLAUDE_CODE_SYSTEM_PROMPT
+        }],
+        "messages": [{"role": "user", "content": MODEL_TEST_PROMPT}],
+        "metadata": {
+            "user_id": client_identity::claude_code_metadata_user_id(credential_id)
+        },
+        "max_tokens": 16
+    })
+}
+
+/// Probe body for the Codex platform, in Responses shape.
+///
+/// When the upstream speaks Anthropic, the protocol bridge rewrites this into a
+/// `/v1/messages` request — and that request has to clear the same Claude Code
+/// gate as a native Anthropic probe. The bridge derives `system` from
+/// `instructions` and forwards `metadata`, so both are seeded here rather than
+/// patched onto the converted body.
+fn codex_probe_body(model: &str, credential_id: &str, interface_format: &str) -> Value {
+    let mut body = json!({
+        "model": model,
+        "input": MODEL_TEST_PROMPT,
+        "temperature": 0,
+        "max_output_tokens": 16
+    });
+
+    if interface_format == "anthropic" {
+        body["instructions"] = json!(client_identity::CLAUDE_CODE_SYSTEM_PROMPT);
+        body["metadata"] = json!({
+            "user_id": client_identity::claude_code_metadata_user_id(credential_id)
+        });
+    }
+
+    body
 }
 
 pub fn extract_model_test_response_text(interface_format: &str, body: &str) -> Option<String> {
@@ -1688,6 +1724,46 @@ mod tests {
     }
 
     #[test]
+    fn codex_probe_survives_the_claude_code_gate_after_bridging_to_anthropic() {
+        // Codex can target an Anthropic upstream, and the converted request hits
+        // `/v1/messages` — the same endpoint sub2api's `claude_code_only` group
+        // gates. The probe therefore has to carry the signature through the
+        // bridge, not just on the native Anthropic path.
+        let credential = api_credential("anthropic");
+        let request =
+            build_model_test_request(&credential, "codex", Some("claude-sonnet-4-20250514"), None)
+                .expect("request");
+        let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
+
+        // `instructions` is what the bridge turns into the Anthropic `system`
+        // block; the conversion itself is covered in responses_claude.
+        assert_eq!(
+            body.pointer("/instructions").and_then(Value::as_str),
+            Some(client_identity::CLAUDE_CODE_SYSTEM_PROMPT),
+        );
+
+        let user_id = body
+            .pointer("/metadata/user_id")
+            .and_then(Value::as_str)
+            .expect("metadata.user_id");
+        let parsed: Value = serde_json::from_str(user_id).expect("user_id is json");
+        assert_eq!(parsed["device_id"].as_str().map(str::len), Some(64));
+    }
+
+    #[test]
+    fn codex_probe_stays_clean_for_non_anthropic_upstreams() {
+        // The Claude Code signature is meaningless to an OpenAI-dialect relay and
+        // `instructions` would become a real system prompt that competes with the
+        // probe's "reply with exactly" instruction.
+        let request = build_model_test_request(&api_credential("openai"), "codex", None, None)
+            .expect("request");
+        let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
+
+        assert!(body.get("instructions").is_none());
+        assert!(body.get("metadata").is_none());
+    }
+
+    #[test]
     fn claude_model_test_builds_local_messages_body_for_openai_upstream() {
         let credential = api_credential("openai");
         let request =
@@ -1978,6 +2054,40 @@ mod tests {
             body.pointer("/messages/0/content").and_then(Value::as_str),
             Some(MODEL_TEST_PROMPT),
         );
+    }
+
+    #[test]
+    fn anthropic_probe_carries_the_claude_code_signature() {
+        // Relays with sub2api's `claude_code_only` group flag score the `system`
+        // block against Claude Code's own prompt and parse `metadata.user_id`.
+        // A probe missing either is rejected with "this group only allows Claude
+        // Code clients" even though the same account works from the real CLI.
+        for credential in [api_credential("anthropic"), official_credential("claude")] {
+            let request =
+                build_model_test_request(&credential, "claude", None, None).expect("request");
+            let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
+
+            assert_eq!(
+                body.pointer("/system/0/text").and_then(Value::as_str),
+                Some(client_identity::CLAUDE_CODE_SYSTEM_PROMPT),
+            );
+            assert_eq!(
+                body.pointer("/system/0/type").and_then(Value::as_str),
+                Some("text"),
+            );
+
+            let user_id = body
+                .pointer("/metadata/user_id")
+                .and_then(Value::as_str)
+                .expect("metadata.user_id");
+            let parsed: Value = serde_json::from_str(user_id).expect("user_id is json");
+            assert_eq!(
+                parsed["device_id"].as_str().map(str::len),
+                Some(64),
+                "gate regex requires 64 hex chars",
+            );
+            assert_eq!(parsed["session_id"].as_str().map(str::len), Some(36));
+        }
     }
 
     #[test]

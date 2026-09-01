@@ -25,6 +25,41 @@ pub const CLAUDE_CODE_DEFAULT_BETA: &str = "claude-code-20250219,interleaved-thi
 /// Impersonated Claude Code CLI User-Agent.
 pub const CLAUDE_CODE_USER_AGENT: &str = "claude-cli/2.1.2 (external, cli)";
 
+/// Claude Code's official system-prompt first block.
+///
+/// Gateways running sub2api's `claude_code_only` group gate score the request's
+/// `system` blocks against this exact string (Dice coefficient ≥ 0.5) and reject
+/// anything below the threshold with `this group only allows Claude Code
+/// clients`. Header spoofing alone does not pass — the body has to carry it too.
+pub const CLAUDE_CODE_SYSTEM_PROMPT: &str =
+    "You are Claude Code, Anthropic's official CLI for Claude.";
+
+/// Build a synthetic `metadata.user_id` accepted by sub2api's group gate.
+///
+/// The gate parses this field and rejects the request when it does not match
+/// either the legacy `user_<64hex>_account_<uuid>_session_<uuid>` shape or the
+/// JSON shape used from CLI 2.1.78 on. We emit the JSON form to match the
+/// version advertised in [`CLAUDE_CODE_USER_AGENT`].
+///
+/// `seed` keys the derived device id so a caller can stay stable across
+/// requests; the session id is random per call, as a real CLI session would be.
+pub fn claude_code_metadata_user_id(seed: &str) -> String {
+    let device_id = derive_device_id(seed);
+    let session_id = uuid::Uuid::new_v4();
+    format!(r#"{{"device_id":"{device_id}","account_uuid":"","session_id":"{session_id}"}}"#)
+}
+
+/// Derive the 64-char hex device id the gate's regex requires.
+///
+/// SHA-256 hex is exactly 64 chars, and hashing keeps the id stable per seed
+/// without leaking the seed (a credential id) to the upstream relay.
+fn derive_device_id(seed: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(seed.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// Impersonated Codex CLI originator/User-Agent.
 pub const CODEX_CLI_ORIGINATOR: &str = "codex_cli_rs";
 const CODEX_CLI_VERSION: &str = "0.80.0";
@@ -185,6 +220,46 @@ mod tests {
         let ua = codex_cli_user_agent();
         assert!(ua.starts_with("codex_cli_rs/0.80.0 ("));
         assert!(ua.ends_with(") Terminal"));
+    }
+
+    #[test]
+    fn metadata_user_id_matches_gateway_json_shape() {
+        let raw = claude_code_metadata_user_id("account-1");
+        let parsed: serde_json::Value = serde_json::from_str(&raw).expect("json");
+
+        let device_id = parsed["device_id"].as_str().expect("device_id");
+        assert_eq!(
+            device_id.len(),
+            64,
+            "gate requires 64 hex chars: {device_id}"
+        );
+        assert!(device_id.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // The gate parses session_id as a 36-char UUID.
+        let session_id = parsed["session_id"].as_str().expect("session_id");
+        assert_eq!(session_id.len(), 36);
+        assert!(uuid::Uuid::parse_str(session_id).is_ok());
+
+        assert_eq!(parsed["account_uuid"], "");
+    }
+
+    #[test]
+    fn metadata_device_id_is_stable_per_seed_but_session_is_not() {
+        let extract = |raw: &str| -> (String, String) {
+            let value: serde_json::Value = serde_json::from_str(raw).expect("json");
+            (
+                value["device_id"].as_str().unwrap().to_string(),
+                value["session_id"].as_str().unwrap().to_string(),
+            )
+        };
+
+        let (device_a, session_a) = extract(&claude_code_metadata_user_id("account-1"));
+        let (device_b, session_b) = extract(&claude_code_metadata_user_id("account-1"));
+        let (device_c, _) = extract(&claude_code_metadata_user_id("account-2"));
+
+        assert_eq!(device_a, device_b, "same seed must reuse the device id");
+        assert_ne!(device_a, device_c, "different seeds must differ");
+        assert_ne!(session_a, session_b, "each probe is its own session");
     }
 
     #[test]
