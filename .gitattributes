@@ -1,0 +1,13 @@
+# Normalize line endings for the sources we format.
+# Scoped deliberately: `* text=auto` would also rewrite the 108 CRLF markdown
+# files and the shell scripts under resources/skill-packages, which are shipped
+# as-is and unrelated to formatting.
+*.rs text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.toml text eol=lf
+*.sql text eol=lf
+
+# Keep diffs readable and stop merge attempts on generated lockfiles.
+pnpm-lock.yaml -diff linguist-generated
+Cargo.lock -diff linguist-generated
