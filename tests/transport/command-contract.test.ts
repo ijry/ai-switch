@@ -36,6 +36,9 @@ describe("command contract", () => {
     ).toEqual([]);
     expect([...webCommands].filter((command) => !clientCommands.has(command))).toEqual([
       "health",
+      // Mobile-only: the paired mobile client calls it over HTTP, so the desktop
+      // client never wraps it.
+      "resume_session_terminal",
       "get_route_credential",
     ]);
   });

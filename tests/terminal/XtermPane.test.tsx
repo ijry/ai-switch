@@ -2,9 +2,11 @@ import { render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   normalizeClaudeLightDiffOutput,
+  shouldNotifyPtyResize,
   XtermPane,
 } from "../../src/components/terminal/XtermPane";
 import { resizeTerminal } from "../../src/lib/api/client";
+import { websocketUrl } from "../../src/lib/transport/web-transport";
 import type { TerminalSession } from "../../src/lib/api/types";
 
 const terminalConstructorOptions = vi.hoisted(() => [] as Array<Record<string, unknown>>);
@@ -448,5 +450,51 @@ describe("XtermPane", () => {
 
     vi.advanceTimersByTime(600);
     expect(terminal?.options.scrollOnEraseInDisplay).toBe(true);
+  });
+});
+
+describe("shouldNotifyPtyResize", () => {
+  it("notifies on first measurement", () => {
+    expect(shouldNotifyPtyResize({ cols: 100, rows: 30 }, null, null)).toBe(true);
+  });
+
+  it("skips when the size is unchanged", () => {
+    expect(shouldNotifyPtyResize({ cols: 100, rows: 30 }, { cols: 100, rows: 30 }, null)).toBe(
+      false,
+    );
+  });
+
+  it("notifies when the size changed and no remote client owns the pty size", () => {
+    expect(shouldNotifyPtyResize({ cols: 120, rows: 40 }, { cols: 100, rows: 30 }, null)).toBe(
+      true,
+    );
+  });
+
+  it("yields to the remote client size instead of pushing the desktop size", () => {
+    expect(
+      shouldNotifyPtyResize(
+        { cols: 120, rows: 40 },
+        { cols: 100, rows: 30 },
+        { cols: 60, rows: 20 },
+      ),
+    ).toBe(false);
+  });
+
+  it("notifies when the desktop size already matches the remote size", () => {
+    expect(
+      shouldNotifyPtyResize({ cols: 60, rows: 20 }, { cols: 100, rows: 30 }, { cols: 60, rows: 20 }),
+    ).toBe(true);
+  });
+});
+
+describe("websocketUrl", () => {
+  it("defaults to the event stream path", () => {
+    expect(websocketUrl("http://127.0.0.1:3090")).toBe("ws://127.0.0.1:3090/ws/events");
+  });
+
+  it("builds terminal stream urls and strips trailing slashes", () => {
+    expect(websocketUrl("https://host.example.com/", "/ws/terminal/abc")).toBe(
+      "wss://host.example.com/ws/terminal/abc",
+    );
   });
 });

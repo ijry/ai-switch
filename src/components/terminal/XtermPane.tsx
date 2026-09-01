@@ -32,6 +32,25 @@ const PTY_RESIZE_SETTLE_MS = 120;
 // screens are archived into scrollback again.
 const RESIZE_REPAINT_WINDOW_MS = 500;
 
+type PtySize = { cols: number; rows: number };
+
+// One PTY is shared by the desktop pane and any remote subscriber, so both would
+// otherwise fight over its dimensions. The smaller remote client wins: pushing
+// the desktop size would reflow the phone's view to a width it cannot display.
+export function shouldNotifyPtyResize(
+  next: PtySize,
+  lastNotified: PtySize | null,
+  remoteSize: PtySize | null,
+): boolean {
+  if (lastNotified && lastNotified.cols === next.cols && lastNotified.rows === next.rows) {
+    return false;
+  }
+  if (remoteSize && (remoteSize.cols !== next.cols || remoteSize.rows !== next.rows)) {
+    return false;
+  }
+  return true;
+}
+
 const CLAUDE_TRUECOLOR_DIFF_BACKGROUNDS = new Map<string, ClaudeDiffTone>([
   ["68;20;24", "removed"],
   ["134;40;48", "removed"],
@@ -232,6 +251,9 @@ export function XtermPane({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAndResizeRef = useRef<() => void>(() => undefined);
+  // Set once a remote subscriber negotiates the PTY size; null means the desktop
+  // pane is the only client and owns it.
+  const remotePtySize = useRef<PtySize | null>(null);
   const theme = useMemo(
     () => createTheme(themeMode, themeOverride, transparentSurface),
     [themeMode, themeOverride, transparentSurface],
@@ -295,7 +317,7 @@ export function XtermPane({
 
     let ptyResizeTimeout: number | null = null;
     let repaintWindowTimeout: number | null = null;
-    let lastNotifiedSize = { cols: 0, rows: 0 };
+    let lastNotifiedSize: PtySize | null = null;
 
     const endResizeRepaintWindow = () => {
       repaintWindowTimeout = null;
@@ -304,10 +326,17 @@ export function XtermPane({
 
     const notifyPtyResize = () => {
       ptyResizeTimeout = null;
-      if (terminal.cols === lastNotifiedSize.cols && terminal.rows === lastNotifiedSize.rows) {
+      const next = { cols: terminal.cols, rows: terminal.rows };
+      if (!shouldNotifyPtyResize(next, lastNotifiedSize, remotePtySize.current)) {
+        // A remote subscriber owns the PTY size. Still reflow locally so the
+        // desktop renders the grid the PTY is actually driving.
+        const remote = remotePtySize.current;
+        if (remote && (terminal.cols !== remote.cols || terminal.rows !== remote.rows)) {
+          terminal.resize(remote.cols, remote.rows);
+        }
         return;
       }
-      lastNotifiedSize = { cols: terminal.cols, rows: terminal.rows };
+      lastNotifiedSize = next;
 
       // Agents answer the SIGWINCH with a full-screen repaint: erase the screen,
       // then draw the same content at the new width. Archiving those erased
@@ -337,7 +366,11 @@ export function XtermPane({
       // scrollback we keep. Only notify the PTY when the grid really changed and
       // only once the size stopped moving, so a width drag leaves one repaint at
       // the final width instead of one stale copy per intermediate width.
-      if (terminal.cols === lastNotifiedSize.cols && terminal.rows === lastNotifiedSize.rows) {
+      if (
+        lastNotifiedSize &&
+        terminal.cols === lastNotifiedSize.cols &&
+        terminal.rows === lastNotifiedSize.rows
+      ) {
         return;
       }
       if (ptyResizeTimeout !== null) {

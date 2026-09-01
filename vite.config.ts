@@ -64,6 +64,11 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,
       },
+      "/ws/terminal": {
+        target: "http://127.0.0.1:3090",
+        changeOrigin: true,
+        ws: true,
+      },
     },
   },
   optimizeDeps: {

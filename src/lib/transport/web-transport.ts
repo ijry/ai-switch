@@ -51,8 +51,8 @@ export function isUnauthorizedTransportError(error: unknown) {
   return message === "unauthorized" || message.includes("http 401");
 }
 
-function websocketUrl(baseUrl: string) {
-  return `${baseUrl.replace(/^http/, "ws").replace(/\/$/, "")}/ws/events`;
+export function websocketUrl(baseUrl: string, path = "/ws/events") {
+  return `${baseUrl.replace(/^http/, "ws").replace(/\/$/, "")}${path}`;
 }
 
 export class WebTransport implements Transport {
