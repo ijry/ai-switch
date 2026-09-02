@@ -1594,7 +1594,9 @@ impl RouteCredentialRepository {
                 (Some(cooldown_until.clone()), Some(cooldown_until))
             }
             // A model-scoped failure leaves the account selectable for its other
-            // models, so its own deadline must not be written.
+            // models, so its own deadline must not be written — and must not
+            // erase one an earlier account-scoped failure already set, which is
+            // why the UPDATE below coalesces instead of assigning.
             _ => (None, None),
         };
         let message = truncate_failure_message(message);
@@ -1602,7 +1604,9 @@ impl RouteCredentialRepository {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             "UPDATE route_credentials
-             SET transient_failure_count = ?, next_retry_at = ?, cooldown_until = ?,
+             SET transient_failure_count = ?,
+                 next_retry_at = COALESCE(?, next_retry_at),
+                 cooldown_until = COALESCE(?, cooldown_until),
                  semantic_failure_streak_count = 0, semantic_failure_streak_fingerprint = NULL,
                  last_failure_kind = ?, last_failure_message = ?, last_failure_response_json = ?, updated_at = ?
              WHERE id = ?",
@@ -3255,6 +3259,72 @@ mod tests {
         assert!(stored.next_retry_at.is_none());
         assert!(stored.cooldown_until.is_none());
         assert_eq!(stored.last_failure_message.as_deref(), Some("temporary"));
+    }
+
+    #[tokio::test]
+    async fn a_model_scoped_failure_leaves_an_existing_account_cooldown_alone() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let created = RouteCredentialRepository::create(
+            &pool,
+            "codex",
+            "api",
+            "Keeps Account Backoff",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-test"}"#,
+            r#"{"base_url":"https://example.com","failure_policy":{"cooldown_enabled":true}}"#,
+            "{}",
+        )
+        .await
+        .unwrap();
+
+        RouteCredentialRepository::record_transient_failure(
+            &pool,
+            &created.id,
+            "transport",
+            "temporary",
+            None,
+            FailureScope::Account,
+        )
+        .await
+        .unwrap();
+        let parked = RouteCredentialRepository::get(&pool, &created.id)
+            .await
+            .unwrap();
+        let account_cooldown = parked.cooldown_until.clone().expect("account cooldown");
+
+        // One of two models fails, so this does not escalate. The account is
+        // still inside the backoff the transport failure just bought it, and
+        // erasing that would put it straight back into rotation.
+        let siblings = vec!["upstream-a".to_string(), "upstream-b".to_string()];
+        RouteCredentialRepository::record_transient_failure(
+            &pool,
+            &created.id,
+            "upstream_status",
+            "upstream returned 429",
+            None,
+            FailureScope::Model {
+                key: "upstream-a",
+                siblings: &siblings,
+            },
+        )
+        .await
+        .unwrap();
+
+        let stored = RouteCredentialRepository::get(&pool, &created.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored.cooldown_until.as_deref(),
+            Some(account_cooldown.as_str())
+        );
+        assert_eq!(
+            stored.next_retry_at.as_deref(),
+            Some(account_cooldown.as_str())
+        );
+        assert_eq!(stored.transient_failure_count, 2);
     }
 
     #[tokio::test]
