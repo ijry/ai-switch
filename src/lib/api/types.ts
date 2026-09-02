@@ -540,6 +540,93 @@ export type SessionUsageStats = {
   truncated: boolean;
 };
 
+/** Where a merged usage row's data came from; also the "source" grouping key. */
+export type UsageRowSource = "matched" | "session_only" | "proxy_only";
+
+/** Aggregated counts for one grouping, or for the whole window. */
+export type UsageOverviewTotals = {
+  request_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_write_tokens: number;
+  cache_read_tokens: number;
+  /** USD micros (1 USD = 1_000_000). */
+  cost_micros: number;
+};
+
+/** One merged request: a transcript entry, a proxied row, or both. */
+export type UsageOverviewRow = {
+  id: string;
+  source: UsageRowSource;
+  /** RFC 3339; null when a transcript entry carried no timestamp. */
+  occurred_at?: string | null;
+  provider: string;
+  model: string;
+  account_id?: string | null;
+  account_name?: string | null;
+  source_label?: string | null;
+  path?: string | null;
+  /** Only ever present on a row that has a proxy side. */
+  status?: string | null;
+  success: boolean;
+  input_tokens: number;
+  output_tokens: number;
+  cache_write_tokens: number;
+  cache_read_tokens: number;
+  cost_micros: number;
+  /**
+   * `upstream` when a real upstream price was used, `estimated` when the local
+   * price table was, null when the model has no known rate.
+   */
+  price_source?: "upstream" | "estimated" | null;
+  upstream_response_id?: string | null;
+  metadata_json?: string | null;
+};
+
+/**
+ * One group row. The Rust side flattens the totals into this object, so their
+ * fields appear inline rather than nested.
+ */
+export type UsageOverviewGroupRow = UsageOverviewTotals & {
+  key: string;
+};
+
+export type UsageOverviewGroups = {
+  by_model: UsageOverviewGroupRow[];
+  by_platform: UsageOverviewGroupRow[];
+  by_account: UsageOverviewGroupRow[];
+  by_source: UsageOverviewGroupRow[];
+};
+
+/** Facts for the data-completeness note beneath the summary cards. */
+export type UsageOverviewIntegrity = {
+  scanned_file_count: number;
+  /** True when the transcript file cap was hit, so the totals are a floor. */
+  truncated: boolean;
+  unpriced_request_count: number;
+  estimated_price_request_count: number;
+  /**
+   * Proxy rows with no recoverable response id. These could not be merged, so a
+   * request may be counted on both sides.
+   */
+  unmatchable_proxy_row_count: number;
+};
+
+/**
+ * Local CLI transcript usage merged with proxied requests, deduplicated on the
+ * upstream response id. `totals` and `groups` cover the whole window; `rows` is
+ * one page.
+ */
+export type UsageOverview = {
+  totals: UsageOverviewTotals;
+  rows: UsageOverviewRow[];
+  groups: UsageOverviewGroups;
+  row_count: number;
+  page: number;
+  page_size: number;
+  integrity: UsageOverviewIntegrity;
+};
+
 export type RouteProxyLiveLogEntry = {
   id: string;
   trace_id?: string | null;
