@@ -32,6 +32,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  Fragment,
   useCallback,
   useEffect,
   useId,
@@ -54,6 +55,7 @@ import { FormTabs, type FormTab } from "../components/accounts/FormTabs";
 import { RouteCredentialExportDialog } from "../components/accounts/RouteCredentialExportDialog";
 import { CopyRouteCredentialDialog } from "../components/accounts/CopyRouteCredentialDialog";
 import { neighborsForDrop } from "../lib/accountReorder";
+import { useDragSort } from "../lib/useDragSort";
 import {
   claudeAliasSupportsOneM,
   CLAUDE_FALLBACK_ALIAS,
@@ -2148,9 +2150,11 @@ export function AccountsScreen({
   const [accountFilters, setAccountFilters] = useState<string[]>([]);
   const [accountPage, setAccountPage] = useState(1);
   const [accountPageSize, setAccountPageSize] = useState(20);
-  const [draggedAccountId, setDraggedAccountId] = useState<string | null>(null);
-  const [dragTargetIndex, setDragTargetIndex] = useState<number | null>(null);
+  // Keyboard reordering keeps its own "picked up" row; the pointer drag tracks its
+  // own active row inside useDragSort.
+  const [keyboardDragId, setKeyboardDragId] = useState<string | null>(null);
   const accountEdgeTimerRef = useRef<number | null>(null);
+  const accountScrollRef = useRef<HTMLDivElement | null>(null);
   const [accountFilterMenuOpen, setAccountFilterMenuOpen] = useState(false);
   const [refreshMenuOpen, setRefreshMenuOpen] = useState(false);
   const [modelTestMenuOpen, setModelTestMenuOpen] = useState(false);
@@ -2513,8 +2517,7 @@ export function AccountsScreen({
   useEffect(() => {
     setAccountPage(1);
     setSelectedAccountIds(new Set());
-    setDraggedAccountId(null);
-    setDragTargetIndex(null);
+    setKeyboardDragId(null);
     setAccountFilterMenuOpen(false);
     setRefreshMenuOpen(false);
     setModelTestMenuOpen(false);
@@ -3869,8 +3872,7 @@ export function AccountsScreen({
       void invalidateAccountData();
     },
     onSettled: () => {
-      setDraggedAccountId(null);
-      setDragTargetIndex(null);
+      setKeyboardDragId(null);
     },
   });
   const routePoolModelsMutation = useMutation({
@@ -4032,7 +4034,7 @@ export function AccountsScreen({
   };
 
   const scheduleAccountEdgePage = (direction: -1 | 1) => {
-    if (accountEdgeTimerRef.current != null || !accountPageData || !draggedAccountId) return;
+    if (accountEdgeTimerRef.current != null || !accountPageData) return;
     const nextPage = accountPageData.page + direction;
     if (nextPage < 1 || nextPage > accountPageData.page_count) return;
     accountEdgeTimerRef.current = window.setTimeout(() => {
@@ -4040,6 +4042,36 @@ export function AccountsScreen({
       setAccountPage(nextPage);
     }, 600);
   };
+
+  const cancelAccountEdgePage = () => {
+    if (accountEdgeTimerRef.current == null) return;
+    window.clearTimeout(accountEdgeTimerRef.current);
+    accountEdgeTimerRef.current = null;
+  };
+
+  const accountIds = useMemo(() => credentials.map((credential) => credential.id), [credentials]);
+  const accountDragSort = useDragSort({
+    itemIds: accountIds,
+    onCommit: commitAccountReorder,
+    getScrollContainer: () => accountScrollRef.current,
+    onEdgeHold: scheduleAccountEdgePage,
+    onEdgeLeave: cancelAccountEdgePage,
+    disabled: reorderMutation.isPending,
+  });
+  const dragMovedIndex = accountDragSort.activeId
+    ? accountIds.indexOf(accountDragSort.activeId)
+    : -1;
+  const dropPlaceholderAtEnd =
+    accountDragSort.insertIndex != null &&
+    accountDragSort.insertIndex >= credentials.length - (dragMovedIndex >= 0 ? 1 : 0);
+  const dropPlaceholder = accountDragSort.insertIndex == null ? null : (
+    <div
+      aria-hidden="true"
+      className="mx-1 mb-0.5 rounded-md border-2 border-dashed border-blue-400 bg-blue-50/70"
+      data-testid="account-drop-placeholder"
+      style={{ height: accountDragSort.placeholderHeight }}
+    />
+  );
 
   const addSelectedToPool = () => {
     if (selectedAccountIds.size === 0 || routePoolMutation.isPending) {
@@ -4773,6 +4805,7 @@ export function AccountsScreen({
         <div
           className="min-h-0 overflow-y-auto overscroll-contain bg-transparent"
           data-testid="account-workspace-scroll-region"
+          ref={accountScrollRef}
         >
         {configWriteOutcomes.length > 0 && (
           <div className="mx-4 mb-3 space-y-1 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] text-stone-600">
@@ -5553,16 +5586,7 @@ export function AccountsScreen({
               {formatApiError(batchStatusMutation.error, "批量设置状态失败。")}
             </p>
           )}
-          <div
-            ref={attachAccountList}
-            onDragOver={(event) => {
-              if (!draggedAccountId) return;
-              event.preventDefault();
-              const rect = event.currentTarget.getBoundingClientRect();
-              if (event.clientY <= rect.top + 20) scheduleAccountEdgePage(-1);
-              if (event.clientY >= rect.bottom - 20) scheduleAccountEdgePage(1);
-            }}
-          >
+          <div ref={attachAccountList}>
           {credentials.map((credential, credentialIndex) => {
                   const subscriptionType = officialSubscriptionType(credential);
                   const primaryRemain = officialPrimaryRemain(credential);
@@ -5649,58 +5673,46 @@ export function AccountsScreen({
                     icon: <Edit3 aria-hidden="true" className="h-3.5 w-3.5" />,
                   });
                   const actionMenuOpen = openActionMenuId === credential.id;
+                  const isDragged = accountDragSort.activeId === credential.id;
+                  // Slot this row falls into once the dragged row is out of the list,
+                  // which is where the placeholder has to show up for "lands here".
+                  const dropSlot =
+                    dragMovedIndex >= 0 && credentialIndex > dragMovedIndex
+                      ? credentialIndex - 1
+                      : credentialIndex;
                   return (
+                  <Fragment key={credential.id}>
+                  {!isDragged && accountDragSort.insertIndex === dropSlot ? dropPlaceholder : null}
                   <div
                     aria-label={`放置在 ${credential.display_name} 前`}
                     className={`mx-1 mb-0.5 grid grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-3 py-2.5 transition-colors last:mb-0 ${
-                      draggedAccountId &&
-                      draggedAccountId !== credential.id &&
-                      dragTargetIndex === credentialIndex
-                        ? "border-blue-400 bg-blue-50/70"
-                        : "border-stone-200 bg-white"
+                      isDragged
+                        ? "border-blue-400 bg-white shadow-lg"
+                        : keyboardDragId === credential.id
+                          ? "border-blue-400 bg-blue-50/70"
+                          : "border-stone-200 bg-white"
                     }`}
-                    key={credential.id}
-                    onDragOver={(event) => {
-                      if (!draggedAccountId || draggedAccountId === credential.id) return;
-                      event.preventDefault();
-                      event.dataTransfer.dropEffect = "move";
-                      setDragTargetIndex(credentialIndex);
-                    }}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      if (draggedAccountId && draggedAccountId !== credential.id) {
-                        commitAccountReorder(draggedAccountId, credentialIndex);
-                      }
-                      setDraggedAccountId(null);
-                      setDragTargetIndex(null);
-                    }}
+                    ref={accountDragSort.registerItem(credential.id)}
                   >
                     <button
-                      aria-grabbed={draggedAccountId === credential.id}
+                      aria-grabbed={isDragged || keyboardDragId === credential.id}
                       aria-label={`拖动 ${credential.display_name}`}
-                      className={`grid h-7 w-7 shrink-0 place-items-center rounded border border-stone-200 px-0 text-stone-400 hover:bg-stone-50 ${
-                        draggedAccountId === credential.id ? "cursor-grabbing bg-stone-100" : "cursor-grab"
+                      className={`grid h-7 w-7 shrink-0 touch-none place-items-center rounded border border-stone-200 px-0 text-stone-400 hover:bg-stone-50 ${
+                        isDragged ? "cursor-grabbing bg-stone-100" : "cursor-grab"
                       }`}
-                      draggable
-                      onDragEnd={() => { setDraggedAccountId(null); setDragTargetIndex(null); }}
-                      onDragStart={(event) => {
-                        event.dataTransfer.effectAllowed = "move";
-                        event.dataTransfer.setData("text/plain", credential.id);
-                        setDraggedAccountId(credential.id);
-                        setDragTargetIndex(credentialIndex);
-                      }}
+                      onPointerDown={(event) => accountDragSort.startDrag(credential.id, event)}
                       onKeyDown={(event) => {
                         if (event.key === " " || event.key === "Enter") {
                           event.preventDefault();
-                          setDraggedAccountId((current) => current === credential.id ? null : credential.id);
-                        } else if (draggedAccountId === credential.id && event.key === "ArrowUp") {
+                          setKeyboardDragId((current) => current === credential.id ? null : credential.id);
+                        } else if (keyboardDragId === credential.id && event.key === "ArrowUp") {
                           event.preventDefault();
                           commitAccountReorder(credential.id, Math.max(0, credentialIndex - 1));
-                        } else if (draggedAccountId === credential.id && event.key === "ArrowDown") {
+                        } else if (keyboardDragId === credential.id && event.key === "ArrowDown") {
                           event.preventDefault();
                           commitAccountReorder(credential.id, Math.min(credentials.length - 1, credentialIndex + 1));
                         } else if (event.key === "Escape") {
-                          setDraggedAccountId(null);
+                          setKeyboardDragId(null);
                         }
                       }}
                       type="button"
@@ -5947,10 +5959,11 @@ export function AccountsScreen({
                       )}
                     </div>
                   </div>
+                  </Fragment>
                   );
                 })}
+          {dropPlaceholderAtEnd ? dropPlaceholder : null}
           </div>
-          <div data-testid="account-list-edge-bottom" className="h-1" onDragOver={(event) => { event.preventDefault(); scheduleAccountEdgePage(1); }} />
           {accountPageData && accountPageData.total > 0 && (
             <div className="hidden flex-wrap items-center justify-between gap-2 border-t border-stone-100 pt-3">
               <label className="flex items-center gap-2 text-[12px] font-semibold text-stone-600">

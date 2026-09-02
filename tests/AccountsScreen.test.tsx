@@ -345,6 +345,48 @@ async function openFormTab(name: "基础" | "高级" | "故障处理" | "其他"
   await userEvent.click(await screen.findByRole("tab", { name }));
 }
 
+// jsdom has no layout, and the pointer drag reads row geometry to decide where the
+// placeholder goes, so the rows under test get their rects handed to them.
+function stubRect(element: HTMLElement, top: number, height: number) {
+  element.getBoundingClientRect = () =>
+    ({
+      top,
+      bottom: top + height,
+      height,
+      left: 0,
+      right: 320,
+      width: 320,
+      x: 0,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+}
+
+const ROW_HEIGHT = 40;
+const ROW_PITCH = 42;
+
+function stubAccountRowGeometry(rows: HTMLElement[]) {
+  stubRect(screen.getByTestId("account-workspace-scroll-region"), 0, 600);
+  rows.forEach((row, index) => stubRect(row, index * ROW_PITCH, ROW_HEIGHT));
+}
+
+function dispatchPointerEvent(
+  target: EventTarget,
+  type: "pointerdown" | "pointermove" | "pointerup",
+  { button = 0, clientX = 0, clientY = 0, pointerId = 1 } = {},
+) {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    button: { configurable: true, value: button },
+    clientX: { configurable: true, value: clientX },
+    clientY: { configurable: true, value: clientY },
+    pointerId: { configurable: true, value: pointerId },
+  });
+  act(() => {
+    target.dispatchEvent(event);
+  });
+}
+
 describe("AccountsScreen", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -1008,24 +1050,24 @@ describe("AccountsScreen", () => {
     expect(screen.getByTestId("workspace-toolbar-leading")).toHaveClass("hidden", "max-[599px]:hidden");
   });
 
-  it("reorders accounts when dragging a handle onto another account row", async () => {
+  it("reorders accounts when a dragged handle is released over the placeholder slot", async () => {
     renderScreen();
 
     const dragHandle = await screen.findByLabelText("拖动 Team Account");
-    const dropTarget = screen.getByLabelText("放置在 API Account 前");
-    const dataTransfer = {
-      dropEffect: "none",
-      effectAllowed: "all",
-      setData: vi.fn(),
-    };
+    const firstRow = screen.getByLabelText("放置在 Team Account 前");
+    const secondRow = screen.getByLabelText("放置在 API Account 前");
+    stubAccountRowGeometry([firstRow, secondRow]);
 
-    fireEvent.dragStart(dragHandle, { dataTransfer });
-    await waitFor(() => expect(dragHandle).toHaveAttribute("aria-grabbed", "true"));
-    expect(dataTransfer.setData).toHaveBeenCalledWith("text/plain", "cred-official-1");
+    dispatchPointerEvent(dragHandle, "pointerdown", { clientY: 20 });
+    dispatchPointerEvent(document, "pointermove", { clientY: 70 });
 
-    fireEvent.dragOver(dropTarget, { dataTransfer });
-    expect(dropTarget).toHaveClass("border-blue-400", "bg-blue-50/70");
-    fireEvent.drop(dropTarget, { dataTransfer });
+    expect(dragHandle).toHaveAttribute("aria-grabbed", "true");
+    expect(firstRow.style.position).toBe("fixed");
+    // The placeholder marks the slot the row lands in, below the row it passed.
+    const placeholder = screen.getByTestId("account-drop-placeholder");
+    expect(placeholder.previousElementSibling).toBe(secondRow);
+
+    dispatchPointerEvent(document, "pointerup", { clientY: 70 });
 
     await waitFor(() =>
       expect(reorderRouteCredentials).toHaveBeenCalledWith({
@@ -1038,6 +1080,53 @@ describe("AccountsScreen", () => {
         page_size: 20,
       }),
     );
+    expect(screen.queryByTestId("account-drop-placeholder")).not.toBeInTheDocument();
+    expect(firstRow.style.position).toBe("");
+  });
+
+  it("moves the last account to the front when dragged over the first row", async () => {
+    renderScreen();
+
+    const dragHandle = await screen.findByLabelText("拖动 API Account");
+    const firstRow = screen.getByLabelText("放置在 Team Account 前");
+    const secondRow = screen.getByLabelText("放置在 API Account 前");
+    stubAccountRowGeometry([firstRow, secondRow]);
+
+    dispatchPointerEvent(dragHandle, "pointerdown", { clientY: 60 });
+    dispatchPointerEvent(document, "pointermove", { clientY: 8 });
+
+    const placeholder = screen.getByTestId("account-drop-placeholder");
+    expect(placeholder.nextElementSibling).toBe(firstRow);
+
+    dispatchPointerEvent(document, "pointerup", { clientY: 8 });
+
+    await waitFor(() =>
+      expect(reorderRouteCredentials).toHaveBeenCalledWith({
+        platform: "codex",
+        moved_account_id: "cred-api-1",
+        previous_account_id: null,
+        next_account_id: "cred-official-1",
+        filters: [],
+        pool_scope: "out_of_pool",
+        page_size: 20,
+      }),
+    );
+  });
+
+  it("leaves the order alone when a drag is released where it started", async () => {
+    renderScreen();
+
+    const dragHandle = await screen.findByLabelText("拖动 API Account");
+    stubAccountRowGeometry([
+      screen.getByLabelText("放置在 Team Account 前"),
+      screen.getByLabelText("放置在 API Account 前"),
+    ]);
+
+    dispatchPointerEvent(dragHandle, "pointerdown", { clientY: 60 });
+    dispatchPointerEvent(document, "pointermove", { clientY: 52 });
+    dispatchPointerEvent(document, "pointerup", { clientY: 52 });
+
+    expect(reorderRouteCredentials).not.toHaveBeenCalled();
   });
 
   it("keeps side toolbar content visible when the window is not pinned to the top", () => {
