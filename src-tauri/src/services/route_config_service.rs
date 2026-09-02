@@ -86,6 +86,7 @@ impl RouteConfigService {
             input: RouteConfigInput {
                 base_url: base_url.to_string(),
                 route_proxy_key: route_proxy_key.clone(),
+                route_proxy_key_aliases: Vec::new(),
                 claude_env,
                 client_models: Vec::new(),
             },
@@ -186,6 +187,7 @@ impl RouteConfigService {
                 input: RouteConfigInput {
                     base_url: base_url.to_string(),
                     route_proxy_key,
+                    route_proxy_key_aliases: Vec::new(),
                     claude_env,
                     client_models: Vec::new(),
                 },
@@ -273,6 +275,7 @@ impl RouteConfigService {
             &RouteConfigInput {
                 base_url: base_url.to_string(),
                 route_proxy_key,
+                route_proxy_key_aliases: Vec::new(),
                 claude_env,
                 client_models: Vec::new(),
             },
@@ -306,6 +309,7 @@ impl RouteConfigService {
             input: RouteConfigInput {
                 base_url: base_url.to_string(),
                 route_proxy_key: route_proxy_key.to_string(),
+                route_proxy_key_aliases: Vec::new(),
                 claude_env,
                 client_models: Vec::new(),
             },

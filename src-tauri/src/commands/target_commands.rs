@@ -122,6 +122,7 @@ mod tests {
                 input: RouteConfigInput {
                     base_url: "http://127.0.0.1:43111".to_string(),
                     route_proxy_key: "sk-ai-switch-test".to_string(),
+                    route_proxy_key_aliases: Vec::new(),
                     claude_env: ClaudeEnvPlan::default(),
                     client_models: Vec::new(),
                 },

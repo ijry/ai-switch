@@ -1,5 +1,6 @@
 mod codex;
 mod json_agent;
+mod zcode;
 
 pub(crate) use codex::codex_model_catalog_path;
 
@@ -15,6 +16,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+use zcode::ZCodeAdapter;
 
 pub(super) const INVALID_EXISTING_CONFIG_CODE: &str = "validation.route_config_existing_invalid";
 
@@ -22,6 +24,10 @@ pub(super) const INVALID_EXISTING_CONFIG_CODE: &str = "validation.route_config_e
 pub struct RouteConfigInput {
     pub base_url: String,
     pub route_proxy_key: String,
+    /// Proxy keys this platform used before rotation. A hand-made client entry
+    /// still carrying an old key is the same user's entry, so adoption has to
+    /// recognize it instead of adding a duplicate.
+    pub route_proxy_key_aliases: Vec<String>,
     /// Claude-only model env plan. Every field is a generic alias rather than an
     /// account's upstream model name: one settings file serves the whole pool,
     /// so the proxy does the per-account translation. An empty plan clears every
@@ -141,6 +147,8 @@ impl TargetAdapterRegistry {
                 Arc::new(JsonAgentAdapter::claude()),
                 Arc::new(JsonAgentAdapter::gemini()),
                 Arc::new(JsonAgentAdapter::grok()),
+                Arc::new(ZCodeAdapter::codex()),
+                Arc::new(ZCodeAdapter::claude()),
             ],
         }
     }
@@ -226,6 +234,7 @@ mod tests {
         RouteConfigInput {
             base_url: BASE_URL.to_string(),
             route_proxy_key: ROUTE_PROXY_KEY.to_string(),
+            route_proxy_key_aliases: Vec::new(),
             claude_env: ClaudeEnvPlan::default(),
             client_models: Vec::new(),
         }
@@ -637,7 +646,7 @@ api_key = "legacy-key"
     }
 
     #[test]
-    fn clients_for_platform_lists_native_cli_only_before_zcode_exists() {
+    fn clients_for_platform_lists_the_native_cli_first_then_zcode() {
         let registry = TargetAdapterRegistry::new();
 
         let codex = registry.clients_for_platform(PlatformId::Codex);
@@ -646,11 +655,13 @@ api_key = "legacy-key"
                 .iter()
                 .map(|client| client.client_key.as_str())
                 .collect::<Vec<_>>(),
-            vec!["codex"]
+            vec!["codex", "zcode"]
         );
         assert_eq!(codex[0].display_name, "Codex CLI");
         assert_eq!(codex[0].target_key, "codex");
         assert_eq!(codex[0].platform, PlatformId::Codex);
+        // ZCode reads its config at startup, so the dialog has to say "restart".
+        assert!(codex[1].restart_required);
 
         // Platforms with no adapter list nothing rather than erroring.
         assert!(registry.clients_for_platform(PlatformId::Hermes).is_empty());
