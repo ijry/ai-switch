@@ -1,5 +1,6 @@
 use crate::adapters::route_config::{
-    codex_model_catalog_path, ClaudeEnvPlan, RouteConfigInput, TargetAdapter, TargetAdapterRegistry,
+    codex_model_catalog_path, ClaudeEnvPlan, ClientModel, RouteConfigInput, TargetAdapter,
+    TargetAdapterRegistry,
 };
 use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
@@ -18,7 +19,7 @@ use crate::services::config_write_service::{
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_model_capability::{
-    codex_model_catalog_payload, parse_model_capability,
+    advertised_model_catalog_entries, codex_model_catalog_payload, parse_model_capability,
 };
 use crate::services::settings_service::SettingsService;
 use directories::BaseDirs;
@@ -86,6 +87,7 @@ impl RouteConfigService {
                 base_url: base_url.to_string(),
                 route_proxy_key: route_proxy_key.clone(),
                 claude_env,
+                client_models: Vec::new(),
             },
         };
         match ConfigWriteCoordinator::write_group(paths, pool, runtime, vec![request]).await {
@@ -185,6 +187,7 @@ impl RouteConfigService {
                     base_url: base_url.to_string(),
                     route_proxy_key,
                     claude_env,
+                    client_models: Vec::new(),
                 },
             });
         }
@@ -271,6 +274,7 @@ impl RouteConfigService {
                 base_url: base_url.to_string(),
                 route_proxy_key,
                 claude_env,
+                client_models: Vec::new(),
             },
         )?;
 
@@ -303,6 +307,7 @@ impl RouteConfigService {
                 base_url: base_url.to_string(),
                 route_proxy_key: route_proxy_key.to_string(),
                 claude_env,
+                client_models: Vec::new(),
             },
         };
         if platform == PlatformId::Codex {
@@ -415,6 +420,39 @@ impl RouteConfigService {
         let parsed = serde_json::from_str::<Value>(raw).ok()?;
         let object = parsed.as_object()?;
         (!object.is_empty()).then(|| object.clone())
+    }
+
+    /// Models this platform's pool advertises, shaped for client configs that
+    /// must carry the list themselves.
+    pub(crate) async fn resolve_client_models(
+        pool: &SqlitePool,
+        platform: PlatformId,
+    ) -> Result<Vec<ClientModel>, AppError> {
+        let ids = RoutePoolRepository::list_member_ids(pool, platform.as_str()).await?;
+        let credentials = RouteCredentialRepository::list_by_ids(
+            pool,
+            &ids,
+            &RouteCredentialSelectionContext {
+                platform: platform.as_str().to_string(),
+                pool_scope: RouteCredentialPoolScope::InPool,
+            },
+        )
+        .await?;
+        let capabilities = credentials
+            .iter()
+            .map(|credential| parse_model_capability(&credential.config_json))
+            .collect::<Vec<_>>();
+
+        Ok(
+            advertised_model_catalog_entries(platform.as_str(), &capabilities)
+                .into_iter()
+                .map(|model| ClientModel {
+                    context_window: client_model_context_window(&model.id),
+                    max_output_tokens: CLIENT_MODEL_MAX_OUTPUT_TOKENS,
+                    id: model.id,
+                })
+                .collect(),
+        )
     }
 
     /// Builds the Claude-only env plan for a config write. Non-Claude platforms
@@ -576,6 +614,20 @@ fn normalize_base_url(base_url: &str) -> Result<&str, AppError> {
 
 pub fn generate_route_proxy_key() -> String {
     format!("sk-ai-switch-{}", Uuid::new_v4().simple())
+}
+
+const CLIENT_MODEL_MAX_OUTPUT_TOKENS: u32 = 128_000;
+const CLIENT_MODEL_CONTEXT_WINDOW: u32 = 200_000;
+const CLIENT_MODEL_ONE_M_CONTEXT_WINDOW: u32 = 1_000_000;
+
+/// The `[1m]` suffix is how the pool advertises a 1M-context variant of a
+/// model, so the written limit has to follow it rather than the base id.
+fn client_model_context_window(model_id: &str) -> u32 {
+    if model_id.trim().to_ascii_lowercase().ends_with("[1m]") {
+        CLIENT_MODEL_ONE_M_CONTEXT_WINDOW
+    } else {
+        CLIENT_MODEL_CONTEXT_WINDOW
+    }
 }
 
 #[cfg(test)]
@@ -1509,6 +1561,19 @@ command = "npx"
                 .await
                 .expect("read grok"),
             grok_original
+        );
+    }
+
+    #[test]
+    fn one_m_suffixed_models_get_the_larger_context_window() {
+        assert_eq!(client_model_context_window("gpt-5.6-sol"), 200_000);
+        assert_eq!(
+            client_model_context_window("claude-sonnet-alias[1m]"),
+            1_000_000
+        );
+        assert_eq!(
+            client_model_context_window("Claude-Sonnet-Alias[1M]"),
+            1_000_000
         );
     }
 

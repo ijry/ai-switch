@@ -8,8 +8,8 @@ pub(crate) struct ModelCapability {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct AdvertisedModel {
-    id: String,
+pub(crate) struct AdvertisedModel {
+    pub(crate) id: String,
     description: String,
 }
 
@@ -206,7 +206,7 @@ pub(crate) fn advertised_model_ids(
         .collect()
 }
 
-fn advertised_model_catalog_entries(
+pub(crate) fn advertised_model_catalog_entries(
     platform: &str,
     capabilities: &[ModelCapability],
 ) -> Vec<AdvertisedModel> {
@@ -344,11 +344,11 @@ fn is_claude_route_model(model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        advertised_model_ids, codex_model_catalog_payload, codex_reasoning_profile,
-        parse_model_capability, requested_model_from_body, resolve_mapping_target,
-        supports_requested_model,
+        advertised_model_catalog_entries, advertised_model_ids, codex_model_catalog_payload,
+        codex_reasoning_profile, parse_model_capability, requested_model_from_body,
+        resolve_mapping_target, supports_requested_model, ModelCapability,
     };
-    use crate::models::route_credential::FALLBACK_MODEL_ALIAS;
+    use crate::models::route_credential::{ModelMapping, FALLBACK_MODEL_ALIAS};
 
     #[test]
     fn codex_baseline_models_use_distinct_reasoning_profiles() {
@@ -608,6 +608,31 @@ mod tests {
         );
 
         assert_eq!(capability.mappings.len(), 2);
+    }
+
+    #[test]
+    fn catalog_entries_are_shared_with_client_config_writers() {
+        let mapping = ModelMapping {
+            from: "gpt-5.6-sol".to_string(),
+            to: "gpt-5.6-sol".to_string(),
+            label: None,
+            supports_1m: None,
+        };
+        let capability = ModelCapability {
+            mappings: vec![mapping],
+        };
+
+        // Same source of truth the Codex catalog uses, so a client config and
+        // the catalog can never advertise different models.
+        let entries = advertised_model_catalog_entries("codex", &[capability]);
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gpt-5.6-sol"]
+        );
     }
 
     #[test]

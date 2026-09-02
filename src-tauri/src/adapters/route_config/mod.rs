@@ -27,6 +27,16 @@ pub struct RouteConfigInput {
     /// so the proxy does the per-account translation. An empty plan clears every
     /// managed key.
     pub claude_env: ClaudeEnvPlan,
+    /// Models the pool advertises, for clients that cannot discover models on
+    /// their own. Empty for clients that can — the four native CLIs ignore it.
+    pub client_models: Vec<ClientModel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientModel {
+    pub id: String,
+    pub context_window: u32,
+    pub max_output_tokens: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -217,6 +227,7 @@ mod tests {
             base_url: BASE_URL.to_string(),
             route_proxy_key: ROUTE_PROXY_KEY.to_string(),
             claude_env: ClaudeEnvPlan::default(),
+            client_models: Vec::new(),
         }
     }
 
@@ -643,6 +654,45 @@ api_key = "legacy-key"
 
         // Platforms with no adapter list nothing rather than erroring.
         assert!(registry.clients_for_platform(PlatformId::Hermes).is_empty());
+    }
+
+    #[test]
+    fn client_models_carry_context_limits_and_are_ignored_by_native_adapters() {
+        let registry = TargetAdapterRegistry::new();
+        let with_models = RouteConfigInput {
+            client_models: vec![
+                ClientModel {
+                    id: "gpt-5.6-sol".to_string(),
+                    context_window: 200_000,
+                    max_output_tokens: 128_000,
+                },
+                ClientModel {
+                    id: "claude-sonnet-alias[1m]".to_string(),
+                    context_window: 1_000_000,
+                    max_output_tokens: 128_000,
+                },
+            ],
+            ..input()
+        };
+
+        // The four native CLIs discover models themselves, so the list must not
+        // leak into their files.
+        let codex = registry
+            .by_client_and_platform("codex", PlatformId::Codex)
+            .unwrap();
+        let rendered = codex
+            .render(Path::new("config.toml"), None, &with_models)
+            .unwrap();
+        let rendered = String::from_utf8(rendered).unwrap();
+        assert!(!rendered.contains("gpt-5.6-sol"));
+
+        let claude = registry
+            .by_client_and_platform("claude_code", PlatformId::Claude)
+            .unwrap();
+        let rendered = claude
+            .render(Path::new("settings.json"), None, &with_models)
+            .unwrap();
+        assert!(!String::from_utf8(rendered).unwrap().contains("gpt-5.6-sol"));
     }
 
     #[test]

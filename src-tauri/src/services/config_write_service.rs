@@ -1029,6 +1029,7 @@ mod tests {
                     base_url: BASE_URL.to_string(),
                     route_proxy_key: ROUTE_PROXY_KEY.to_string(),
                     claude_env: ClaudeEnvPlan::default(),
+                    client_models: Vec::new(),
                 },
             }
         }
@@ -1048,6 +1049,7 @@ mod tests {
                     base_url: BASE_URL.to_string(),
                     route_proxy_key: ROUTE_PROXY_KEY.to_string(),
                     claude_env: ClaudeEnvPlan::default(),
+                    client_models: Vec::new(),
                 },
             }
         }
