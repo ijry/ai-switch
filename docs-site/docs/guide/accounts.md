@@ -71,6 +71,8 @@ kind TEXT NOT NULL CHECK (kind IN ('official','api'))
 
 **`paused` 的账号仍然可以被显式测试。** 这是有意设计：手动测一次，正是用户判断暂停中的账号是否已经恢复的方式。
 
+**账号状态之外还有一层模型状态。** 同一个账号上的每个模型有自己的 `ok` / `error` / `paused` 三态与冷却窗口，存在 `route_credential_models` 表里。账号级 `paused` 让整个号退出调度，模型级 `paused` 只让这一个模型退出；两者互不影响。编辑抽屉的「模型状态」区块可以逐模型暂停、恢复或解除冷却。
+
 失败分类的完整规则、退避时长与阈值，见 [稳定性与自动恢复](/guide/reliability)。
 
 ## 优先级与并发上限
@@ -97,12 +99,14 @@ ALTER TABLE route_credentials
 
 一次代理请求的选号过程是：
 
-1. **筛出候选**。SQL 条件要求：在池内且启用（`route_pool_members.enabled = 1`）、未归档（`archived_at IS NULL`）、状态为 `ok`，且配额字段（`primary_remain`、`weekly_remain`）为空或大于 0。
+1. **筛出候选**。SQL 条件要求：在池内且启用（`route_pool_members.enabled = 1`）、未归档（`archived_at IS NULL`）、状态为 `ok`，且配额字段（`primary_remain`、`weekly_remain`）为空或大于 0。这一步不判冷却。
 2. **排序**。`ORDER BY route_priority ASC, sort_order ASC, created_at ASC` —— 先按优先级，再按池内手工排序，最后按创建时间。
 3. **分组轮转**。候选按 `route_priority` 分组，组内从持久化游标（`route_pool_cursors` 表按平台记录 `next_index`）开始轮询。游标持久化意味着重启应用之后不会每次都从第一个账号打起。
-4. **剔除冷却中的账号**。带有仍在未来的 `next_retry_at` 或 `cooldown_until` 的账号被移出可用集合。如果这样一来一个可用账号都不剩，调度器**只保留最快恢复的那一个冷却账号**去试，而不是让请求直接失败。
-5. **按模型过滤**。再根据平台能力规则与请求里的模型名筛一遍。
+4. **按模型过滤并解析模型键**。按平台能力规则与请求里的模型名筛一遍，同一趟为每个留下的候选算出它该被记账的上游模型键（`model_mappings` 的 `to`；官方账号取请求原名）。筛空返回 `route_pool.model_unmatched`。
+5. **查模型状态并剔除冷却**。按 `(账号 ID, 模型键)` 对批量读 `route_credential_models`，然后：被暂停或判为异常的模型**硬排除**，不参与任何兜底；账号级或模型级冷却未过期的进冷却桶。如果这样一来一个可用账号都不剩，调度器**只保留最快恢复的那一个冷却账号**去试，而不是让请求直接失败；如果连兜底都没有（全被硬排除），返回 `route_pool.model_unavailable`。
 6. **取并发租约**。逐个尝试 `try_acquire(platform, id, max_concurrency)`；拿不到租约就顺延到重试队列里的下一个账号。
+
+**第 4 步必须在第 5 步之前。** 该不该判为冷却取决于请求哪个模型，不知道模型就无法分桶。完整规则见 [稳定性与自动恢复](/guide/reliability)。
 
 支撑这套查询的复合索引是：
 
@@ -111,7 +115,12 @@ CREATE INDEX IF NOT EXISTS idx_route_credentials_routing_priority
   ON route_credentials(platform, route_priority, status, next_retry_at, cooldown_until);
 ```
 
-索引列顺序也正是调度语义：**池按平台切分，组内按优先级排序，冷却中的账号被排除在外。**
+索引列顺序也正是调度语义：**池按平台切分，组内按优先级排序，冷却中的账号被排除在外。** 模型级状态另有一个索引：
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_route_credential_models_lookup
+  ON route_credential_models(route_credential_id, status, cooldown_until);
+```
 
 ### 怎么配这两个值
 
