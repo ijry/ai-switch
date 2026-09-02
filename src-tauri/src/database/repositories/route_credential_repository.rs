@@ -1,3 +1,4 @@
+use crate::database::repositories::route_credential_model_repository::RouteCredentialModelRepository;
 use crate::error::AppError;
 use crate::models::route_credential::{
     RecoveryCandidate, ReorderRouteCredentialInput, RouteCredential, RouteCredentialFailurePolicy,
@@ -6,6 +7,7 @@ use crate::models::route_credential::{
     DEFAULT_ROUTE_CREDENTIAL_ERROR_STATUS_ENABLED, DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY,
     DEFAULT_ROUTE_CREDENTIAL_PRIORITY,
 };
+use crate::models::route_credential_model::FailureScope;
 use crate::models::route_credential_transfer::RouteCredentialSelectionContext;
 use chrono::Utc;
 use serde_json::Value;
@@ -1345,6 +1347,7 @@ impl RouteCredentialRepository {
         kind: &str,
         message: &str,
         response_body: Option<&[u8]>,
+        scope: FailureScope<'_>,
     ) -> Result<RetryState, AppError> {
         let mut tx = pool.begin().await.map_err(|err| AppError::Database {
             code: "database.route_credential_retry_tx",
@@ -1373,17 +1376,60 @@ impl RouteCredentialRepository {
             });
         };
         let policy = RouteCredentialFailurePolicy::from_config_json(&config_json);
+        let cooldown_seconds = policy.cooldown_enabled.then_some(policy.cooldown_seconds);
+
+        // A model-scoped failure charges the model row first, then asks whether
+        // anything is left to serve. Both happen inside this transaction:
+        // concurrent requests must not each see "not all parked yet" and skip
+        // the escalation.
+        let escalate = match scope {
+            FailureScope::Account => true,
+            FailureScope::Model { key, siblings } => {
+                RouteCredentialModelRepository::record_transient_failure(
+                    &mut tx,
+                    id,
+                    key,
+                    kind,
+                    message,
+                    response_body,
+                    cooldown_seconds,
+                    None,
+                    i64::from(policy.semantic_error_threshold),
+                    policy.error_status_enabled,
+                )
+                .await?;
+                let now = Utc::now().to_rfc3339();
+                let unavailable =
+                    RouteCredentialModelRepository::unavailable_keys(&mut tx, id, &now).await?;
+                let paused = RouteCredentialModelRepository::paused_keys(&mut tx, id).await?;
+                let serviceable = siblings
+                    .iter()
+                    .filter(|sibling| !paused.contains(sibling))
+                    .count();
+                let parked = siblings
+                    .iter()
+                    .filter(|sibling| !paused.contains(sibling) && unavailable.contains(sibling))
+                    .count();
+                // Only escalate when the account has run out of usable models.
+                // Paused models are excluded from the denominator: pausing three
+                // of four must not let the fourth's single failure fake an
+                // account-wide outage.
+                serviceable > 0 && parked >= serviceable
+            }
+        };
 
         let failure_count = current.saturating_add(1);
         // Every trigger uses the same account-configured window, so a flaky
         // account recovers predictably instead of sliding into a long backoff.
-        let (retry_at, cooldown_until) = if policy.cooldown_enabled {
-            let cooldown_until = (Utc::now()
-                + chrono::Duration::seconds(i64::from(policy.cooldown_seconds)))
-            .to_rfc3339();
-            (Some(cooldown_until.clone()), Some(cooldown_until))
-        } else {
-            (None, None)
+        let (retry_at, cooldown_until) = match (escalate, cooldown_seconds) {
+            (true, Some(seconds)) => {
+                let cooldown_until =
+                    (Utc::now() + chrono::Duration::seconds(i64::from(seconds))).to_rfc3339();
+                (Some(cooldown_until.clone()), Some(cooldown_until))
+            }
+            // A model-scoped failure leaves the account selectable for its other
+            // models, so its own deadline must not be written.
+            _ => (None, None),
         };
         let message = truncate_failure_message(message);
         let response = truncate_failure_response(response_body);
@@ -1425,7 +1471,17 @@ impl RouteCredentialRepository {
         })
     }
 
-    pub async fn clear_transient_failure(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
+    /// A success clears this account's backoff and, when the request named a
+    /// model, that model's row. Sibling models keep their own state: proving
+    /// `glm-5.3` works says nothing about `gpt-5.6-sol`.
+    pub async fn clear_transient_failure(
+        pool: &SqlitePool,
+        id: &str,
+        model_key: Option<&str>,
+    ) -> Result<(), AppError> {
+        if let Some(model_key) = model_key {
+            RouteCredentialModelRepository::clear(pool, id, model_key).await?;
+        }
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
             "UPDATE route_credentials
@@ -2616,6 +2672,7 @@ mod tests {
             "transport",
             &"x".repeat(600),
             None,
+            FailureScope::Account,
         )
         .await
         .unwrap();
@@ -2632,6 +2689,7 @@ mod tests {
             "transport",
             "temporary",
             None,
+            FailureScope::Account,
         )
         .await
         .unwrap();
@@ -2645,6 +2703,7 @@ mod tests {
             "upstream",
             "temporary",
             Some(br#"{"error":{"message":"bad key"}}"#),
+            FailureScope::Account,
         )
         .await
         .unwrap();
@@ -2665,7 +2724,7 @@ mod tests {
             Some(r#"{"error":{"message":"bad key"}}"#)
         );
 
-        RouteCredentialRepository::clear_transient_failure(&pool, &created.id)
+        RouteCredentialRepository::clear_transient_failure(&pool, &created.id, None)
             .await
             .unwrap();
         let cleared = RouteCredentialRepository::get(&pool, &created.id)
@@ -2723,6 +2782,7 @@ mod tests {
             "transport",
             "temporary",
             None,
+            FailureScope::Account,
         )
         .await
         .unwrap();
@@ -2744,6 +2804,7 @@ mod tests {
                 "transport",
                 "temporary",
                 None,
+                FailureScope::Account,
             )
             .await
             .unwrap();

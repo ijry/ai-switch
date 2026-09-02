@@ -5,6 +5,7 @@ use crate::models::platform::{ApiDialect, CapabilityRule, PlatformId, PlatformOp
 use crate::models::route_credential::{
     is_fallback_mapping, ModelMapping, RouteCredentialFailurePolicy,
 };
+use crate::models::route_credential_model::FailureScope;
 use crate::models::route_pool::{
     RoutePoolModelTestOutcome, RoutePoolModelTestRequest, RouteUsageBreakdown,
 };
@@ -1294,7 +1295,10 @@ async fn finish_outcome(
         let _ = maybe_persist_official_quota_from_response(pool, &credential, &response_body).await;
     }
     if success {
-        let _ = RouteCredentialRepository::clear_transient_failure(pool, &credential.id).await;
+        // Placeholder scope until per-model model-test bookkeeping lands: this
+        // still clears the whole account.
+        let _ =
+            RouteCredentialRepository::clear_transient_failure(pool, &credential.id, None).await;
         if should_restore_model_test_account_status(&credential.status) {
             RouteCredentialRepository::update_status(pool, &credential.id, "ok").await?;
         }
@@ -1315,6 +1319,8 @@ async fn finish_outcome(
                 "model_test_status",
                 &message,
                 Some(response_body.as_bytes()),
+                // Placeholder scope until per-model model-test bookkeeping lands.
+                FailureScope::Account,
             )
             .await?;
         } else if let Some(failure) = detect_response_failed(response_body.as_bytes()) {
@@ -1324,6 +1330,8 @@ async fn finish_outcome(
                 "semantic_response_transient",
                 &failure.message,
                 Some(response_body.as_bytes()),
+                // Placeholder scope until per-model model-test bookkeeping lands.
+                FailureScope::Account,
             )
             .await?;
         } else {
@@ -1348,6 +1356,9 @@ async fn finish_outcome(
                         "model_test",
                         message,
                         Some(response_body.as_bytes()),
+                        // Placeholder scope until per-model model-test bookkeeping
+                        // lands. A transport failure is account-scoped anyway.
+                        FailureScope::Account,
                     )
                     .await;
                 }

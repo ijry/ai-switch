@@ -9,7 +9,9 @@ use crate::models::route_credential::{
     RouteCredentialFailurePolicy, ANTHROPIC_API_KEY_FIELD, ANTHROPIC_AUTH_TOKEN_FIELD,
     CLAUDE_ONE_M_SUFFIX,
 };
-use crate::models::route_credential_model::{RouteCredentialModelState, MODEL_STATUS_OK};
+use crate::models::route_credential_model::{
+    FailureScope, RouteCredentialModelState, MODEL_STATUS_OK,
+};
 use crate::models::route_pool::RouteUsageBreakdown;
 use crate::services::client_identity;
 use crate::services::codex_reasoning_cache::CodexReasoningCache;
@@ -29,10 +31,11 @@ use crate::services::route_config_service::generate_route_proxy_key;
 use crate::services::route_credential_activity::{
     RouteCredentialActivityLease, RouteCredentialActivityRegistry,
 };
+use crate::services::route_failure_scope::is_account_scoped_failure;
 use crate::services::route_model_capability::{
-    advertised_model_ids, codex_reasoning_metadata, model_state_key, parse_model_capability,
-    parse_model_capability_value, requested_model_from_body, resolve_mapping_target,
-    supports_requested_model,
+    advertised_model_ids, codex_reasoning_metadata, known_upstream_models, model_state_key,
+    parse_model_capability, parse_model_capability_value, requested_model_from_body,
+    resolve_mapping_target, supports_requested_model,
 };
 use crate::services::route_protocol_bridge::{
     is_anthropic_count_tokens_path, prepare_request as prepare_protocol_bridge_request,
@@ -634,7 +637,27 @@ async fn forward_request(
             "route_pool.model_unmatched: no enabled route credential supports model '{model}' on platform '{platform}'"
         ));
     }
-    let credentials = partition_by_cooldown(candidates, &HashMap::new(), Utc::now());
+    // Keyed by account id: two accounts may map the same requested model to
+    // different upstream names, so the pair is the key, never the model alone.
+    let model_keys: HashMap<String, String> = candidates
+        .iter()
+        .filter_map(|candidate| {
+            Some((
+                candidate.credential.id.clone(),
+                candidate.model_key.clone()?,
+            ))
+        })
+        .collect();
+    let model_states = load_candidate_model_states(pool, &candidates)
+        .await
+        .map_err(|err| err.to_string())?;
+    let credentials = partition_by_cooldown(candidates, &model_states, Utc::now());
+    if credentials.is_empty() {
+        let model = requested_model.as_deref().unwrap_or("unknown");
+        return Err(format!(
+            "route_pool.model_unavailable: every route credential for model '{model}' on platform '{platform}' is paused or marked unhealthy"
+        ));
+    }
     let cursor = RoutePoolRepository::next_cursor_index(pool, &platform)
         .await
         .map_err(|err| err.to_string())?;
@@ -680,6 +703,9 @@ async fn forward_request(
     while let Some((credential_index, credential_retry_count)) = retry_queue.pop_front() {
         attempt += 1;
         let selected = &credentials[credential_index];
+        // The upstream model this account was matched on. Every failure recorded
+        // below is charged against it unless the failure is account-scoped.
+        let selected_model_key = model_keys.get(&selected.id).cloned();
         let Some(activity_lease) = state
             .activity
             .try_acquire(&platform, &selected.id, selected.max_concurrency)
@@ -700,7 +726,8 @@ async fn forward_request(
                             &state.activity,
                             &platform,
                             pool,
-                            &selected.id,
+                            selected,
+                            selected_model_key.as_deref(),
                             "refresh",
                             &error,
                             None,
@@ -780,7 +807,8 @@ async fn forward_request(
                     &state.activity,
                     &platform,
                     pool,
-                    &credential.id,
+                    &credential,
+                    selected_model_key.as_deref(),
                     "request_build",
                     &error,
                     None,
@@ -905,7 +933,8 @@ async fn forward_request(
                         &state.activity,
                         &platform,
                         pool,
-                        &credential.id,
+                        &credential,
+                        selected_model_key.as_deref(),
                         "transport",
                         &error_message,
                         None,
@@ -964,6 +993,7 @@ async fn forward_request(
                             request_start,
                             requested_model: requested_model.as_deref(),
                             upstream_model: upstream_model.as_deref(),
+                            model_key: selected_model_key.as_deref(),
                             bridge_name: bridge_name.as_deref(),
                             client_request: &body_bytes,
                             upstream_request: &upstream_request_bytes,
@@ -999,6 +1029,7 @@ async fn forward_request(
                             request_start,
                             requested_model: requested_model.as_deref(),
                             upstream_model: upstream_model.as_deref(),
+                            model_key: selected_model_key.as_deref(),
                             bridge_name: bridge_name.as_deref(),
                             client_request: &body_bytes,
                             upstream_request: &upstream_request_bytes,
@@ -1035,6 +1066,7 @@ async fn forward_request(
                         request_start,
                         requested_model: requested_model.as_deref(),
                         upstream_model: upstream_model.as_deref(),
+                        model_key: selected_model_key.as_deref(),
                         bridge_name: bridge_name.as_deref(),
                         client_request: &body_bytes,
                         upstream_request: &upstream_request_bytes,
@@ -1071,6 +1103,7 @@ async fn forward_request(
                 request_start,
                 requested_model: requested_model.clone(),
                 upstream_model: upstream_model.clone(),
+                model_key: selected_model_key.clone(),
                 bridge_name: bridge_name.clone(),
                 client_request: body_bytes.clone(),
                 upstream_request: upstream_request_bytes.clone(),
@@ -1147,7 +1180,8 @@ async fn forward_request(
                         &state.activity,
                         &platform,
                         pool,
-                        &credential.id,
+                        &credential,
+                        selected_model_key.as_deref(),
                         "transport",
                         &error_message,
                         None,
@@ -1198,7 +1232,8 @@ async fn forward_request(
                         &state.activity,
                         &platform,
                         pool,
-                        &credential.id,
+                        &credential,
+                        selected_model_key.as_deref(),
                         "response_transform",
                         &error_message,
                         Some(&response_bytes),
@@ -1400,7 +1435,8 @@ async fn forward_request(
                     &state.activity,
                     &platform,
                     pool,
-                    &credential.id,
+                    &credential,
+                    selected_model_key.as_deref(),
                     "semantic_response_transient",
                     &failure.message,
                     Some(&response_bytes),
@@ -1416,12 +1452,14 @@ async fn forward_request(
                 wait_for_credential_retry(failure_policy).await;
                 retry_queue.push_front((credential_index, credential_retry_count + 1));
             } else {
-                record_route_credential_failure(
+                record_route_credential_failure_with_status(
                     &state.activity,
                     &platform,
                     pool,
-                    &credential.id,
+                    &credential,
+                    selected_model_key.as_deref(),
                     "upstream_status",
+                    Some(status.as_u16()),
                     &error_message,
                     Some(&response_bytes),
                 )
@@ -1432,12 +1470,14 @@ async fn forward_request(
         }
         if should_retry {
             let error_message = format!("upstream returned {}", status.as_u16());
-            record_route_credential_failure(
+            record_route_credential_failure_with_status(
                 &state.activity,
                 &platform,
                 pool,
-                &credential.id,
+                &credential,
+                selected_model_key.as_deref(),
                 "upstream_status",
+                Some(status.as_u16()),
                 &error_message,
                 Some(&response_bytes),
             )
@@ -1450,9 +1490,13 @@ async fn forward_request(
             continue;
         }
 
-        if RouteCredentialRepository::clear_transient_failure(pool, &credential.id)
-            .await
-            .is_ok()
+        if RouteCredentialRepository::clear_transient_failure(
+            pool,
+            &credential.id,
+            selected_model_key.as_deref(),
+        )
+        .await
+        .is_ok()
         {
             state
                 .activity
@@ -1938,6 +1982,9 @@ struct StreamPrimeContext<'a> {
     request_start: Instant,
     requested_model: Option<&'a str>,
     upstream_model: Option<&'a str>,
+    /// Upstream model key this attempt is charged under, `None` when the request
+    /// carried no model.
+    model_key: Option<&'a str>,
     bridge_name: Option<&'a str>,
     client_request: &'a [u8],
     upstream_request: &'a [u8],
@@ -2014,7 +2061,8 @@ async fn handle_stream_prime_failure(
             &state.activity,
             platform,
             pool,
-            &credential.id,
+            credential,
+            context.model_key,
             "transport",
             error_message,
             None,
@@ -2041,6 +2089,9 @@ struct StreamCompletion {
     request_start: Instant,
     requested_model: Option<String>,
     upstream_model: Option<String>,
+    /// Upstream model key this response is charged under, `None` when the request
+    /// carried no model.
+    model_key: Option<String>,
     bridge_name: Option<String>,
     client_request: axum::body::Bytes,
     upstream_request: Vec<u8>,
@@ -2067,6 +2118,7 @@ impl StreamCompletion {
             request_start,
             requested_model,
             upstream_model,
+            model_key,
             bridge_name,
             client_request,
             upstream_request,
@@ -2135,7 +2187,8 @@ impl StreamCompletion {
                 &state.activity,
                 &platform,
                 &state.pool,
-                &credential.id,
+                &credential,
+                model_key.as_deref(),
                 "semantic_response_transient",
                 STREAM_DISCONNECTED_FAILURE_MESSAGE,
                 Some(&preview),
@@ -2144,9 +2197,13 @@ impl StreamCompletion {
             return;
         }
 
-        if RouteCredentialRepository::clear_transient_failure(&state.pool, &credential.id)
-            .await
-            .is_ok()
+        if RouteCredentialRepository::clear_transient_failure(
+            &state.pool,
+            &credential.id,
+            model_key.as_deref(),
+        )
+        .await
+        .is_ok()
         {
             state
                 .activity
@@ -2288,26 +2345,75 @@ pub fn credential_is_retryable_now(
         })
 }
 
+/// Record a failure whose scope can be decided from `kind` alone.
+///
+/// The account's mapped models are only parsed when the failure could be
+/// model-scoped, so the common account-wide case stays as cheap as before.
 async fn record_route_credential_failure(
     activity: &RouteCredentialActivityRegistry,
     platform: &str,
     pool: &SqlitePool,
-    credential_id: &str,
+    credential: &SelectedCredential,
+    model_key: Option<&str>,
     kind: &str,
     message: &str,
     response_body: Option<&[u8]>,
 ) {
+    record_route_credential_failure_with_status(
+        activity,
+        platform,
+        pool,
+        credential,
+        model_key,
+        kind,
+        None,
+        message,
+        response_body,
+    )
+    .await;
+}
+
+/// Same, for failures whose scope also depends on the upstream status code
+/// (`upstream_status` / `model_test_status`: 401/403 condemn the key, anything
+/// else is a verdict on one model).
+#[allow(clippy::too_many_arguments)]
+async fn record_route_credential_failure_with_status(
+    activity: &RouteCredentialActivityRegistry,
+    platform: &str,
+    pool: &SqlitePool,
+    credential: &SelectedCredential,
+    model_key: Option<&str>,
+    kind: &str,
+    status: Option<u16>,
+    message: &str,
+    response_body: Option<&[u8]>,
+) {
+    // Without a model name there is nothing to charge but the account — Gemini
+    // keeps its model in the path, and some routes carry none at all.
+    let siblings = (!is_account_scoped_failure(kind, status))
+        .then(|| {
+            model_key.map(|_| {
+                let capability = parse_model_capability(&credential.config_json);
+                known_upstream_models(platform, &capability, &credential.kind)
+            })
+        })
+        .flatten();
+    let scope = match (model_key, siblings.as_deref()) {
+        (Some(key), Some(siblings)) => FailureScope::Model { key, siblings },
+        _ => FailureScope::Account,
+    };
     if RouteCredentialRepository::record_transient_failure(
         pool,
-        credential_id,
+        &credential.id,
         kind,
         message,
         response_body,
+        scope,
     )
     .await
     .is_ok()
     {
-        activity.notify_status_change(platform, credential_id);
+        activity.notify_status_change(platform, &credential.id);
     }
 }
 
@@ -2350,6 +2456,11 @@ fn json_error(status: StatusCode, message: &str) -> Response {
         "route_pool.empty"
     } else if message.contains("route_pool.model_unmatched") {
         "route_pool.model_unmatched"
+    } else if message.contains("route_pool.model_unavailable") {
+        // Every account that could serve this model is paused, marked unhealthy,
+        // or still cooling. Distinct from `model_unmatched`: the mapping exists,
+        // it is just unusable right now.
+        "route_pool.model_unavailable"
     } else {
         "route_proxy.error"
     };
@@ -2627,10 +2738,8 @@ fn latest_deadline(left: Option<&str>, right: Option<&str>) -> Option<String> {
 
 /// Batch-read the per-model state for candidates that carry a model key.
 ///
-/// Not yet on the forward path: the request path keeps passing an empty map until
-/// the failure bookkeeping actually writes model rows, because dropping
-/// `paused`/`error` candidates needs the distinct error code that lands with it.
-#[allow(dead_code)]
+/// One query for the whole pool rather than one per account: the forward path
+/// runs this on every request, so the round trip count has to stay flat.
 pub(crate) async fn load_candidate_model_states(
     pool: &SqlitePool,
     candidates: &[PoolCandidate],
@@ -5492,6 +5601,41 @@ mod tests {
         format!("http://{address}/v1")
     }
 
+    /// An upstream that fails one model and serves another, i.e. exactly the
+    /// relay behaviour that makes account-wide cooldown wrong.
+    async fn start_per_model_upstream(failing_model: &'static str) -> String {
+        let app = Router::new().fallback(move |body: axum::body::Bytes| async move {
+            let model = serde_json::from_slice::<Value>(&body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_default();
+            if model == failing_model {
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    r#"{"error":{"message":"rate limited"}}"#,
+                )
+            } else {
+                (
+                    StatusCode::OK,
+                    r#"{"choices":[{"message":{"content":"ok"}}]}"#,
+                )
+            }
+        });
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind per-model upstream");
+        let address = listener.local_addr().expect("per-model address");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve per-model");
+        });
+        format!("http://{address}/v1")
+    }
+
     /// An upstream that accepts the connection and then goes silent forever.
     ///
     /// This is the failure the proxy could not see before it had deadlines: no
@@ -7225,6 +7369,7 @@ mod tests {
                 "transport",
                 "temporary",
                 None,
+                FailureScope::Account,
             )
             .await
             .expect("record failure");
@@ -7239,7 +7384,7 @@ mod tests {
             vec![credential_id.clone()]
         );
 
-        RouteCredentialRepository::clear_transient_failure(&pool, &credential_id)
+        RouteCredentialRepository::clear_transient_failure(&pool, &credential_id, None)
             .await
             .expect("clear retry state");
         assert_eq!(
@@ -10114,6 +10259,242 @@ data: [DONE]\n\n";
             filter_candidates_for_model("codex", vec![candidate("cred-1", None, None)], None);
         assert_eq!(filtered.len(), 1);
         assert!(filtered[0].model_key.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_failing_model_does_not_take_out_its_sibling_on_the_same_account() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let upstream = start_per_model_upstream("upstream-sol").await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential = RouteCredentialRepository::create(
+            &pool,
+            "codex",
+            "api",
+            "Dual Model",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-upstream"}"#,
+            &json!({
+                "base_url": upstream,
+                "interface_format": "openai",
+                "model_mappings": [
+                    {"from": "gpt-5.6-sol", "to": "upstream-sol"},
+                    {"from": "glm-5.3", "to": "upstream-glm"}
+                ],
+                "failure_policy": {"cooldown_enabled": true, "cooldown_seconds": 600, "retry_count": 0}
+            })
+            .to_string(),
+            "{}",
+        )
+        .await
+        .expect("create credential");
+        RoutePoolRepository::replace_members(&pool, "codex", &[credential.id.clone()])
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-per-model")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+        let endpoint = format!(
+            "{}/v1/chat/completions",
+            proxy.base_url.as_deref().expect("base url")
+        );
+        let client = reqwest::Client::new();
+        let post = |model: &'static str| {
+            let client = client.clone();
+            let endpoint = endpoint.clone();
+            let route_key = route_key.clone();
+            async move {
+                client
+                    .post(&endpoint)
+                    .bearer_auth(&route_key)
+                    .header(ROUTE_PROXY_PLATFORM_HEADER, "codex")
+                    .json(&json!({"model": model, "messages": []}))
+                    .send()
+                    .await
+                    .expect("proxy response")
+            }
+        };
+
+        // 1. The failing model parks itself.
+        assert_eq!(
+            post("gpt-5.6-sol").await.status(),
+            reqwest::StatusCode::BAD_GATEWAY
+        );
+        let states =
+            RouteCredentialModelRepository::list_for_credentials(&pool, &[credential.id.clone()])
+                .await
+                .expect("model states");
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].model_key, "upstream-sol");
+        assert!(states[0].cooldown_until.is_some());
+
+        // 2. The sibling still works — this is the regression this feature exists for.
+        assert_eq!(post("glm-5.3").await.status(), reqwest::StatusCode::OK);
+
+        // 3. The account itself was never parked, so the cooling model can still
+        //    be probed as the last resort.
+        let stored = RouteCredentialRepository::get(&pool, &credential.id)
+            .await
+            .expect("account row");
+        assert!(stored.cooldown_until.is_none());
+        assert_eq!(
+            post("gpt-5.6-sol").await.status(),
+            reqwest::StatusCode::BAD_GATEWAY
+        );
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn a_healthy_account_wins_over_one_whose_model_is_cooling() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let failing = start_per_model_upstream("upstream-sol").await;
+        let healthy = start_fixed_upstream(StatusCode::OK, r#"{"route":"healthy"}"#).await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let cooling_id = create_proxy_api_credential_with_mappings(
+            &pool,
+            "cooling",
+            &failing,
+            json!([{"from": "gpt-5.6-sol", "to": "upstream-sol"}]),
+        )
+        .await;
+        sqlx::query("UPDATE route_credentials SET config_json = json_set(config_json, '$.failure_policy', json('{\"cooldown_enabled\":true,\"cooldown_seconds\":600,\"retry_count\":0}')) WHERE id = ?")
+            .bind(&cooling_id)
+            .execute(&pool)
+            .await
+            .expect("enable cooldown");
+        let healthy_id = create_proxy_api_credential_with_mappings(
+            &pool,
+            "healthy",
+            &healthy,
+            json!([{"from": "gpt-5.6-sol", "to": "upstream-sol"}]),
+        )
+        .await;
+        RoutePoolRepository::replace_members(
+            &pool,
+            "codex",
+            &[cooling_id.clone(), healthy_id.clone()],
+        )
+        .await
+        .expect("pool members");
+        let route_key = RouteProxyKeyRepository::ensure_platform_key(
+            &pool,
+            "codex",
+            "sk-ai-switch-model-failover",
+        )
+        .await
+        .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+        let endpoint = format!(
+            "{}/v1/chat/completions",
+            proxy.base_url.as_deref().expect("base url")
+        );
+        let client = reqwest::Client::new();
+
+        // First request fails over from the cooling account to the healthy one.
+        let first = client
+            .post(&endpoint)
+            .bearer_auth(&route_key)
+            .header(ROUTE_PROXY_PLATFORM_HEADER, "codex")
+            .json(&json!({"model": "gpt-5.6-sol", "messages": []}))
+            .send()
+            .await
+            .expect("first response");
+        assert_eq!(first.status(), reqwest::StatusCode::OK);
+
+        // Second request skips the parked model outright.
+        let second = client
+            .post(&endpoint)
+            .bearer_auth(&route_key)
+            .header(ROUTE_PROXY_PLATFORM_HEADER, "codex")
+            .json(&json!({"model": "gpt-5.6-sol", "messages": []}))
+            .send()
+            .await
+            .expect("second response");
+        assert_eq!(second.status(), reqwest::StatusCode::OK);
+        assert_eq!(second.text().await.expect("body"), r#"{"route":"healthy"}"#);
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn every_model_cooling_escalates_to_an_account_level_cooldown() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        // This upstream fails everything, so both mapped models get parked.
+        let upstream = start_fixed_upstream(
+            StatusCode::TOO_MANY_REQUESTS,
+            r#"{"error":{"message":"rate limited"}}"#,
+        )
+        .await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_proxy_api_credential_with_mappings(
+            &pool,
+            "all-models",
+            &upstream,
+            json!([
+                {"from": "gpt-5.6-sol", "to": "upstream-sol"},
+                {"from": "glm-5.3", "to": "upstream-glm"}
+            ]),
+        )
+        .await;
+        sqlx::query("UPDATE route_credentials SET config_json = json_set(config_json, '$.failure_policy', json('{\"cooldown_enabled\":true,\"cooldown_seconds\":600,\"retry_count\":0}')) WHERE id = ?")
+            .bind(&credential_id)
+            .execute(&pool)
+            .await
+            .expect("enable cooldown");
+        RoutePoolRepository::replace_members(&pool, "codex", &[credential_id.clone()])
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-escalate")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+        let endpoint = format!(
+            "{}/v1/chat/completions",
+            proxy.base_url.as_deref().expect("base url")
+        );
+        let client = reqwest::Client::new();
+        for model in ["gpt-5.6-sol", "glm-5.3"] {
+            let _ = client
+                .post(&endpoint)
+                .bearer_auth(&route_key)
+                .header(ROUTE_PROXY_PLATFORM_HEADER, "codex")
+                .json(&json!({"model": model, "messages": []}))
+                .send()
+                .await
+                .expect("response");
+        }
+
+        let stored = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("account row");
+        // With nothing left to serve, the account itself backs off — otherwise a
+        // fully-down relay would be re-probed once per model forever.
+        assert!(stored.cooldown_until.is_some());
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
     }
 
     #[tokio::test]

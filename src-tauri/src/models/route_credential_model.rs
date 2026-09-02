@@ -30,3 +30,18 @@ pub struct RouteCredentialModelState {
     pub created_at: String,
     pub updated_at: String,
 }
+
+/// Where a failure should be charged.
+///
+/// `siblings` is every model key this account is known to serve, so the
+/// repository can tell whether parking this one leaves nothing usable and the
+/// account itself should back off. The service layer computes it — parsing
+/// `model_mappings` is not the repository's job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureScope<'a> {
+    Account,
+    Model {
+        key: &'a str,
+        siblings: &'a [String],
+    },
+}
