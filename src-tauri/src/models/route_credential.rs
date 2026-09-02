@@ -163,6 +163,10 @@ pub struct RecoveryCandidate {
     pub config_json: String,
     pub next_retry_at: Option<String>,
     pub cooldown_until: Option<String>,
+    /// 1 when the account has non-paused model rows. An account can look healthy
+    /// at the account level while one of its models is parked, and that case must
+    /// still reach the scheduler.
+    pub has_model_failures: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

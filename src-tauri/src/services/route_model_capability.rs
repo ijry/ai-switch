@@ -221,6 +221,19 @@ pub(crate) fn model_state_key(
         .unwrap_or_else(|| requested.to_string())
 }
 
+/// Map an upstream model key back to a client-facing alias, for places that must
+/// speak the request vocabulary (the model test takes `mapping.from`).
+pub(crate) fn alias_for_model_key(capability: &ModelCapability, model_key: &str) -> Option<String> {
+    capability
+        .mappings
+        .iter()
+        .find(|mapping| {
+            !is_fallback_mapping(mapping)
+                && strip_one_m_suffix_for_route_lookup(&mapping.to) == model_key
+        })
+        .map(|mapping| mapping.from.trim().to_string())
+}
+
 /// Every model key this account could ever produce. Used as the denominator when
 /// deciding whether an account-level escalation is due, and to list models the
 /// user may pause before any of them has failed.
@@ -395,9 +408,9 @@ fn is_claude_route_model(model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        advertised_model_ids, codex_model_catalog_payload, codex_reasoning_profile,
-        known_upstream_models, model_state_key, parse_model_capability, requested_model_from_body,
-        resolve_mapping_target, supports_requested_model,
+        advertised_model_ids, alias_for_model_key, codex_model_catalog_payload,
+        codex_reasoning_profile, known_upstream_models, model_state_key, parse_model_capability,
+        requested_model_from_body, resolve_mapping_target, supports_requested_model,
     };
     use crate::models::route_credential::FALLBACK_MODEL_ALIAS;
 
@@ -770,5 +783,17 @@ mod tests {
         let models = known_upstream_models("codex", &capability, "official");
         assert!(models.contains(&"gpt-5.6-sol".to_string()));
         assert!(!models.contains(&"upstream-sol".to_string()));
+    }
+
+    #[test]
+    fn alias_for_model_key_maps_upstream_names_back_to_client_aliases() {
+        let capability = parse_model_capability(
+            r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"upstream-sol"}]}"#,
+        );
+        assert_eq!(
+            alias_for_model_key(&capability, "upstream-sol").as_deref(),
+            Some("gpt-5.6-sol")
+        );
+        assert!(alias_for_model_key(&capability, "unknown").is_none());
     }
 }

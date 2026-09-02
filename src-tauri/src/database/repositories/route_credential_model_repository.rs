@@ -232,8 +232,9 @@ impl RouteCredentialModelRepository {
         Ok(())
     }
 
-    /// Account-level reactivation (scheduled recovery, explicit account test)
-    /// wipes automatic model state but leaves paused models paused.
+    /// Scheduled recovery means "revive unconditionally", so it wipes automatic
+    /// model state — but leaves paused models paused. An explicit per-account
+    /// test does NOT use this: it only proves the one model it asked about.
     pub async fn clear_all_unpaused(
         conn: &mut SqliteConnection,
         credential_id: &str,

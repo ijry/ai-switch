@@ -1327,7 +1327,11 @@ impl RouteCredentialRepository {
         pool: &SqlitePool,
     ) -> Result<Vec<RecoveryCandidate>, AppError> {
         sqlx::query_as::<_, RecoveryCandidate>(
-            "SELECT id, platform, status, config_json, next_retry_at, cooldown_until
+            "SELECT id, platform, status, config_json, next_retry_at, cooldown_until,
+                    EXISTS (
+                      SELECT 1 FROM route_credential_models m
+                      WHERE m.route_credential_id = route_credentials.id AND m.status != 'paused'
+                    ) AS has_model_failures
              FROM route_credentials
              WHERE archived_at IS NULL",
         )
@@ -1607,13 +1611,33 @@ impl RouteCredentialRepository {
     }
 
     pub async fn recover_after_explicit_test(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
-        Self::reactivate_credential(pool, id).await
+        // Account columns only. An explicit test asks about one model, and
+        // `clear_transient_failure` already cleared that model's row; dropping
+        // its siblings here would claim the upstream answered for models it was
+        // never asked about.
+        Self::reactivate(pool, id, false).await
     }
 
     /// Set the account back to "ok" and clear any cooldown/retry backoff, unless
     /// it is `revoked` (a hard auth failure that must not be silently re-enabled).
-    /// Shared by explicit model tests and the auto-recovery scheduler.
+    /// Scheduled recovery means "revive unconditionally", so it also drops every
+    /// automatic model row.
     pub async fn reactivate_credential(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
+        Self::reactivate(pool, id, true).await
+    }
+
+    async fn reactivate(
+        pool: &SqlitePool,
+        id: &str,
+        clear_model_state: bool,
+    ) -> Result<(), AppError> {
+        let mut tx = pool.begin().await.map_err(|err| {
+            database_error(
+                "database.route_credential_recover",
+                "Could not start route credential recovery",
+                err,
+            )
+        })?;
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
             "UPDATE route_credentials
@@ -1627,7 +1651,7 @@ impl RouteCredentialRepository {
         )
         .bind(&now)
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|err| {
             database_error(
@@ -1636,11 +1660,17 @@ impl RouteCredentialRepository {
                 err,
             )
         })?;
+
+        if clear_model_state {
+            // Automation may undo automation, never a human decision.
+            RouteCredentialModelRepository::clear_all_unpaused(&mut tx, id).await?;
+        }
+
         if result.rows_affected() == 0 {
             let exists =
                 sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM route_credentials WHERE id = ?")
                     .bind(id)
-                    .fetch_one(pool)
+                    .fetch_one(&mut *tx)
                     .await
                     .map_err(|err| {
                         database_error(
@@ -1658,6 +1688,13 @@ impl RouteCredentialRepository {
                 });
             }
         }
+        tx.commit().await.map_err(|err| {
+            database_error(
+                "database.route_credential_recover",
+                "Could not save route credential recovery",
+                err,
+            )
+        })?;
         Ok(())
     }
 
@@ -3143,5 +3180,87 @@ mod tests {
         assert_eq!(quota.primary_remain, Some(3));
         assert_eq!(quota.quota_remaining, Some(3));
         assert_eq!(quota.reset_primary.as_deref(), Some("2026-07-22T00:00:00Z"));
+    }
+
+    #[tokio::test]
+    async fn reactivating_an_account_keeps_paused_models_paused() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let created = create_api_credential(&pool, "codex", "Reactivate").await;
+
+        let mut conn = pool.acquire().await.expect("conn");
+        RouteCredentialModelRepository::record_transient_failure(
+            &mut conn,
+            &created.id,
+            "auto-parked",
+            "upstream_status",
+            "boom",
+            None,
+            Some(600),
+            Some(429),
+            10,
+            true,
+        )
+        .await
+        .expect("park");
+        drop(conn);
+        RouteCredentialModelRepository::set_status(&pool, &created.id, "held", "paused")
+            .await
+            .expect("pause");
+
+        RouteCredentialRepository::reactivate_credential(&pool, &created.id)
+            .await
+            .expect("reactivate");
+
+        let states = RouteCredentialModelRepository::list_for_credentials(&pool, &[created.id])
+            .await
+            .expect("states");
+        // Scheduled recovery clears what automation parked, never what the user did.
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].model_key, "held");
+    }
+
+    #[tokio::test]
+    async fn recovery_candidates_flag_accounts_whose_only_problem_is_a_model() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let created = create_api_credential(&pool, "codex", "Model only").await;
+
+        let candidates = RouteCredentialRepository::list_recovery_candidates(&pool)
+            .await
+            .expect("candidates");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].has_model_failures, 0);
+
+        // A paused model is the user's decision, not something to recover from.
+        RouteCredentialModelRepository::set_status(&pool, &created.id, "held", "paused")
+            .await
+            .expect("pause");
+        let candidates = RouteCredentialRepository::list_recovery_candidates(&pool)
+            .await
+            .expect("candidates");
+        assert_eq!(candidates[0].has_model_failures, 0);
+
+        let mut conn = pool.acquire().await.expect("conn");
+        RouteCredentialModelRepository::record_transient_failure(
+            &mut conn,
+            &created.id,
+            "auto-parked",
+            "upstream_status",
+            "boom",
+            None,
+            Some(600),
+            Some(429),
+            10,
+            true,
+        )
+        .await
+        .expect("park");
+        drop(conn);
+
+        let candidates = RouteCredentialRepository::list_recovery_candidates(&pool)
+            .await
+            .expect("candidates");
+        assert_eq!(candidates[0].has_model_failures, 1);
     }
 }
