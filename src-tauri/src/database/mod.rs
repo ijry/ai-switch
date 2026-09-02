@@ -191,18 +191,34 @@ fn line_ending_variants_match(sql: &str, stored: &[u8]) -> bool {
 async fn has_user_data(pool: &SqlitePool) -> Result<bool, AppError> {
     for table in USER_DATA_TABLES {
         // EXISTS stops at the first row, so this stays cheap even next to a
-        // usage_events table with a million rows. A table missing from an older
-        // schema simply holds no rows here.
-        let present: Option<bool> =
-            sqlx::query_scalar(&format!("SELECT EXISTS(SELECT 1 FROM \"{table}\")"))
+        // usage_events table with a million rows.
+        let present =
+            sqlx::query_scalar::<_, bool>(&format!("SELECT EXISTS(SELECT 1 FROM \"{table}\")"))
                 .fetch_one(pool)
-                .await
-                .ok();
-        if present.unwrap_or(false) {
-            return Ok(true);
+                .await;
+        match present {
+            Ok(true) => return Ok(true),
+            Ok(false) => {}
+            // A table missing from an older schema genuinely holds no rows. Any
+            // other failure must not be read as "nothing here to lose": both
+            // callers take `false` as permission to replace this database, so a
+            // transient query error would cost the user their accounts.
+            Err(err) if is_missing_table(&err) => {}
+            Err(err) => {
+                return Err(migration_repair_error(
+                    &format!("check whether \"{table}\" holds user data"),
+                    err,
+                ))
+            }
         }
     }
     Ok(false)
+}
+
+/// True when SQLite rejected the statement because the table is not part of this
+/// schema — the expected answer for a database written by an older version.
+fn is_missing_table(err: &sqlx::Error) -> bool {
+    err.to_string().contains("no such table")
 }
 
 /// Bring back a database that an earlier version quarantined.
@@ -224,15 +240,23 @@ async fn restore_quarantined_database(
     if has_user_data(&pool).await? {
         return Ok(pool);
     }
-    let Some(candidate) = newest_quarantined_database(database_file, backups_dir).await else {
+    let Some(stamp) = newest_quarantined_stamp(database_file, backups_dir).await else {
         return Ok(pool);
     };
+    let quarantined = quarantined_paths(database_file, backups_dir, &stamp);
 
     // Migrate a scratch copy first: a quarantine file that cannot be brought up
-    // to the current schema must not replace the working database.
+    // to the current schema must not replace the working database. The `-wal`
+    // sidecar travels with it — a quarantine taken after an unclean shutdown
+    // keeps its newest transactions there, and opening the bare `.db` would
+    // drop them without a word.
     let staged = append_suffix(database_file, ".restore-candidate");
     let _ = remove_database_files(&staged).await;
-    tokio::fs::copy(&candidate, &staged).await?;
+    for (source, target) in quarantined.iter().zip(database_sidecar_paths(&staged)) {
+        if tokio::fs::try_exists(source).await.unwrap_or(false) {
+            tokio::fs::copy(source, &target).await?;
+        }
+    }
     let restored = match prepare_restored_copy(&staged).await {
         Ok(true) => true,
         Ok(false) | Err(_) => false,
@@ -243,11 +267,16 @@ async fn restore_quarantined_database(
     }
 
     pool.close().await;
-    remove_database_files(database_file).await?;
-    tokio::fs::rename(&staged, database_file).await?;
+    // Park what is being replaced instead of deleting it. The live database is
+    // empty by the check above, but that is a verdict this code reached on its
+    // own: if it is ever wrong, the bytes still have to exist somewhere.
+    park_replaced_database(database_file, backups_dir).await?;
+    rename_database_files(&staged, database_file).await?;
     // Keep the bytes, but take the file out of the candidate set so a later
     // start cannot restore it a second time over newer data.
-    let _ = tokio::fs::rename(&candidate, append_suffix(&candidate, ".restored")).await;
+    if let Some(base) = quarantined.first() {
+        let _ = rename_with_retry(base, &append_suffix(base, ".restored")).await;
+    }
 
     create_pool(database_file).await
 }
@@ -268,14 +297,14 @@ async fn prepare_restored_copy(staged: &Path) -> Result<bool, AppError> {
     outcome
 }
 
-/// Newest `*.migration-conflict-*` copy of this database, ignoring the `-wal`
-/// and `-shm` sidecars and anything already restored.
-async fn newest_quarantined_database(database_file: &Path, backups_dir: &Path) -> Option<PathBuf> {
+/// Timestamp of the newest `*.migration-conflict-*` copy of this database,
+/// ignoring the `-wal` and `-shm` sidecars and anything already restored.
+async fn newest_quarantined_stamp(database_file: &Path, backups_dir: &Path) -> Option<String> {
     let base_name = database_file.file_name()?.to_str()?;
     let prefix = format!("{base_name}.migration-conflict-");
 
     let mut entries = tokio::fs::read_dir(backups_dir).await.ok()?;
-    let mut newest: Option<(String, PathBuf)> = None;
+    let mut newest: Option<String> = None;
     while let Some(entry) = entries.next_entry().await.ok()? {
         let name = entry.file_name();
         let name = name.to_string_lossy();
@@ -289,13 +318,89 @@ async fn newest_quarantined_database(database_file: &Path, backups_dir: &Path) -
         }
         if newest
             .as_ref()
-            .is_none_or(|(newest_stamp, _)| stamp > newest_stamp.as_str())
+            .is_none_or(|newest_stamp| stamp > newest_stamp.as_str())
         {
-            newest = Some((stamp.to_string(), entry.path()));
+            newest = Some(stamp.to_string());
         }
     }
 
-    newest.map(|(_, path)| path)
+    newest
+}
+
+/// The names [`quarantine_database_files`] produced for one timestamp. Each
+/// sidecar keeps its own suffix ahead of the marker, so `ai-switch.db-wal` was
+/// parked as `ai-switch.db-wal.migration-conflict-<stamp>`.
+fn quarantined_paths(database_file: &Path, backups_dir: &Path, stamp: &str) -> Vec<PathBuf> {
+    database_sidecar_paths(database_file)
+        .into_iter()
+        .filter_map(|path| {
+            let name = path.file_name()?.to_str()?;
+            Some(backups_dir.join(format!("{name}.migration-conflict-{stamp}")))
+        })
+        .collect()
+}
+
+/// Move the database that is about to be replaced into `backups_dir`, sidecars
+/// included. The `replaced` marker deliberately differs from the quarantine
+/// marker so these copies can never be picked up as a restore candidate.
+async fn park_replaced_database(database_file: &Path, backups_dir: &Path) -> Result<(), AppError> {
+    tokio::fs::create_dir_all(backups_dir).await?;
+    let stamp = Utc::now().format("%Y%m%d-%H%M%S");
+    for path in database_sidecar_paths(database_file) {
+        if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        rename_with_retry(&path, &backups_dir.join(format!("{name}.replaced-{stamp}"))).await?;
+    }
+    Ok(())
+}
+
+/// Move a database and its sidecars, keeping each sidecar attached to the new
+/// base name. Missing files are skipped.
+async fn rename_database_files(from: &Path, to: &Path) -> Result<(), AppError> {
+    for (source, target) in database_sidecar_paths(from)
+        .into_iter()
+        .zip(database_sidecar_paths(to))
+    {
+        if !tokio::fs::try_exists(&source).await.unwrap_or(false) {
+            continue;
+        }
+        rename_with_retry(&source, &target).await?;
+    }
+    Ok(())
+}
+
+/// Rename a database file that was closed moments ago, waiting out a handle the
+/// OS has not released yet.
+///
+/// `SqlitePool::close` resolves before every underlying file handle is
+/// necessarily gone, and Windows fails a rename against a still-open handle
+/// with a sharing violation where Unix would simply succeed. The wait is short
+/// and bounded: the handle is already on its way out.
+pub(crate) async fn rename_with_retry(from: &Path, to: &Path) -> Result<(), std::io::Error> {
+    const ATTEMPTS: usize = 20;
+    let mut attempt = 0usize;
+    loop {
+        attempt += 1;
+        match tokio::fs::rename(from, to).await {
+            Ok(()) => return Ok(()),
+            Err(err) if attempt < ATTEMPTS && is_sharing_violation(&err) => {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+}
+
+/// True when the operation failed only because someone still holds the file
+/// open. Windows reports `ERROR_SHARING_VIOLATION` (32) and
+/// `ERROR_LOCK_VIOLATION` (33), neither of which has a stable `ErrorKind`.
+fn is_sharing_violation(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::PermissionDenied
+        || matches!(err.raw_os_error(), Some(32) | Some(33))
 }
 
 async fn remove_database_files(database_file: &Path) -> Result<(), AppError> {
@@ -381,7 +486,7 @@ async fn quarantine_database_files(
             .unwrap_or(base_name);
         let backup_name = format!("{file_name}.migration-conflict-{stamp}");
         let backup_path = backups_dir.join(backup_name);
-        tokio::fs::rename(&path, &backup_path)
+        rename_with_retry(&path, &backup_path)
             .await
             .map_err(|err| AppError::Filesystem {
                 code: "filesystem.migration_quarantine",
@@ -518,7 +623,7 @@ mod migration_checksum_manifest_tests {
 
 #[cfg(test)]
 mod recovery_tests {
-    use super::{append_suffix, open_migrated_pool, run_migrations, MIGRATOR};
+    use super::{append_suffix, open_migrated_pool, rename_with_retry, run_migrations, MIGRATOR};
     use sha2::{Digest, Sha384};
     use sqlx::{Row, SqlitePool};
     use std::path::Path;
@@ -630,7 +735,7 @@ mod recovery_tests {
         insert_account(&orphan_pool, "account-quarantined").await;
         orphan_pool.close().await;
         let quarantined = backups_dir.join("ai-switch.db.migration-conflict-20260901-193257");
-        tokio::fs::rename(&orphan, &quarantined)
+        rename_with_retry(&orphan, &quarantined)
             .await
             .expect("park the quarantined database");
 
@@ -652,6 +757,21 @@ mod recovery_tests {
         // as a restore candidate.
         assert!(!quarantined.exists());
         assert!(append_suffix(&quarantined, ".restored").exists());
+
+        // The database that was replaced is parked too. It was empty, but that
+        // was this code's own verdict, so the bytes still have to be somewhere.
+        let mut parked = Vec::new();
+        let mut entries = tokio::fs::read_dir(&backups_dir).await.expect("backups");
+        while let Some(entry) = entries.next_entry().await.expect("backup entry") {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.contains(".replaced-") {
+                parked.push(name);
+            }
+        }
+        assert!(
+            parked.iter().any(|name| name.starts_with("ai-switch.db.")),
+            "the replaced database should be parked, got {parked:?}"
+        );
     }
 
     // Restoring must never overwrite accounts the user added after the
@@ -681,7 +801,7 @@ mod recovery_tests {
         // Only now does the quarantine file appear, so the restore decision is
         // made against a live database that already holds an account.
         let quarantined = backups_dir.join("ai-switch.db.migration-conflict-20260901-193257");
-        tokio::fs::rename(&orphan, &quarantined)
+        rename_with_retry(&orphan, &quarantined)
             .await
             .expect("park the quarantined database");
 
