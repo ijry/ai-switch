@@ -327,6 +327,29 @@ When `sensitive_words_detected` shows up in `last_failure_response_json` or `las
 
 This class of error comes from the relay's own keyword filter, not from a broken account. When you see the reminder, check your prompts and code for trigger words, or try another relay to see whether it was a false positive.
 
+### The exhausted-budget-pool reminder
+
+When `Budget pool quota has been exhausted` shows up in `last_failure_response_json` or `last_failure_message`, the hover panel gains one extra blue line:
+
+> 友情提醒：当前中转站公共池额度耗尽，并非你个人额度耗尽，请等待下一次公共池补充额度。 ("Heads-up: the relay's shared pool is out of credit, not your personal quota. Wait for the pool to be topped up.")
+
+The raw response looks like this:
+
+```json
+{
+  "error": {
+    "message": "Budget pool quota has been exhausted. Please ask an administrator to increase the limit or select another budget pool.",
+    "type": "bad_response_status_code",
+    "param": "",
+    "code": "bad_response_status_code"
+  }
+}
+```
+
+The message contains `quota has been exhausted`, so the quota-exhaustion text rule above already matches and the account flips to abnormal on the **first** occurrence — the reminder only puts that existing verdict in plain words. It is worth adding because the English reads like "you are out of credit", while what actually ran dry is the shared budget pool behind the relay: topping up your own account does nothing, and only an administrator refilling the pool (or switching to another one) helps. Hence the emphasis on "not your personal quota".
+
+The phrase is looked for in both the stored body and `last_failure_message`, case-insensitively and as a substring rather than a prefix — the same latitude the backend's `quota has been exhausted` rule takes, so the reminder keeps up with every spelling the backend already judges as quota exhaustion. Both fields are checked because the quota-exhaustion channel stores the message verbatim, while the same response recorded as a status-code failure carries a synthesized message such as `upstream returned 429`, leaving the original wording only inside the body.
+
 ## Failure classification labels
 
 `last_failure_kind` records which step of the chain the failure occurred in, and it is used both in the UI and while debugging:

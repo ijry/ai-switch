@@ -1476,6 +1476,54 @@ describe("AccountsScreen", () => {
     expect(within(secondRow).queryByText(/关键词检测/)).not.toBeInTheDocument();
   });
 
+  it("explains that an exhausted budget pool is the relay's, not the user's own quota", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      {
+        ...credentialsFixture[0],
+        status: "error",
+        last_failure_kind: "semantic_response_failed",
+        last_failure_message:
+          "Budget pool quota has been exhausted. Please ask an administrator to increase the limit or select another budget pool.",
+        last_failure_response_json:
+          '{"error":{"message":"Budget pool quota has been exhausted. Please ask an administrator to increase the limit or select another budget pool.","type":"bad_response_status_code","param":"","code":"bad_response_status_code"}}',
+      },
+      {
+        // The user's own balance running out must NOT get the reassurance.
+        ...credentialsFixture[1],
+        status: "error",
+        last_failure_kind: "semantic_response_failed",
+        last_failure_message: "用户额度不足, 剩余额度: ＄-0.398052",
+        last_failure_response_json:
+          '{"error":{"type":"new_api_error","message":"用户额度不足, 剩余额度: ＄-0.398052"}}',
+      },
+      {
+        // Recorded by status code, so the original wording survives only in the
+        // body — and a relay may not capitalize it the way the sample did.
+        ...credentialsFixture[0],
+        id: "cred-pool-by-status",
+        display_name: "Status Coded Account",
+        status: "error",
+        last_failure_kind: "upstream_status",
+        last_failure_message: "upstream returned 429",
+        last_failure_response_json:
+          '{"error":{"message":"budget pool quota has been exhausted, please ask an administrator"}}',
+      },
+    ]);
+
+    renderScreen();
+
+    const firstRow = await screen.findByLabelText("放置在 Team Account 前");
+    const secondRow = screen.getByLabelText("放置在 API Account 前");
+    const thirdRow = screen.getByLabelText("放置在 Status Coded Account 前");
+    expect(
+      within(firstRow).getByText(
+        /当前中转站公共池额度耗尽，并非你个人额度耗尽，请等待下一次公共池补充额度。/,
+      ),
+    ).toBeInTheDocument();
+    expect(within(secondRow).queryByText(/公共池/)).not.toBeInTheDocument();
+    expect(within(thirdRow).getByText(/公共池额度耗尽/)).toBeInTheDocument();
+  });
+
   it("keeps the failure tooltip hoverable so its text can be selected", async () => {
     vi.mocked(listRouteCredentials).mockResolvedValue([
       {

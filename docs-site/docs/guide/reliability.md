@@ -331,6 +331,29 @@ let cooldown_seconds = policy.cooldown_enabled.then_some(policy.cooldown_seconds
 
 这类错误来自中转站自己的关键词过滤，不是账号坏了。看到提醒可以先检查提示词与代码里有没有触发词，也可以换一个中转站验证是否误判。
 
+### 公共池额度耗尽提醒
+
+如果 `last_failure_response_json` 或 `last_failure_message` 里出现 `Budget pool quota has been exhausted`，悬停提示里会多出一条蓝色友情提醒：
+
+> 友情提醒：当前中转站公共池额度耗尽，并非你个人额度耗尽，请等待下一次公共池补充额度。
+
+原始响应长这样：
+
+```json
+{
+  "error": {
+    "message": "Budget pool quota has been exhausted. Please ask an administrator to increase the limit or select another budget pool.",
+    "type": "bad_response_status_code",
+    "param": "",
+    "code": "bad_response_status_code"
+  }
+}
+```
+
+消息里带 `quota has been exhausted`，已经被上面的配额耗尽文本规则命中，所以账号会**一次就被置为异常**——提醒只是替这个既有判定补一句人话。加这条提醒是因为英文原文读起来像"你的额度用完了"，实际耗尽的是中转站背后那个共享预算池：给自己的账号充值没有用，管理员补池或换一个池才有用。因此文案强调"并非你个人额度"。
+
+判定文本在响应体和 `last_failure_message` 里都查，含子串即可（不要求开头），且大小写不敏感——和后端那条 `quota has been exhausted` 规则的口径一致，凡是被后端判成配额耗尽的写法，这条提醒都跟得上。两处都查是因为：走配额耗尽通道时消息会被原样存下来，而如果同一份响应是按状态码记的失败，消息会变成 `upstream returned 429` 之类，原文只留在响应体里。
+
 ## 失败分类标签
 
 `last_failure_kind` 记的是失败发生在链路哪一步，界面上和排错时都用得到：
