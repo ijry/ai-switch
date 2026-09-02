@@ -10,6 +10,7 @@ import {
   startTailscaleWithAuthKey,
 } from "../../lib/api/client";
 import { useI18n } from "../../lib/i18n";
+import { ApiClientError } from "../../lib/api/errors";
 import { openExternal } from "../../lib/openExternal";
 import { isDesktop } from "../../lib/transport";
 
@@ -75,7 +76,7 @@ export function TailscaleSettings({ enabled, exposureMode = "private" }: Tailsca
   });
 
   const pairingMutation = useMutation({
-    mutationFn: createMobilePairing,
+    mutationFn: (force: boolean) => createMobilePairing(force),
     onSuccess: (payload) => setPairingPayload(payload),
   });
 
@@ -105,6 +106,8 @@ export function TailscaleSettings({ enabled, exposureMode = "private" }: Tailsca
   const accessUrls = status?.accessUrls?.filter(Boolean) ?? [];
   const busy =
     loginMutation.isPending || authKeyMutation.isPending || disconnectMutation.isPending || pairingMutation.isPending;
+  const pairingError = pairingMutation.error instanceof ApiClientError ? pairingMutation.error : null;
+  const pairingUnreachable = pairingError?.code === "mobile_pairing.remote_url_unreachable";
 
   const copyUrl = async (url: string) => {
     if (typeof navigator === "undefined" || !navigator.clipboard) {
@@ -191,7 +194,7 @@ export function TailscaleSettings({ enabled, exposureMode = "private" }: Tailsca
             <button
               className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-stone-200 bg-white px-2 py-1 text-[11px] font-semibold text-stone-700 hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
               disabled={busy}
-              onClick={() => pairingMutation.mutate()}
+              onClick={() => pairingMutation.mutate(false)}
               type="button"
             >
               <QrCode className="h-3 w-3" />
@@ -217,7 +220,28 @@ export function TailscaleSettings({ enabled, exposureMode = "private" }: Tailsca
             ))}
           </ul>
           {pairingMutation.isError ? (
-            <p className="text-[12px] text-red-700">{t("settings.tailscale.pairingError")}</p>
+            <div className="space-y-1.5">
+              <p className="text-[12px] text-red-700">
+                {pairingUnreachable
+                  ? t("settings.tailscale.pairingUnreachable")
+                  : t("settings.tailscale.pairingError")}
+              </p>
+              {pairingError?.details ?? pairingError?.message ? (
+                <p className="break-all text-[11px] text-stone-500">
+                  {pairingError?.details ?? pairingError?.message}
+                </p>
+              ) : null}
+              {pairingUnreachable ? (
+                <button
+                  className="inline-flex items-center gap-1 rounded-lg border border-stone-200 bg-white px-2 py-1 text-[11px] font-semibold text-stone-700 hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={busy}
+                  onClick={() => pairingMutation.mutate(true)}
+                  type="button"
+                >
+                  {t("settings.tailscale.pairingForce")}
+                </button>
+              ) : null}
+            </div>
           ) : null}
           {pairingPayload ? (
             <div className="flex flex-wrap items-start gap-3 rounded-lg border border-sky-100 bg-sky-50/60 p-2.5">

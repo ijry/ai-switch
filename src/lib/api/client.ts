@@ -535,8 +535,8 @@ export function getTailscaleStatus(): Promise<TailscaleStatus> {
   return invoke("get_tailscale_status");
 }
 
-export function createMobilePairing(): Promise<MobilePairingPayload> {
-  return invoke("create_mobile_pairing");
+export function createMobilePairing(force = false): Promise<MobilePairingPayload> {
+  return invoke("create_mobile_pairing", { force });
 }
 
 export function startTailscaleLogin(): Promise<TailscaleLogin> {

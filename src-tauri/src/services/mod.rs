@@ -16,6 +16,7 @@ pub mod mobile_pairing;
 pub mod model_pricing;
 pub mod official_agent_identity_service;
 pub mod platform_capability_service;
+pub mod remote_probe;
 pub mod response_failure_service;
 pub mod route_config_service;
 pub mod route_credential_activity;

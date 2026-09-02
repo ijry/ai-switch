@@ -8,6 +8,7 @@ use crate::server::{
 use crate::services::mobile_pairing::{
     MobilePairingPayload, MobilePairingRedeemResponse, MobilePairingStore, MobileTokenRegistry,
 };
+use crate::services::remote_probe::{probe_access_url, should_probe_access_url};
 use crate::services::tailscale_service::{TailscaleLogin, TailscaleService, TailscaleStatus};
 use crate::web::router::build_router_with_sensitive_command_gate;
 use crate::web::static_assets::resolve_static_dir;
@@ -97,7 +98,10 @@ impl WebService {
         runtime.mobile_pairing.clone()
     }
 
-    pub async fn create_mobile_pairing(state: &AppState) -> Result<MobilePairingPayload, AppError> {
+    pub async fn create_mobile_pairing(
+        state: &AppState,
+        force: bool,
+    ) -> Result<MobilePairingPayload, AppError> {
         let _guard = state.web_service.config_reconciliation_lock.lock().await;
         let config = Self::load_config(&state.paths).await?;
         let web_status = Self::status(&state.web_service, &config).await;
@@ -127,6 +131,18 @@ impl WebService {
                 details: None,
                 recoverable: true,
             })?;
+        // A blocked Funnel ingress still resolves and accepts TCP, so the phone
+        // only learns it is unusable after scanning. Probe the same path first.
+        if should_probe_access_url(tailscale.public, force) {
+            if let Err(reason) = probe_access_url(&access_url).await {
+                return Err(AppError::Validation {
+                    code: "mobile_pairing.remote_url_unreachable",
+                    message: format!("{access_url} is not reachable from this computer"),
+                    details: Some(reason),
+                    recoverable: true,
+                });
+            }
+        }
         let (public_url, private_url) = if tailscale.public {
             (Some(access_url), None)
         } else {

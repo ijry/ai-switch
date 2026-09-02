@@ -911,9 +911,12 @@ pub async fn dispatch_command(
                 .map_err(to_error)?,
         ),
         "create_mobile_pairing" => to_value(
-            WebService::create_mobile_pairing(state.as_ref())
-                .await
-                .map_err(to_error)?,
+            WebService::create_mobile_pairing(
+                state.as_ref(),
+                args.get("force").and_then(Value::as_bool).unwrap_or(false),
+            )
+            .await
+            .map_err(to_error)?,
         ),
         "start_tailscale_login" => to_value(
             WebService::start_tailscale_login(state.as_ref())

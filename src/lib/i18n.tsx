@@ -576,6 +576,9 @@ const en = {
   "settings.tailscale.pairingQrAlt": "Mobile pairing QR code",
   "settings.tailscale.pairingQrLoading": "Generating QR code...",
   "settings.tailscale.pairingError": "Could not create a mobile pairing code.",
+  "settings.tailscale.pairingUnreachable":
+    "This computer cannot reach the public URL, so scanning the code would fail too. Confirm remote access first, or generate it anyway if the phone uses a different network such as cellular data.",
+  "settings.tailscale.pairingForce": "Generate anyway",
   "settings.tailscale.closePairing": "Close",
   "settings.tailscale.copyUrl": "Copy",
   "settings.tailscale.copied": "Copied",
@@ -1276,6 +1279,9 @@ const zh = {
   "settings.tailscale.pairingQrAlt": "移动端配对二维码",
   "settings.tailscale.pairingQrLoading": "正在生成二维码……",
   "settings.tailscale.pairingError": "无法创建移动端配对码。",
+  "settings.tailscale.pairingUnreachable":
+    "本机连不上这个公网地址，手机扫码后同样会失败。请先确认远程访问可用；若手机走的是另一条网络（例如蜂窝数据），可以选择仍要生成。",
+  "settings.tailscale.pairingForce": "仍要生成",
   "settings.tailscale.closePairing": "关闭",
   "settings.tailscale.copyUrl": "复制",
   "settings.tailscale.copied": "已复制",
