@@ -51,6 +51,7 @@ import {
 } from "../components/accounts/ExternalClientImportPanel";
 import { RouteCredentialExportDialog } from "../components/accounts/RouteCredentialExportDialog";
 import { CopyRouteCredentialDialog } from "../components/accounts/CopyRouteCredentialDialog";
+import { UsageOverviewPanel } from "../components/accounts/UsageOverviewPanel";
 import { neighborsForDrop } from "../lib/accountReorder";
 import {
   claudeAliasSupportsOneM,
@@ -72,7 +73,6 @@ import {
   deleteRouteCredential,
   fetchRouteModels,
   getRoutePool,
-  getSessionUsageStats,
   getRouteProxyKey,
   getRouteProxyStatus,
   importExternalClientAccounts,
@@ -120,7 +120,6 @@ import type {
   RouteModelsFetchRequest,
   RoutePoolModelTestOutcome,
   RoutePoolModelTestRequest,
-  RoutePoolUsageLog,
   RouteProxyLiveLogEntry,
 } from "../lib/api/types";
 import {
@@ -294,12 +293,6 @@ function transientFailureTag(
   };
 }
 
-const routeStatsPeriods = [
-  { key: "today", label: "当日" },
-  { key: "week", label: "本周" },
-  { key: "month", label: "本月" },
-  { key: "all", label: "累计" },
-] as const;
 
 const accountViewOptions: Array<{ key: AccountView; label: string }> = [
   { key: "in_pool", label: "算力池" },
@@ -307,37 +300,6 @@ const accountViewOptions: Array<{ key: AccountView; label: string }> = [
   { key: "archived", label: "已归档" },
   { key: "stats", label: "统计" },
 ];
-
-const routeStatsPageSize = 20;
-const routeStatsRefreshMs = 5000;
-/**
- * Session usage refreshes far less often than the route stats: it re-reads CLI
- * transcripts from disk, and those totals only change when a CLI writes a turn.
- */
-const sessionUsageRefreshMs = 60_000;
-
-type RouteStatsPeriod = (typeof routeStatsPeriods)[number]["key"];
-
-function routeStatsSince(period: RouteStatsPeriod, now = new Date()) {
-  if (period === "all") {
-    return null;
-  }
-
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-
-  if (period === "week") {
-    const day = start.getDay();
-    const daysSinceMonday = day === 0 ? 6 : day - 1;
-    start.setDate(start.getDate() - daysSinceMonday);
-  }
-
-  if (period === "month") {
-    start.setDate(1);
-  }
-
-  return start.toISOString();
-}
 
 function formatUsageTime(value: string) {
   const date = new Date(value);
@@ -362,219 +324,7 @@ function LiveLogStage({ title, body }: { title: string; body: string | null | un
   );
 }
 
-type ParsedUsageMetadata = {
-  path: string;
-  status: string;
-  model: string;
-  responseBody: string | null;
-  formattedJson: string;
-  raw: string;
-  valid: boolean;
-};
 
-function metadataField(record: Record<string, unknown>, key: string) {
-  const value = record[key];
-  if (typeof value === "string" && value.trim()) {
-    return value;
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  return "-";
-}
-
-function optionalMetadataField(record: Record<string, unknown>, key: string) {
-  const value = record[key];
-  if (typeof value === "string" && value.trim()) {
-    return value.trim();
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  return null;
-}
-
-function parseUsageMetadata(metadataJson: string): ParsedUsageMetadata {
-  try {
-    const value = JSON.parse(metadataJson) as unknown;
-    const formattedJson = JSON.stringify(value, null, 2) ?? metadataJson;
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return {
-        path: "-",
-        status: "-",
-        model: "-",
-        responseBody: null,
-        formattedJson,
-        raw: metadataJson,
-        valid: true,
-      };
-    }
-    const record = value as Record<string, unknown>;
-    const requestedModel = optionalMetadataField(record, "requested_model");
-    const upstreamModel = optionalMetadataField(record, "upstream_model");
-    const model =
-      requestedModel && upstreamModel && requestedModel !== upstreamModel
-        ? `${requestedModel}->${upstreamModel}`
-        : requestedModel ?? upstreamModel ?? "-";
-    return {
-      path: metadataField(record, "path"),
-      status: metadataField(record, "status"),
-      model,
-      responseBody: optionalMetadataField(record, "response_body"),
-      formattedJson,
-      raw: metadataJson,
-      valid: true,
-    };
-  } catch {
-    return {
-      path: "-",
-      status: "-",
-      model: "-",
-      responseBody: null,
-      formattedJson: metadataJson,
-      raw: metadataJson,
-      valid: false,
-    };
-  }
-}
-
-function formatUsageCount(value: number | null | undefined) {
-  return value == null ? "-" : value.toLocaleString();
-}
-
-function formatUsageTotalTokens(request: RoutePoolUsageLog) {
-  if (request.input_tokens == null && request.output_tokens == null) {
-    return "-";
-  }
-  return ((request.input_tokens ?? 0) + (request.output_tokens ?? 0)).toLocaleString();
-}
-
-function usageTokenTooltip(request: RoutePoolUsageLog) {
-  return `输入 Token：${formatUsageCount(request.input_tokens)}；输出 Token：${formatUsageCount(request.output_tokens)}；缓存 Token：${formatUsageCount(request.cache_tokens)}`;
-}
-
-function formatUsagePrice(request: RoutePoolUsageLog) {
-  const suffix = request.price_source === "estimated" ? "(估)" : "";
-  if (request.price_currency === "cny" && request.price_cny_micros != null) {
-    return `¥${(request.price_cny_micros / 1_000_000).toFixed(6)}${suffix}`;
-  }
-  if (request.price_currency === "usd" && request.price_usd_micros != null) {
-    return `$${(request.price_usd_micros / 1_000_000).toFixed(6)}${suffix}`;
-  }
-  return "-";
-}
-
-/**
- * Format a USD-micros total for a summary card.
- *
- * Fixed two-decimal formatting rendered any real amount under half a cent as
- * "$0.00", which is indistinguishable from having no cost data at all. Small
- * totals therefore get more decimals rather than being rounded away.
- */
-function formatCostMicros(micros: number) {
-  const dollars = micros / 1_000_000;
-  if (dollars === 0) {
-    return "$0.00";
-  }
-  if (Math.abs(dollars) < 0.01) {
-    return `$${dollars.toFixed(6)}`;
-  }
-  if (Math.abs(dollars) < 1) {
-    return `$${dollars.toFixed(4)}`;
-  }
-  return `$${dollars.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
-
-/** Compact token counts so six-figure values stay readable in a card. */
-function formatTokenCount(value: number) {
-  if (value >= 1_000_000_000) {
-    return `${(value / 1_000_000_000).toFixed(2)}B`;
-  }
-  if (value >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(1)}M`;
-  }
-  return value.toLocaleString();
-}
-
-function RouteRequestDetail({
-  metadata,
-  request,
-}: {
-  metadata: ParsedUsageMetadata;
-  request: RoutePoolUsageLog;
-}) {
-  return (
-    <div
-      aria-label={`请求 ${request.id} 详情`}
-      className="border-t border-stone-100 bg-stone-50 px-3 py-3"
-      id={`route-request-detail-${request.id}`}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-[12px] font-semibold text-stone-800">请求详情</p>
-        <p className="font-mono text-[11px] text-stone-500">{request.id}</p>
-      </div>
-      <div className="mt-3 grid gap-2 text-[12px] sm:grid-cols-2 lg:grid-cols-3">
-        <div>
-          <p className="text-[11px] font-medium text-stone-500">账号</p>
-          <p className="mt-0.5 text-stone-800">{request.account_name ?? "-"}</p>
-        </div>
-        <div>
-          <p className="text-[11px] font-medium text-stone-500">账号 ID</p>
-          <p className="mt-0.5 break-all font-mono text-[11px] text-stone-700">{request.account_id ?? "-"}</p>
-        </div>
-        <div>
-          <p className="text-[11px] font-medium text-stone-500">来源</p>
-          <p className="mt-0.5 text-stone-800">{request.source_label}</p>
-        </div>
-        <div>
-          <p className="text-[11px] font-medium text-stone-500">指标</p>
-          <p className="mt-0.5 text-stone-800">
-            {request.amount} {request.unit}
-          </p>
-        </div>
-        <div>
-          <p className="text-[11px] font-medium text-stone-500">输入 Token</p>
-          <p className="mt-0.5 text-stone-800">{formatUsageCount(request.input_tokens)}</p>
-        </div>
-        <div>
-          <p className="text-[11px] font-medium text-stone-500">输出 Token</p>
-          <p className="mt-0.5 text-stone-800">{formatUsageCount(request.output_tokens)}</p>
-        </div>
-        <div>
-          <p className="text-[11px] font-medium text-stone-500">缓存 Token</p>
-          <p className="mt-0.5 text-stone-800">{formatUsageCount(request.cache_tokens)}</p>
-        </div>
-        <div>
-          <p className="text-[11px] font-medium text-stone-500">价格</p>
-          <p className="mt-0.5 text-stone-800">{formatUsagePrice(request)}</p>
-        </div>
-        <div>
-          <p className="text-[11px] font-medium text-stone-500">时间</p>
-          <p className="mt-0.5 text-stone-800">{formatUsageTime(request.created_at)}</p>
-        </div>
-      </div>
-      {metadata.responseBody ? (
-        <div className="mt-3">
-          <p className="text-[11px] font-medium text-stone-500">上游原始响应</p>
-          <pre className="mt-1 max-h-56 overflow-auto rounded-lg border border-stone-200 bg-white p-2 font-mono text-[11px] leading-relaxed text-stone-700">
-            {prettyJsonOrText(metadata.responseBody)}
-          </pre>
-        </div>
-      ) : null}
-      <div className="mt-3">
-        <p className="text-[11px] font-medium text-stone-500">
-          {metadata.valid ? "metadata_json" : "metadata_json 无法解析，显示原始内容。"}
-        </p>
-        <pre className="mt-1 max-h-56 overflow-auto rounded-lg border border-stone-200 bg-white p-2 font-mono text-[11px] leading-relaxed text-stone-700">
-          {metadata.valid ? metadata.formattedJson : metadata.raw}
-        </pre>
-      </div>
-    </div>
-  );
-}
 
 type AccountsScreenProps = {
   platform?: PlatformKey;
@@ -2050,9 +1800,6 @@ export function AccountsScreen({
   const toolbarHideTimerRef = useRef<number | null>(null);
   const toolbarHoveredRef = useRef(false);
   const toolbarAutoHideEligibleRef = useRef(false);
-  const [statsPeriod, setStatsPeriod] = useState<RouteStatsPeriod>("today");
-  const [requestPage, setRequestPage] = useState(1);
-  const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [createMode, setCreateMode] = useState<CreateMode>("api");
   const [joinPoolOnCreate, setJoinPoolOnCreate] = useState(true);
@@ -2167,7 +1914,6 @@ export function AccountsScreen({
     () => Array.from(draftPoolIds).sort().join(","),
     [draftPoolIds],
   );
-  const statsSince = useMemo(() => routeStatsSince(statsPeriod), [statsPeriod]);
 
   const clearToolbarHideTimer = useCallback(() => {
     if (toolbarHideTimerRef.current != null) {
@@ -2473,22 +2219,13 @@ export function AccountsScreen({
     setModelTestModels((current) => pruneModelTestModelMap(current, liveIds, activePlatform));
   }, [activePlatform, allCredentials]);
 
+  // Pool membership only. Statistics moved to UsageOverviewPanel, so this key
+  // no longer carries a period filter — which also means the account-data
+  // invalidations keyed on ["route-pool", platform] match it again.
   const routePoolQuery = useQuery({
-    queryKey: ["route-pool", activePlatform, statsSince, requestPage, routeStatsPageSize],
-    queryFn: () => getRoutePool(activePlatform, statsSince, requestPage, routeStatsPageSize),
+    queryKey: ["route-pool", activePlatform],
+    queryFn: () => getRoutePool(activePlatform, null, null, null),
     placeholderData: keepPreviousData,
-    refetchInterval: statsOpen ? routeStatsRefreshMs : false,
-  });
-  // Session usage reads the CLI transcript corpus from disk, which is far more
-  // expensive than the route-pool query (a cold scan of a multi-gigabyte history
-  // takes tens of seconds; warm scans hit a per-file cache). It is therefore only
-  // fetched while the stats panel is open, and on a much slower interval.
-  const sessionUsageQuery = useQuery({
-    queryKey: ["session-usage", statsSince],
-    queryFn: () => getSessionUsageStats(statsSince),
-    enabled: statsOpen,
-    placeholderData: keepPreviousData,
-    refetchInterval: statsOpen ? sessionUsageRefreshMs : false,
   });
   const routeProxyQuery = useQuery({
     queryKey: ["route-proxy-status"],
@@ -2633,14 +2370,9 @@ export function AccountsScreen({
   }, [liveLogOpen, activePlatform]);
 
   useEffect(() => {
-    setRequestPage(1);
     setSelectedAccountIds(new Set());
     setRoutePoolFeedback(null);
   }, [activePlatform]);
-
-  useEffect(() => {
-    setExpandedRequestId(null);
-  }, [activePlatform, statsPeriod, requestPage]);
 
   useEffect(() => {
     if (routePoolQuery.data) {
@@ -2737,19 +2469,6 @@ export function AccountsScreen({
     return () => window.clearTimeout(timeout);
   }, [configWriteOutcomes]);
 
-  useEffect(() => {
-    const stats = routePoolQuery.data?.stats;
-    if (!stats) {
-      return;
-    }
-    const nextPageCount = Math.max(
-      1,
-      Math.ceil(stats.request_row_count / Math.max(1, stats.request_page_size)),
-    );
-    if (requestPage > nextPageCount) {
-      setRequestPage(nextPageCount);
-    }
-  }, [requestPage, routePoolQuery.data?.stats]);
 
   const accountPageData = credentialsQuery.data;
   const credentials = accountPageData?.items ?? [];
@@ -2837,17 +2556,6 @@ export function AccountsScreen({
     [accountPageData?.filter_options],
   );
 
-  const routeStats = routePoolQuery.data?.stats;
-  const costTotal = (routeStats?.cost_micros ?? 0) / 1_000_000;
-  const sessionUsage = sessionUsageQuery.data;
-  const sessionTotals = sessionUsage?.totals;
-  const requestRowCount = routeStats?.request_row_count ?? (routeStats?.requests ?? []).length;
-  const resolvedRequestPage = routeStats?.request_page ?? requestPage;
-  const resolvedRequestPageSize = routeStats?.request_page_size ?? routeStatsPageSize;
-  const requestPageCount = Math.max(
-    1,
-    Math.ceil(requestRowCount / Math.max(1, resolvedRequestPageSize)),
-  );
   const generatedEditApiPreviewJson = useMemo(() => {
     if (editingCredential?.kind !== "api") {
       return editPreviewJson;
@@ -3251,7 +2959,7 @@ export function AccountsScreen({
       setModelTestOutcome(outcome);
       setLastRouteAccount(outcome.selected_account_name);
       queryClient.setQueryData(
-        ["route-pool", activePlatform, statsSince, requestPage, routeStatsPageSize],
+        ["route-pool", activePlatform],
         {
           platform: outcome.platform,
           account_ids: routePoolQuery.data?.account_ids ?? Array.from(draftPoolIds),
@@ -4000,19 +3708,11 @@ export function AccountsScreen({
     modelTestMutation.reset();
   };
 
-  const selectStatsPeriod = (period: RouteStatsPeriod) => {
-    setStatsPeriod(period);
-    setRequestPage(1);
-  };
-
   const selectAccountView = (view: AccountView) => {
     if (view === accountView) {
       return;
     }
     setAccountView(view);
-    if (view === "stats") {
-      void routePoolQuery.refetch();
-    }
   };
 
   const decodeApiKey = () => {
@@ -4696,275 +4396,7 @@ export function AccountsScreen({
             </button>
           </div>
         ) : null}
-        {statsOpen && (
-          <div className="space-y-3 border-t border-stone-200/80 px-3 py-3">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-[13px] font-semibold text-stone-950">请求统计</p>
-                <p className="text-[12px] text-stone-500">统计当前 {platformLabels[activePlatform]} 的历史路由请求</p>
-              </div>
-              <div className="grid grid-cols-4 gap-1 rounded-xl bg-stone-100 p-1">
-                {routeStatsPeriods.map((period) => (
-                  <button
-                    className={`rounded-lg px-2.5 py-1.5 text-[12px] font-semibold transition-colors ${
-                      statsPeriod === period.key
-                        ? "bg-white text-stone-950 shadow-sm"
-                        : "text-stone-500 hover:text-stone-900"
-                    }`}
-                    key={period.key}
-                    onClick={() => selectStatsPeriod(period.key)}
-                    type="button"
-                  >
-                    {period.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
-              <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
-                <p className="text-[11px] font-medium text-stone-500">请求</p>
-                <p className="mt-1 text-lg font-semibold text-stone-950">{routeStats?.request_count ?? 0}</p>
-              </div>
-              <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
-                <p className="text-[11px] font-medium text-stone-500">输入 Token</p>
-                <p className="mt-1 text-lg font-semibold text-stone-950">
-                  {(routeStats?.input_token_count ?? 0).toLocaleString()}
-                </p>
-              </div>
-              <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
-                <p className="text-[11px] font-medium text-stone-500">输出 Token</p>
-                <p className="mt-1 text-lg font-semibold text-stone-950">
-                  {(routeStats?.output_token_count ?? 0).toLocaleString()}
-                </p>
-              </div>
-              <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
-                <p className="text-[11px] font-medium text-stone-500">缓存 Token</p>
-                <p className="mt-1 text-lg font-semibold text-stone-950">
-                  {(routeStats?.cache_token_count ?? 0).toLocaleString()}
-                </p>
-              </div>
-              <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
-                <p className="text-[11px] font-medium text-stone-500">Token 总计</p>
-                <p className="mt-1 text-lg font-semibold text-stone-950">
-                  {(routeStats?.token_count ?? 0).toLocaleString()}
-                </p>
-              </div>
-              <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
-                <p className="text-[11px] font-medium text-stone-500">总费用（USD）</p>
-                <p
-                  className="mt-1 text-lg font-semibold text-stone-950"
-                  title={`${costTotal.toFixed(6)} USD`}
-                >
-                  {formatCostMicros(routeStats?.cost_micros ?? 0)}
-                </p>
-              </div>
-            </div>
-
-            <p className="text-[11px] text-stone-400">
-              上游未返回价格时，费用按本地价格表估算（明细中标注「估」）；可在 ~/.ai-switch/model-prices.json 自定义价格。
-            </p>
-
-            <div className="space-y-2 rounded-xl border border-stone-200 bg-white p-3">
-              <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
-                <div>
-                  <p className="text-[13px] font-semibold text-stone-950">本机会话用量</p>
-                  <p className="text-[12px] text-stone-500">
-                    读取 Claude Code 与 Codex CLI 的本地会话记录，包含未经本应用代理的请求
-                  </p>
-                </div>
-                {sessionUsage ? (
-                  <p className="text-[11px] text-stone-400">
-                    已扫描 {sessionUsage.scanned_file_count.toLocaleString()} 个会话文件
-                  </p>
-                ) : null}
-              </div>
-
-              {sessionUsageQuery.isError ? (
-                <p className="rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-700" role="alert">
-                  {formatApiError(sessionUsageQuery.error, "读取本机会话用量失败")}
-                </p>
-              ) : !sessionUsage ? (
-                <p className="text-[12px] text-stone-500" role="status">
-                  正在读取本机会话记录…首次扫描较慢，之后会走缓存。
-                </p>
-              ) : sessionTotals && sessionTotals.request_count === 0 ? (
-                <p className="text-[12px] text-stone-500">当前筛选范围内没有本机会话记录。</p>
-              ) : (
-                <>
-                  <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
-                    <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
-                      <p className="text-[11px] font-medium text-stone-500">请求</p>
-                      <p className="mt-1 text-lg font-semibold text-stone-950">
-                        {(sessionTotals?.request_count ?? 0).toLocaleString()}
-                      </p>
-                    </div>
-                    <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
-                      <p className="text-[11px] font-medium text-stone-500">输入 Token</p>
-                      <p
-                        className="mt-1 text-lg font-semibold text-stone-950"
-                        title={(sessionTotals?.input_tokens ?? 0).toLocaleString()}
-                      >
-                        {formatTokenCount(sessionTotals?.input_tokens ?? 0)}
-                      </p>
-                    </div>
-                    <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
-                      <p className="text-[11px] font-medium text-stone-500">输出 Token</p>
-                      <p
-                        className="mt-1 text-lg font-semibold text-stone-950"
-                        title={(sessionTotals?.output_tokens ?? 0).toLocaleString()}
-                      >
-                        {formatTokenCount(sessionTotals?.output_tokens ?? 0)}
-                      </p>
-                    </div>
-                    <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
-                      <p className="text-[11px] font-medium text-stone-500">缓存写入</p>
-                      <p
-                        className="mt-1 text-lg font-semibold text-stone-950"
-                        title={(sessionTotals?.cache_write_tokens ?? 0).toLocaleString()}
-                      >
-                        {formatTokenCount(sessionTotals?.cache_write_tokens ?? 0)}
-                      </p>
-                    </div>
-                    <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
-                      <p className="text-[11px] font-medium text-stone-500">缓存读取</p>
-                      <p
-                        className="mt-1 text-lg font-semibold text-stone-950"
-                        title={(sessionTotals?.cache_read_tokens ?? 0).toLocaleString()}
-                      >
-                        {formatTokenCount(sessionTotals?.cache_read_tokens ?? 0)}
-                      </p>
-                    </div>
-                    <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
-                      <p className="text-[11px] font-medium text-stone-500">估算费用（USD）</p>
-                      <p
-                        className="mt-1 text-lg font-semibold text-stone-950"
-                        title="按本地价格表估算，非上游实际计费"
-                      >
-                        {formatCostMicros(sessionTotals?.cost_micros ?? 0)}
-                      </p>
-                    </div>
-                  </div>
-
-                  {sessionUsage.truncated ? (
-                    <p className="text-[11px] text-amber-700">
-                      会话文件数量超过扫描上限，以下数字不完整。
-                    </p>
-                  ) : null}
-                  {sessionTotals && sessionTotals.unpriced_request_count > 0 ? (
-                    <p className="text-[11px] text-stone-500">
-                      其中 {sessionTotals.unpriced_request_count.toLocaleString()} 个请求的模型没有价格数据，未计入费用；
-                      可在 ~/.ai-switch/model-prices.json 中补充价格。
-                    </p>
-                  ) : null}
-                  <p className="text-[11px] text-stone-400">
-                    费用为按本地价格表的估算值（缓存写入按输入价 1.25 倍、缓存读取按 0.1 倍计），与上游实际账单可能存在差异。
-                  </p>
-
-                  {sessionUsage.by_model.length > 0 ? (
-                    <div className="overflow-hidden rounded-xl border border-stone-200">
-                      <div className="grid grid-cols-[1.6fr_0.6fr_0.8fr_0.8fr_0.8fr] gap-2 border-b border-stone-100 bg-stone-50 px-3 py-2 text-[11px] font-medium text-stone-500">
-                        <span>模型</span>
-                        <span className="text-right">请求</span>
-                        <span className="text-right">输入</span>
-                        <span className="text-right">输出</span>
-                        <span className="text-right">费用</span>
-                      </div>
-                      <div className="divide-y divide-stone-100">
-                        {sessionUsage.by_model.slice(0, 12).map((row) => (
-                          <div
-                            className="grid grid-cols-[1.6fr_0.6fr_0.8fr_0.8fr_0.8fr] gap-2 px-3 py-2 text-[12px]"
-                            key={`${row.provider}:${row.model}`}
-                          >
-                            <span className="truncate text-stone-800" title={row.model}>
-                              <span className="text-stone-400">{row.provider}</span> {row.model}
-                            </span>
-                            <span className="text-right text-stone-600">
-                              {row.request_count.toLocaleString()}
-                            </span>
-                            <span
-                              className="text-right text-stone-600"
-                              title={row.input_tokens.toLocaleString()}
-                            >
-                              {formatTokenCount(row.input_tokens)}
-                            </span>
-                            <span
-                              className="text-right text-stone-600"
-                              title={row.output_tokens.toLocaleString()}
-                            >
-                              {formatTokenCount(row.output_tokens)}
-                            </span>
-                            <span className="text-right text-stone-800">
-                              {row.priced ? formatCostMicros(row.cost_micros) : "无价格"}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-                </>
-              )}
-            </div>
-
-            <div className="overflow-hidden rounded-xl border border-stone-200 bg-white">
-              <div className="flex items-center justify-between border-b border-stone-100 bg-stone-50 px-3 py-2">
-                <p className="text-[12px] font-semibold text-stone-700">请求列表</p>
-                <p className="text-[11px] font-medium text-stone-500">
-                  {requestRowCount} 条
-                </p>
-              </div>
-              {(routeStats?.requests ?? []).length === 0 ? (
-                <p className="px-3 py-4 text-[12px] text-stone-500">当前筛选范围内暂无请求。</p>
-              ) : (
-                <div className="divide-y divide-stone-100">
-                  {(routeStats?.requests ?? []).map((request) => {
-                    const metadata = parseUsageMetadata(request.metadata_json);
-                    const expanded = expandedRequestId === request.id;
-                    return (
-                      <div className="bg-white" data-route-request-row key={request.id}>
-                        <div className="grid grid-cols-2 gap-2 px-3 py-2.5 text-[12px] text-stone-600 sm:grid-cols-4 lg:grid-cols-[1.2fr_1fr_0.5fr_1.4fr_1.4fr_0.8fr_0.8fr_0.8fr_auto] lg:items-center">
-                          <span className="font-medium text-stone-800">{formatUsageTime(request.created_at)}</span>
-                          <span className="truncate">{request.account_name ?? request.account_id ?? "-"}</span>
-                          <span className="rounded-lg bg-stone-100 px-2 py-1 text-center font-semibold text-stone-700">
-                            {metadata.status}
-                          </span>
-                          <span className="truncate font-mono text-[11px]">{metadata.path}</span>
-                          <span className="truncate" title={metadata.model}>
-                            <span className="mr-1 text-[10px] text-stone-400 lg:hidden">模型</span>
-                            {metadata.model}
-                          </span>
-                          <span
-                            aria-label={usageTokenTooltip(request)}
-                            title={usageTokenTooltip(request)}
-                          >
-                            <span className="mr-1 text-[10px] text-stone-400 lg:hidden">Token</span>
-                            {formatUsageTotalTokens(request)}
-                          </span>
-                          <span title="价格">
-                            <span className="mr-1 text-[10px] text-stone-400 lg:hidden">价格</span>
-                            {formatUsagePrice(request)}
-                          </span>
-                          <span className="truncate">{request.source_label}</span>
-                          <button
-                            aria-controls={`route-request-detail-${request.id}`}
-                            aria-expanded={expanded}
-                            aria-label={`${expanded ? "隐藏" : "查看"}请求 ${request.id} 详情`}
-                            className="inline-flex items-center justify-center rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50"
-                            onClick={() => setExpandedRequestId(expanded ? null : request.id)}
-                            type="button"
-                          >
-                            详情
-                          </button>
-                        </div>
-                        {expanded ? <RouteRequestDetail metadata={metadata} request={request} /> : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+      {statsOpen && <UsageOverviewPanel />}
       {accountView !== "stats" && (
       <section className="flex min-h-full flex-col border-t border-stone-300/80 bg-transparent pt-2">
         <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-y border-stone-300/80 bg-stone-100/90 px-2 py-1.5 backdrop-blur-sm">
@@ -5713,29 +5145,6 @@ export function AccountsScreen({
             </span>
           ) : <span className="min-w-0 flex-1" />}
           <div className="flex min-w-0 items-center gap-1">
-            {statsOpen ? (
-              <>
-                <span className="hidden truncate sm:inline">{requestRowCount} 条请求</span>
-                <button
-                  aria-label="上一页请求"
-                  className="grid h-6 w-6 place-items-center border border-stone-300 bg-white text-stone-700 hover:bg-stone-200 disabled:cursor-not-allowed disabled:opacity-40"
-                  disabled={resolvedRequestPage <= 1}
-                  onClick={() => setRequestPage((page) => Math.max(1, page - 1))}
-                  title="上一页请求"
-                  type="button"
-                ><ChevronLeft aria-hidden="true" className="h-3.5 w-3.5" /></button>
-                <span className="whitespace-nowrap font-mono text-[11px]">请求 {resolvedRequestPage}/{requestPageCount}</span>
-                <button
-                  aria-label="下一页请求"
-                  className="grid h-6 w-6 place-items-center border border-stone-300 bg-white text-stone-700 hover:bg-stone-200 disabled:cursor-not-allowed disabled:opacity-40"
-                  disabled={resolvedRequestPage >= requestPageCount}
-                  onClick={() => setRequestPage((page) => Math.min(requestPageCount, page + 1))}
-                  title="下一页请求"
-                  type="button"
-                ><ChevronRight aria-hidden="true" className="h-3.5 w-3.5" /></button>
-              </>
-            ) : (
-              <>
                 <span className="hidden truncate sm:inline">{accountPageData?.total ?? 0} 个账号</span>
                 {accountPageData && accountPageData.total > 0 ? (
                   <>
@@ -5772,8 +5181,6 @@ export function AccountsScreen({
                     ><ChevronRight aria-hidden="true" className="h-3.5 w-3.5" /></button>
                   </>
                 ) : null}
-              </>
-            )}
           </div>
         </footer>
 

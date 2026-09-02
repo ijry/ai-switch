@@ -13,7 +13,7 @@ import {
   getRoutePool,
   getRouteProxyKey,
   getRouteProxyStatus,
-  getSessionUsageStats,
+  getUsageOverview,
   getSettings,
   importExternalClientAccounts,
   importOfficialRouteCredentialsFromFiles,
@@ -74,7 +74,7 @@ vi.mock("../src/lib/api/client", () => ({
   getRoutePool: vi.fn(),
   getRouteProxyKey: vi.fn(),
   getRouteProxyStatus: vi.fn(),
-  getSessionUsageStats: vi.fn(),
+  getUsageOverview: vi.fn(),
   importExternalClientAccounts: vi.fn(),
   importOfficialRouteCredentialsFromFiles: vi.fn(),
   importOfficialRouteCredentialsFromText: vi.fn(),
@@ -326,10 +326,10 @@ describe("AccountsScreen", () => {
     vi.mocked(getRoutePool).mockReset();
     vi.mocked(getRouteProxyKey).mockReset();
     vi.mocked(getRouteProxyStatus).mockReset();
-    vi.mocked(getSessionUsageStats).mockReset();
-    // Default to an empty scan so tests that don't exercise session usage still
-    // resolve the query instead of leaving it pending.
-    vi.mocked(getSessionUsageStats).mockResolvedValue({
+    vi.mocked(getUsageOverview).mockReset();
+    // Default to an empty overview so tests that only switch to the stats view
+    // resolve the panel's query instead of leaving it pending.
+    vi.mocked(getUsageOverview).mockResolvedValue({
       totals: {
         request_count: 0,
         input_tokens: 0,
@@ -337,12 +337,19 @@ describe("AccountsScreen", () => {
         cache_write_tokens: 0,
         cache_read_tokens: 0,
         cost_micros: 0,
-        unpriced_request_count: 0,
       },
-      by_provider: [],
-      by_model: [],
-      scanned_file_count: 0,
-      truncated: false,
+      rows: [],
+      groups: { by_model: [], by_platform: [], by_account: [], by_source: [] },
+      row_count: 0,
+      page: 1,
+      page_size: 20,
+      integrity: {
+        scanned_file_count: 0,
+        truncated: false,
+        unpriced_request_count: 0,
+        estimated_price_request_count: 0,
+        unmatchable_proxy_row_count: 0,
+      },
     });
     vi.mocked(importExternalClientAccounts).mockReset();
     vi.mocked(importOfficialRouteCredentialsFromFiles).mockReset();
@@ -1296,7 +1303,7 @@ describe("AccountsScreen", () => {
     );
 
     await userEvent.click(screen.getByRole("button", { name: "统计" }));
-    expect(await screen.findByText("请求统计")).toBeInTheDocument();
+    expect(await screen.findByText("用量总览")).toBeInTheDocument();
     expect(screen.queryByText("筛选：")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("批量加入算力池")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("批量移出算力池")).not.toBeInTheDocument();
@@ -2925,362 +2932,6 @@ describe("AccountsScreen", () => {
     expect(config.headers["User-Agent"]).toContain("Mozilla/5.0");
   });
 
-  it("renders filtered route request statistics, expands request details, and paginates request rows", async () => {
-    vi.setSystemTime(new Date("2026-07-17T08:00:00Z"));
-    const expectedMonthStart = new Date();
-    expectedMonthStart.setHours(0, 0, 0, 0);
-    expectedMonthStart.setDate(1);
-
-    vi.mocked(getRoutePool).mockImplementation(async (platform, since, requestPage = 1, requestPageSize = 20) => {
-      const requests: RoutePoolUsageLog[] =
-        requestPage === 2
-          ? [
-              {
-                id: "request-page-2",
-                account_id: "cred-api-1",
-                account_name: "API Account",
-                source_label: "route_proxy",
-                metric_type: "request",
-                amount: 1,
-                unit: "count",
-                input_tokens: 50,
-                output_tokens: 10,
-                cache_tokens: 5,
-                price_usd_micros: null,
-                price_cny_micros: null,
-                price_currency: null,
-                metadata_json: JSON.stringify({
-                  requested_model: "gpt-5",
-                  upstream_model: "gpt-5",
-                  path: "/chat/completions",
-                  status: 401,
-                  success: false,
-                  error_message: "upstream returned 401",
-                  response_body: "{\"error\":{\"message\":\"expired\"}}",
-                }),
-                created_at: "2026-07-17T08:02:00Z",
-              },
-            ]
-          : [
-              {
-                id: "request-success",
-                account_id: "cred-official-1",
-                account_name: "Team Account",
-                source_label: "route_proxy",
-                metric_type: "request",
-                amount: 1,
-                unit: "count",
-                input_tokens: 120,
-                output_tokens: 30,
-                cache_tokens: 80,
-                price_usd_micros: null,
-                price_cny_micros: 7_100_000,
-                price_currency: "cny",
-                metadata_json: JSON.stringify({
-                  source: "ui_model_connectivity_test",
-                  request_kind: "model_connectivity",
-                  platform: "codex",
-                  route_credential_id: "cred-official-1",
-                  route_credential_name: "Team Account",
-                  interface_format: "openai",
-                  requested_model: "gpt-5.6-sol",
-                  upstream_model: "sol-upstream",
-                  path: "/chat/completions",
-                  status: 200,
-                  success: true,
-                  duration_ms: 321,
-                  request_body_json:
-                    "{\"model\":\"gpt-5\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: ai-switch-ok\"}]}",
-                  response_body: "{\"choices\":[{\"message\":{\"content\":\"ai-switch-ok\"}}]}",
-                  response_text: "ai-switch-ok",
-                  error_message: null,
-                }),
-                created_at: "2026-07-17T08:00:00Z",
-              },
-              {
-                id: "request-invalid-metadata",
-                account_id: "cred-api-1",
-                account_name: "Broken Metadata Account",
-                source_label: "route_proxy",
-                metric_type: "request",
-                amount: 1,
-                unit: "count",
-                metadata_json: "{bad json",
-                created_at: "2026-07-17T08:01:00Z",
-              },
-            ];
-
-      return {
-        platform,
-        account_ids: ["cred-official-1"],
-        stats: statsFixture({
-          member_count: 1,
-          request_count: 99,
-          token_count: 150,
-          input_token_count: 120,
-          output_token_count: 30,
-          cache_token_count: 80,
-          cost_micros: 1_000_000,
-          request_row_count: 42,
-          request_page: requestPage ?? 1,
-          request_page_size: requestPageSize ?? 20,
-          requests,
-        }),
-      };
-    });
-
-    renderScreen();
-
-    await userEvent.click(await screen.findByRole("button", { name: "统计" }));
-
-    expect(await screen.findByText("请求统计")).toBeInTheDocument();
-    expect(screen.getByText("统计当前 Codex 的历史路由请求")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "当日" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "本周" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "本月" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "累计" })).toBeInTheDocument();
-    expect(await screen.findByText("42 条请求")).toBeInTheDocument();
-    expect(await screen.findByText("请求 1/3")).toBeInTheDocument();
-    const statusBar = screen.getByTestId("account-workspace-status-bar");
-    expect(statusBar).toContainElement(screen.getByText("请求 1/3"));
-    expect(statusBar).toContainElement(screen.getByRole("button", { name: "下一页请求" }));
-    expect(screen.getByText(/\/chat\/completions/)).toBeInTheDocument();
-    expect(screen.getByText("200")).toBeInTheDocument();
-    expect(screen.getAllByText("route_proxy")).toHaveLength(2);
-    expect(screen.getByLabelText("查看请求 request-success 详情")).toBeInTheDocument();
-
-    const invalidMetadataRow = screen.getByText("Broken Metadata Account").closest("[data-route-request-row]");
-    expect(invalidMetadataRow).not.toBeNull();
-    expect(within(invalidMetadataRow as HTMLElement).getAllByText("-")).toHaveLength(5);
-
-    expect(screen.getByText("输入 Token")).toBeInTheDocument();
-    expect(screen.getByText("输出 Token")).toBeInTheDocument();
-    expect(screen.getByText("缓存 Token")).toBeInTheDocument();
-    expect(screen.getByText("总费用（USD）")).toBeInTheDocument();
-    expect(screen.getByText("¥7.100000")).toBeInTheDocument();
-    expect(screen.getByText("$1.00")).toBeInTheDocument();
-    expect(screen.getAllByText("120").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("30").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("80").length).toBeGreaterThan(0);
-    expect(screen.getByText("gpt-5.6-sol->sol-upstream")).toBeInTheDocument();
-    expect(
-      screen.getByTitle("输入 Token：120；输出 Token：30；缓存 Token：80"),
-    ).toBeInTheDocument();
-    const successRow = screen.getByText("Team Account").closest("[data-route-request-row]");
-    expect(successRow).not.toBeNull();
-    expect((successRow as HTMLElement).firstElementChild).toHaveClass(
-      "grid-cols-2",
-      "sm:grid-cols-4",
-    );
-
-    await userEvent.click(screen.getByLabelText("查看请求 request-success 详情"));
-
-    const successDetail = await screen.findByLabelText("请求 request-success 详情");
-    expect(within(successDetail).getByText("请求详情")).toBeInTheDocument();
-    expect(within(successDetail).getByText("request-success")).toBeInTheDocument();
-    expect(within(successDetail).getByText("cred-official-1")).toBeInTheDocument();
-    expect(within(successDetail).getByText("Team Account")).toBeInTheDocument();
-    expect(within(successDetail).getByText("1 count")).toBeInTheDocument();
-    expect(within(successDetail).getByText("120")).toBeInTheDocument();
-    expect(within(successDetail).getByText("30")).toBeInTheDocument();
-    expect(within(successDetail).getByText("80")).toBeInTheDocument();
-    expect(within(successDetail).getByText("¥7.100000")).toBeInTheDocument();
-    expect(within(successDetail).getByText(/"path": "\/chat\/completions"/)).toBeInTheDocument();
-    expect(within(successDetail).getByText(/"status": 200/)).toBeInTheDocument();
-    expect(within(successDetail).getByText(/model_connectivity/)).toBeInTheDocument();
-    expect(within(successDetail).getByText(/request_body_json/)).toBeInTheDocument();
-    expect(within(successDetail).getByText(/response_body/)).toBeInTheDocument();
-    expect(within(successDetail).getAllByText(/ai-switch-ok/).length).toBeGreaterThan(0);
-
-    await userEvent.click(screen.getByLabelText("查看请求 request-invalid-metadata 详情"));
-
-    const invalidDetail = await screen.findByLabelText("请求 request-invalid-metadata 详情");
-    expect(within(invalidDetail).getByText("metadata_json 无法解析，显示原始内容。")).toBeInTheDocument();
-    expect(within(invalidDetail).getByText("{bad json")).toBeInTheDocument();
-
-    await userEvent.click(screen.getByLabelText("下一页请求"));
-
-    await waitFor(() =>
-      expect(getRoutePool).toHaveBeenLastCalledWith(
-        "codex",
-        expect.any(String),
-        2,
-        20,
-      ),
-    );
-    expect(await screen.findByText("请求 2/3")).toBeInTheDocument();
-    const pageTwoDetailButton = await screen.findByLabelText("查看请求 request-page-2 详情");
-    expect(pageTwoDetailButton).toBeInTheDocument();
-    await userEvent.click(pageTwoDetailButton);
-    expect(await screen.findByText("request-page-2")).toBeInTheDocument();
-    const failedDetail = await screen.findByLabelText("请求 request-page-2 详情");
-    expect(within(failedDetail).getByText("上游原始响应")).toBeInTheDocument();
-    expect(within(failedDetail).getByText(/"message": "expired"/)).toBeInTheDocument();
-    expect(screen.queryByText("request-success")).not.toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("button", { name: "本月" }));
-
-    await waitFor(() =>
-      expect(getRoutePool).toHaveBeenLastCalledWith(
-        "codex",
-        expectedMonthStart.toISOString(),
-        1,
-        20,
-      ),
-    );
-
-    await userEvent.click(screen.getByRole("button", { name: "累计" }));
-
-    await waitFor(() => expect(getRoutePool).toHaveBeenLastCalledWith("codex", null, 1, 20));
-  });
-
-  it("renders local session usage alongside route statistics", async () => {
-    vi.mocked(getRoutePool).mockResolvedValue({
-      platform: "codex",
-      account_ids: [],
-      stats: statsFixture(),
-    });
-    vi.mocked(getSessionUsageStats).mockResolvedValue({
-      totals: {
-        request_count: 11254,
-        input_tokens: 5_584_802_591,
-        output_tokens: 129_897_022,
-        cache_write_tokens: 318_626_507,
-        cache_read_tokens: 19_115_772_272,
-        cost_micros: 16_248_905_925,
-        unpriced_request_count: 3,
-      },
-      by_provider: [],
-      by_model: [
-        {
-          provider: "codex",
-          model: "gpt-5.6-sol",
-          priced: true,
-          request_count: 152,
-          input_tokens: 1_000_000,
-          output_tokens: 2_000,
-          cache_write_tokens: 0,
-          cache_read_tokens: 0,
-          cost_micros: 3_357_030_000,
-          unpriced_request_count: 0,
-        },
-        {
-          provider: "codex",
-          model: "unknown",
-          priced: false,
-          request_count: 3,
-          input_tokens: 500,
-          output_tokens: 10,
-          cache_write_tokens: 0,
-          cache_read_tokens: 0,
-          cost_micros: 0,
-          unpriced_request_count: 3,
-        },
-      ],
-      scanned_file_count: 1186,
-      truncated: false,
-    });
-
-    renderScreen();
-
-    await userEvent.click(await screen.findByRole("button", { name: "统计" }));
-
-    expect(await screen.findByText("本机会话用量")).toBeInTheDocument();
-    expect(screen.getByText("已扫描 1,186 个会话文件")).toBeInTheDocument();
-    expect(screen.getByText("11,254")).toBeInTheDocument();
-    // Large token counts are abbreviated, with the exact figure in the tooltip.
-    expect(screen.getByText("5.58B")).toBeInTheDocument();
-    expect(screen.getByTitle("5,584,802,591")).toBeInTheDocument();
-    expect(screen.getByText("$16,248.91")).toBeInTheDocument();
-    // Models with no rate are called out rather than silently counted as free.
-    expect(
-      screen.getByText(/其中 3 个请求的模型没有价格数据/),
-    ).toBeInTheDocument();
-    expect(screen.getByText("无价格")).toBeInTheDocument();
-    expect(screen.getByText(/gpt-5\.6-sol/)).toBeInTheDocument();
-
-    await waitFor(() => expect(getSessionUsageStats).toHaveBeenCalled());
-  });
-
-  it("shows sub-cent route costs instead of rounding them to $0.00", async () => {
-    // A real amount below half a cent used to render as "$0.00", which is
-    // indistinguishable from having no cost data at all.
-    vi.mocked(getRoutePool).mockResolvedValue({
-      platform: "codex",
-      account_ids: [],
-      stats: statsFixture({ request_count: 1, cost_micros: 4_200 }),
-    });
-    vi.mocked(getSessionUsageStats).mockResolvedValue({
-      totals: {
-        request_count: 0,
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_write_tokens: 0,
-        cache_read_tokens: 0,
-        cost_micros: 0,
-        unpriced_request_count: 0,
-      },
-      by_provider: [],
-      by_model: [],
-      scanned_file_count: 0,
-      truncated: false,
-    });
-
-    renderScreen();
-
-    await userEvent.click(await screen.findByRole("button", { name: "统计" }));
-
-    expect(await screen.findByText("$0.004200")).toBeInTheDocument();
-    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
-  });
-
-  it("auto refreshes route statistics only while the panel is open", async () => {
-    vi.mocked(getRoutePool).mockResolvedValue({
-      platform: "codex",
-      account_ids: [],
-      stats: statsFixture({
-        request_row_count: 0,
-        request_page: 1,
-        request_page_size: 20,
-      }),
-    });
-
-    renderScreen();
-
-    await screen.findByText("筛选：");
-    expect(getRoutePool).toHaveBeenCalledTimes(1);
-
-    vi.useFakeTimers();
-
-    act(() => {
-      fireEvent.click(screen.getByRole("button", { name: "统计" }));
-    });
-
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    expect(getRoutePool).toHaveBeenCalledTimes(2);
-
-    await act(async () => {
-      vi.advanceTimersByTime(5000);
-      await Promise.resolve();
-    });
-
-    expect(getRoutePool).toHaveBeenCalledTimes(3);
-
-    act(() => {
-      fireEvent.click(screen.getByRole("button", { name: "未入池" }));
-    });
-
-    await act(async () => {
-      vi.advanceTimersByTime(5000);
-      await Promise.resolve();
-    });
-
-    expect(getRoutePool).toHaveBeenCalledTimes(3);
-  });
-
   it("tests the credential pool route through the internal model connectivity check", async () => {
     vi.mocked(routePoolTestModel).mockResolvedValue(
       modelTestOutcomeFixture({
@@ -3322,7 +2973,7 @@ describe("AccountsScreen", () => {
     expect(screen.getByText("命中账号")).toBeInTheDocument();
     expect(screen.getByText(/Team Account · cred-official-1/)).toBeInTheDocument();
     expect(screen.getByText("上游接口")).toBeInTheDocument();
-    expect(screen.queryByText("请求统计")).not.toBeInTheDocument();
+    expect(screen.queryByText("用量总览")).not.toBeInTheDocument();
 
     const proxyStatus = screen.getByText("本地代理：未启动");
     const recentRouteStatus = screen.getByText("最近路由到：Team Account");
