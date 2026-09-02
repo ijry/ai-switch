@@ -67,6 +67,9 @@ pub struct RoutePoolUsageLog {
     pub price_currency: Option<String>,
     /// `"upstream"`, `"estimated"`, or `None` — see [`RouteUsageBreakdown`].
     pub price_source: Option<String>,
+    /// Upstream response id, when one could be read from the response body.
+    /// The join key against a CLI transcript entry for the same request.
+    pub upstream_response_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

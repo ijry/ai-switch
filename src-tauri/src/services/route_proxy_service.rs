@@ -719,6 +719,7 @@ async fn forward_request(
                         &selected.id,
                         &metadata,
                         &RouteUsageBreakdown::default(),
+                        None,
                     )
                     .await;
                     emit_live_log(
@@ -798,6 +799,7 @@ async fn forward_request(
                     &credential.id,
                     &metadata,
                     &RouteUsageBreakdown::default(),
+                    None,
                 )
                 .await;
                 emit_live_log(
@@ -867,6 +869,7 @@ async fn forward_request(
                     &credential.id,
                     &metadata,
                     &RouteUsageBreakdown::default(),
+                    None,
                 )
                 .await;
                 emit_live_log(
@@ -1109,6 +1112,7 @@ async fn forward_request(
                     &credential.id,
                     &metadata,
                     &RouteUsageBreakdown::default(),
+                    None,
                 )
                 .await;
                 emit_live_log(
@@ -1216,6 +1220,10 @@ async fn forward_request(
                         &credential.id,
                         &metadata,
                         &RouteUsageBreakdown::default(),
+                        crate::services::upstream_response_id::extract_upstream_response_id(
+                            &response_bytes,
+                        )
+                        .as_deref(),
                     )
                     .await;
                     emit_live_log(
@@ -1321,8 +1329,15 @@ async fn forward_request(
             .or_else(|| upstream_model.clone())
             .or_else(|| requested_model.clone());
         apply_estimated_price(&mut usage, priced_model.as_deref());
-        let _ =
-            insert_route_credential_request_event(pool, &credential.id, &metadata, &usage).await;
+        let _ = insert_route_credential_request_event(
+            pool,
+            &credential.id,
+            &metadata,
+            &usage,
+            crate::services::upstream_response_id::extract_upstream_response_id(&response_bytes)
+                .as_deref(),
+        )
+        .await;
         emit_live_log(
             &state.live_log,
             &platform,
@@ -1976,6 +1991,7 @@ async fn handle_stream_prime_failure(
         &credential.id,
         &metadata,
         &RouteUsageBreakdown::default(),
+        None,
     )
     .await;
     emit_live_log(
@@ -2094,9 +2110,15 @@ impl StreamCompletion {
             upstream_model.as_deref(),
             Some(&preview),
         );
-        let _ =
-            insert_route_credential_request_event(&state.pool, &credential.id, &metadata, &usage)
-                .await;
+        let _ = insert_route_credential_request_event(
+            &state.pool,
+            &credential.id,
+            &metadata,
+            &usage,
+            crate::services::upstream_response_id::extract_upstream_response_id(&preview)
+                .as_deref(),
+        )
+        .await;
         emit_live_log(
             &state.live_log,
             &platform,
@@ -5088,6 +5110,7 @@ async fn insert_route_credential_request_event(
     route_credential_id: &str,
     metadata_json: &str,
     usage: &RouteUsageBreakdown,
+    upstream_response_id: Option<&str>,
 ) -> Result<(), AppError> {
     RoutePoolRepository::insert_request_event(
         pool,
@@ -5095,6 +5118,7 @@ async fn insert_route_credential_request_event(
         "route_proxy",
         metadata_json,
         usage,
+        upstream_response_id,
     )
     .await
 }

@@ -335,14 +335,16 @@ impl RoutePoolRepository {
         source_label: &str,
         metadata_json: &str,
         usage: &RouteUsageBreakdown,
+        upstream_response_id: Option<&str>,
     ) -> Result<(), AppError> {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             "INSERT INTO usage_events
              (id, route_credential_id, source_label, metric_type, amount, unit,
               metadata_json, input_tokens, output_tokens, cache_tokens,
-              price_usd_micros, price_cny_micros, price_currency, price_source, created_at)
-             VALUES (?, ?, ?, 'request', 1, 'count', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              price_usd_micros, price_cny_micros, price_currency, price_source,
+              upstream_response_id, created_at)
+             VALUES (?, ?, ?, 'request', 1, 'count', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(account_id)
@@ -355,6 +357,7 @@ impl RoutePoolRepository {
         .bind(usage.price_cny_micros)
         .bind(&usage.price_currency)
         .bind(&usage.price_source)
+        .bind(upstream_response_id)
         .bind(&now)
         .execute(pool)
         .await
@@ -423,7 +426,8 @@ impl RoutePoolRepository {
             "SELECT ue.id, ue.route_credential_id, a.display_name AS account_name,
                     ue.source_label, ue.metric_type, ue.amount, ue.unit, ue.metadata_json, ue.created_at,
                     ue.input_tokens, ue.output_tokens, ue.cache_tokens,
-                    ue.price_usd_micros, ue.price_cny_micros, ue.price_currency, ue.price_source
+                    ue.price_usd_micros, ue.price_cny_micros, ue.price_currency, ue.price_source,
+                    ue.upstream_response_id
              FROM usage_events ue
              INNER JOIN route_credentials a ON a.id = ue.route_credential_id
              WHERE a.platform = ? AND a.archived_at IS NULL{usage_since_clause}
@@ -470,7 +474,8 @@ impl RoutePoolRepository {
             "SELECT ue.id, ue.route_credential_id, a.display_name AS account_name,
                     ue.source_label, ue.metric_type, ue.amount, ue.unit, ue.metadata_json, ue.created_at,
                     ue.input_tokens, ue.output_tokens, ue.cache_tokens,
-                    ue.price_usd_micros, ue.price_cny_micros, ue.price_currency, ue.price_source
+                    ue.price_usd_micros, ue.price_cny_micros, ue.price_currency, ue.price_source,
+                    ue.upstream_response_id
              FROM usage_events ue
              INNER JOIN route_credentials a ON a.id = ue.route_credential_id
              WHERE a.platform = ? AND a.archived_at IS NULL AND ue.metric_type = 'request'{usage_since_clause}
@@ -511,6 +516,7 @@ impl RoutePoolRepository {
             price_cny_micros: row.get("price_cny_micros"),
             price_currency: row.get("price_currency"),
             price_source: row.get("price_source"),
+            upstream_response_id: row.get("upstream_response_id"),
         };
 
         Ok(RoutePoolStats {
@@ -650,6 +656,7 @@ mod tests {
             "route_proxy",
             r#"{"path":"/chat/completions","status":200}"#,
             &usage,
+            None,
         )
         .await
         .unwrap();
@@ -669,6 +676,58 @@ mod tests {
         assert_eq!(stats.requests[0].price_cny_micros, Some(7_100_000));
         assert_eq!(stats.requests[0].price_currency.as_deref(), Some("cny"));
         assert_eq!(stats.requests[0].price_source.as_deref(), Some("upstream"));
+    }
+
+    #[tokio::test]
+    async fn request_event_persists_the_upstream_response_id() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let account_id = create_credential(&pool, "claude", "ClaudeOne").await;
+
+        RoutePoolRepository::insert_request_event(
+            &pool,
+            &account_id,
+            "route_proxy",
+            r#"{"platform":"claude","success":true}"#,
+            &RouteUsageBreakdown::default(),
+            Some("msg_abc123"),
+        )
+        .await
+        .unwrap();
+
+        let stats = RoutePoolRepository::stats(&pool, "claude", None, 1, 20)
+            .await
+            .unwrap();
+        assert_eq!(
+            stats.requests[0].upstream_response_id.as_deref(),
+            Some("msg_abc123")
+        );
+    }
+
+    #[tokio::test]
+    async fn request_event_without_a_response_id_stores_null() {
+        // A transport failure never produced a response, so there is no id to
+        // record. It must read as unknown rather than as an empty-string key,
+        // which would collide with every other id-less row during merging.
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let account_id = create_credential(&pool, "claude", "ClaudeOne").await;
+
+        RoutePoolRepository::insert_request_event(
+            &pool,
+            &account_id,
+            "route_proxy",
+            r#"{"platform":"claude","success":false}"#,
+            &RouteUsageBreakdown::default(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let stats = RoutePoolRepository::stats(&pool, "claude", None, 1, 20)
+            .await
+            .unwrap();
+        assert_eq!(stats.requests[0].upstream_response_id, None);
     }
 
     #[tokio::test]
@@ -695,6 +754,7 @@ mod tests {
                     price_currency: Some("usd".to_string()),
                     price_source: Some(price_source.to_string()),
                 },
+                None,
             )
             .await
             .unwrap();
