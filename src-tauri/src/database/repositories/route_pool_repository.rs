@@ -376,6 +376,13 @@ impl RoutePoolRepository {
     /// Deliberately unfiltered by platform and by `archived_at`: the usage
     /// overview reports total spend, so a request stays counted after its
     /// account is archived. Archiving governs the account list, not history.
+    ///
+    /// The join is outer for the same reason. Deleting an account removes only
+    /// the `route_credentials` row — `usage_events.route_credential_id` has no
+    /// cascade — so an inner join would drop the whole history of every deleted
+    /// account and understate spend without saying so. The request metadata
+    /// carries the platform and the account name it was written with, which is
+    /// exactly what is needed to label a row whose account is gone.
     pub async fn list_request_events(
         pool: &SqlitePool,
         since: Option<&str>,
@@ -386,14 +393,17 @@ impl RoutePoolRepository {
             ""
         };
         let sql = format!(
-            "SELECT ue.id, a.platform AS platform, ue.route_credential_id,
-                    a.display_name AS account_name, ue.source_label,
+            "SELECT ue.id,
+                    COALESCE(a.platform, json_extract(ue.metadata_json, '$.platform'), '') AS platform,
+                    ue.route_credential_id,
+                    COALESCE(a.display_name, json_extract(ue.metadata_json, '$.route_credential_name')) AS account_name,
+                    ue.source_label,
                     ue.metadata_json, ue.created_at,
                     ue.input_tokens, ue.output_tokens, ue.cache_tokens,
                     ue.price_usd_micros, ue.price_cny_micros, ue.price_currency,
                     ue.price_source, ue.upstream_response_id
              FROM usage_events ue
-             INNER JOIN route_credentials a ON a.id = ue.route_credential_id
+             LEFT JOIN route_credentials a ON a.id = ue.route_credential_id
              WHERE ue.metric_type = 'request'{since_clause}
              ORDER BY ue.created_at DESC, ue.id DESC"
         );
@@ -825,6 +835,40 @@ mod tests {
         assert_eq!(rows.len(), 2, "both platforms, archived included");
         let platforms: HashSet<&str> = rows.iter().map(|row| row.platform.as_str()).collect();
         assert!(platforms.contains("claude") && platforms.contains("codex"));
+    }
+
+    #[tokio::test]
+    async fn list_request_events_keeps_history_after_the_account_is_deleted() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let account_id = create_credential(&pool, "codex", "CodexOne").await;
+
+        RoutePoolRepository::insert_request_event(
+            &pool,
+            &account_id,
+            "route_proxy",
+            r#"{"success":true,"platform":"codex","route_credential_name":"CodexOne"}"#,
+            &RouteUsageBreakdown::default(),
+            Some("resp_kept"),
+        )
+        .await
+        .unwrap();
+
+        // Deleting an account drops only its own row: usage_events has no
+        // cascade, so the spend is still on the books and still has to be
+        // reported. Losing it would silently understate the total.
+        RouteCredentialRepository::delete(&pool, &account_id)
+            .await
+            .unwrap();
+
+        let rows = RoutePoolRepository::list_request_events(&pool, None)
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        // Labels come from the metadata the request was written with.
+        assert_eq!(rows[0].platform, "codex");
+        assert_eq!(rows[0].account_name.as_deref(), Some("CodexOne"));
     }
 
     #[tokio::test]
