@@ -21,6 +21,7 @@ pub mod route_credential_service;
 pub mod route_credential_transfer_codec;
 pub mod route_credential_transfer_import_service;
 pub mod route_credential_transfer_service;
+pub(crate) mod route_failure_scope;
 pub(crate) mod route_model_capability;
 pub mod route_model_fetch_service;
 pub mod route_model_test_service;
