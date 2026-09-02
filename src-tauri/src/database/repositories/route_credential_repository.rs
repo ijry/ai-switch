@@ -104,7 +104,7 @@ fn push_pool_scope_predicate(builder: &mut QueryBuilder<Sqlite>, scope: RouteCre
     }
 }
 
-fn database_error(code: &'static str, message: &str, error: impl ToString) -> AppError {
+pub(crate) fn database_error(code: &'static str, message: &str, error: impl ToString) -> AppError {
     AppError::Database {
         code,
         message: message.to_string(),
@@ -1745,7 +1745,7 @@ impl RouteCredentialRepository {
     }
 }
 
-fn truncate_failure_message(message: &str) -> String {
+pub(crate) fn truncate_failure_message(message: &str) -> String {
     let end = message
         .char_indices()
         .take_while(|(index, character)| *index + character.len_utf8() <= 512)
@@ -1755,7 +1755,7 @@ fn truncate_failure_message(message: &str) -> String {
     message[..end].to_string()
 }
 
-fn semantic_failure_fingerprint(response_status: Option<u16>, message: &str) -> String {
+pub(crate) fn semantic_failure_fingerprint(response_status: Option<u16>, message: &str) -> String {
     use sha2::{Digest, Sha256};
 
     let normalized_message = message
@@ -1775,7 +1775,7 @@ fn semantic_failure_fingerprint(response_status: Option<u16>, message: &str) -> 
 
 const MAX_FAILURE_RESPONSE_CHARS: usize = 8192;
 
-fn truncate_failure_response(response_body: Option<&[u8]>) -> Option<String> {
+pub(crate) fn truncate_failure_response(response_body: Option<&[u8]>) -> Option<String> {
     let body = std::str::from_utf8(response_body?).ok()?.trim();
     if body.is_empty() {
         return None;

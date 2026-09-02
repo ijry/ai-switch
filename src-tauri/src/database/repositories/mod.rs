@@ -3,6 +3,7 @@ pub mod batch_repository;
 pub mod config_snapshot_repository;
 pub mod import_repository;
 pub mod provider_repository;
+pub mod route_credential_model_repository;
 pub mod route_credential_repository;
 pub mod route_credential_transfer_repository;
 pub mod route_pool_repository;
