@@ -9,6 +9,9 @@ use crate::models::route_credential::{
 use crate::services::route_credential_service::RouteCredentialService;
 use crate::services::route_quota_service::{QuotaRefreshOutcome, RouteQuotaService};
 use crate::services::route_recovery_service::{RecoveryRule, RouteRecoveryService};
+use crate::services::route_relay_balance_service::{
+    RelayBalanceRefreshOutcome, RouteRelayBalanceService,
+};
 use tauri::State;
 
 #[tauri::command]
@@ -209,6 +212,26 @@ pub async fn refresh_route_credentials_quota(
     platform: String,
 ) -> Result<Vec<QuotaRefreshOutcome>, ApiError> {
     RouteQuotaService::refresh_platform(&state.pool, platform)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn refresh_route_credential_relay_balance(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<RelayBalanceRefreshOutcome, ApiError> {
+    RouteRelayBalanceService::refresh_one(&state.pool, id)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn refresh_route_credentials_relay_balance(
+    state: State<'_, AppState>,
+    platform: String,
+) -> Result<Vec<RelayBalanceRefreshOutcome>, ApiError> {
+    RouteRelayBalanceService::refresh_platform(&state.pool, platform)
         .await
         .map_err(ApiError::from)
 }

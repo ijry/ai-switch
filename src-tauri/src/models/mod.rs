@@ -10,5 +10,6 @@ pub mod route_credential_model;
 pub mod route_credential_transfer;
 pub mod route_pool;
 pub mod route_proxy_https;
+pub mod route_relay_balance;
 pub mod settings;
 pub mod target_app;

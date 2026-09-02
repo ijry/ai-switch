@@ -38,7 +38,8 @@ use commands::route_credential_commands::{
     create_api_route_credential, delete_route_credential, get_route_credential,
     import_official_route_credentials_from_files, import_official_route_credentials_from_text,
     list_route_credentials, list_route_credentials_page, refresh_route_credential_quota,
-    refresh_route_credentials_quota, reorder_route_credentials, restore_route_credentials,
+    refresh_route_credential_relay_balance, refresh_route_credentials_quota,
+    refresh_route_credentials_relay_balance, reorder_route_credentials, restore_route_credentials,
     set_route_credential_model_status, set_route_credential_recovery,
     set_route_credential_statuses, update_route_credential,
 };
@@ -459,6 +460,8 @@ pub fn run() {
             set_route_credential_statuses,
             refresh_route_credential_quota,
             refresh_route_credentials_quota,
+            refresh_route_credential_relay_balance,
+            refresh_route_credentials_relay_balance,
             export_route_credentials,
             preview_route_credential_import,
             import_route_credentials,

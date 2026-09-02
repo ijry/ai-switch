@@ -48,6 +48,7 @@ use crate::services::route_proxy_https_service::RouteProxyHttpsService;
 use crate::services::route_proxy_service::RouteProxyService;
 use crate::services::route_quota_service::RouteQuotaService;
 use crate::services::route_recovery_service::{RecoveryRule, RouteRecoveryService};
+use crate::services::route_relay_balance_service::RouteRelayBalanceService;
 use crate::services::target_service::TargetService;
 use crate::services::web_service::{WebService, WebServiceConfig};
 use crate::terminal_manager::CreateTerminalSessionInput;
@@ -602,6 +603,22 @@ pub async fn dispatch_command(
             let platform = required_string_arg(&args, "platform")?;
             to_value(
                 RouteQuotaService::refresh_platform(&state.pool, platform)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "refresh_route_credential_relay_balance" => {
+            let id = required_string_arg(&args, "id")?;
+            to_value(
+                RouteRelayBalanceService::refresh_one(&state.pool, id)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "refresh_route_credentials_relay_balance" => {
+            let platform = required_string_arg(&args, "platform")?;
+            to_value(
+                RouteRelayBalanceService::refresh_platform(&state.pool, platform)
                     .await
                     .map_err(to_error)?,
             )

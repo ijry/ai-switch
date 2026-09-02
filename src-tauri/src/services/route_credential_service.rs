@@ -18,6 +18,9 @@ use crate::models::route_credential_model::{
 };
 use crate::models::route_credential_transfer::TransferPlatformChoice;
 use crate::models::route_pool::FetchedRouteModel;
+use crate::models::route_relay_balance::{
+    RelayBalanceConfig, RelayBalanceProvider, RELAY_BALANCE_CONFIG_KEY,
+};
 use crate::services::cpa_import_service::{parse_cpa_text, ParsedOfficialCredential};
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_credential_activity::RouteCredentialActivityRegistry;
@@ -160,6 +163,11 @@ impl RouteCredentialService {
             .filter(|value| !value.is_empty())
         {
             config["headers"] = json!({ "User-Agent": user_agent });
+        }
+        if let Some(relay_balance) =
+            parse_relay_balance_provider(input.relay_balance_provider.as_deref())?
+        {
+            config[RELAY_BALANCE_CONFIG_KEY] = serde_json::to_value(relay_balance)?;
         }
         let config_json = config.to_string();
         let preview_json = input.preview_json.unwrap_or_else(|| {
@@ -769,6 +777,39 @@ fn validate_api_key_field(
 
 fn is_anthropic_interface_format(value: &str) -> bool {
     value == "anthropic"
+}
+
+/// Turns the create form's provider name into a balance query config.
+///
+/// Only the two zero-config providers are accepted here: `custom` needs an
+/// endpoint and a value path, and there is nowhere to enter those while the
+/// account is still being created.
+fn parse_relay_balance_provider(
+    value: Option<&str>,
+) -> Result<Option<RelayBalanceConfig>, AppError> {
+    let Some(value) = value.map(str::trim).filter(|item| !item.is_empty()) else {
+        return Ok(None);
+    };
+    if value.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+    let provider = serde_json::from_value::<RelayBalanceProvider>(json!(value)).map_err(|_| {
+        AppError::Validation {
+            code: "validation.relay_balance_provider",
+            message: "relay_balance_provider must be new_api, sub2api or none".to_string(),
+            details: Some(value.to_string()),
+            recoverable: true,
+        }
+    })?;
+    if provider == RelayBalanceProvider::Custom {
+        return Err(AppError::Validation {
+            code: "validation.relay_balance_provider",
+            message: "自定义余额查询要在编辑账号里填写请求 URL 与取值路径".to_string(),
+            details: Some(value.to_string()),
+            recoverable: true,
+        });
+    }
+    Ok(Some(RelayBalanceConfig::new(provider)))
 }
 
 fn parse_official_credentials_text(
@@ -1518,6 +1559,7 @@ mod tests {
                 batch_id: None,
                 responses_custom_tool_compat: None,
                 user_agent: None,
+                relay_balance_provider: None,
             },
         )
         .await
@@ -1556,6 +1598,7 @@ mod tests {
                 batch_id: None,
                 responses_custom_tool_compat: None,
                 user_agent: None,
+                relay_balance_provider: None,
             },
         )
         .await
@@ -1597,6 +1640,7 @@ mod tests {
                 batch_id: None,
                 responses_custom_tool_compat: None,
                 user_agent: None,
+                relay_balance_provider: None,
             },
         )
         .await
@@ -1675,6 +1719,7 @@ mod tests {
                 batch_id: None,
                 responses_custom_tool_compat: Some(true),
                 user_agent: Some("shared-client/1.0".into()),
+                relay_balance_provider: None,
             },
         )
         .await
@@ -1755,6 +1800,7 @@ mod tests {
                 batch_id: None,
                 responses_custom_tool_compat: None,
                 user_agent: None,
+                relay_balance_provider: None,
             },
         )
         .await
@@ -1801,6 +1847,7 @@ mod tests {
                 batch_id: None,
                 responses_custom_tool_compat: None,
                 user_agent: None,
+                relay_balance_provider: None,
             },
         )
         .await
@@ -1845,6 +1892,7 @@ mod tests {
                 batch_id: None,
                 responses_custom_tool_compat: None,
                 user_agent: None,
+                relay_balance_provider: None,
             },
         )
         .await
@@ -1890,6 +1938,7 @@ mod tests {
                 batch_id: None,
                 responses_custom_tool_compat: Some(true),
                 user_agent: None,
+                relay_balance_provider: None,
             },
         )
         .await
@@ -1976,6 +2025,7 @@ mod tests {
                 batch_id: None,
                 responses_custom_tool_compat: None,
                 user_agent: None,
+                relay_balance_provider: None,
             },
         )
         .await
@@ -2022,6 +2072,7 @@ mod tests {
                 batch_id: None,
                 responses_custom_tool_compat: None,
                 user_agent: None,
+                relay_balance_provider: None,
             },
         )
         .await
@@ -2062,6 +2113,7 @@ mod tests {
                 batch_id: None,
                 responses_custom_tool_compat: Some(true),
                 user_agent: None,
+                relay_balance_provider: None,
             },
         )
         .await
@@ -2096,6 +2148,7 @@ mod tests {
                 batch_id: None,
                 responses_custom_tool_compat: None,
                 user_agent: None,
+                relay_balance_provider: None,
             },
         )
         .await
@@ -2130,6 +2183,7 @@ mod tests {
                 batch_id: None,
                 responses_custom_tool_compat: None,
                 user_agent: Some("  MyGrokClient/9.9.9  ".into()),
+                relay_balance_provider: None,
             },
         )
         .await
@@ -2164,6 +2218,7 @@ mod tests {
                 batch_id: None,
                 responses_custom_tool_compat: None,
                 user_agent: Some("   ".into()),
+                relay_balance_provider: None,
             },
         )
         .await
@@ -2241,5 +2296,115 @@ mod tests {
             .expect("first restored")
             .archived_at
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn create_api_credential_stores_the_relay_balance_provider() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+
+        let created = RouteCredentialService::create_api(
+            &pool,
+            CreateApiRouteCredentialInput {
+                platform: "codex".into(),
+                display_name: "Relay".into(),
+                api_key: "sk-test".into(),
+                base_url: "https://panel.example.com/v1".into(),
+                interface_format: "openai".into(),
+                model_mappings_json: "[]".into(),
+                fetched_models_json: None,
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: None,
+                user_agent: None,
+                relay_balance_provider: Some("new_api".into()),
+            },
+        )
+        .await
+        .expect("create");
+
+        let config = serde_json::from_str::<Value>(&created.config_json).expect("config");
+        assert_eq!(
+            config["relay_balance"]["provider"].as_str(),
+            Some("new_api")
+        );
+    }
+
+    #[tokio::test]
+    async fn create_api_credential_leaves_balance_querying_off_by_default() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+
+        for provider in [None, Some("none".to_string()), Some("  ".to_string())] {
+            let created = RouteCredentialService::create_api(
+                &pool,
+                CreateApiRouteCredentialInput {
+                    platform: "codex".into(),
+                    display_name: "Relay".into(),
+                    api_key: "sk-test".into(),
+                    base_url: "https://panel.example.com/v1".into(),
+                    interface_format: "openai".into(),
+                    model_mappings_json: "[]".into(),
+                    fetched_models_json: None,
+                    api_key_field: None,
+                    preview_json: None,
+                    batch_id: None,
+                    responses_custom_tool_compat: None,
+                    user_agent: None,
+                    relay_balance_provider: provider.clone(),
+                },
+            )
+            .await
+            .expect("create");
+
+            let config = serde_json::from_str::<Value>(&created.config_json).expect("config");
+            assert!(
+                config.get("relay_balance").is_none(),
+                "provider {provider:?} must not write the block"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn create_api_credential_rejects_an_unconfigurable_custom_provider() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+
+        for provider in ["custom", "nope"] {
+            let error = RouteCredentialService::create_api(
+                &pool,
+                CreateApiRouteCredentialInput {
+                    platform: "codex".into(),
+                    display_name: "Relay".into(),
+                    api_key: "sk-test".into(),
+                    base_url: "https://panel.example.com/v1".into(),
+                    interface_format: "openai".into(),
+                    model_mappings_json: "[]".into(),
+                    fetched_models_json: None,
+                    api_key_field: None,
+                    preview_json: None,
+                    batch_id: None,
+                    responses_custom_tool_compat: None,
+                    user_agent: None,
+                    relay_balance_provider: Some(provider.into()),
+                },
+            )
+            .await
+            .expect_err("must be rejected");
+            assert!(matches!(
+                error,
+                AppError::Validation {
+                    code: "validation.relay_balance_provider",
+                    ..
+                }
+            ));
+        }
     }
 }

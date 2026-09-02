@@ -194,6 +194,11 @@ pub struct CreateApiRouteCredentialInput {
     pub responses_custom_tool_compat: Option<bool>,
     #[serde(default)]
     pub user_agent: Option<String>,
+    /// Which relay panel dialect the account's balance is read with. Only the
+    /// provider name is settable at creation time; the custom variant's endpoint
+    /// and paths are configured from the edit drawer afterwards.
+    #[serde(default)]
+    pub relay_balance_provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

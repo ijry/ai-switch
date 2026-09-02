@@ -162,6 +162,7 @@ pub fn to_create_api_input(parsed: &DeepLinkProviderImport) -> CreateApiRouteCre
         batch_id: None,
         responses_custom_tool_compat: None,
         user_agent: None,
+        relay_balance_provider: None,
     }
 }
 

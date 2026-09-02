@@ -475,6 +475,7 @@ mod tests {
                 batch_id: None,
                 responses_custom_tool_compat: None,
                 user_agent: None,
+                relay_balance_provider: None,
             },
         )
         .await
