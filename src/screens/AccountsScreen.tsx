@@ -8125,7 +8125,7 @@ export function AccountsScreen({
                         {editRelayBalanceError}
                       </p>
                     ) : null}
-                    {editRelayBalanceSnapshot ? (
+                    {editRelayBalance.provider === "none" ? null : editRelayBalanceSnapshot ? (
                       <div className="flex flex-wrap items-center gap-2 border-t border-stone-100 pt-2">
                         <span
                           className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
@@ -8146,7 +8146,7 @@ export function AccountsScreen({
                           立即查询
                         </button>
                       </div>
-                    ) : editRelayBalance.provider !== "none" ? (
+                    ) : (
                       <button
                         className={`${secondaryButtonClass} h-7 justify-self-start px-2 text-[11px]`}
                         disabled={relayBalanceMutation.isPending}
@@ -8155,7 +8155,7 @@ export function AccountsScreen({
                       >
                         立即查询
                       </button>
-                    ) : null}
+                    )}
                   </div>
                 </>
               ) : null}
