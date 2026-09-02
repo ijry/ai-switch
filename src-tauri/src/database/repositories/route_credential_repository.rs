@@ -615,9 +615,16 @@ impl RouteCredentialRepository {
     /// Deliberately narrower than [`Self::update`]: it replaces the payload the
     /// external client owns (name, secret, config, preview) and leaves local
     /// edits — priority, concurrency, pool membership, batch — alone. It also
-    /// clears the failure bookkeeping, since a refreshed key deserves a clean
-    /// slate. `status` is left as-is unless it is `revoked`; a revoked account
-    /// stays revoked so a re-import cannot silently resurrect it.
+    /// clears the failure bookkeeping, both account-level and per-model, since a
+    /// refreshed key deserves a clean slate. `status` is left as-is unless it is
+    /// `revoked`; a revoked account stays revoked so a re-import cannot silently
+    /// resurrect it.
+    ///
+    /// `archived_at` is cleared, which `revoked` deliberately is not. An archived
+    /// account is invisible in the list and out of the pool, while the unique
+    /// `(client, source_id)` index still points the import at it — leaving it
+    /// archived would make that external record permanently unimportable, with no
+    /// way out except finding the row in the recycle bin.
     pub async fn overwrite_from_external_source(
         tx: &mut Transaction<'_, Sqlite>,
         id: &str,
@@ -636,6 +643,7 @@ impl RouteCredentialRepository {
                  semantic_failure_streak_count = 0, semantic_failure_streak_fingerprint = NULL,
                  last_failure_kind = NULL, last_failure_message = NULL,
                  last_failure_response_json = NULL,
+                 archived_at = NULL,
                  subscription_type = ?, primary_remain = ?, weekly_remain = ?,
                  reset_primary = ?, reset_weekly = ?,
                  quota_remaining = ?, quota_limit = ?, quota_used = ?, quota_updated_at = ?,
@@ -675,6 +683,11 @@ impl RouteCredentialRepository {
                 recoverable: true,
             });
         }
+        // Same reasoning as the account-level reset above: a model parked while
+        // the old key was failing must not stay parked once the key has been
+        // replaced. A model the user paused by hand is their decision, so it
+        // survives.
+        RouteCredentialModelRepository::clear_all_unpaused(&mut **tx, id).await?;
         Ok(())
     }
 
@@ -2277,6 +2290,81 @@ mod tests {
             .unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].1.id, imported.id);
+    }
+
+    #[tokio::test]
+    async fn overwrite_from_external_source_brings_an_archived_account_back() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        let imported = RouteCredentialRepository::create_tx_with_external_source(
+            &mut tx,
+            "claude",
+            "api",
+            "Archived",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-old"}"#,
+            "{}",
+            "{}",
+            Some(ExternalSourceRef {
+                client: "cc-switch",
+                source_id: "provider-1",
+            }),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        // Park a model failure too: the account-level reset already happens, and
+        // leaving the model row behind makes a freshly re-imported account look
+        // healthy while one of its models is still skipped.
+        let mut conn = pool.acquire().await.unwrap();
+        RouteCredentialModelRepository::record_transient_failure(
+            &mut conn,
+            &imported.id,
+            "upstream-sol",
+            "upstream_status",
+            "boom",
+            None,
+            Some(30),
+            Some(429),
+            10,
+            true,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+
+        RouteCredentialRepository::set_archived(&pool, std::slice::from_ref(&imported.id), true)
+            .await
+            .unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        RouteCredentialRepository::overwrite_from_external_source(
+            &mut tx,
+            &imported.id,
+            "Archived",
+            r#"{"api_key":"sk-new"}"#,
+            "{}",
+            "{}",
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let updated = RouteCredentialRepository::get(&pool, &imported.id)
+            .await
+            .unwrap();
+        // Otherwise the row stays in the recycle bin while the unique index keeps
+        // pointing every future import at it: the record becomes unimportable.
+        assert!(updated.archived_at.is_none());
+        assert!(updated.config_json.is_empty() || updated.secret_payload_json.contains("sk-new"));
+        let states = RouteCredentialModelRepository::list_for_credentials(&pool, &[imported.id])
+            .await
+            .unwrap();
+        assert!(states.is_empty(), "a replaced key clears parked models");
     }
 
     #[tokio::test]
