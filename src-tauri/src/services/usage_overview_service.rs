@@ -334,9 +334,489 @@ fn rfc3339_from_millis(millis: i64) -> Option<String> {
     chrono::DateTime::from_timestamp_millis(millis).map(|value| value.to_rfc3339())
 }
 
+impl UsageOverviewTotals {
+    fn absorb(&mut self, row: &UsageOverviewRow) {
+        self.request_count += 1;
+        self.input_tokens += row.input_tokens;
+        self.output_tokens += row.output_tokens;
+        self.cache_write_tokens += row.cache_write_tokens;
+        self.cache_read_tokens += row.cache_read_tokens;
+        self.cost_micros += row.cost_micros;
+    }
+}
+
+/// Totals over every row in the window — never over one page, or the summary
+/// cards would change as the user pages through the list.
+pub fn summarize(rows: &[UsageOverviewRow]) -> UsageOverviewTotals {
+    let mut totals = UsageOverviewTotals::default();
+    for row in rows {
+        totals.absorb(row);
+    }
+    totals
+}
+
+/// Label for the "source" grouping dimension.
+fn source_label(source: UsageRowSource) -> &'static str {
+    match source {
+        UsageRowSource::Matched => "匹配",
+        UsageRowSource::SessionOnly => "仅会话",
+        UsageRowSource::ProxyOnly => "仅代理",
+    }
+}
+
+/// Bucket for rows with no owning account. Most merged rows are transcript-only,
+/// so this needs a real label rather than an empty cell.
+const NO_ACCOUNT_LABEL: &str = "未经代理";
+
+fn group_by<'a, F>(rows: &'a [UsageOverviewRow], key: F) -> Vec<UsageOverviewGroupRow>
+where
+    F: Fn(&'a UsageOverviewRow) -> String,
+{
+    let mut buckets: HashMap<String, UsageOverviewTotals> = HashMap::new();
+    for row in rows {
+        buckets.entry(key(row)).or_default().absorb(row);
+    }
+    let mut grouped: Vec<UsageOverviewGroupRow> = buckets
+        .into_iter()
+        .map(|(key, totals)| UsageOverviewGroupRow { key, totals })
+        .collect();
+    // Highest spend first, then by request count so unpriced groups still
+    // order sensibly, then by key for a stable result.
+    grouped.sort_by(|left, right| {
+        right
+            .totals
+            .cost_micros
+            .cmp(&left.totals.cost_micros)
+            .then_with(|| right.totals.request_count.cmp(&left.totals.request_count))
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    grouped
+}
+
+/// All four dimensions at once: their cardinality is small (single to double
+/// digits), so computing them together avoids a refetch when the user flips the
+/// segmented control.
+pub fn group_all(rows: &[UsageOverviewRow]) -> UsageOverviewGroups {
+    UsageOverviewGroups {
+        by_model: group_by(rows, |row| row.model.clone()),
+        by_platform: group_by(rows, |row| row.provider.clone()),
+        by_account: group_by(rows, |row| {
+            row.account_name
+                .clone()
+                .or_else(|| row.account_id.clone())
+                .unwrap_or_else(|| NO_ACCOUNT_LABEL.to_string())
+        }),
+        by_source: group_by(rows, |row| source_label(row.source).to_string()),
+    }
+}
+
+/// One page of rows. A page past the end is empty rather than an error: the
+/// list shrinks between refreshes as rows age out of the window.
+pub fn paginate(rows: &[UsageOverviewRow], page: i64, page_size: i64) -> Vec<UsageOverviewRow> {
+    let offset = ((page - 1).max(0) as usize).saturating_mul(page_size.max(1) as usize);
+    rows.iter()
+        .skip(offset)
+        .take(page_size.max(1) as usize)
+        .cloned()
+        .collect()
+}
+
+fn integrity_of(
+    rows: &[UsageOverviewRow],
+    scanned_file_count: i64,
+    truncated: bool,
+    unmatchable_proxy_row_count: i64,
+) -> UsageOverviewIntegrity {
+    UsageOverviewIntegrity {
+        scanned_file_count,
+        truncated,
+        unpriced_request_count: rows.iter().filter(|row| row.price_source.is_none()).count() as i64,
+        estimated_price_request_count: rows
+            .iter()
+            .filter(|row| row.price_source.as_deref() == Some("estimated"))
+            .count() as i64,
+        unmatchable_proxy_row_count,
+    }
+}
+
+/// Assemble the full overview: merge, summarize, group, and page.
+///
+/// The transcript scan is blocking file IO over a corpus that can reach
+/// gigabytes, so it runs on a blocking thread. Warm scans hit the per-file parse
+/// cache in [`session_usage_service`].
+pub async fn build_usage_overview(
+    pool: &SqlitePool,
+    since: Option<&str>,
+    page: i64,
+    page_size: i64,
+    window: TimeWindow,
+) -> Result<UsageOverview, AppError> {
+    let proxy_rows = RoutePoolRepository::list_request_events(pool, since).await?;
+
+    let (session_entries, scanned_file_count, truncated) =
+        tokio::task::spawn_blocking(move || session_usage_service::collect_session_entries(window))
+            .await
+            .map_err(|error| AppError::Filesystem {
+                code: "filesystem.session_usage_scan_failed",
+                message: format!("Failed to scan session usage: {error}"),
+                details: None,
+                recoverable: true,
+            })?;
+
+    Ok(assemble_overview(
+        session_entries,
+        proxy_rows,
+        scanned_file_count,
+        truncated,
+        page,
+        page_size,
+    ))
+}
+
+/// Merge both sides and shape the result, with no IO of its own.
+///
+/// Split out from [`build_usage_overview`] so the shaping rules — totals over
+/// the window rather than the page, groups over every row, integrity counts —
+/// can be tested without reading a multi-gigabyte transcript corpus.
+fn assemble_overview(
+    session_entries: Vec<SessionUsageEntry>,
+    proxy_rows: Vec<ProxyRequestRow>,
+    scanned_file_count: i64,
+    truncated: bool,
+    page: i64,
+    page_size: i64,
+) -> UsageOverview {
+    let unmatchable_proxy_row_count = proxy_rows
+        .iter()
+        .filter(|row| resolve_proxy_response_id(row).is_none())
+        .count() as i64;
+
+    let rows = merge_entries(session_entries, proxy_rows);
+    let totals = summarize(&rows);
+    let groups = group_all(&rows);
+    let integrity = integrity_of(
+        &rows,
+        scanned_file_count,
+        truncated,
+        unmatchable_proxy_row_count,
+    );
+
+    UsageOverview {
+        totals,
+        row_count: rows.len() as i64,
+        rows: paginate(&rows, page, page_size),
+        groups,
+        page,
+        page_size,
+        integrity,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build one proxied request row carrying an upstream price.
+    fn priced_proxy_row(index: usize, response_id: Option<&str>) -> ProxyRequestRow {
+        ProxyRequestRow {
+            id: format!("proxy-{index}"),
+            platform: "claude".to_string(),
+            account_id: Some("cred-1".to_string()),
+            account_name: Some("Team Account".to_string()),
+            source_label: "route_proxy".to_string(),
+            metadata_json: r#"{"path":"/v1/messages","status":200,"success":true,"upstream_model":"claude-opus-5"}"#.to_string(),
+            created_at: format!("2026-08-19T14:{:02}:00Z", index % 60),
+            input_tokens: Some(100),
+            output_tokens: Some(10),
+            cache_tokens: None,
+            price_usd_micros: Some(1_000),
+            price_cny_micros: None,
+            price_currency: Some("usd".to_string()),
+            price_source: Some("upstream".to_string()),
+            upstream_response_id: response_id.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn totals_and_groups_cover_the_window_while_rows_cover_one_page() {
+        // The summary cards answer "what did I spend in this period", so paging
+        // through the list must not change them.
+        let proxy_rows: Vec<ProxyRequestRow> = (0..25)
+            .map(|index| {
+                let id = format!("msg_seed_{index}");
+                priced_proxy_row(index, Some(&id))
+            })
+            .collect();
+
+        let first = assemble_overview(Vec::new(), proxy_rows.clone(), 1_186, false, 1, 20);
+        let second = assemble_overview(Vec::new(), proxy_rows, 1_186, false, 2, 20);
+
+        assert_eq!(first.rows.len(), 20, "one page of rows");
+        assert_eq!(second.rows.len(), 5);
+        assert_eq!(first.row_count, 25, "the whole window is reported");
+        assert_eq!(
+            first.totals.request_count, 25,
+            "totals must not shrink to the page"
+        );
+        assert_eq!(first.totals.cost_micros, 25_000);
+        assert_eq!(
+            first.groups.by_account[0].totals.request_count, 25,
+            "groups must not shrink to the page either"
+        );
+        assert_eq!(
+            second.totals, first.totals,
+            "the totals are identical on every page"
+        );
+        assert_eq!(second.groups, first.groups);
+    }
+
+    #[test]
+    fn integrity_reports_proxy_rows_that_carry_no_response_id() {
+        // These rows could not be merged, so a transcript entry for the same
+        // request is still counted separately. The UI has to be able to say so.
+        let overview = assemble_overview(
+            Vec::new(),
+            vec![
+                priced_proxy_row(0, None),
+                priced_proxy_row(1, Some("msg_ok")),
+            ],
+            1_186,
+            false,
+            1,
+            20,
+        );
+
+        assert_eq!(overview.integrity.unmatchable_proxy_row_count, 1);
+        assert_eq!(overview.integrity.scanned_file_count, 1_186);
+    }
+
+    fn row_with(
+        source: UsageRowSource,
+        provider: &str,
+        model: &str,
+        account: Option<&str>,
+        cost: i64,
+    ) -> UsageOverviewRow {
+        UsageOverviewRow {
+            id: format!("{model}-{cost}"),
+            source,
+            occurred_at: Some("2026-08-19T14:04:50Z".to_string()),
+            provider: provider.to_string(),
+            model: model.to_string(),
+            account_id: account.map(|_| "cred-1".to_string()),
+            account_name: account.map(str::to_string),
+            source_label: None,
+            path: None,
+            status: None,
+            success: true,
+            input_tokens: 100,
+            output_tokens: 10,
+            cache_write_tokens: 2,
+            cache_read_tokens: 3,
+            cost_micros: cost,
+            price_source: Some("upstream".to_string()),
+            upstream_response_id: None,
+            metadata_json: None,
+        }
+    }
+
+    #[test]
+    fn totals_add_up_every_row_exactly_once() {
+        let rows = vec![
+            row_with(
+                UsageRowSource::Matched,
+                "claude",
+                "claude-opus-5",
+                Some("A"),
+                1_000,
+            ),
+            row_with(
+                UsageRowSource::SessionOnly,
+                "claude",
+                "claude-opus-5",
+                None,
+                2_000,
+            ),
+            row_with(
+                UsageRowSource::ProxyOnly,
+                "codex",
+                "gpt-5.6-sol",
+                Some("B"),
+                3_000,
+            ),
+        ];
+
+        let totals = summarize(&rows);
+
+        assert_eq!(totals.request_count, 3);
+        assert_eq!(totals.input_tokens, 300);
+        assert_eq!(totals.output_tokens, 30);
+        assert_eq!(totals.cache_write_tokens, 6);
+        assert_eq!(totals.cache_read_tokens, 9);
+        assert_eq!(totals.cost_micros, 6_000);
+    }
+
+    #[test]
+    fn groups_cover_all_four_dimensions() {
+        let rows = vec![
+            row_with(
+                UsageRowSource::Matched,
+                "claude",
+                "claude-opus-5",
+                Some("A"),
+                1_000,
+            ),
+            row_with(
+                UsageRowSource::SessionOnly,
+                "claude",
+                "claude-haiku-4-5",
+                None,
+                2_000,
+            ),
+            row_with(
+                UsageRowSource::ProxyOnly,
+                "codex",
+                "gpt-5.6-sol",
+                Some("B"),
+                3_000,
+            ),
+        ];
+
+        let groups = group_all(&rows);
+
+        assert_eq!(groups.by_model.len(), 3);
+        assert_eq!(groups.by_platform.len(), 2);
+        assert_eq!(groups.by_source.len(), 3);
+        // Two named accounts plus one bucket for the rows with none.
+        assert_eq!(groups.by_account.len(), 3);
+    }
+
+    #[test]
+    fn account_grouping_buckets_rows_that_never_went_through_the_proxy() {
+        // Most merged rows come from transcripts and have no account, so the
+        // bucket has to be an explicit, named row rather than a blank label.
+        let rows = vec![
+            row_with(
+                UsageRowSource::SessionOnly,
+                "claude",
+                "claude-opus-5",
+                None,
+                2_000,
+            ),
+            row_with(
+                UsageRowSource::SessionOnly,
+                "claude",
+                "claude-opus-5",
+                None,
+                3_000,
+            ),
+        ];
+
+        let groups = group_all(&rows);
+
+        assert_eq!(groups.by_account.len(), 1);
+        assert_eq!(groups.by_account[0].key, "未经代理");
+        assert_eq!(groups.by_account[0].totals.request_count, 2);
+        assert_eq!(groups.by_account[0].totals.cost_micros, 5_000);
+    }
+
+    #[test]
+    fn groups_are_ordered_by_cost_so_the_biggest_spend_reads_first() {
+        let rows = vec![
+            row_with(
+                UsageRowSource::Matched,
+                "claude",
+                "cheap-model",
+                Some("A"),
+                10,
+            ),
+            row_with(
+                UsageRowSource::Matched,
+                "claude",
+                "pricey-model",
+                Some("A"),
+                9_000,
+            ),
+        ];
+
+        let groups = group_all(&rows);
+
+        assert_eq!(groups.by_model[0].key, "pricey-model");
+    }
+
+    #[test]
+    fn source_group_keys_are_human_readable() {
+        let rows = vec![
+            row_with(UsageRowSource::Matched, "claude", "m", Some("A"), 1),
+            row_with(UsageRowSource::SessionOnly, "claude", "m", None, 1),
+            row_with(UsageRowSource::ProxyOnly, "codex", "m", Some("B"), 1),
+        ];
+
+        let groups = group_all(&rows);
+        let keys: Vec<&str> = groups
+            .by_source
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect();
+
+        assert!(keys.contains(&"匹配"));
+        assert!(keys.contains(&"仅会话"));
+        assert!(keys.contains(&"仅代理"));
+    }
+
+    #[test]
+    fn paging_slices_rows_without_shrinking_the_totals() {
+        // The cards answer "what did I spend in this period", so they must not
+        // change as the user walks through pages.
+        let rows: Vec<UsageOverviewRow> = (0..25)
+            .map(|index| {
+                row_with(
+                    UsageRowSource::SessionOnly,
+                    "claude",
+                    &format!("model-{index}"),
+                    None,
+                    100,
+                )
+            })
+            .collect();
+
+        let first = paginate(&rows, 1, 20);
+        let second = paginate(&rows, 2, 20);
+
+        assert_eq!(first.len(), 20);
+        assert_eq!(second.len(), 5);
+        assert_eq!(summarize(&rows).cost_micros, 2_500);
+    }
+
+    #[test]
+    fn a_page_past_the_end_yields_no_rows_rather_than_an_error() {
+        let rows = vec![row_with(
+            UsageRowSource::SessionOnly,
+            "claude",
+            "m",
+            None,
+            1,
+        )];
+
+        assert!(paginate(&rows, 99, 20).is_empty());
+    }
+
+    #[test]
+    fn integrity_counts_unpriced_and_estimated_rows() {
+        let mut unpriced = row_with(UsageRowSource::SessionOnly, "codex", "unknown", None, 0);
+        unpriced.price_source = None;
+        let mut estimated = row_with(UsageRowSource::SessionOnly, "claude", "m", None, 500);
+        estimated.price_source = Some("estimated".to_string());
+        let upstream = row_with(UsageRowSource::Matched, "claude", "m", Some("A"), 700);
+
+        let integrity = integrity_of(&[unpriced, estimated, upstream], 1_186, false, 4);
+
+        assert_eq!(integrity.unpriced_request_count, 1);
+        assert_eq!(integrity.estimated_price_request_count, 1);
+        assert_eq!(integrity.scanned_file_count, 1_186);
+        assert_eq!(integrity.unmatchable_proxy_row_count, 4);
+        assert!(!integrity.truncated);
+    }
 
     fn session_entry(response_id: Option<&str>, model: &str, input: i64) -> SessionUsageEntry {
         SessionUsageEntry {
