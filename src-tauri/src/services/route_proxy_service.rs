@@ -1,3 +1,4 @@
+use crate::database::repositories::route_credential_model_repository::RouteCredentialModelRepository;
 use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
@@ -8,6 +9,7 @@ use crate::models::route_credential::{
     RouteCredentialFailurePolicy, ANTHROPIC_API_KEY_FIELD, ANTHROPIC_AUTH_TOKEN_FIELD,
     CLAUDE_ONE_M_SUFFIX,
 };
+use crate::models::route_credential_model::{RouteCredentialModelState, MODEL_STATUS_OK};
 use crate::models::route_pool::RouteUsageBreakdown;
 use crate::services::client_identity;
 use crate::services::codex_reasoning_cache::CodexReasoningCache;
@@ -28,7 +30,7 @@ use crate::services::route_credential_activity::{
     RouteCredentialActivityLease, RouteCredentialActivityRegistry,
 };
 use crate::services::route_model_capability::{
-    advertised_model_ids, codex_reasoning_metadata, parse_model_capability,
+    advertised_model_ids, codex_reasoning_metadata, model_state_key, parse_model_capability,
     parse_model_capability_value, requested_model_from_body, resolve_mapping_target,
     supports_requested_model,
 };
@@ -574,10 +576,11 @@ async fn forward_request(
             )
                 .into_response());
         }
-        let credentials = select_pool_credentials(pool, &platform)
+        let candidates = load_pool_candidates(pool, &platform)
             .await
             .map_err(|err| err.to_string())?;
-        let credentials = filter_credentials_for_rule(credentials, &routing_rule);
+        let candidates = filter_candidates_for_rule(candidates, &routing_rule);
+        let credentials = partition_by_cooldown(candidates, &HashMap::new(), Utc::now());
         return Ok(json_models_list_response(
             &platform,
             &credentials,
@@ -613,21 +616,25 @@ async fn forward_request(
     }
 
     let requested_model = requested_model_from_body(&body_bytes);
-    let credentials = select_pool_credentials(pool, &platform)
+    let candidates = load_pool_candidates(pool, &platform)
         .await
         .map_err(|err| err.to_string())?;
-    let credentials = filter_credentials_for_rule(credentials, &routing_rule);
-    if credentials.is_empty() {
+    let candidates = filter_candidates_for_rule(candidates, &routing_rule);
+    if candidates.is_empty() {
         return Err("No enabled route credentials in pool".to_string());
     }
-    let credentials =
-        filter_credentials_for_model(&platform, credentials, requested_model.as_deref());
-    if credentials.is_empty() {
+    // Model filtering must run before cooldown partitioning: the model a request
+    // asks for decides which cooldown applies, so an account cannot be judged
+    // before its model key is known. It also means the all-cooling probe below
+    // is now scoped to accounts that can actually serve this model.
+    let candidates = filter_candidates_for_model(&platform, candidates, requested_model.as_deref());
+    if candidates.is_empty() {
         let model = requested_model.as_deref().unwrap_or("unknown");
         return Err(format!(
             "route_pool.model_unmatched: no enabled route credential supports model '{model}' on platform '{platform}'"
         ));
     }
+    let credentials = partition_by_cooldown(candidates, &HashMap::new(), Utc::now());
     let cursor = RoutePoolRepository::next_cursor_index(pool, &platform)
         .await
         .map_err(|err| err.to_string())?;
@@ -2262,6 +2269,10 @@ pub(crate) fn should_retry_same_credential_status(status: StatusCode) -> bool {
     !status.is_success() && !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
 }
 
+/// Account-level retry eligibility. `partition_by_cooldown` supersedes this for
+/// selection — it has to, because it also weighs the requested model — so this
+/// now only pins down the account-level rule the partition inherits.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn credential_is_retryable_now(
     next_retry_at: Option<&str>,
     cooldown_until: Option<&str>,
@@ -2529,10 +2540,23 @@ pub struct SelectedCredential {
     pub config_json: String,
 }
 
-pub async fn select_pool_credentials(
+/// A pool row plus the state needed to decide whether it may serve *this*
+/// request. `model_key` is filled in by `filter_candidates_for_model` and stays
+/// `None` when the request carries no model (Gemini puts it in the path).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolCandidate {
+    pub credential: SelectedCredential,
+    pub cooldown_until: Option<String>,
+    pub model_key: Option<String>,
+}
+
+/// Load the pool rows a request could use: SQL-level filters and quota only.
+/// Cooldown partitioning deliberately happens later — which rows count as
+/// cooling depends on the requested model, which is not known here.
+pub async fn load_pool_candidates(
     pool: &SqlitePool,
     platform: &str,
-) -> Result<Vec<SelectedCredential>, AppError> {
+) -> Result<Vec<PoolCandidate>, AppError> {
     let rows = sqlx::query(
         "SELECT c.id, c.platform, c.kind, c.display_name, c.status,
                 c.route_priority, c.max_concurrency,
@@ -2558,9 +2582,7 @@ pub async fn select_pool_credentials(
         recoverable: true,
     })?;
 
-    let now = Utc::now();
-    let mut eligible = Vec::new();
-    let mut cooling = Vec::new();
+    let mut candidates = Vec::with_capacity(rows.len());
     for row in rows {
         let next_retry_at: Option<String> = row.get("next_retry_at");
         let cooldown_until: Option<String> = row.get("cooldown_until");
@@ -2579,74 +2601,169 @@ pub async fn select_pool_credentials(
         if !is_route_credential_quota_available(&credential.config_json) {
             continue;
         }
-        if credential_is_retryable_now(next_retry_at.as_deref(), cooldown_until.as_deref(), now) {
-            eligible.push(credential);
+        candidates.push(PoolCandidate {
+            credential,
+            // The two account columns are always written the same value, so the
+            // later of them is the single deadline that matters.
+            cooldown_until: latest_deadline(next_retry_at.as_deref(), cooldown_until.as_deref()),
+            model_key: None,
+        });
+    }
+    Ok(candidates)
+}
+
+fn latest_deadline(left: Option<&str>, right: Option<&str>) -> Option<String> {
+    [left, right]
+        .into_iter()
+        .flatten()
+        .filter_map(|value| {
+            DateTime::parse_from_rfc3339(value)
+                .ok()
+                .map(|parsed| (parsed.with_timezone(&Utc), value.to_string()))
+        })
+        .max_by_key(|(parsed, _)| *parsed)
+        .map(|(_, value)| value)
+}
+
+/// Batch-read the per-model state for candidates that carry a model key.
+///
+/// Not yet on the forward path: the request path keeps passing an empty map until
+/// the failure bookkeeping actually writes model rows, because dropping
+/// `paused`/`error` candidates needs the distinct error code that lands with it.
+#[allow(dead_code)]
+pub(crate) async fn load_candidate_model_states(
+    pool: &SqlitePool,
+    candidates: &[PoolCandidate],
+) -> Result<HashMap<(String, String), RouteCredentialModelState>, AppError> {
+    let keys: Vec<(String, String)> = candidates
+        .iter()
+        .filter_map(|candidate| {
+            Some((
+                candidate.credential.id.clone(),
+                candidate.model_key.clone()?,
+            ))
+        })
+        .collect();
+    RouteCredentialModelRepository::load_states(pool, &keys).await
+}
+
+/// Split candidates into "may serve now" and "still cooling", then hand back the
+/// usable set.
+///
+/// Order matters: `paused`/`error` models are dropped outright, because those are
+/// verdicts rather than waits and must never be reached by the all-cooling probe
+/// below. Only time-based cooldowns get that second chance — otherwise a pool
+/// where everything is briefly cooling would fail requests it could still serve.
+pub fn partition_by_cooldown(
+    candidates: Vec<PoolCandidate>,
+    model_states: &HashMap<(String, String), RouteCredentialModelState>,
+    now: DateTime<Utc>,
+) -> Vec<SelectedCredential> {
+    let mut eligible = Vec::new();
+    let mut cooling: Vec<(DateTime<Utc>, usize, SelectedCredential)> = Vec::new();
+
+    for candidate in candidates {
+        let state = candidate.model_key.as_ref().and_then(|model_key| {
+            model_states.get(&(candidate.credential.id.clone(), model_key.clone()))
+        });
+        if state.is_some_and(|state| state.status != MODEL_STATUS_OK) {
             continue;
         }
+        let model_cooldown = state.and_then(|state| state.cooldown_until.clone());
+        let deadline = latest_deadline(
+            candidate.cooldown_until.as_deref(),
+            model_cooldown.as_deref(),
+        )
+        .and_then(|value| {
+            DateTime::parse_from_rfc3339(&value)
+                .ok()
+                .map(|parsed| parsed.with_timezone(&Utc))
+        });
 
-        let retry_at = [next_retry_at.as_deref(), cooldown_until.as_deref()]
-            .into_iter()
-            .filter_map(|timestamp| {
-                DateTime::parse_from_rfc3339(timestamp?)
-                    .ok()
-                    .map(|value| value.with_timezone(&Utc))
-            })
-            .max();
-        if let Some(retry_at) = retry_at {
-            cooling.push((retry_at, cooling.len(), credential));
+        match deadline {
+            Some(deadline) if deadline > now => {
+                cooling.push((deadline, cooling.len(), candidate.credential));
+            }
+            _ => eligible.push(candidate.credential),
         }
     }
 
     if !eligible.is_empty() {
-        return Ok(eligible);
+        return eligible;
     }
 
     cooling.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-    Ok(cooling
+    cooling
         .into_iter()
         .take(1)
         .map(|(_, _, credential)| credential)
-        .collect())
+        .collect()
 }
 
-fn filter_credentials_for_rule(
-    mut credentials: Vec<SelectedCredential>,
+pub async fn select_pool_credentials(
+    pool: &SqlitePool,
+    platform: &str,
+) -> Result<Vec<SelectedCredential>, AppError> {
+    let candidates = load_pool_candidates(pool, platform).await?;
+    Ok(partition_by_cooldown(
+        candidates,
+        &HashMap::new(),
+        Utc::now(),
+    ))
+}
+
+fn filter_candidates_for_rule(
+    mut candidates: Vec<PoolCandidate>,
     rule: &CapabilityRule,
-) -> Vec<SelectedCredential> {
+) -> Vec<PoolCandidate> {
     if !rule.credential_kinds.is_empty() {
-        credentials.retain(|credential| {
+        candidates.retain(|candidate| {
             rule.credential_kinds
                 .iter()
-                .any(|kind| kind == &credential.kind)
+                .any(|kind| kind == &candidate.credential.kind)
         });
     }
-    credentials
+    candidates
 }
 
-fn filter_credentials_for_model(
+/// Drop candidates that cannot serve the requested model, and record the model
+/// key the survivors will be charged under. Both happen in one pass because both
+/// need the same parsed capability.
+fn filter_candidates_for_model(
     platform: &str,
-    mut credentials: Vec<SelectedCredential>,
+    candidates: Vec<PoolCandidate>,
     requested_model: Option<&str>,
-) -> Vec<SelectedCredential> {
+) -> Vec<PoolCandidate> {
     let Some(requested_model) = requested_model else {
-        return credentials;
+        return candidates;
     };
 
-    credentials.retain(|credential| {
-        let mut capability = parse_model_capability(&credential.config_json);
-        if credential.kind == "official" {
-            // build_official_upstream_request never applies model mappings, so a
-            // synthetic alias would reach the vendor verbatim and 404. Ignoring
-            // those entries here keeps official accounts on exactly their
-            // pre-feature semantics (an alias-only config collapses to the
-            // baseline-only wildcard).
-            capability
-                .mappings
-                .retain(|mapping| !is_synthetic_route_alias(&mapping.from));
-        }
-        supports_requested_model(platform, &capability, Some(requested_model))
-    });
-    credentials
+    candidates
+        .into_iter()
+        .filter_map(|mut candidate| {
+            let mut capability = parse_model_capability(&candidate.credential.config_json);
+            if candidate.credential.kind == "official" {
+                // build_official_upstream_request never applies model mappings, so a
+                // synthetic alias would reach the vendor verbatim and 404. Ignoring
+                // those entries here keeps official accounts on exactly their
+                // pre-feature semantics (an alias-only config collapses to the
+                // baseline-only wildcard).
+                capability
+                    .mappings
+                    .retain(|mapping| !is_synthetic_route_alias(&mapping.from));
+            }
+            if !supports_requested_model(platform, &capability, Some(requested_model)) {
+                return None;
+            }
+            candidate.model_key = Some(model_state_key(
+                platform,
+                &capability,
+                &candidate.credential.kind,
+                requested_model,
+            ));
+            Some(candidate)
+        })
+        .collect()
 }
 
 async fn bind_route_proxy_listener() -> Result<TcpListener, AppError> {
@@ -5106,6 +5223,10 @@ mod tests {
     use crate::models::route_credential::{
         DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT, FALLBACK_MODEL_ALIAS,
     };
+    use crate::models::route_credential_model::{
+        RouteCredentialModelState, MODEL_STATUS_ERROR, MODEL_STATUS_OK, MODEL_STATUS_PAUSED,
+    };
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -9775,6 +9896,224 @@ data: [DONE]\n\n";
         let baseline =
             filter_credentials_for_model("claude", vec![official], Some("claude-sonnet-alias"));
         assert_eq!(baseline.len(), 1);
+    }
+
+    fn candidate(id: &str, cooldown_until: Option<&str>, model_key: Option<&str>) -> PoolCandidate {
+        PoolCandidate {
+            credential: SelectedCredential {
+                id: id.to_string(),
+                platform: "codex".to_string(),
+                kind: "api".to_string(),
+                display_name: id.to_string(),
+                status: "ok".to_string(),
+                route_priority: 3,
+                max_concurrency: 5,
+                secret_payload_json: r#"{"api_key":"sk"}"#.to_string(),
+                config_json: r#"{"base_url":"https://example.com","model_mappings":[]}"#
+                    .to_string(),
+            },
+            cooldown_until: cooldown_until.map(str::to_string),
+            model_key: model_key.map(str::to_string),
+        }
+    }
+
+    fn model_state(
+        credential_id: &str,
+        model_key: &str,
+        status: &str,
+        cooldown_until: Option<&str>,
+    ) -> ((String, String), RouteCredentialModelState) {
+        (
+            (credential_id.to_string(), model_key.to_string()),
+            RouteCredentialModelState {
+                route_credential_id: credential_id.to_string(),
+                model_key: model_key.to_string(),
+                status: status.to_string(),
+                transient_failure_count: 1,
+                cooldown_until: cooldown_until.map(str::to_string),
+                semantic_failure_streak_count: 0,
+                semantic_failure_streak_fingerprint: None,
+                last_failure_kind: None,
+                last_failure_message: None,
+                last_failure_response_json: None,
+                created_at: "2026-09-02T00:00:00Z".to_string(),
+                updated_at: "2026-09-02T00:00:00Z".to_string(),
+            },
+        )
+    }
+
+    fn now_for_partition() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-09-02T12:00:00Z")
+            .expect("fixed now")
+            .with_timezone(&Utc)
+    }
+
+    /// Model filtering now works on candidates, but the pre-existing assertions
+    /// are about which accounts survive — wrap so they keep reading that way.
+    fn filter_credentials_for_model(
+        platform: &str,
+        credentials: Vec<SelectedCredential>,
+        requested_model: Option<&str>,
+    ) -> Vec<SelectedCredential> {
+        filter_candidates_for_model(
+            platform,
+            credentials
+                .into_iter()
+                .map(|credential| PoolCandidate {
+                    credential,
+                    cooldown_until: None,
+                    model_key: None,
+                })
+                .collect(),
+            requested_model,
+        )
+        .into_iter()
+        .map(|candidate| candidate.credential)
+        .collect()
+    }
+
+    #[test]
+    fn a_cooling_model_does_not_park_its_siblings_on_the_same_account() {
+        let now = now_for_partition();
+        let states = HashMap::from([model_state(
+            "cred-1",
+            "upstream-sol",
+            MODEL_STATUS_OK,
+            Some("2026-09-02T12:00:30Z"),
+        )]);
+
+        // The request asks for the healthy sibling, so the account is eligible.
+        let healthy = partition_by_cooldown(
+            vec![candidate("cred-1", None, Some("upstream-glm"))],
+            &states,
+            now,
+        );
+        assert_eq!(
+            healthy.into_iter().map(|item| item.id).collect::<Vec<_>>(),
+            vec!["cred-1"]
+        );
+
+        // The same account for the cooling model: only reachable as the
+        // all-cooling probe, never as a normal pick.
+        let cooling = partition_by_cooldown(
+            vec![
+                candidate("cred-1", None, Some("upstream-sol")),
+                candidate("cred-2", None, Some("upstream-sol")),
+            ],
+            &states,
+            now,
+        );
+        assert_eq!(
+            cooling.into_iter().map(|item| item.id).collect::<Vec<_>>(),
+            vec!["cred-2"]
+        );
+    }
+
+    #[test]
+    fn account_level_cooldown_still_parks_every_model() {
+        let now = now_for_partition();
+        let selected = partition_by_cooldown(
+            vec![
+                candidate(
+                    "cooling",
+                    Some("2026-09-02T12:05:00Z"),
+                    Some("upstream-glm"),
+                ),
+                candidate("ready", None, Some("upstream-glm")),
+            ],
+            &HashMap::new(),
+            now,
+        );
+        assert_eq!(
+            selected.into_iter().map(|item| item.id).collect::<Vec<_>>(),
+            vec!["ready"]
+        );
+    }
+
+    #[test]
+    fn paused_and_error_models_are_hard_excluded_even_when_nothing_else_is_left() {
+        let now = now_for_partition();
+        let states = HashMap::from([
+            model_state("paused-acc", "upstream-sol", MODEL_STATUS_PAUSED, None),
+            model_state("error-acc", "upstream-sol", MODEL_STATUS_ERROR, None),
+        ]);
+        let selected = partition_by_cooldown(
+            vec![
+                candidate("paused-acc", None, Some("upstream-sol")),
+                candidate("error-acc", None, Some("upstream-sol")),
+            ],
+            &states,
+            now,
+        );
+        // No probe fallback: unlike a cooldown these are verdicts, not waits.
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn all_cooling_falls_back_to_the_earliest_recovering_candidate() {
+        let now = now_for_partition();
+        let states = HashMap::from([
+            model_state(
+                "late",
+                "upstream-sol",
+                MODEL_STATUS_OK,
+                Some("2026-09-02T12:10:00Z"),
+            ),
+            model_state(
+                "soon",
+                "upstream-sol",
+                MODEL_STATUS_OK,
+                Some("2026-09-02T12:01:00Z"),
+            ),
+        ]);
+        let selected = partition_by_cooldown(
+            vec![
+                candidate("late", None, Some("upstream-sol")),
+                candidate("soon", None, Some("upstream-sol")),
+            ],
+            &states,
+            now,
+        );
+        assert_eq!(
+            selected.into_iter().map(|item| item.id).collect::<Vec<_>>(),
+            vec!["soon"]
+        );
+    }
+
+    #[test]
+    fn a_candidate_without_a_model_key_only_consults_account_level_cooldown() {
+        let now = now_for_partition();
+        // A Gemini-style request carries its model in the path, so there is no
+        // key to look up; the model table must not park it.
+        let states = HashMap::from([model_state(
+            "cred-1",
+            "upstream-sol",
+            MODEL_STATUS_PAUSED,
+            None,
+        )]);
+        let selected = partition_by_cooldown(vec![candidate("cred-1", None, None)], &states, now);
+        assert_eq!(
+            selected.into_iter().map(|item| item.id).collect::<Vec<_>>(),
+            vec!["cred-1"]
+        );
+    }
+
+    #[test]
+    fn filter_candidates_for_model_records_the_upstream_key() {
+        let mut item = candidate("cred-1", None, None);
+        item.credential.config_json =
+            r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"upstream-sol"}]}"#.to_string();
+        let filtered = filter_candidates_for_model("codex", vec![item], Some("gpt-5.6-sol"));
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].model_key.as_deref(), Some("upstream-sol"));
+    }
+
+    #[test]
+    fn filter_candidates_for_model_leaves_the_key_empty_without_a_requested_model() {
+        let filtered =
+            filter_candidates_for_model("codex", vec![candidate("cred-1", None, None)], None);
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered[0].model_key.is_none());
     }
 
     #[tokio::test]
