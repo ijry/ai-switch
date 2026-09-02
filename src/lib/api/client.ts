@@ -55,6 +55,7 @@ import type {
   TargetApp,
   TargetConfigStatus,
   TerminalSession,
+  UsageOverview,
   WebServerStatus,
   WebServiceConfig,
   UpdateOfficialAccount,
@@ -180,6 +181,26 @@ export function getSessionUsageStats(since?: string | null): Promise<SessionUsag
 /** Reload `~/.ai-switch/model-prices.json`, returning the entry count. */
 export function reloadModelPriceOverrides(): Promise<number> {
   return invoke("reload_model_price_overrides");
+}
+
+/**
+ * Local CLI transcript usage merged with proxied requests, deduplicated on the
+ * upstream response id.
+ *
+ * Spans every platform: the figures answer "my total spend", so a per-platform
+ * view comes from the returned groups rather than from a filter. `since` is an
+ * RFC 3339 timestamp; pass null for the full history.
+ */
+export function getUsageOverview(
+  since: string | null,
+  page: number,
+  pageSize: number,
+): Promise<UsageOverview> {
+  return invoke("get_usage_overview", {
+    since: since ?? null,
+    page,
+    page_size: pageSize,
+  });
 }
 
 export function routePoolRouteOnce(request: RoutePoolRouteRequest): Promise<RoutePoolRouteOutcome> {

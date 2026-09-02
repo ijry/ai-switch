@@ -53,7 +53,7 @@ pub async fn reload_model_price_overrides_core() -> Result<usize, AppError> {
     })
 }
 
-fn parse_window(since: Option<&str>) -> Result<TimeWindow, AppError> {
+pub(crate) fn parse_window(since: Option<&str>) -> Result<TimeWindow, AppError> {
     let Some(since) = since.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(TimeWindow::default());
     };

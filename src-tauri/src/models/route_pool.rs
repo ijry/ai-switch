@@ -67,6 +67,33 @@ pub struct RoutePoolUsageLog {
     pub price_currency: Option<String>,
     /// `"upstream"`, `"estimated"`, or `None` — see [`RouteUsageBreakdown`].
     pub price_source: Option<String>,
+    /// Upstream response id, when one could be read from the response body.
+    /// The join key against a CLI transcript entry for the same request.
+    pub upstream_response_id: Option<String>,
+}
+
+/// One proxied request as stored in `usage_events`, for the usage overview.
+///
+/// Unlike [`RoutePoolUsageLog`] this carries the owning credential's platform
+/// and is never filtered by platform or archive state: the overview reports
+/// total spend, and an archived account's past requests are still spend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyRequestRow {
+    pub id: String,
+    pub platform: String,
+    pub account_id: Option<String>,
+    pub account_name: Option<String>,
+    pub source_label: String,
+    pub metadata_json: String,
+    pub created_at: String,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cache_tokens: Option<i64>,
+    pub price_usd_micros: Option<i64>,
+    pub price_cny_micros: Option<i64>,
+    pub price_currency: Option<String>,
+    pub price_source: Option<String>,
+    pub upstream_response_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

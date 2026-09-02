@@ -11,6 +11,7 @@ use crate::core::terminals::{
     create_terminal_session_core, kill_terminal_session_core, list_terminal_sessions_core,
     resize_terminal_core, resume_session_terminal_core, write_terminal_input_core,
 };
+use crate::core::usage_overview::get_usage_overview_core;
 use crate::core::usage_stats::{get_session_usage_stats_core, reload_model_price_overrides_core};
 use crate::database::repositories::config_snapshot_repository::ConfigSnapshotRepository;
 use crate::error::{ApiError, AppError};
@@ -376,6 +377,16 @@ pub async fn dispatch_command(
                 .await
                 .map_err(to_error)?,
         ),
+        "get_usage_overview" => {
+            let since = optional_string_arg(&args, "since")?;
+            let page = optional_i64_arg(&args, "page")?;
+            let page_size = optional_i64_arg(&args, "page_size")?;
+            to_value(
+                get_usage_overview_core(&state.pool, since, page, page_size)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
         "get_session_messages" => {
             let provider_id = required_string_arg(&args, "providerId")?;
             let source_path = required_string_arg(&args, "sourcePath")?;

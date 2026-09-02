@@ -127,6 +127,8 @@ struct UsageEntry {
     model: String,
     /// Dedup key (Claude `message.id`); `None` when the transcript has none.
     dedup_key: Option<String>,
+    /// Upstream response id, the join key against a proxy usage row.
+    response_id: Option<String>,
     timestamp_ms: Option<i64>,
     usage: TokenUsage,
 }
@@ -276,16 +278,7 @@ pub fn scan_session_usage(window: TimeWindow) -> SessionUsageStats {
     // appear in both the primary projects directory and the cache mirror.
     let mut seen_dedup_keys = HashSet::new();
 
-    let roots = claude_roots()
-        .into_iter()
-        .map(|root| (root, Provider::Claude))
-        .chain(
-            codex_roots()
-                .into_iter()
-                .map(|root| (root, Provider::Codex)),
-        );
-
-    for (root, provider) in roots {
+    for (root, provider) in scan_roots() {
         if !root.exists() {
             continue;
         }
@@ -301,6 +294,77 @@ pub fn scan_session_usage(window: TimeWindow) -> SessionUsageStats {
     stats.scanned_file_count = scanned;
     stats.truncated = truncated;
     stats
+}
+
+/// One billable request from a transcript, after time filtering and dedup.
+///
+/// The public counterpart of the internal parse entry, for callers that merge
+/// transcript records with proxy usage rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionUsageEntry {
+    /// `claude` or `codex`.
+    pub provider: &'static str,
+    pub model: String,
+    /// Upstream response id: the join key against a proxy usage row.
+    pub response_id: Option<String>,
+    pub timestamp_ms: Option<i64>,
+    pub usage: TokenUsage,
+}
+
+/// Scan local transcripts and return the deduplicated per-request entries
+/// within `window`, plus the scanned file count and whether the cap was hit.
+///
+/// Shares the parse cache with [`scan_session_usage`], so a caller that needs
+/// both rows and rollups pays for the file reads once.
+///
+/// Blocking file IO — call from `spawn_blocking`.
+pub fn collect_session_entries(window: TimeWindow) -> (Vec<SessionUsageEntry>, i64, bool) {
+    let mut entries = Vec::new();
+    let mut scanned = 0_i64;
+    let mut truncated = false;
+    let mut seen_dedup_keys = HashSet::new();
+
+    for (root, provider) in scan_roots() {
+        if !root.exists() {
+            continue;
+        }
+        let files = collect_files(&root, &mut truncated);
+        scanned += files.len() as i64;
+        for path in files {
+            let parsed = parsed_file(&path, provider);
+            for entry in &parsed.entries {
+                if !window.contains(entry.timestamp_ms) {
+                    continue;
+                }
+                if let Some(key) = &entry.dedup_key {
+                    if !seen_dedup_keys.insert(key.clone()) {
+                        continue;
+                    }
+                }
+                entries.push(SessionUsageEntry {
+                    provider: entry.provider,
+                    model: entry.model.clone(),
+                    response_id: entry.response_id.clone(),
+                    timestamp_ms: entry.timestamp_ms,
+                    usage: entry.usage,
+                });
+            }
+        }
+    }
+
+    (entries, scanned, truncated)
+}
+
+/// Every transcript root paired with the provider that writes it.
+fn scan_roots() -> impl Iterator<Item = (PathBuf, Provider)> {
+    claude_roots()
+        .into_iter()
+        .map(|root| (root, Provider::Claude))
+        .chain(
+            codex_roots()
+                .into_iter()
+                .map(|root| (root, Provider::Codex)),
+        )
 }
 
 fn collect_files(root: &Path, truncated: &mut bool) -> Vec<PathBuf> {
@@ -468,17 +532,22 @@ fn parse_claude_file(path: &Path) -> ParsedFile {
             continue;
         }
 
+        // Resume and compaction rewrite the same assistant message into several
+        // files, so `message.id` is the cross-file dedup key. It is also the
+        // upstream response id, which is what joins this entry to a proxy usage
+        // row for the same request. Rows with no id are kept unconditionally —
+        // every observed id-less row was a distinct request, and undercounting
+        // spend is worse.
+        let message_id = message
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+
         entries.push(UsageEntry {
             provider: "claude",
             model: model.to_string(),
-            // Resume and compaction rewrite the same assistant message into
-            // several files; without this key the totals roughly double. Rows
-            // with no id are kept unconditionally — every observed id-less row
-            // was a distinct request, and undercounting spend is worse.
-            dedup_key: message
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::to_string),
+            dedup_key: message_id.clone(),
+            response_id: message_id,
             timestamp_ms: entry_timestamp_ms(&entry),
             usage: claude_token_usage(usage),
         });
@@ -496,24 +565,33 @@ fn claude_token_usage(usage: &Value) -> TokenUsage {
     }
 }
 
-/// Parse one Codex CLI rollout file into its single billable entry.
+/// Parse one Codex CLI rollout into its per-turn billable entries.
 ///
-/// `total_token_usage` accumulates over the session, so only the final
-/// `token_count` event is counted. The model lives on separate `turn_context`
-/// records, so it is tracked as the file is read.
+/// `total_token_usage` accumulates over the session, so each turn is the
+/// difference from the previous event rather than the value itself. Summing the
+/// raw values overstated one real file by 350x (see the module header).
+///
+/// `last_token_usage` looks like it would serve directly, but on a real corpus
+/// only 12 of 58 comparable files had `Σ(last)` equal the final cumulative
+/// total — forked sessions re-report the parent's history. Diffing matched on
+/// 76 of 77.
 fn parse_codex_file(path: &Path) -> ParsedFile {
     let Some(lines) = read_lines(path) else {
         return ParsedFile::default();
     };
 
     let mut model: Option<String> = None;
-    let mut last_total: Option<TokenUsage> = None;
-    let mut last_timestamp: Option<i64> = None;
+    let mut previous: Option<CodexCumulative> = None;
+    let mut pending_response_id: Option<String> = None;
+    let mut entries = Vec::new();
 
     for line in lines {
-        // Same cheap pre-filter as the Claude path: only `turn_context` records
-        // (which carry the model) and `token_count` events matter.
-        if !line.contains("token_count") && !line.contains("\"model\"") {
+        // Cheap pre-filter: only `turn_context` (the model), `response_item`
+        // (the response id), and `token_count` events matter.
+        if !line.contains("token_count")
+            && !line.contains("\"model\"")
+            && !line.contains("response_item")
+        {
             continue;
         }
         let Ok(entry) = serde_json::from_str::<Value>(&line) else {
@@ -529,49 +607,122 @@ fn parse_codex_file(path: &Path) -> ParsedFile {
             model = Some(found.to_string());
         }
 
+        if let Some(id) = codex_assistant_response_id(payload) {
+            pending_response_id = Some(id);
+        }
+
         if payload.get("type").and_then(Value::as_str) != Some("token_count") {
             continue;
         }
         let Some(total) = payload.pointer("/info/total_token_usage") else {
             continue;
         };
+        let current = CodexCumulative::from_value(total);
 
-        last_total = Some(codex_token_usage(total));
-        last_timestamp = entry_timestamp_ms(&entry).or(last_timestamp);
-    }
+        let delta = match previous {
+            // The same cumulative value is emitted 2-3 times in a row; only the
+            // first occurrence is a turn.
+            Some(previous) if previous == current => continue,
+            Some(previous) => current.delta_from(previous),
+            None => Some(current.usage()),
+        };
+        // A negative delta means the session counter reset (fork or resume), so
+        // the event starts a fresh running total instead of being diffed.
+        let usage = delta.unwrap_or_else(|| current.usage());
 
-    let Some(usage) = last_total else {
-        return ParsedFile::default();
-    };
-
-    ParsedFile {
-        entries: vec![UsageEntry {
+        entries.push(UsageEntry {
             provider: "codex",
             // A rollout without a recorded model still represents real spend;
             // attribute it to a placeholder so it appears as unpriced rather
             // than vanishing from the totals.
-            model: model.unwrap_or_else(|| "unknown".to_string()),
-            // One entry per file already, and Codex has no cross-file id.
+            model: model.clone().unwrap_or_else(|| "unknown".to_string()),
+            // Codex has no cross-file message id; the response id below is the
+            // merge key, not a dedup key.
             dedup_key: None,
-            timestamp_ms: last_timestamp,
+            response_id: pending_response_id.take(),
+            timestamp_ms: entry_timestamp_ms(&entry),
             usage,
-        }],
+        });
+        previous = Some(current);
+    }
+
+    ParsedFile { entries }
+}
+
+/// Cumulative token counts as Codex reports them, before cache adjustment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CodexCumulative {
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    cache_write_input_tokens: i64,
+    output_tokens: i64,
+}
+
+impl CodexCumulative {
+    fn from_value(total: &Value) -> Self {
+        Self {
+            input_tokens: json_i64(total.get("input_tokens")),
+            cached_input_tokens: json_i64(total.get("cached_input_tokens")),
+            cache_write_input_tokens: json_i64(total.get("cache_write_input_tokens")),
+            // `reasoning_output_tokens` is already part of `output_tokens`;
+            // adding it would double-count reasoning.
+            output_tokens: json_i64(total.get("output_tokens")),
+        }
+    }
+
+    /// This event's own usage, treating the cumulative value as the whole turn.
+    fn usage(self) -> TokenUsage {
+        // Codex reports `input_tokens` inclusive of `cached_input_tokens`, so
+        // the cached portion is subtracted to avoid billing it at the full
+        // input rate.
+        TokenUsage {
+            input_tokens: (self.input_tokens - self.cached_input_tokens).max(0),
+            output_tokens: self.output_tokens,
+            cache_write_tokens: self.cache_write_input_tokens,
+            cache_read_tokens: self.cached_input_tokens,
+        }
+    }
+
+    /// Usage attributable to this turn alone, or `None` when any field went
+    /// backwards (the session counter reset).
+    fn delta_from(self, previous: Self) -> Option<TokenUsage> {
+        let input = self.input_tokens - previous.input_tokens;
+        let cached = self.cached_input_tokens - previous.cached_input_tokens;
+        let cache_write = self.cache_write_input_tokens - previous.cache_write_input_tokens;
+        let output = self.output_tokens - previous.output_tokens;
+        if input < 0 || cached < 0 || cache_write < 0 || output < 0 {
+            return None;
+        }
+        Some(TokenUsage {
+            input_tokens: (input - cached).max(0),
+            output_tokens: output,
+            cache_write_tokens: cache_write,
+            cache_read_tokens: cached,
+        })
     }
 }
 
-fn codex_token_usage(total: &Value) -> TokenUsage {
-    // Codex reports `input_tokens` inclusive of `cached_input_tokens`, so the
-    // cached portion is subtracted to avoid billing it at the full input rate.
-    let raw_input = json_i64(total.get("input_tokens"));
-    let cached = json_i64(total.get("cached_input_tokens"));
-    // `reasoning_output_tokens` is already part of `output_tokens`; adding it
-    // would double-count reasoning.
-    TokenUsage {
-        input_tokens: (raw_input - cached).max(0),
-        output_tokens: json_i64(total.get("output_tokens")),
-        cache_write_tokens: json_i64(total.get("cache_write_input_tokens")),
-        cache_read_tokens: cached,
-    }
+/// The upstream Responses uuid embedded in an assistant `response_item` id.
+///
+/// `rs_` (reasoning) and `fc_` (function_call) only ever appear in assistant
+/// output. `fco_` is the client's own function_call_output, and a `msg_` on a
+/// user or developer turn is a client-side conversation id — neither joins to a
+/// proxy row, so both are rejected.
+fn codex_assistant_response_id(payload: &Value) -> Option<String> {
+    let item_type = payload.get("type").and_then(Value::as_str)?;
+    let id = payload.get("id").and_then(Value::as_str)?;
+    let uuid = match item_type {
+        "reasoning" => id.strip_prefix("rs_"),
+        "function_call" => id.strip_prefix("fc_").map(|rest| {
+            // Function-call ids carry a trailing index: fc_<uuid>_0.
+            rest.rsplit_once('_').map_or(rest, |(head, _)| head)
+        }),
+        "message" if payload.get("role").and_then(Value::as_str) == Some("assistant") => {
+            id.strip_prefix("msg_")
+        }
+        _ => None,
+    }?;
+    (!uuid.trim().is_empty()).then(|| uuid.to_string())
 }
 
 fn json_i64(value: Option<&Value>) -> i64 {
@@ -649,6 +800,151 @@ mod tests {
 
     fn aggregate_codex(path: &Path) -> SessionUsageStats {
         aggregate(&[(path, Provider::Codex)], TimeWindow::default())
+    }
+
+    /// Build a Codex `token_count` event with the given cumulative totals.
+    fn codex_token_count(ts: &str, input: i64, cached: i64, output: i64) -> String {
+        format!(
+            r#"{{"timestamp":"{ts}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{input},"cached_input_tokens":{cached},"output_tokens":{output}}}}}}}}}"#
+        )
+    }
+
+    #[test]
+    fn codex_cumulative_totals_are_split_into_per_turn_entries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_jsonl(
+            dir.path(),
+            "rollout.jsonl",
+            &[
+                r#"{"timestamp":"2026-08-19T03:41:50.476Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+                &codex_token_count("2026-08-19T03:42:00.000Z", 100, 0, 10),
+                &codex_token_count("2026-08-19T03:43:00.000Z", 300, 0, 30),
+                &codex_token_count("2026-08-19T03:44:00.000Z", 1000, 200, 50),
+            ],
+        );
+
+        let stats = aggregate_codex(&path);
+
+        // Three turns, not one file-level row and not a triple-counted sum.
+        assert_eq!(stats.totals.request_count, 3);
+        // The per-turn deltas must add back up to the final cumulative value:
+        // 1000 input of which 200 cached -> 800 uncached, 200 cache reads, 50 out.
+        assert_eq!(stats.totals.input_tokens, 800);
+        assert_eq!(stats.totals.cache_read_tokens, 200);
+        assert_eq!(stats.totals.output_tokens, 50);
+    }
+
+    #[test]
+    fn codex_repeated_identical_totals_are_not_counted_twice() {
+        // A real rollout emits the same cumulative value 2-3 times in a row.
+        // Each repeat would otherwise become a zero-token request, inflating the
+        // request count without changing the tokens.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_jsonl(
+            dir.path(),
+            "rollout.jsonl",
+            &[
+                r#"{"timestamp":"2026-08-19T03:41:50.476Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+                &codex_token_count("2026-08-19T03:42:00.000Z", 100, 0, 10),
+                &codex_token_count("2026-08-19T03:42:01.000Z", 100, 0, 10),
+                &codex_token_count("2026-08-19T03:42:02.000Z", 100, 0, 10),
+                &codex_token_count("2026-08-19T03:43:00.000Z", 300, 0, 30),
+            ],
+        );
+
+        let stats = aggregate_codex(&path);
+
+        assert_eq!(stats.totals.request_count, 2);
+        assert_eq!(stats.totals.input_tokens, 300);
+        assert_eq!(stats.totals.output_tokens, 30);
+    }
+
+    #[test]
+    fn codex_negative_delta_restarts_the_running_total() {
+        // A fork or resume resets the cumulative counter mid-file. Diffing
+        // across that boundary would yield negative tokens; the event is
+        // instead treated as a fresh start.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_jsonl(
+            dir.path(),
+            "rollout.jsonl",
+            &[
+                r#"{"timestamp":"2026-08-19T03:41:50.476Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+                &codex_token_count("2026-08-19T03:42:00.000Z", 1000, 0, 100),
+                &codex_token_count("2026-08-19T03:43:00.000Z", 50, 0, 5),
+                &codex_token_count("2026-08-19T03:44:00.000Z", 120, 0, 12),
+            ],
+        );
+
+        let stats = aggregate_codex(&path);
+
+        assert_eq!(stats.totals.request_count, 3);
+        // 1000 (first) + 50 (restart) + 70 (delta) = 1120.
+        assert_eq!(stats.totals.input_tokens, 1120);
+        // 100 (first) + 5 (restart) + 7 (delta) = 112.
+        assert_eq!(stats.totals.output_tokens, 112);
+    }
+
+    #[test]
+    fn codex_per_turn_deltas_sum_back_to_the_final_cumulative_total() {
+        // The invariant that guards the 350x lesson recorded at the top of this
+        // file: whatever the split produces must add back up to the last
+        // cumulative value the session reported. If a future change reverts to
+        // summing the cumulative values, this fails immediately.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_jsonl(
+            dir.path(),
+            "rollout.jsonl",
+            &[
+                r#"{"timestamp":"2026-08-19T03:41:50.476Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+                &codex_token_count("2026-08-19T03:42:00.000Z", 17063, 0, 500),
+                &codex_token_count("2026-08-19T03:42:01.000Z", 17063, 0, 500),
+                &codex_token_count("2026-08-19T03:43:00.000Z", 39956, 9600, 1200),
+                &codex_token_count("2026-08-19T03:44:00.000Z", 76853, 30000, 2400),
+            ],
+        );
+
+        let parsed = parse_codex_file(&path);
+        let summed_input: i64 = parsed.entries.iter().map(|e| e.usage.input_tokens).sum();
+        let summed_cache_read: i64 = parsed
+            .entries
+            .iter()
+            .map(|e| e.usage.cache_read_tokens)
+            .sum();
+        let summed_output: i64 = parsed.entries.iter().map(|e| e.usage.output_tokens).sum();
+
+        // Final cumulative: 76853 input of which 30000 cached -> 46853 uncached.
+        assert_eq!(summed_input, 46_853);
+        assert_eq!(summed_cache_read, 30_000);
+        assert_eq!(summed_output, 2_400);
+    }
+
+    #[test]
+    fn codex_turn_response_id_comes_from_assistant_items_only() {
+        // `rs_` (reasoning) and `fc_` (function_call) ids embed the upstream
+        // Responses uuid and only appear in assistant output. `fco_` is the
+        // client's own function_call_output and `msg_` on a user/developer turn
+        // is a client-side conversation id — neither can join to a proxy row.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_jsonl(
+            dir.path(),
+            "rollout.jsonl",
+            &[
+                r#"{"timestamp":"2026-08-19T03:41:50.476Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+                r#"{"timestamp":"2026-08-19T03:41:51.000Z","type":"response_item","payload":{"type":"message","role":"user","id":"msg_01a0601e-a66f-7c42-aabe-6488c2cf7b61"}}"#,
+                r#"{"timestamp":"2026-08-19T03:41:52.000Z","type":"response_item","payload":{"type":"reasoning","id":"rs_5d76e101-2615-4e87-8455-72061b36392c"}}"#,
+                r#"{"timestamp":"2026-08-19T03:41:53.000Z","type":"response_item","payload":{"type":"function_call_output","id":"fco_01a0601e-fbbc-7e40-be4a-7d80109de16b"}}"#,
+                &codex_token_count("2026-08-19T03:42:00.000Z", 100, 0, 10),
+            ],
+        );
+
+        let parsed = parse_codex_file(&path);
+
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(
+            parsed.entries[0].response_id.as_deref(),
+            Some("5d76e101-2615-4e87-8455-72061b36392c")
+        );
     }
 
     #[test]
@@ -738,24 +1034,27 @@ mod tests {
     }
 
     #[test]
-    fn codex_counts_only_the_final_cumulative_total() {
+    fn codex_turns_never_sum_the_cumulative_totals() {
+        // The original form of this test pinned "one row per file". Turns are
+        // now split out per event, but the property it guarded still holds: the
+        // tokens must equal the final cumulative value, never the sum of every
+        // cumulative snapshot (which overstated one real file by 350x).
         let dir = tempfile::tempdir().expect("tempdir");
-        // total_token_usage grows over the session; summing would triple it.
         let path = write_jsonl(
             dir.path(),
             "rollout.jsonl",
             &[
                 r#"{"timestamp":"2026-08-19T03:41:50.476Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
-                r#"{"timestamp":"2026-08-19T03:42:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10}}}}"#,
-                r#"{"timestamp":"2026-08-19T03:43:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":0,"output_tokens":30}}}}"#,
-                r#"{"timestamp":"2026-08-19T03:44:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":50}}}}"#,
+                &codex_token_count("2026-08-19T03:42:00.000Z", 100, 0, 10),
+                &codex_token_count("2026-08-19T03:43:00.000Z", 300, 0, 30),
+                &codex_token_count("2026-08-19T03:44:00.000Z", 1000, 200, 50),
             ],
         );
 
         let stats = aggregate_codex(&path);
 
-        assert_eq!(stats.totals.request_count, 1);
-        // Final event only: 1000 input of which 200 cached -> 800 uncached.
+        // Summing the snapshots would give 1400 input; the correct answer is
+        // the final cumulative value, 1000, minus the 200 cached portion.
         assert_eq!(stats.totals.input_tokens, 800);
         assert_eq!(stats.totals.cache_read_tokens, 200);
         assert_eq!(stats.totals.output_tokens, 50);
@@ -812,6 +1111,40 @@ mod tests {
 
         assert_eq!(stats.totals.request_count, 1);
         assert_eq!(stats.totals.input_tokens, 7);
+    }
+
+    #[test]
+    fn collected_entries_carry_the_response_id_and_respect_dedup() {
+        // Mirrors what collect_session_entries does, without touching the real
+        // home directory: the same message id in two files yields one entry,
+        // and the response id survives for merging.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = write_jsonl(
+            dir.path(),
+            "a.jsonl",
+            &[&claude_line("msg_shared", "claude-opus-5", 500, 0)],
+        );
+        let second = write_jsonl(
+            dir.path(),
+            "b.jsonl",
+            &[&claude_line("msg_shared", "claude-opus-5", 500, 0)],
+        );
+
+        let mut seen = HashSet::new();
+        let mut collected = Vec::new();
+        for path in [&first, &second] {
+            for entry in parse_claude_file(path).entries {
+                if let Some(key) = &entry.dedup_key {
+                    if !seen.insert(key.clone()) {
+                        continue;
+                    }
+                }
+                collected.push(entry);
+            }
+        }
+
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0].response_id.as_deref(), Some("msg_shared"));
     }
 
     #[test]

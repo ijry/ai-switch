@@ -1,6 +1,6 @@
 use crate::error::AppError;
 use crate::models::route_pool::{
-    RoutePoolMemberAccount, RoutePoolStats, RoutePoolUsageLog, RouteUsageBreakdown,
+    ProxyRequestRow, RoutePoolMemberAccount, RoutePoolStats, RoutePoolUsageLog, RouteUsageBreakdown,
 };
 use chrono::Utc;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
@@ -335,14 +335,16 @@ impl RoutePoolRepository {
         source_label: &str,
         metadata_json: &str,
         usage: &RouteUsageBreakdown,
+        upstream_response_id: Option<&str>,
     ) -> Result<(), AppError> {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             "INSERT INTO usage_events
              (id, route_credential_id, source_label, metric_type, amount, unit,
               metadata_json, input_tokens, output_tokens, cache_tokens,
-              price_usd_micros, price_cny_micros, price_currency, price_source, created_at)
-             VALUES (?, ?, ?, 'request', 1, 'count', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              price_usd_micros, price_cny_micros, price_currency, price_source,
+              upstream_response_id, created_at)
+             VALUES (?, ?, ?, 'request', 1, 'count', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(account_id)
@@ -355,6 +357,7 @@ impl RoutePoolRepository {
         .bind(usage.price_cny_micros)
         .bind(&usage.price_currency)
         .bind(&usage.price_source)
+        .bind(upstream_response_id)
         .bind(&now)
         .execute(pool)
         .await
@@ -366,6 +369,68 @@ impl RoutePoolRepository {
         })?;
 
         Ok(())
+    }
+
+    /// Every proxied request in the window, across all platforms.
+    ///
+    /// Deliberately unfiltered by platform and by `archived_at`: the usage
+    /// overview reports total spend, so a request stays counted after its
+    /// account is archived. Archiving governs the account list, not history.
+    pub async fn list_request_events(
+        pool: &SqlitePool,
+        since: Option<&str>,
+    ) -> Result<Vec<ProxyRequestRow>, AppError> {
+        let since_clause = if since.is_some() {
+            " AND ue.created_at >= ?"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT ue.id, a.platform AS platform, ue.route_credential_id,
+                    a.display_name AS account_name, ue.source_label,
+                    ue.metadata_json, ue.created_at,
+                    ue.input_tokens, ue.output_tokens, ue.cache_tokens,
+                    ue.price_usd_micros, ue.price_cny_micros, ue.price_currency,
+                    ue.price_source, ue.upstream_response_id
+             FROM usage_events ue
+             INNER JOIN route_credentials a ON a.id = ue.route_credential_id
+             WHERE ue.metric_type = 'request'{since_clause}
+             ORDER BY ue.created_at DESC, ue.id DESC"
+        );
+        let mut query = sqlx::query(&sql);
+        if let Some(since) = since {
+            query = query.bind(since);
+        }
+        let rows = query
+            .fetch_all(pool)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.usage_overview_requests",
+                message: "Could not load proxied requests".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| ProxyRequestRow {
+                id: row.get("id"),
+                platform: row.get("platform"),
+                account_id: row.get("route_credential_id"),
+                account_name: row.get("account_name"),
+                source_label: row.get("source_label"),
+                metadata_json: row.get("metadata_json"),
+                created_at: row.get("created_at"),
+                input_tokens: row.get("input_tokens"),
+                output_tokens: row.get("output_tokens"),
+                cache_tokens: row.get("cache_tokens"),
+                price_usd_micros: row.get("price_usd_micros"),
+                price_cny_micros: row.get("price_cny_micros"),
+                price_currency: row.get("price_currency"),
+                price_source: row.get("price_source"),
+                upstream_response_id: row.get("upstream_response_id"),
+            })
+            .collect())
     }
 
     pub async fn stats(
@@ -423,7 +488,8 @@ impl RoutePoolRepository {
             "SELECT ue.id, ue.route_credential_id, a.display_name AS account_name,
                     ue.source_label, ue.metric_type, ue.amount, ue.unit, ue.metadata_json, ue.created_at,
                     ue.input_tokens, ue.output_tokens, ue.cache_tokens,
-                    ue.price_usd_micros, ue.price_cny_micros, ue.price_currency, ue.price_source
+                    ue.price_usd_micros, ue.price_cny_micros, ue.price_currency, ue.price_source,
+                    ue.upstream_response_id
              FROM usage_events ue
              INNER JOIN route_credentials a ON a.id = ue.route_credential_id
              WHERE a.platform = ? AND a.archived_at IS NULL{usage_since_clause}
@@ -470,7 +536,8 @@ impl RoutePoolRepository {
             "SELECT ue.id, ue.route_credential_id, a.display_name AS account_name,
                     ue.source_label, ue.metric_type, ue.amount, ue.unit, ue.metadata_json, ue.created_at,
                     ue.input_tokens, ue.output_tokens, ue.cache_tokens,
-                    ue.price_usd_micros, ue.price_cny_micros, ue.price_currency, ue.price_source
+                    ue.price_usd_micros, ue.price_cny_micros, ue.price_currency, ue.price_source,
+                    ue.upstream_response_id
              FROM usage_events ue
              INNER JOIN route_credentials a ON a.id = ue.route_credential_id
              WHERE a.platform = ? AND a.archived_at IS NULL AND ue.metric_type = 'request'{usage_since_clause}
@@ -511,6 +578,7 @@ impl RoutePoolRepository {
             price_cny_micros: row.get("price_cny_micros"),
             price_currency: row.get("price_currency"),
             price_source: row.get("price_source"),
+            upstream_response_id: row.get("upstream_response_id"),
         };
 
         Ok(RoutePoolStats {
@@ -650,6 +718,7 @@ mod tests {
             "route_proxy",
             r#"{"path":"/chat/completions","status":200}"#,
             &usage,
+            None,
         )
         .await
         .unwrap();
@@ -669,6 +738,129 @@ mod tests {
         assert_eq!(stats.requests[0].price_cny_micros, Some(7_100_000));
         assert_eq!(stats.requests[0].price_currency.as_deref(), Some("cny"));
         assert_eq!(stats.requests[0].price_source.as_deref(), Some("upstream"));
+    }
+
+    #[tokio::test]
+    async fn request_event_persists_the_upstream_response_id() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let account_id = create_credential(&pool, "claude", "ClaudeOne").await;
+
+        RoutePoolRepository::insert_request_event(
+            &pool,
+            &account_id,
+            "route_proxy",
+            r#"{"platform":"claude","success":true}"#,
+            &RouteUsageBreakdown::default(),
+            Some("msg_abc123"),
+        )
+        .await
+        .unwrap();
+
+        let stats = RoutePoolRepository::stats(&pool, "claude", None, 1, 20)
+            .await
+            .unwrap();
+        assert_eq!(
+            stats.requests[0].upstream_response_id.as_deref(),
+            Some("msg_abc123")
+        );
+    }
+
+    #[tokio::test]
+    async fn request_event_without_a_response_id_stores_null() {
+        // A transport failure never produced a response, so there is no id to
+        // record. It must read as unknown rather than as an empty-string key,
+        // which would collide with every other id-less row during merging.
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let account_id = create_credential(&pool, "claude", "ClaudeOne").await;
+
+        RoutePoolRepository::insert_request_event(
+            &pool,
+            &account_id,
+            "route_proxy",
+            r#"{"platform":"claude","success":false}"#,
+            &RouteUsageBreakdown::default(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let stats = RoutePoolRepository::stats(&pool, "claude", None, 1, 20)
+            .await
+            .unwrap();
+        assert_eq!(stats.requests[0].upstream_response_id, None);
+    }
+
+    #[tokio::test]
+    async fn list_request_events_spans_platforms_and_includes_archived_accounts() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let claude_id = create_credential(&pool, "claude", "ClaudeOne").await;
+        let codex_id = create_credential(&pool, "codex", "CodexOne").await;
+
+        for (account_id, response_id) in [(&claude_id, "msg_a"), (&codex_id, "resp_b")] {
+            RoutePoolRepository::insert_request_event(
+                &pool,
+                account_id,
+                "route_proxy",
+                r#"{"success":true}"#,
+                &RouteUsageBreakdown::default(),
+                Some(response_id),
+            )
+            .await
+            .unwrap();
+        }
+
+        // Archiving an account hides it from the account list; it must not erase
+        // the spend it already incurred.
+        RouteCredentialRepository::set_archived(&pool, std::slice::from_ref(&claude_id), true)
+            .await
+            .unwrap();
+
+        let rows = RoutePoolRepository::list_request_events(&pool, None)
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 2, "both platforms, archived included");
+        let platforms: HashSet<&str> = rows.iter().map(|row| row.platform.as_str()).collect();
+        assert!(platforms.contains("claude") && platforms.contains("codex"));
+    }
+
+    #[tokio::test]
+    async fn list_request_events_filters_by_since_and_excludes_non_request_metrics() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let account_id = create_credential(&pool, "codex", "CodexOne").await;
+
+        for (metric_type, amount, unit, created_at) in [
+            ("request", 1_i64, "count", "2026-08-01T00:00:00Z"),
+            ("request", 1_i64, "count", "2026-08-20T00:00:00Z"),
+            // A legacy token row must not become a phantom request.
+            ("token", 4096_i64, "token", "2026-08-20T00:00:00Z"),
+        ] {
+            sqlx::query(
+                "INSERT INTO usage_events
+                 (id, route_credential_id, source_label, metric_type, amount, unit, metadata_json, created_at)
+                 VALUES (?, ?, 'route_proxy', ?, ?, ?, '{}', ?)",
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(&account_id)
+            .bind(metric_type)
+            .bind(amount)
+            .bind(unit)
+            .bind(created_at)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let rows = RoutePoolRepository::list_request_events(&pool, Some("2026-08-10T00:00:00Z"))
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].created_at, "2026-08-20T00:00:00Z");
     }
 
     #[tokio::test]
@@ -695,6 +887,7 @@ mod tests {
                     price_currency: Some("usd".to_string()),
                     price_source: Some(price_source.to_string()),
                 },
+                None,
             )
             .await
             .unwrap();

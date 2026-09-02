@@ -1412,6 +1412,10 @@ async fn finish_outcome(
         ROUTE_MODEL_TEST_SOURCE,
         &metadata,
         &usage,
+        crate::services::upstream_response_id::extract_upstream_response_id(
+            response_body.as_bytes(),
+        )
+        .as_deref(),
     )
     .await?;
 
