@@ -28,6 +28,7 @@ import {
   SlidersHorizontal,
   Square,
   Trash2,
+  Wallet,
   Wand2,
   X,
 } from "lucide-react";
@@ -87,7 +88,9 @@ import {
   listRouteCredentialPage,
   reorderRouteCredentials,
   refreshRouteCredentialQuota,
+  refreshRouteCredentialRelayBalance,
   refreshRouteCredentialsQuota,
+  refreshRouteCredentialsRelayBalance,
   restoreRouteCredentials,
   getSettings,
   routePoolTestModel,
@@ -115,6 +118,8 @@ import type {
   ModelMapping,
   PlatformId,
   QuotaRefreshOutcome,
+  RelayBalanceProvider,
+  RelayBalanceSnapshot,
   RouteCredential,
   RouteCredentialActivityEvent,
   RouteCredentialFailurePolicy,
@@ -1280,6 +1285,198 @@ function turnReminderTextFromConfig(config: Record<string, unknown>): string {
   return typeof value === "string" ? value : "";
 }
 
+/// Form shape for `config_json.relay_balance`. "none" is a UI-only value: an
+/// account with querying off carries no `relay_balance` key at all.
+type RelayBalanceFormState = {
+  provider: RelayBalanceProvider | "none";
+  endpoint: string;
+  remainingPath: string;
+  usedPath: string;
+  limitPath: string;
+  planPath: string;
+  unit: string;
+  divisor: string;
+};
+
+const relayBalanceProviderOptions: Array<{
+  value: RelayBalanceFormState["provider"];
+  label: string;
+  hint: string;
+}> = [
+  { value: "none", label: "关闭", hint: "不查询余额" },
+  { value: "new_api", label: "new-api", hint: "用账号自己的 API Key 查 /api/usage/token/，无需额外填写" },
+  { value: "sub2api", label: "sub2api", hint: "用账号自己的 API Key 查 /v1/usage，无需额外填写" },
+  { value: "custom", label: "自定义", hint: "自己填请求 URL 与取值路径" },
+];
+
+const emptyRelayBalanceForm: RelayBalanceFormState = {
+  provider: "none",
+  endpoint: "",
+  remainingPath: "",
+  usedPath: "",
+  limitPath: "",
+  planPath: "",
+  unit: "",
+  divisor: "",
+};
+
+function relayBalanceFormFromConfig(config: Record<string, unknown>): RelayBalanceFormState {
+  const raw = config.relay_balance;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return emptyRelayBalanceForm;
+  }
+  const block = raw as Record<string, unknown>;
+  const provider = stringFromRecord(block, "provider");
+  if (provider !== "new_api" && provider !== "sub2api" && provider !== "custom") {
+    return emptyRelayBalanceForm;
+  }
+  const divisor = block.divisor;
+  return {
+    provider,
+    endpoint: stringFromRecord(block, "endpoint"),
+    remainingPath: stringFromRecord(block, "remaining_path"),
+    usedPath: stringFromRecord(block, "used_path"),
+    limitPath: stringFromRecord(block, "limit_path"),
+    planPath: stringFromRecord(block, "plan_path"),
+    unit: stringFromRecord(block, "unit"),
+    divisor: typeof divisor === "number" && Number.isFinite(divisor) ? String(divisor) : "",
+  };
+}
+
+function writeRelayBalanceToConfig(
+  config: Record<string, unknown>,
+  form: RelayBalanceFormState,
+): Record<string, unknown> {
+  const next = { ...config };
+  if (form.provider === "none") {
+    // Turning querying off also drops the stale reading, so the badge disappears
+    // with the setting instead of freezing at its last value.
+    delete next.relay_balance;
+    delete next.relay_balance_snapshot;
+    return next;
+  }
+  const block: Record<string, unknown> = { provider: form.provider };
+  if (form.provider === "custom") {
+    block.endpoint = form.endpoint.trim();
+    block.remaining_path = form.remainingPath.trim();
+    for (const [key, value] of [
+      ["used_path", form.usedPath],
+      ["limit_path", form.limitPath],
+      ["plan_path", form.planPath],
+      ["unit", form.unit],
+    ] as const) {
+      const trimmed = value.trim();
+      if (trimmed) {
+        block[key] = trimmed;
+      }
+    }
+    const divisor = Number(form.divisor.trim());
+    if (form.divisor.trim() && Number.isFinite(divisor) && divisor > 0) {
+      block.divisor = divisor;
+    }
+  }
+  next.relay_balance = block;
+  return next;
+}
+
+/// Client-side mirror of `RelayBalanceConfig::validate`, so a bad custom setup
+/// is caught before the round trip and can point at the offending tab.
+function relayBalanceFormError(form: RelayBalanceFormState): string | null {
+  if (form.provider !== "custom") {
+    return null;
+  }
+  const endpoint = form.endpoint.trim();
+  if (!endpoint) {
+    return "自定义余额查询需要填写请求 URL";
+  }
+  if (!endpoint.startsWith("http://") && !endpoint.startsWith("https://")) {
+    return "自定义余额查询的请求 URL 必须以 http:// 或 https:// 开头";
+  }
+  if (!form.remainingPath.trim()) {
+    return "自定义余额查询需要填写剩余额度的取值路径";
+  }
+  for (const path of [form.remainingPath, form.usedPath, form.limitPath, form.planPath]) {
+    const trimmed = path.trim();
+    if (trimmed && trimmed.split(".").some((segment) => !segment.trim())) {
+      return `取值路径 ${trimmed} 不合法：用点号分隔字段名，例如 data.total_available`;
+    }
+  }
+  const divisor = form.divisor.trim();
+  if (divisor && !(Number(divisor) > 0)) {
+    return "额度换算除数必须是大于 0 的数字";
+  }
+  return null;
+}
+
+function relayBalanceSnapshotFromConfig(
+  config: Record<string, unknown>,
+): RelayBalanceSnapshot | null {
+  const raw = config.relay_balance_snapshot;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  return raw as RelayBalanceSnapshot;
+}
+
+function formatRelayBalanceAmount(value: number, unit: string): string {
+  const amount = Math.abs(value) >= 1000 ? value.toFixed(0) : value.toFixed(2);
+  return unit === "USD" ? `$${amount}` : `${amount} ${unit}`.trim();
+}
+
+function formatRelayBalanceCheckedAt(checkedAt: string): string {
+  const date = new Date(checkedAt);
+  return Number.isFinite(date.getTime()) ? date.toLocaleString() : checkedAt;
+}
+
+/// The account row's balance badge: what it says, how alarming it looks, and the
+/// detail that belongs in the tooltip.
+function relayBalanceBadge(
+  snapshot: RelayBalanceSnapshot,
+): { label: string; toneClass: string; title: string } {
+  const unit = snapshot.unit || "USD";
+  const details: string[] = [`来源 ${snapshot.source_url}`];
+  if (snapshot.plan_name) {
+    details.unshift(`套餐 ${snapshot.plan_name}`);
+  }
+  if (typeof snapshot.used === "number") {
+    details.push(`已用 ${formatRelayBalanceAmount(snapshot.used, unit)}`);
+  }
+  if (typeof snapshot.limit === "number") {
+    details.push(`总额 ${formatRelayBalanceAmount(snapshot.limit, unit)}`);
+  }
+  if (typeof snapshot.expires_at === "string" && snapshot.expires_at) {
+    details.push(`到期 ${snapshot.expires_at}`);
+  }
+  for (const note of snapshot.notes ?? []) {
+    details.push(note);
+  }
+  const checkedAt = new Date(snapshot.checked_at);
+  if (Number.isFinite(checkedAt.getTime())) {
+    details.push(`更新于 ${checkedAt.toLocaleString()}`);
+  }
+
+  if (snapshot.unlimited) {
+    return {
+      label: "余额 不限",
+      toneClass: "bg-teal-50 text-teal-800",
+      title: details.join("\n"),
+    };
+  }
+  if (typeof snapshot.remaining !== "number") {
+    return {
+      label: "余额 未知",
+      toneClass: "bg-stone-100 text-stone-600",
+      title: details.join("\n"),
+    };
+  }
+  return {
+    label: `余额 ${formatRelayBalanceAmount(snapshot.remaining, unit)}`,
+    toneClass:
+      snapshot.remaining <= 0 ? "bg-rose-50 text-rose-700" : "bg-teal-50 text-teal-800",
+    title: details.join("\n"),
+  };
+}
+
 function apiConfigJsonWithFields(
   configJson: string,
   baseUrl: string,
@@ -2118,6 +2315,134 @@ function UserAgentFields({
   );
 }
 
+function RelayBalanceFields({
+  allowCustom = true,
+  fieldClass,
+  idPrefix,
+  labelClass,
+  onChange,
+  value,
+}: {
+  allowCustom?: boolean;
+  fieldClass: string;
+  idPrefix: string;
+  labelClass: string;
+  onChange: (next: RelayBalanceFormState) => void;
+  value: RelayBalanceFormState;
+}) {
+  const options = allowCustom
+    ? relayBalanceProviderOptions
+    : relayBalanceProviderOptions.filter((option) => option.value !== "custom");
+  const active =
+    relayBalanceProviderOptions.find((option) => option.value === value.provider) ?? options[0];
+  return (
+    <fieldset className="grid gap-1.5">
+      <legend className="text-[12px] font-semibold text-stone-600">中转站余额查询</legend>
+      <div
+        className={`mt-1.5 grid gap-1 rounded-lg bg-stone-100 p-1 ${
+          options.length === 4 ? "grid-cols-4" : "grid-cols-3"
+        }`}
+      >
+        {options.map((option) => {
+          const selected = value.provider === option.value;
+          return (
+            <button
+              aria-label={`${idPrefix} 余额查询 ${option.label}`}
+              aria-pressed={selected}
+              className={`h-8 min-w-0 cursor-pointer whitespace-nowrap rounded-md px-1 text-[12px] font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
+                selected ? "bg-white text-stone-950 shadow-sm" : "text-stone-600 hover:text-stone-900"
+              }`}
+              key={option.value}
+              onClick={() => onChange({ ...value, provider: option.value })}
+              title={option.hint}
+              type="button"
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-stone-500">{active.hint}</p>
+      {value.provider === "custom" && allowCustom ? (
+        <div className="grid gap-2">
+          <label className={labelClass}>
+            请求 URL
+            <input
+              aria-label={`${idPrefix} 余额查询请求 URL`}
+              className={fieldClass}
+              onChange={(event) => onChange({ ...value, endpoint: event.target.value })}
+              placeholder="https://panel.example.com/api/billing"
+              value={value.endpoint}
+            />
+          </label>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label className={labelClass}>
+              剩余额度路径
+              <input
+                aria-label={`${idPrefix} 余额查询剩余额度路径`}
+                className={fieldClass}
+                onChange={(event) => onChange({ ...value, remainingPath: event.target.value })}
+                placeholder="data.total_available"
+                value={value.remainingPath}
+              />
+            </label>
+            <label className={labelClass}>
+              已用额度路径
+              <input
+                aria-label={`${idPrefix} 余额查询已用额度路径`}
+                className={fieldClass}
+                onChange={(event) => onChange({ ...value, usedPath: event.target.value })}
+                placeholder="可选，如 data.total_used"
+                value={value.usedPath}
+              />
+            </label>
+            <label className={labelClass}>
+              总额度路径
+              <input
+                aria-label={`${idPrefix} 余额查询总额度路径`}
+                className={fieldClass}
+                onChange={(event) => onChange({ ...value, limitPath: event.target.value })}
+                placeholder="可选，如 data.total_granted"
+                value={value.limitPath}
+              />
+            </label>
+            <label className={labelClass}>
+              套餐名路径
+              <input
+                aria-label={`${idPrefix} 余额查询套餐名路径`}
+                className={fieldClass}
+                onChange={(event) => onChange({ ...value, planPath: event.target.value })}
+                placeholder="可选，如 data.group"
+                value={value.planPath}
+              />
+            </label>
+            <label className={labelClass}>
+              单位
+              <input
+                aria-label={`${idPrefix} 余额查询单位`}
+                className={fieldClass}
+                onChange={(event) => onChange({ ...value, unit: event.target.value })}
+                placeholder="留空按 USD"
+                value={value.unit}
+              />
+            </label>
+            <label className={labelClass}>
+              换算除数
+              <input
+                aria-label={`${idPrefix} 余额查询换算除数`}
+                className={fieldClass}
+                onChange={(event) => onChange({ ...value, divisor: event.target.value })}
+                placeholder="留空按 1；new-api 类面板常见 500000"
+                value={value.divisor}
+              />
+            </label>
+          </div>
+        </div>
+      ) : null}
+    </fieldset>
+  );
+}
+
 export function AccountsScreen({
   onOpenSessions,
   platform = "codex",
@@ -2219,6 +2544,9 @@ export function AccountsScreen({
   const [apiFetchedModels, setApiFetchedModels] = useState<FetchedRouteModel[]>([]);
   const [apiFetchModelsError, setApiFetchModelsError] = useState<string | null>(null);
   const [apiPreviewJson, setApiPreviewJson] = useState("");
+  const [apiRelayBalance, setApiRelayBalance] = useState<RelayBalanceFormState>(
+    emptyRelayBalanceForm,
+  );
   const [editingCredential, setEditingCredential] = useState<RouteCredential | null>(null);
   const [editName, setEditName] = useState("");
   const [editEmail, setEditEmail] = useState("");
@@ -2251,6 +2579,14 @@ export function AccountsScreen({
   const [editTurnReminder, setEditTurnReminder] = useState(false);
   const [editTurnReminderText, setEditTurnReminderText] = useState("");
   const [editUserAgent, setEditUserAgent] = useState("");
+  const [editRelayBalance, setEditRelayBalance] = useState<RelayBalanceFormState>(
+    emptyRelayBalanceForm,
+  );
+  const [editRelayBalanceError, setEditRelayBalanceError] = useState<string | null>(null);
+  /// Held apart from `editingCredential` so pressing 立即查询 in the drawer can
+  /// show the fresh reading without re-hydrating (and discarding) unsaved edits.
+  const [editRelayBalanceSnapshot, setEditRelayBalanceSnapshot] =
+    useState<RelayBalanceSnapshot | null>(null);
   const [editApiKeyField, setEditApiKeyField] = useState<AnthropicApiKeyField>("ANTHROPIC_API_KEY");
   const [editSecretJson, setEditSecretJson] = useState("{}");
   const [editConfigJson, setEditConfigJson] = useState("{}");
@@ -2278,6 +2614,8 @@ export function AccountsScreen({
   const [testingAccountId, setTestingAccountId] = useState<string | null>(null);
   const [refreshingQuotaId, setRefreshingQuotaId] = useState<string | null>(null);
   const [quotaRefreshMessage, setQuotaRefreshMessage] = useState<string | null>(null);
+  const [refreshingRelayBalanceId, setRefreshingRelayBalanceId] = useState<string | null>(null);
+  const [relayBalanceMessage, setRelayBalanceMessage] = useState<string | null>(null);
   const autoQuotaRefreshedPlatform = useRef<string | null>(null);
   const [modelTestOutcome, setModelTestOutcome] = useState<RoutePoolModelTestOutcome | null>(null);
   const [configWriteOutcomes, setConfigWriteOutcomes] = useState<ConfigWriteOutcome[]>([]);
@@ -2797,6 +3135,7 @@ export function AccountsScreen({
     setApiMappingsError(null);
     setApiFetchedModels([]);
     setApiFetchModelsError(null);
+    setApiRelayBalance(emptyRelayBalanceForm);
     setModelTestOutcome(null);
   }, [activePlatform]);
 
@@ -2838,6 +3177,8 @@ export function AccountsScreen({
       setEditInlineRemoteImages(inlineRemoteImagesFromConfig(config));
       setEditTurnReminder(turnReminderFromConfig(config));
       setEditTurnReminderText(turnReminderTextFromConfig(config));
+      setEditRelayBalance(relayBalanceFormFromConfig(config));
+      setEditRelayBalanceSnapshot(relayBalanceSnapshotFromConfig(config));
       setEditApiKeyDecodeError(null);
       setEditApiKeyOcrError(null);
     } else {
@@ -2851,9 +3192,12 @@ export function AccountsScreen({
       // bleeds into an official one that has no such setting.
       setEditTurnReminder(false);
       setEditTurnReminderText("");
+      setEditRelayBalance(emptyRelayBalanceForm);
+      setEditRelayBalanceSnapshot(null);
       setEditApiKeyDecodeError(null);
       setEditApiKeyOcrError(null);
     }
+    setEditRelayBalanceError(null);
     setEditModelMappings(parseModelMappingsFromConfig(editingCredential.config_json));
     setEditModelMappingsError(null);
     setEditFetchedModels(parseFetchedModelsFromConfig(editingCredential.config_json));
@@ -3275,6 +3619,10 @@ export function AccountsScreen({
           batch_id: batch?.id ?? null,
           responses_custom_tool_compat: apiResponsesCustomToolCompat,
           user_agent: apiUserAgent.trim() || null,
+          relay_balance_provider:
+            apiRelayBalance.provider === "none" || apiRelayBalance.provider === "custom"
+              ? null
+              : apiRelayBalance.provider,
         };
         imported.push(
           await createApiRouteCredential(
@@ -3464,6 +3812,69 @@ export function AccountsScreen({
     },
     onSettled: () => {
       setRefreshingQuotaId(null);
+    },
+  });
+
+  const relayBalanceMutation = useMutation({
+    mutationFn: (id: string) => refreshRouteCredentialRelayBalance(id),
+    onMutate: (id) => {
+      setRefreshingRelayBalanceId(id);
+      setRelayBalanceMessage(null);
+    },
+    onSuccess: async (outcome) => {
+      mergeCredentialsIntoCache([outcome.credential]);
+      await invalidateAccountData();
+      const snapshot = relayBalanceSnapshotFromConfig(
+        parseJsonObject(outcome.credential.config_json),
+      );
+      setEditRelayBalanceSnapshot((current) =>
+        editingCredential?.id === outcome.credential.id ? snapshot : current,
+      );
+      if (outcome.message) {
+        setRelayBalanceMessage(outcome.message);
+        return;
+      }
+      const amount = snapshot ? relayBalanceBadge(snapshot).label : "余额";
+      setRelayBalanceMessage(
+        outcome.updated ? `已更新${amount}（${outcome.source}）` : `${amount}，未变化`,
+      );
+    },
+    onError: (error) => {
+      setRelayBalanceMessage(formatApiError(error, "查询余额失败"));
+    },
+    onSettled: () => {
+      setRefreshingRelayBalanceId(null);
+    },
+  });
+
+  const relayBalancePlatformMutation = useMutation({
+    mutationFn: () => refreshRouteCredentialsRelayBalance(activePlatform),
+    onMutate: () => {
+      setRefreshingRelayBalanceId("__platform__");
+      setRelayBalanceMessage(null);
+    },
+    onSuccess: async (outcomes) => {
+      const credentials = outcomes.map((item) => item.credential).filter((item) => item.id);
+      if (credentials.length) {
+        mergeCredentialsIntoCache(credentials);
+      }
+      await invalidateAccountData();
+      if (outcomes.length === 0) {
+        setRelayBalanceMessage("没有开启余额查询的中转站账号");
+        return;
+      }
+      const updated = outcomes.filter((item) => item.updated).length;
+      const failed = outcomes.filter((item) => item.source === "error").length;
+      const parts = [`中转站账号 ${outcomes.length} 个`];
+      if (updated) parts.push(`更新 ${updated}`);
+      if (failed) parts.push(`失败 ${failed}`);
+      setRelayBalanceMessage(parts.join(" · "));
+    },
+    onError: (error) => {
+      setRelayBalanceMessage(formatApiError(error, "批量查询余额失败"));
+    },
+    onSettled: () => {
+      setRefreshingRelayBalanceId(null);
     },
   });
 
@@ -3690,6 +4101,14 @@ export function AccountsScreen({
       };
       setEditFailurePolicyError(null);
       setEditModelMappingsError(null);
+      const relayBalanceError =
+        editingCredential.kind === "api" ? relayBalanceFormError(editRelayBalance) : null;
+      if (relayBalanceError) {
+        setEditRelayBalanceError(relayBalanceError);
+        setEditTab("advanced");
+        throw new Error(relayBalanceError);
+      }
+      setEditRelayBalanceError(null);
       const nextSecretJson =
         editingCredential.kind === "api"
           ? apiSecretJsonWithKey(editSecretJson, editApiKey)
@@ -3718,8 +4137,12 @@ export function AccountsScreen({
         editingCredential.kind === "api"
           ? writeFetchedModelsToConfig(baseConfig, editFetchedModels)
           : baseConfig;
+      const configWithRelayBalance =
+        editingCredential.kind === "api"
+          ? writeRelayBalanceToConfig(configWithFetchedModels, editRelayBalance)
+          : configWithFetchedModels;
       const nextConfigJson = JSON.stringify(
-        writeFailurePolicyToConfig(configWithFetchedModels, failurePolicy),
+        writeFailurePolicyToConfig(configWithRelayBalance, failurePolicy),
         null,
         2,
       );
@@ -5423,6 +5846,26 @@ export function AccountsScreen({
                     />
                     刷新账号额度
                   </button>
+                  <button
+                    aria-label="查询中转站余额"
+                    className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] font-semibold text-teal-700 transition-colors hover:bg-teal-50 disabled:opacity-50"
+                    disabled={
+                      relayBalancePlatformMutation.isPending || credentialsQuery.isFetching
+                    }
+                    onClick={() => {
+                      setRefreshMenuOpen(false);
+                      relayBalancePlatformMutation.mutate();
+                    }}
+                    role="menuitem"
+                    title="查询本平台所有开启了余额查询的中转站账号"
+                    type="button"
+                  >
+                    <Wallet
+                      aria-hidden="true"
+                      className={`h-3.5 w-3.5 ${relayBalancePlatformMutation.isPending ? "animate-pulse" : ""}`}
+                    />
+                    查中转站余额
+                  </button>
                 </div>
               ) : null}
             </div>
@@ -5538,6 +5981,11 @@ export function AccountsScreen({
               {quotaRefreshMessage}
             </p>
           )}
+          {relayBalanceMessage && (
+            <p className="rounded-xl bg-teal-50 px-3 py-2 text-[12px] font-medium text-teal-800">
+              {relayBalanceMessage}
+            </p>
+          )}
           {credentialsQuery.isLoading && <p className="rounded-xl bg-stone-50 p-4 text-sm text-stone-500">正在加载账号...</p>}
           {credentialsQuery.error && <p className="rounded-xl bg-red-50 p-4 text-sm text-red-700">账号加载失败。</p>}
           {!credentialsQuery.isLoading && credentials.length === 0 && (
@@ -5577,6 +6025,14 @@ export function AccountsScreen({
                   const modelMappings = parseModelMappingsFromConfig(credential.config_json);
                   const modelIssues = credentialModelIssues(credential, cooldownNow);
                   const baseUrlLink = credentialBaseUrlLink(credential);
+                  const credentialConfig = parseJsonObject(credential.config_json);
+                  const credentialRelayBalanceEnabled =
+                    credential.kind === "api" &&
+                    relayBalanceFormFromConfig(credentialConfig).provider !== "none";
+                  const relayBalanceSnapshot = relayBalanceSnapshotFromConfig(credentialConfig);
+                  const relayBalanceTag = relayBalanceSnapshot
+                    ? relayBalanceBadge(relayBalanceSnapshot)
+                    : null;
                   const isCopyingCredential =
                     copyCredentialMutation.isPending &&
                     copyCredentialMutation.variables?.credential.id === credential.id;
@@ -5598,6 +6054,26 @@ export function AccountsScreen({
                         <RefreshCw
                           aria-hidden="true"
                           className={`h-3.5 w-3.5 ${refreshingQuotaId === credential.id ? "animate-spin" : ""}`}
+                        />
+                      ),
+                    });
+                  }
+                  if (credentialRelayBalanceEnabled && !credential.archived_at) {
+                    rowActions.push({
+                      key: "relay-balance",
+                      ariaLabel: `查询 ${credential.display_name} 余额`,
+                      menuLabel: "查余额",
+                      title: `查询 ${credential.display_name} 的中转站余额`,
+                      disabled:
+                        relayBalanceMutation.isPending || relayBalancePlatformMutation.isPending,
+                      onClick: () => relayBalanceMutation.mutate(credential.id),
+                      inlineToneClass: "border-teal-200 text-teal-700 hover:bg-teal-50",
+                      icon: (
+                        <Wallet
+                          aria-hidden="true"
+                          className={`h-3.5 w-3.5 ${
+                            refreshingRelayBalanceId === credential.id ? "animate-pulse" : ""
+                          }`}
                         />
                       ),
                     });
@@ -5854,6 +6330,15 @@ export function AccountsScreen({
                             title="最近重置时间"
                           >
                             重置 {latestReset}
+                          </span>
+                        )}
+                        {relayBalanceTag && (
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${relayBalanceTag.toneClass}`}
+                            data-testid={`credential-relay-balance-${credential.id}`}
+                            title={relayBalanceTag.title}
+                          >
+                            {relayBalanceTag.label}
                           </span>
                         )}
                       </div>
@@ -6832,6 +7317,14 @@ export function AccountsScreen({
                       onChange={setApiUserAgent}
                       value={apiUserAgent}
                     />
+                    <RelayBalanceFields
+                      allowCustom={false}
+                      fieldClass={fieldClass}
+                      idPrefix="创建"
+                      labelClass={labelClass}
+                      onChange={setApiRelayBalance}
+                      value={apiRelayBalance}
+                    />
                     {shouldShowResponsesCustomToolCompatForFormat(activePlatform, apiInterfaceFormat) ? (
                       <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
                         <input
@@ -7616,6 +8109,54 @@ export function AccountsScreen({
                       ) : null}
                     </div>
                   ) : null}
+                  <div className="grid gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2">
+                    <RelayBalanceFields
+                      fieldClass={fieldClass}
+                      idPrefix="编辑"
+                      labelClass={labelClass}
+                      onChange={(next) => {
+                        setEditRelayBalance(next);
+                        setEditRelayBalanceError(null);
+                      }}
+                      value={editRelayBalance}
+                    />
+                    {editRelayBalanceError ? (
+                      <p className="text-[11px] font-semibold text-red-700">
+                        {editRelayBalanceError}
+                      </p>
+                    ) : null}
+                    {editRelayBalanceSnapshot ? (
+                      <div className="flex flex-wrap items-center gap-2 border-t border-stone-100 pt-2">
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                            relayBalanceBadge(editRelayBalanceSnapshot).toneClass
+                          }`}
+                        >
+                          {relayBalanceBadge(editRelayBalanceSnapshot).label}
+                        </span>
+                        <span className="text-[11px] font-medium text-stone-500">
+                          更新于 {formatRelayBalanceCheckedAt(editRelayBalanceSnapshot.checked_at)}
+                        </span>
+                        <button
+                          className={`${secondaryButtonClass} h-7 px-2 text-[11px]`}
+                          disabled={relayBalanceMutation.isPending}
+                          onClick={() => relayBalanceMutation.mutate(editingCredential.id)}
+                          type="button"
+                        >
+                          立即查询
+                        </button>
+                      </div>
+                    ) : editRelayBalance.provider !== "none" ? (
+                      <button
+                        className={`${secondaryButtonClass} h-7 justify-self-start px-2 text-[11px]`}
+                        disabled={relayBalanceMutation.isPending}
+                        onClick={() => relayBalanceMutation.mutate(editingCredential.id)}
+                        type="button"
+                      >
+                        立即查询
+                      </button>
+                    ) : null}
+                  </div>
                 </>
               ) : null}
               {editTab === "other" ? (

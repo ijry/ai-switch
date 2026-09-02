@@ -35,6 +35,7 @@ import type {
   RouteCredentialImportResult,
   QuotaRefreshOutcome,
   RecoveryRule,
+  RelayBalanceRefreshOutcome,
   RouteModelsFetchRequest,
   RoutePoolModelTestOutcome,
   RoutePoolModelTestRequest,
@@ -427,6 +428,18 @@ export function refreshRouteCredentialQuota(id: string): Promise<QuotaRefreshOut
 
 export function refreshRouteCredentialsQuota(platform: string): Promise<QuotaRefreshOutcome[]> {
   return invoke("refresh_route_credentials_quota", { platform });
+}
+
+export function refreshRouteCredentialRelayBalance(
+  id: string,
+): Promise<RelayBalanceRefreshOutcome> {
+  return invoke("refresh_route_credential_relay_balance", { id });
+}
+
+export function refreshRouteCredentialsRelayBalance(
+  platform: string,
+): Promise<RelayBalanceRefreshOutcome[]> {
+  return invoke("refresh_route_credentials_relay_balance", { platform });
 }
 
 export function listSessions(platform?: string | null): Promise<SessionMeta[]> {

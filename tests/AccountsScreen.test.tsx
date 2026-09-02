@@ -24,6 +24,7 @@ import {
   listRouteCredentials,
   listRouteCredentialPage,
   reorderRouteCredentials,
+  refreshRouteCredentialRelayBalance,
   refreshRouteCredentialsQuota,
   restoreRouteCredentials,
   routePoolTestModel,
@@ -89,7 +90,9 @@ vi.mock("../src/lib/api/client", () => ({
   listRouteCredentials: vi.fn(),
   listRouteCredentialPage: vi.fn(),
   reorderRouteCredentials: vi.fn(),
+  refreshRouteCredentialRelayBalance: vi.fn(),
   refreshRouteCredentialsQuota: vi.fn(),
+  refreshRouteCredentialsRelayBalance: vi.fn(),
   restoreRouteCredentials: vi.fn(),
   routePoolTestModel: vi.fn(),
   getSettings: vi.fn(),
@@ -1853,6 +1856,7 @@ describe("AccountsScreen", () => {
         batch_id: null,
         responses_custom_tool_compat: false,
         user_agent: null,
+        relay_balance_provider: null,
       }),
     );
   });
@@ -2323,6 +2327,7 @@ describe("AccountsScreen", () => {
         batch_id: null,
         responses_custom_tool_compat: false,
         user_agent: null,
+        relay_balance_provider: null,
       }),
     );
   });
@@ -2926,6 +2931,113 @@ describe("AccountsScreen", () => {
         preview_json: "{\n  \"auth_json\": {}\n}",
       }),
     );
+  });
+
+  it("saves the relay balance provider chosen in the advanced tab", async () => {
+    vi.mocked(updateRouteCredential).mockResolvedValue(credentialsFixture[1]);
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
+    await userEvent.click(screen.getByLabelText("编辑 余额查询 new-api"));
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const lastCall = vi.mocked(updateRouteCredential).mock.calls.at(-1);
+    const config = JSON.parse(lastCall![1].config_json);
+    expect(config.relay_balance).toEqual({ provider: "new_api" });
+  });
+
+  it("refuses a custom balance query with no request URL", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
+    await userEvent.click(screen.getByLabelText("编辑 余额查询 自定义"));
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    expect(
+      (await screen.findAllByText(/自定义余额查询需要填写请求 URL/)).length,
+    ).toBeGreaterThan(0);
+    expect(updateRouteCredential).not.toHaveBeenCalled();
+  });
+
+  it("saves the declared paths of a custom balance query", async () => {
+    vi.mocked(updateRouteCredential).mockResolvedValue(credentialsFixture[1]);
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
+    await userEvent.click(screen.getByLabelText("编辑 余额查询 自定义"));
+    await userEvent.type(
+      screen.getByLabelText("编辑 余额查询请求 URL"),
+      "https://panel.example.com/api/billing",
+    );
+    await userEvent.type(
+      screen.getByLabelText("编辑 余额查询剩余额度路径"),
+      "data.left",
+    );
+    await userEvent.type(screen.getByLabelText("编辑 余额查询换算除数"), "1000");
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const lastCall = vi.mocked(updateRouteCredential).mock.calls.at(-1);
+    expect(JSON.parse(lastCall![1].config_json).relay_balance).toEqual({
+      provider: "custom",
+      endpoint: "https://panel.example.com/api/billing",
+      remaining_path: "data.left",
+      divisor: 1000,
+    });
+  });
+
+  it("shows the stored balance on the account row and re-queries it from the row action", async () => {
+    const relayAccount = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://panel.example.com/v1",
+        interface_format: "openai",
+        model_mappings: [],
+        relay_balance: { provider: "new_api" },
+        relay_balance_snapshot: {
+          provider: "new_api",
+          remaining: 37.7,
+          used: 12.3,
+          limit: 50,
+          unit: "USD",
+          source_url: "https://panel.example.com/api/usage/token/",
+          checked_at: "2026-09-02T12:00:00Z",
+        },
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockImplementation(async () => [
+      credentialsFixture[0],
+      relayAccount,
+    ]);
+    vi.mocked(refreshRouteCredentialRelayBalance).mockResolvedValue({
+      credential: relayAccount,
+      updated: true,
+      source: "new_api",
+      message: null,
+    });
+    renderScreen();
+
+    expect(
+      await screen.findByTestId(`credential-relay-balance-${relayAccount.id}`),
+    ).toHaveTextContent("余额 $37.70");
+
+    await userEvent.click(screen.getByRole("button", { name: "查询 API Account 余额" }));
+    await waitFor(() =>
+      expect(refreshRouteCredentialRelayBalance).toHaveBeenCalledWith(relayAccount.id),
+    );
+  });
+
+  it("leaves the balance action off accounts that have not enabled querying", async () => {
+    renderScreen();
+
+    expect(await screen.findByRole("button", { name: "编辑 API Account" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "查询 API Account 余额" }),
+    ).not.toBeInTheDocument();
   });
 
   it("saves per-account scheduled recovery settings", async () => {

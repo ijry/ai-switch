@@ -234,6 +234,43 @@ export type QuotaRefreshOutcome = {
   message?: string | null;
 };
 
+/** Which relay panel dialect an account's balance is read with. */
+export type RelayBalanceProvider = "new_api" | "sub2api" | "custom";
+
+/** Mirrors `config_json.relay_balance`; an absent block means querying is off. */
+export type RelayBalanceConfig = {
+  provider: RelayBalanceProvider;
+  endpoint?: string;
+  remaining_path?: string;
+  used_path?: string;
+  limit_path?: string;
+  plan_path?: string;
+  unit?: string;
+  divisor?: number | null;
+};
+
+/** Mirrors `config_json.relay_balance_snapshot`. Money is a float, not a quota int. */
+export type RelayBalanceSnapshot = {
+  provider: RelayBalanceProvider;
+  plan_name?: string | null;
+  remaining?: number | null;
+  used?: number | null;
+  limit?: number | null;
+  unit: string;
+  unlimited?: boolean;
+  expires_at?: string | null;
+  source_url: string;
+  checked_at: string;
+  notes?: string[];
+};
+
+export type RelayBalanceRefreshOutcome = {
+  credential: RouteCredential;
+  updated: boolean;
+  source: string;
+  message?: string | null;
+};
+
 export type CreateApiRouteCredentialInput = {
   platform: string;
   display_name: string;
@@ -247,6 +284,7 @@ export type CreateApiRouteCredentialInput = {
   batch_id?: string | null;
   responses_custom_tool_compat?: boolean | null;
   user_agent?: string | null;
+  relay_balance_provider?: RelayBalanceProvider | null;
 };
 
 export type CopyRouteCredentialInput = {
