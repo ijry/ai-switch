@@ -17,6 +17,12 @@ pub struct AppSettings {
     /// on every config write.
     #[serde(default)]
     pub claude_client_config_json: Option<String>,
+    /// Which clients each platform writes config for, as
+    /// `{"codex":["codex","zcode"]}`. Recorded per platform because the dialog
+    /// always opens in one platform's context. Absent or empty means the
+    /// platform's native CLI only.
+    #[serde(default)]
+    pub config_write_clients_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -30,6 +36,7 @@ pub struct AppSettingsView {
     pub ccswitch_deeplink_compat_enabled: bool,
     pub ccswitch_deeplink_compat_supported: bool,
     pub claude_client_config_json: Option<String>,
+    pub config_write_clients_json: Option<String>,
 }
 
 impl AppSettingsView {
@@ -44,6 +51,7 @@ impl AppSettingsView {
             ccswitch_deeplink_compat_enabled: settings.ccswitch_deeplink_compat_enabled,
             ccswitch_deeplink_compat_supported: supported,
             claude_client_config_json: settings.claude_client_config_json,
+            config_write_clients_json: settings.config_write_clients_json,
         }
     }
 }
@@ -59,6 +67,7 @@ impl AppSettings {
             data_dir,
             ccswitch_deeplink_compat_enabled: false,
             claude_client_config_json: None,
+            config_write_clients_json: None,
         }
     }
 }

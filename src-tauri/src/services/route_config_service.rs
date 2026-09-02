@@ -426,6 +426,46 @@ impl RouteConfigService {
         (!object.is_empty()).then(|| object.clone())
     }
 
+    /// Adapters to write for this platform. Explicit `requested` wins; otherwise
+    /// the stored per-platform selection; otherwise the platform's native CLI so
+    /// callers that predate client selection behave exactly as before.
+    pub(crate) async fn resolve_write_clients(
+        paths: &AppPaths,
+        platform: PlatformId,
+        requested: Option<&[String]>,
+    ) -> Result<Vec<Arc<dyn TargetAdapter>>, AppError> {
+        let keys = match requested {
+            Some(keys) if !keys.is_empty() => keys.to_vec(),
+            _ => Self::stored_write_client_keys(paths, platform).await,
+        };
+        if keys.is_empty() {
+            return Ok(vec![route_config_adapter(
+                &native_client_key(platform)?,
+                platform,
+            )?]);
+        }
+
+        keys.iter()
+            .map(|key| route_config_adapter(key, platform))
+            .collect()
+    }
+
+    /// Stored selection for this platform, or empty when absent, malformed, or
+    /// empty. A corrupt preference must never block a write.
+    async fn stored_write_client_keys(paths: &AppPaths, platform: PlatformId) -> Vec<String> {
+        let Ok(settings) = SettingsService::load(paths).await else {
+            return Vec::new();
+        };
+        let Some(raw) = settings.config_write_clients_json else {
+            return Vec::new();
+        };
+        serde_json::from_str::<Map<String, Value>>(&raw)
+            .ok()
+            .and_then(|map| map.get(platform.as_str()).cloned())
+            .and_then(|value| serde_json::from_value::<Vec<String>>(value).ok())
+            .unwrap_or_default()
+    }
+
     /// Models this platform's pool advertises, shaped for client configs that
     /// must carry the list themselves.
     pub(crate) async fn resolve_client_models(
@@ -639,6 +679,7 @@ mod tests {
     use super::*;
     use crate::config_writer::ConfigWriter;
     use crate::database::{create_memory_pool, run_migrations};
+    use crate::models::settings::AppSettings;
     use crate::services::config_write_service::ConfigWriteRuntimeState;
 
     #[test]
@@ -1578,6 +1619,158 @@ command = "npx"
         assert_eq!(
             client_model_context_window("Claude-Sonnet-Alias[1M]"),
             1_000_000
+        );
+    }
+
+    #[tokio::test]
+    async fn write_clients_default_to_the_native_cli_when_never_chosen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
+
+        let clients = RouteConfigService::resolve_write_clients(&paths, PlatformId::Codex, None)
+            .await
+            .expect("clients");
+
+        // Unchanged behavior for users who never open the dialog.
+        assert_eq!(
+            clients
+                .iter()
+                .map(|adapter| adapter.client_key())
+                .collect::<Vec<_>>(),
+            vec!["codex"]
+        );
+    }
+
+    #[tokio::test]
+    async fn stored_selection_is_honored_per_platform() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
+        let mut settings = AppSettings::defaults_for_data_dir(paths.data_dir.display().to_string());
+        settings.config_write_clients_json =
+            Some(r#"{"codex":["codex","zcode"],"claude":["claude_code"]}"#.to_string());
+        SettingsService::save(&paths, &settings)
+            .await
+            .expect("save");
+
+        let codex = RouteConfigService::resolve_write_clients(&paths, PlatformId::Codex, None)
+            .await
+            .expect("codex clients");
+        assert_eq!(
+            codex
+                .iter()
+                .map(|adapter| adapter.target_key())
+                .collect::<Vec<_>>(),
+            vec!["codex", "zcode_codex"]
+        );
+
+        // The stored codex selection must not leak into another platform.
+        let claude = RouteConfigService::resolve_write_clients(&paths, PlatformId::Claude, None)
+            .await
+            .expect("claude clients");
+        assert_eq!(
+            claude
+                .iter()
+                .map(|adapter| adapter.target_key())
+                .collect::<Vec<_>>(),
+            vec!["claude_code"]
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_request_overrides_storage_and_rejects_unknown_clients() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
+
+        let requested = vec!["zcode".to_string()];
+        let clients =
+            RouteConfigService::resolve_write_clients(&paths, PlatformId::Codex, Some(&requested))
+                .await
+                .expect("clients");
+        assert_eq!(
+            clients
+                .iter()
+                .map(|adapter| adapter.target_key())
+                .collect::<Vec<_>>(),
+            vec!["zcode_codex"]
+        );
+
+        // Fail loudly: silently skipping an unknown key would look like a
+        // successful write that did nothing.
+        let unknown = vec!["not-a-client".to_string()];
+        // `Vec<Arc<dyn TargetAdapter>>` is not `Debug`, so `expect_err` is out.
+        let Err(error) =
+            RouteConfigService::resolve_write_clients(&paths, PlatformId::Codex, Some(&unknown))
+                .await
+        else {
+            panic!("an unknown client key must be rejected");
+        };
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "config.client_unavailable",
+                ..
+            }
+        ));
+
+        // A client that exists but not for this platform is equally a mismatch.
+        let wrong_platform = vec!["claude_code".to_string()];
+        assert!(RouteConfigService::resolve_write_clients(
+            &paths,
+            PlatformId::Codex,
+            Some(&wrong_platform)
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn malformed_selection_json_falls_back_to_the_native_cli() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
+        let mut settings = AppSettings::defaults_for_data_dir(paths.data_dir.display().to_string());
+        settings.config_write_clients_json = Some("{not json".to_string());
+        SettingsService::save(&paths, &settings)
+            .await
+            .expect("save");
+
+        // A corrupt preference must never be the thing that blocks a write.
+        let clients = RouteConfigService::resolve_write_clients(&paths, PlatformId::Codex, None)
+            .await
+            .expect("clients");
+        assert_eq!(
+            clients
+                .iter()
+                .map(|adapter| adapter.client_key())
+                .collect::<Vec<_>>(),
+            vec!["codex"]
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_stored_selection_falls_back_to_the_native_cli() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
+        let mut settings = AppSettings::defaults_for_data_dir(paths.data_dir.display().to_string());
+        settings.config_write_clients_json = Some(r#"{"codex":[]}"#.to_string());
+        SettingsService::save(&paths, &settings)
+            .await
+            .expect("save");
+
+        // An empty list would otherwise write nothing and report success.
+        let clients = RouteConfigService::resolve_write_clients(&paths, PlatformId::Codex, None)
+            .await
+            .expect("clients");
+        assert_eq!(
+            clients
+                .iter()
+                .map(|adapter| adapter.client_key())
+                .collect::<Vec<_>>(),
+            vec!["codex"]
         );
     }
 

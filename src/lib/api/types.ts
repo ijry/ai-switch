@@ -727,6 +727,13 @@ export type AppSettings = {
    * shares, so unlike model mappings they cannot be per-account.
    */
   claude_client_config_json?: string | null;
+  /**
+   * Which clients each platform writes config for, as
+   * `{"codex":["codex","zcode"]}`. Recorded per platform because the dialog
+   * always opens in one platform's context. Absent or empty means the
+   * platform's native CLI only.
+   */
+  config_write_clients_json?: string | null;
 };
 
 export type AppSettingsView = AppSettings & {
