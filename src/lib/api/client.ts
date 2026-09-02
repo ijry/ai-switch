@@ -7,6 +7,7 @@ import type {
   Batch,
   BatchGroup,
   ConfigSnapshotSummary,
+  ConfigWriteClientStatus,
   ConfigWriteOutcome,
   CopyRouteCredentialInput,
   ExternalClientImportOutcome,
@@ -258,8 +259,13 @@ export function openRouteProxyHttpsCertificateDirectory(): Promise<void> {
 export function writeRouteProxyConfigs(
   baseUrl: string | null | undefined,
   platform: string,
+  clientKeys?: string[] | null,
 ): Promise<ConfigWriteOutcome[]> {
-  return invoke("write_route_proxy_configs", { baseUrl: baseUrl ?? null, platform });
+  return invoke("write_route_proxy_configs", {
+    baseUrl: baseUrl ?? null,
+    platform,
+    clientKeys: clientKeys ?? null,
+  });
 }
 
 /// Whether writing config now would change the file on disk. Config is written
@@ -268,8 +274,19 @@ export function writeRouteProxyConfigs(
 export function routeConfigWriteIsStale(
   baseUrl: string | null | undefined,
   platform: string,
+  clientKeys?: string[] | null,
 ): Promise<boolean> {
-  return invoke("route_config_write_is_stale", { baseUrl: baseUrl ?? null, platform });
+  return invoke("route_config_write_is_stale", {
+    baseUrl: baseUrl ?? null,
+    platform,
+    clientKeys: clientKeys ?? null,
+  });
+}
+
+/// Clients this platform can write config for, with each one's current file
+/// state. Drives the write dialog's checkbox list.
+export function listConfigWriteClients(platform: string): Promise<ConfigWriteClientStatus[]> {
+  return invoke("list_config_write_clients", { platform });
 }
 
 export function listRouteCredentials(platform: string): Promise<RouteCredential[]> {

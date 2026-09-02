@@ -60,6 +60,7 @@ mod tests {
             data_dir: paths.data_dir.display().to_string(),
             ccswitch_deeplink_compat_enabled: false,
             claude_client_config_json: Some(r#"{"includeCoAuthoredBy":false}"#.to_string()),
+            config_write_clients_json: None,
         };
 
         SettingsService::save(&paths, &settings)

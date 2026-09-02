@@ -62,7 +62,8 @@ use commands::route_proxy_https_commands::{
 use commands::session_commands::{get_session_messages, list_sessions, open_session_terminal};
 use commands::settings_commands::{get_settings, save_settings};
 use commands::target_commands::{
-    list_config_snapshots, list_target_apps, list_target_config_statuses, rollback_config_snapshot,
+    list_config_snapshots, list_config_write_clients, list_target_apps,
+    list_target_config_statuses, rollback_config_snapshot,
 };
 use commands::terminal_commands::{
     create_terminal_session, kill_terminal_session, list_agent_launch_options,
@@ -490,6 +491,7 @@ pub fn run() {
             reload_model_price_overrides,
             list_target_apps,
             list_target_config_statuses,
+            list_config_write_clients,
             list_config_snapshots,
             rollback_config_snapshot,
             create_terminal_session,

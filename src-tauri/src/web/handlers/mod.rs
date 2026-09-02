@@ -18,6 +18,7 @@ use crate::models::batch::NewBatch;
 use crate::models::external_client_import::{
     ImportExternalClientAccountsInput, PreviewExternalClientImportInput,
 };
+use crate::models::platform::PlatformId;
 use crate::models::route_credential::{
     CopyRouteCredentialInput, CreateApiRouteCredentialInput, ImportOfficialFilesInput,
     ImportOfficialTextInput, ReorderRouteCredentialInput, RouteCredentialPageRequest,
@@ -304,6 +305,15 @@ pub async fn dispatch_command(
                 .await
                 .map_err(to_error)?,
         ),
+        "list_config_write_clients" => {
+            let platform = required_string_arg(&args, "platform")?;
+            let platform = PlatformId::parse(&platform).map_err(to_error)?;
+            to_value(
+                TargetService::list_config_write_clients(&state.pool, platform)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
         "list_config_snapshots" => {
             let target_app_id = optional_string_arg(&args, "targetAppId")?;
             let limit = optional_i64_arg(&args, "limit")?
@@ -769,6 +779,7 @@ pub async fn dispatch_command(
                     recoverable: true,
                 })
             })?;
+            let client_keys = optional_string_array_arg(&args, "clientKeys")?;
             let status = RouteProxyService::status(&state.route_proxy).await;
             let resolved = base_url
                 .filter(|value| !value.is_empty())
@@ -788,6 +799,7 @@ pub async fn dispatch_command(
                     &state.config_writes,
                     &resolved,
                     &platform,
+                    client_keys.as_deref(),
                 )
                 .await
                 .map_err(to_error)?,
@@ -803,6 +815,7 @@ pub async fn dispatch_command(
                     recoverable: true,
                 })
             })?;
+            let client_keys = optional_string_array_arg(&args, "clientKeys")?;
             let status = RouteProxyService::status(&state.route_proxy).await;
             match base_url
                 .filter(|value| !value.is_empty())
@@ -814,6 +827,7 @@ pub async fn dispatch_command(
                         &state.pool,
                         &resolved,
                         &platform,
+                        client_keys.as_deref(),
                     )
                     .await,
                 ),
@@ -930,6 +944,28 @@ fn optional_string_arg(args: &Value, key: &str) -> Result<Option<String>, ApiErr
             Ok(Some(text.trim().to_string()).filter(|value| !value.is_empty()))
         }
         Some(_) => Err(invalid_argument(key, Some("expected string".to_string()))),
+    }
+}
+
+fn optional_string_array_arg(args: &Value, key: &str) -> Result<Option<Vec<String>>, ApiError> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(|text| text.trim().to_string())
+                    .filter(|text| !text.is_empty())
+                    .ok_or_else(|| {
+                        invalid_argument(key, Some("expected array of strings".to_string()))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some),
+        Some(_) => Err(invalid_argument(
+            key,
+            Some("expected array of strings".to_string()),
+        )),
     }
 }
 

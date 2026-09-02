@@ -1022,13 +1022,15 @@ mod tests {
         fn codex_request(&self) -> ConfigWriteRequest {
             ConfigWriteRequest {
                 adapter: TargetAdapterRegistry::new()
-                    .for_platform(PlatformId::Codex)
+                    .by_client_and_platform("codex", PlatformId::Codex)
                     .expect("Codex adapter"),
                 home: self.home.clone(),
                 input: RouteConfigInput {
                     base_url: BASE_URL.to_string(),
                     route_proxy_key: ROUTE_PROXY_KEY.to_string(),
+                    route_proxy_key_aliases: Vec::new(),
                     claude_env: ClaudeEnvPlan::default(),
+                    client_models: Vec::new(),
                 },
             }
         }
@@ -1039,7 +1041,7 @@ mod tests {
 
         fn conflicting_claude_request(&self) -> ConfigWriteRequest {
             let adapter = TargetAdapterRegistry::new()
-                .for_platform(PlatformId::Claude)
+                .by_client_and_platform("claude_code", PlatformId::Claude)
                 .expect("Claude adapter");
             ConfigWriteRequest {
                 adapter: Arc::new(ConflictOnCommitAdapter { inner: adapter }),
@@ -1047,7 +1049,9 @@ mod tests {
                 input: RouteConfigInput {
                     base_url: BASE_URL.to_string(),
                     route_proxy_key: ROUTE_PROXY_KEY.to_string(),
+                    route_proxy_key_aliases: Vec::new(),
                     claude_env: ClaudeEnvPlan::default(),
+                    client_models: Vec::new(),
                 },
             }
         }
@@ -1064,6 +1068,26 @@ mod tests {
     impl TargetAdapter for ConflictOnCommitAdapter {
         fn target_key(&self) -> &'static str {
             self.inner.target_key()
+        }
+
+        fn client_key(&self) -> &'static str {
+            self.inner.client_key()
+        }
+
+        fn client_display_name(&self) -> &'static str {
+            self.inner.client_display_name()
+        }
+
+        fn native(&self) -> bool {
+            self.inner.native()
+        }
+
+        fn restart_required(&self) -> bool {
+            self.inner.restart_required()
+        }
+
+        fn requires_client_models(&self) -> bool {
+            self.inner.requires_client_models()
         }
 
         fn platform(&self) -> PlatformId {

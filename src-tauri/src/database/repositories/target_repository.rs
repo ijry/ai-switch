@@ -14,6 +14,8 @@ impl TargetRepository {
             ("codex", "codex", "Codex"),
             ("gemini_cli", "gemini", "Gemini CLI"),
             ("grok", "grok", "Grok"),
+            ("zcode_codex", "codex", "ZCode (Codex)"),
+            ("zcode_claude", "claude", "ZCode (Claude)"),
             ("opencode", "opencode", "OpenCode"),
             ("openclaw", "openclaw", "OpenClaw"),
             ("hermes", "hermes", "Hermes"),
