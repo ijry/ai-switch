@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { resolve, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { desktopOnlyCommands } from "../../src/lib/api/commandSupport";
 
@@ -9,6 +9,56 @@ function readSource(path: string) {
 
 function extractMatches(source: string, pattern: RegExp) {
   return new Set([...source.matchAll(pattern)].map((match) => match[1]));
+}
+
+/// Every `invoke("name", { ... })` call with its argument object, found by brace
+/// matching so a nested object cannot end the call early.
+function invokeCalls(source: string) {
+  const calls: { command: string; body: string }[] = [];
+  const pattern = /\binvoke(?:<[^>]+>)?\(\s*"([a-z0-9_]+)"\s*,\s*\{/g;
+  for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
+    const open = pattern.lastIndex - 1;
+    let depth = 0;
+    for (let index = open; index < source.length; index += 1) {
+      if (source[index] === "{") depth += 1;
+      else if (source[index] === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          calls.push({ command: match[1], body: source.slice(open + 1, index) });
+          break;
+        }
+      }
+    }
+  }
+  return calls;
+}
+
+/// Keys of the argument object itself, skipping anything nested inside a value.
+function topLevelKeys(body: string) {
+  const keys: string[] = [];
+  let depth = 0;
+  for (const line of body.split("\n")) {
+    if (depth === 0) {
+      const key = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:/.exec(line);
+      if (key) keys.push(key[1]);
+    }
+    for (const char of line) {
+      if (char === "{" || char === "[") depth += 1;
+      else if (char === "}" || char === "]") depth -= 1;
+    }
+  }
+  return keys;
+}
+
+function rustSources(dir: string): string[] {
+  const absolute = resolve(process.cwd(), dir);
+  return readdirSync(absolute).flatMap((entry) => {
+    const path = join(dir, entry);
+    if (statSync(resolve(process.cwd(), path)).isDirectory()) {
+      return entry === "target" || entry.startsWith("target-") ? [] : rustSources(path);
+    }
+    return entry.endsWith(".rs") ? [readSource(path)] : [];
+  });
 }
 
 describe("command contract", () => {
@@ -41,6 +91,35 @@ describe("command contract", () => {
       "resume_session_terminal",
       "get_route_credential",
     ]);
+  });
+
+  it("passes snake_case arguments only to commands that opt out of camelCase", () => {
+    // `#[tauri::command]` rewrites argument names to camelCase, so a client that
+    // sends `page_size` to a command without `rename_all` is not rejected — the
+    // argument simply arrives as `None` and the command silently uses its
+    // default, while the web dispatcher (which reads the raw key) works fine.
+    // Nothing else in the suite can see that divergence.
+    const modules = rustSources("src-tauri/src").join("\n");
+    const offenders: string[] = [];
+
+    for (const call of invokeCalls(readSource("src/lib/api/client.ts"))) {
+      const snakeKeys = topLevelKeys(call.body).filter((key) => key.includes("_"));
+      if (snakeKeys.length === 0) {
+        continue;
+      }
+      const declaration = new RegExp(
+        `(#\\[tauri::command[^\\]]*\\])\\s*pub (?:async )?fn ${call.command}\\(`,
+      ).exec(modules);
+      if (!declaration) {
+        offenders.push(`${call.command}: command function not found`);
+        continue;
+      }
+      if (!declaration[1].includes('rename_all = "snake_case"')) {
+        offenders.push(`${call.command}: sends ${snakeKeys.join(", ")} without rename_all`);
+      }
+    }
+
+    expect(offenders).toEqual([]);
   });
 
   it("exposes export in both transports and save only on desktop", () => {

@@ -31,7 +31,9 @@ pub async fn unsubscribe_route_proxy_live_log(state: State<'_, AppState>) -> Res
     Ok(())
 }
 
-#[tauri::command]
+// `rename_all` because the request-page arguments travel over the wire as-is,
+// the same way the web dispatcher reads them.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn get_route_pool(
     state: State<'_, AppState>,
     platform: String,

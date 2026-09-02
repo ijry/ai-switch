@@ -31,7 +31,11 @@ pub async fn reload_model_price_overrides() -> Result<usize, ApiError> {
 ///
 /// Spans every platform: the figures answer "my total spend", so a per-platform
 /// view comes from the returned groups rather than from a filter.
-#[tauri::command]
+// `rename_all` because `page_size` travels over the wire as-is: the web
+// dispatcher reads that exact key, and the default camelCase rewrite would look
+// for `pageSize`, quietly fall back to the default page size on the desktop, and
+// leave the two transports disagreeing.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn get_usage_overview(
     state: State<'_, AppState>,
     since: Option<String>,
