@@ -49,6 +49,19 @@ Secrets and non-secrets are stored separately: the API key lands in `secret_payl
 
 What each dialect means, and how it decides the shape a request gets rewritten into, is covered in [Protocol Routing and Bridging](/en/guide/protocol-routing).
 
+## How the add and edit panels are grouped
+
+The field count outgrew a single scroll, so both the add dialog and the edit drawer group fields into tabs. Switching tabs never discards what you have typed:
+
+| Tab | Edit drawer | Add dialog (API account mode) |
+| --- | --- | --- |
+| 基础 ("basics") | Name, email (official accounts), status, API Key, Base URL, interface format, Claude auth field, model mappings | Account preset, name, API Key, Base URL, interface format, Claude auth field, model mappings |
+| 高级 ("advanced") | Route priority, max concurrency, User-Agent, custom-tool compat, inline remote images, per-turn reminder | User-Agent, custom-tool compat, preview JSON |
+| 故障处理 ("failure handling") | Failure policy, model status, auto recovery | None — those fields only exist after creation |
+| 其他 ("other") | Secret JSON, Config JSON (official accounts), Preview JSON | None |
+
+Only the add dialog's "API account" mode is tabbed; the batch-import and external-client-import modes have few enough fields to stay as they were. When save validation fails, the panel jumps to the tab that owns the offending field instead of leaving a bottom-of-panel error with no hint where to look.
+
 ## The status machine
 
 Status is restricted to five values (enforced by `validate_route_credential_status`):
@@ -71,7 +84,7 @@ The database default is `ok`. Three classes of event drive transitions:
 
 **A `paused` account can still be tested explicitly.** That is deliberate: running one test is exactly how you find out whether a paused account has come back.
 
-**Beyond account status there is a second layer of model status.** Every model on an account has its own `ok` / `error` / `paused` state and its own cooldown window, stored in `route_credential_models`. An account-level `paused` takes the whole account out of scheduling; a model-level `paused` takes out only that one model. The two are independent. The edit drawer's 模型状态 ("model status") section pauses, resumes, or clears the cooldown of each model individually.
+**Beyond account status there is a second layer of model status.** Every model on an account has its own `ok` / `error` / `paused` state and its own cooldown window, stored in `route_credential_models`. An account-level `paused` takes the whole account out of scheduling; a model-level `paused` takes out only that one model. The two are independent. The edit drawer's 模型状态 ("model status") section, under the 故障处理 ("failure handling") tab, pauses, resumes, or clears the cooldown of each model individually.
 
 Full failure classification, backoff durations, and thresholds live in [Reliability and Auto Recovery](/en/guide/reliability).
 

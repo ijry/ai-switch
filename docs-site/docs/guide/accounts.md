@@ -49,6 +49,19 @@ kind TEXT NOT NULL CHECK (kind IN ('official','api'))
 
 协议方言的含义、以及它如何决定请求被改写成什么形状，见 [协议路由与桥接](/guide/protocol-routing)。
 
+## 新增与编辑面板的分区
+
+字段多了以后，新增弹窗与编辑抽屉都按 tab 分区，切换 tab 不会丢已填内容：
+
+| 分区 | 编辑抽屉 | 新增弹窗（API 账号模式） |
+| --- | --- | --- |
+| 基础 | 名称、邮箱（官方账号）、状态、API Key、Base URL、接口格式、Claude 鉴权字段、模型映射 | 账号预设、名称、API Key、Base URL、接口格式、Claude 鉴权字段、模型映射 |
+| 高级 | 路由优先级、最大并发数、User-Agent、custom 工具兼容、内联远程图片、每轮纠偏提醒 | User-Agent、custom 工具兼容、预览 JSON |
+| 故障处理 | 失败处理策略、模型状态、自动恢复 | 无（这些字段只在创建之后才有） |
+| 其他 | Secret JSON、Config JSON（官方账号）、Preview JSON | 无 |
+
+新增弹窗只有「API 账号」模式分区，批量导入和导入其他客户端两个模式字段少，保持原样。保存校验失败时面板会自动跳到出错字段所在的分区，不会只在底部留一条看不出位置的报错。
+
 ## 账号状态机
 
 状态字段只允许五种取值（校验函数 `validate_route_credential_status`）：
@@ -71,7 +84,7 @@ kind TEXT NOT NULL CHECK (kind IN ('official','api'))
 
 **`paused` 的账号仍然可以被显式测试。** 这是有意设计：手动测一次，正是用户判断暂停中的账号是否已经恢复的方式。
 
-**账号状态之外还有一层模型状态。** 同一个账号上的每个模型有自己的 `ok` / `error` / `paused` 三态与冷却窗口，存在 `route_credential_models` 表里。账号级 `paused` 让整个号退出调度，模型级 `paused` 只让这一个模型退出；两者互不影响。编辑抽屉的「模型状态」区块可以逐模型暂停、恢复或解除冷却。
+**账号状态之外还有一层模型状态。** 同一个账号上的每个模型有自己的 `ok` / `error` / `paused` 三态与冷却窗口，存在 `route_credential_models` 表里。账号级 `paused` 让整个号退出调度，模型级 `paused` 只让这一个模型退出；两者互不影响。编辑抽屉「故障处理」分区的「模型状态」区块可以逐模型暂停、恢复或解除冷却。
 
 失败分类的完整规则、退避时长与阈值，见 [稳定性与自动恢复](/guide/reliability)。
 

@@ -50,6 +50,7 @@ import {
   useExternalClientImportPreview,
 } from "../components/accounts/ExternalClientImportPanel";
 import { ConfigWriteTargetsDialog } from "../components/accounts/ConfigWriteTargetsDialog";
+import { FormTabs, type FormTab } from "../components/accounts/FormTabs";
 import { RouteCredentialExportDialog } from "../components/accounts/RouteCredentialExportDialog";
 import { CopyRouteCredentialDialog } from "../components/accounts/CopyRouteCredentialDialog";
 import { neighborsForDrop } from "../lib/accountReorder";
@@ -182,6 +183,8 @@ const DEFAULT_MAX_CONCURRENCY = 5;
 type PlatformKey = PlatformId;
 type CreateMode = "api" | "official" | "external";
 type AccountView = "in_pool" | "out_of_pool" | "archived" | "stats";
+type CreateTab = "basic" | "advanced";
+type EditTab = "basic" | "advanced" | "failure" | "other";
 type RowAction = {
   key: string;
   ariaLabel: string;
@@ -215,6 +218,18 @@ const defaultRouteCredentialFailurePolicy: RouteCredentialFailurePolicy = {
   cooldown_seconds: DEFAULT_ROUTE_CREDENTIAL_COOLDOWN_SECONDS,
   error_status_enabled: true,
 };
+
+const createTabs: Array<FormTab<CreateTab>> = [
+  { value: "basic", label: "基础" },
+  { value: "advanced", label: "高级" },
+];
+
+const editTabs: Array<FormTab<EditTab>> = [
+  { value: "basic", label: "基础" },
+  { value: "advanced", label: "高级" },
+  { value: "failure", label: "故障处理" },
+  { value: "other", label: "其他" },
+];
 
 function formatApiError(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim()) {
@@ -2150,6 +2165,8 @@ export function AccountsScreen({
   const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [createMode, setCreateMode] = useState<CreateMode>("api");
+  const [createTab, setCreateTab] = useState<CreateTab>("basic");
+  const [editTab, setEditTab] = useState<EditTab>("basic");
   const [joinPoolOnCreate, setJoinPoolOnCreate] = useState(true);
   const [officialText, setOfficialText] = useState(() => defaultOfficialJson(activePlatform));
   const [officialBatchName, setOfficialBatchName] = useState("");
@@ -3197,15 +3214,18 @@ export function AccountsScreen({
       }
 
       if (!apiName.trim()) {
+        setCreateTab("basic");
         throw new Error("API 账号名称不能为空");
       }
       const apiKeys = apiKeyLines(apiKey);
       if (apiKeys.length === 0) {
+        setCreateTab("basic");
         throw new Error("至少需要一个 API Key");
       }
       const normalizedMappings = normalizeModelMappings(apiMappings, activePlatform);
       if (normalizedMappings.error) {
         setApiMappingsError(normalizedMappings.error);
+        setCreateTab("basic");
         throw new Error(normalizedMappings.error);
       }
       setApiMappingsError(null);
@@ -3584,21 +3604,26 @@ export function AccountsScreen({
       const normalizedMappings = normalizeModelMappings(editModelMappings, activePlatform);
       if (editingCredential.kind === "api" && normalizedMappings.error) {
         setEditModelMappingsError(normalizedMappings.error);
+        setEditTab("basic");
         throw new Error(normalizedMappings.error);
       }
       if (editingCredential.kind === "api") {
         if (!editApiKey.trim()) {
+          setEditTab("basic");
           throw new Error("API Key 不能为空");
         }
         if (!editApiBaseUrl.trim()) {
+          setEditTab("basic");
           throw new Error("Base URL 不能为空");
         }
       }
       if (!Number.isInteger(editPriority) || editPriority < 1 || editPriority > 5) {
+        setEditTab("advanced");
         throw new Error("路由优先级必须是 1-5 的整数");
       }
       const maxConcurrency = Number(editMaxConcurrency);
       if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
+        setEditTab("advanced");
         throw new Error("最大并发数必须是大于等于 1 的整数");
       }
       const retryCount = Number(editRetryCount);
@@ -3629,6 +3654,7 @@ export function AccountsScreen({
       }
       if (failurePolicyError) {
         setEditFailurePolicyError(failurePolicyError);
+        setEditTab("failure");
         throw new Error(failurePolicyError);
       }
       const failurePolicy: RouteCredentialFailurePolicy = {
@@ -5289,6 +5315,7 @@ export function AccountsScreen({
               className="grid h-7 w-7 place-items-center border border-stone-700 bg-stone-800 text-white transition-colors hover:bg-stone-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-400"
               onClick={() => {
                 setJoinPoolOnCreate(true);
+                setCreateTab("basic");
                 setCreateOpen(true);
               }}
               title="新增账号"
@@ -5592,6 +5619,7 @@ export function AccountsScreen({
                     onClick: () => {
                       updateMutation.reset();
                       deleteMutation.reset();
+                      setEditTab("basic");
                       setEditingCredential(credential);
                     },
                     inlineToneClass: "border-stone-200 text-stone-700 hover:bg-stone-50",
@@ -6610,186 +6638,205 @@ export function AccountsScreen({
             )}
 
             {createMode === "api" && (
+              <div className="mt-4">
+                <FormTabs<CreateTab>
+                  ariaLabel="新增账号分组"
+                  onChange={setCreateTab}
+                  tabs={createTabs}
+                  value={createTab}
+                />
+              </div>
+            )}
+
+            {createMode === "api" && (
               <div className="mt-4 grid gap-3">
-                <PresetFields
-                  baseUrl={apiBaseUrl}
-                  fieldClass={fieldClass}
-                  idPrefix="创建"
-                  labelClass={labelClass}
-                  onApply={(preset) => {
-                    setApiBaseUrl(preset.baseUrl);
-                    setApiInterfaceFormat(preset.interfaceFormat);
-                    setApiMappings(preset.modelMappings.map((mapping) => ({ ...mapping })));
-                    setApiName((current) => (current.trim() ? current : preset.defaultName));
-                    setApiFetchedModels([]);
-                    setApiFetchModelsError(null);
-                    setApiMappingsError(null);
-                  }}
-                  platform={activePlatform}
-                />
-                <label className={labelClass}>
-                  账号名称
-                  <input
-                    aria-label="API 账号名称"
-                    className={fieldClass}
-                    onChange={(event) => setApiName(event.target.value)}
-                    value={apiName}
-                  />
-                </label>
-                <label className={labelClass}>
-                  API Key
-                  <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-                    <textarea
-                      aria-label="API Key"
-                      className={`${monoFieldClass} min-h-24`}
-                      onChange={(event) => {
-                        setApiKey(event.target.value);
-                        setApiKeyDecodeError(null);
-                        setApiKeyOcrError(null);
+                {createTab === "basic" ? (
+                  <>
+                    <PresetFields
+                      baseUrl={apiBaseUrl}
+                      fieldClass={fieldClass}
+                      idPrefix="创建"
+                      labelClass={labelClass}
+                      onApply={(preset) => {
+                        setApiBaseUrl(preset.baseUrl);
+                        setApiInterfaceFormat(preset.interfaceFormat);
+                        setApiMappings(preset.modelMappings.map((mapping) => ({ ...mapping })));
+                        setApiName((current) => (current.trim() ? current : preset.defaultName));
                         setApiFetchedModels([]);
                         setApiFetchModelsError(null);
+                        setApiMappingsError(null);
                       }}
-                      placeholder={"每行一个 API Key；多行会自动创建为同一批量。\nsk-...\nsk-..."}
-                      value={apiKey}
+                      platform={activePlatform}
                     />
-                    <div className="flex flex-col gap-2 sm:w-28">
-                      <button
-                        aria-label="Base64 解码 API Key"
-                        className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:bg-white"
-                        onClick={decodeApiKey}
-                        type="button"
-                      >
-                        Base64 解码
-                      </button>
-                      <button
-                        aria-label="OCR识别 API Key"
-                        className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] font-semibold text-blue-700 transition-colors hover:bg-white disabled:opacity-50"
-                        disabled={apiKeyOcrRecognizing}
-                        onClick={runApiKeyOcr}
-                        type="button"
-                      >
-                        <ScanText className="h-3.5 w-3.5" />
-                        {apiKeyOcrRecognizing ? "识别中..." : "OCR识别"}
-                      </button>
+                    <label className={labelClass}>
+                      账号名称
                       <input
-                        accept="image/*"
-                        aria-label="选择图片识别 API Key"
-                        className="sr-only"
-                        onChange={handleApiKeyOcrFileChange}
-                        ref={apiKeyOcrFileInputRef}
-                        type="file"
+                        aria-label="API 账号名称"
+                        className={fieldClass}
+                        onChange={(event) => setApiName(event.target.value)}
+                        value={apiName}
                       />
-                    </div>
-                  </div>
-                  {apiKeyDecodeError && <span className="text-[12px] font-semibold text-red-700">{apiKeyDecodeError}</span>}
-                  {apiKeyOcrError && <span className="text-[12px] font-semibold text-red-700">{apiKeyOcrError}</span>}
-                </label>
-                <label className={labelClass}>
-                  Base URL
-                  <input
-                    aria-label="Base URL"
-                    className={fieldClass}
-                    onChange={(event) => {
-                      setApiBaseUrl(event.target.value);
-                      setApiFetchedModels([]);
-                      setApiFetchModelsError(null);
-                    }}
-                    value={apiBaseUrl}
-                  />
-                </label>
-                <UserAgentFields
-                  fieldClass={fieldClass}
-                  idPrefix="创建"
-                  labelClass={labelClass}
-                  onChange={setApiUserAgent}
-                  value={apiUserAgent}
-                />
-                {shouldShowInterfaceFormatSelect(activePlatform) ? (
-                  <label className={labelClass}>
-                    接口格式
-                    <select
-                      aria-label="接口格式"
-                      className={fieldClass}
-                      onChange={(event) => {
-                        setApiInterfaceFormat(event.target.value as InterfaceFormat);
-                        setApiFetchedModels([]);
-                        setApiFetchModelsError(null);
+                    </label>
+                    <label className={labelClass}>
+                      API Key
+                      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                        <textarea
+                          aria-label="API Key"
+                          className={`${monoFieldClass} min-h-24`}
+                          onChange={(event) => {
+                            setApiKey(event.target.value);
+                            setApiKeyDecodeError(null);
+                            setApiKeyOcrError(null);
+                            setApiFetchedModels([]);
+                            setApiFetchModelsError(null);
+                          }}
+                          placeholder={"每行一个 API Key；多行会自动创建为同一批量。\nsk-...\nsk-..."}
+                          value={apiKey}
+                        />
+                        <div className="flex flex-col gap-2 sm:w-28">
+                          <button
+                            aria-label="Base64 解码 API Key"
+                            className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:bg-white"
+                            onClick={decodeApiKey}
+                            type="button"
+                          >
+                            Base64 解码
+                          </button>
+                          <button
+                            aria-label="OCR识别 API Key"
+                            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] font-semibold text-blue-700 transition-colors hover:bg-white disabled:opacity-50"
+                            disabled={apiKeyOcrRecognizing}
+                            onClick={runApiKeyOcr}
+                            type="button"
+                          >
+                            <ScanText className="h-3.5 w-3.5" />
+                            {apiKeyOcrRecognizing ? "识别中..." : "OCR识别"}
+                          </button>
+                          <input
+                            accept="image/*"
+                            aria-label="选择图片识别 API Key"
+                            className="sr-only"
+                            onChange={handleApiKeyOcrFileChange}
+                            ref={apiKeyOcrFileInputRef}
+                            type="file"
+                          />
+                        </div>
+                      </div>
+                      {apiKeyDecodeError && <span className="text-[12px] font-semibold text-red-700">{apiKeyDecodeError}</span>}
+                      {apiKeyOcrError && <span className="text-[12px] font-semibold text-red-700">{apiKeyOcrError}</span>}
+                    </label>
+                    <label className={labelClass}>
+                      Base URL
+                      <input
+                        aria-label="Base URL"
+                        className={fieldClass}
+                        onChange={(event) => {
+                          setApiBaseUrl(event.target.value);
+                          setApiFetchedModels([]);
+                          setApiFetchModelsError(null);
+                        }}
+                        value={apiBaseUrl}
+                      />
+                    </label>
+                    {shouldShowInterfaceFormatSelect(activePlatform) ? (
+                      <label className={labelClass}>
+                        接口格式
+                        <select
+                          aria-label="接口格式"
+                          className={fieldClass}
+                          onChange={(event) => {
+                            setApiInterfaceFormat(event.target.value as InterfaceFormat);
+                            setApiFetchedModels([]);
+                            setApiFetchModelsError(null);
+                          }}
+                          value={apiInterfaceFormat}
+                        >
+                          {interfaceFormatsForPlatform(activePlatform).map((format) => (
+                            <option key={format} value={format}>
+                              {interfaceFormatLabel(format)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : null}
+                    {isAnthropicInterfaceFormat(apiInterfaceFormat) ? (
+                      <label className={labelClass}>
+                        Claude 鉴权字段
+                        <select
+                          aria-label="Claude 鉴权字段"
+                          className={fieldClass}
+                          onChange={(event) => {
+                            setApiKeyField(event.target.value as AnthropicApiKeyField);
+                            setApiFetchedModels([]);
+                            setApiFetchModelsError(null);
+                          }}
+                          value={apiKeyField}
+                        >
+                          {anthropicApiKeyFields.map((field) => (
+                            <option key={field.value} value={field.value}>
+                              {field.label}
+                            </option>
+                          ))}
+                        </select>
+                        <span className="text-[11px] font-medium text-stone-500">
+                          {anthropicApiKeyFieldDescription(apiKeyField)}
+                        </span>
+                      </label>
+                    ) : null}
+                    <ModelMappingsEditor
+                      error={apiMappingsError}
+                      fetchError={apiFetchModelsError}
+                      fetchedModels={apiFetchedModels}
+                      interfaceFormat={apiInterfaceFormat}
+                      isFetchingModels={apiFetchModelsMutation.isPending}
+                      label="模型映射"
+                      onChange={(next) => {
+                        setApiMappings(next);
+                        setApiMappingsError(null);
                       }}
-                      value={apiInterfaceFormat}
-                    >
-                      {interfaceFormatsForPlatform(activePlatform).map((format) => (
-                        <option key={format} value={format}>
-                          {interfaceFormatLabel(format)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ) : null}
-                {isAnthropicInterfaceFormat(apiInterfaceFormat) ? (
-                  <label className={labelClass}>
-                    Claude 鉴权字段
-                    <select
-                      aria-label="Claude 鉴权字段"
-                      className={fieldClass}
-                      onChange={(event) => {
-                        setApiKeyField(event.target.value as AnthropicApiKeyField);
-                        setApiFetchedModels([]);
-                        setApiFetchModelsError(null);
-                      }}
-                      value={apiKeyField}
-                    >
-                      {anthropicApiKeyFields.map((field) => (
-                        <option key={field.value} value={field.value}>
-                          {field.label}
-                        </option>
-                      ))}
-                    </select>
-                    <span className="text-[11px] font-medium text-stone-500">
-                      {anthropicApiKeyFieldDescription(apiKeyField)}
-                    </span>
-                  </label>
-                ) : null}
-                {shouldShowResponsesCustomToolCompatForFormat(activePlatform, apiInterfaceFormat) ? (
-                  <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
-                    <input
-                      aria-label="兼容 custom 工具（Responses 中转）"
-                      checked={apiResponsesCustomToolCompat}
-                      className="mt-0.5"
-                      onChange={(event) => setApiResponsesCustomToolCompat(event.target.checked)}
-                      type="checkbox"
+                      onFetchModels={fetchApiModels}
+                      platform={activePlatform}
+                      value={apiMappings}
                     />
-                    <span className="grid gap-1">
-                      <span>兼容 custom 工具（Responses 中转）</span>
-                      <span className="text-[11px] font-medium text-stone-500">
-                        仅当上游为 Responses 中转且不支持 custom 工具时勾选，把 custom 改写成 function。Chat/Anthropic/Gemini 上游会自动处理，无需勾选。
-                      </span>
-                    </span>
-                  </label>
+                  </>
                 ) : null}
-                <ModelMappingsEditor
-                  error={apiMappingsError}
-                  fetchError={apiFetchModelsError}
-                  fetchedModels={apiFetchedModels}
-                  interfaceFormat={apiInterfaceFormat}
-                  isFetchingModels={apiFetchModelsMutation.isPending}
-                  label="模型映射"
-                  onChange={(next) => {
-                    setApiMappings(next);
-                    setApiMappingsError(null);
-                  }}
-                  onFetchModels={fetchApiModels}
-                  platform={activePlatform}
-                  value={apiMappings}
-                />
-                <label className={labelClass}>
-                  预览 JSON（可选）
-                  <textarea
-                    aria-label="预览 JSON"
-                    className={`${monoFieldClass} min-h-20`}
-                    onChange={(event) => setApiPreviewJson(event.target.value)}
-                    value={apiPreviewJson}
-                  />
-                </label>
+                {createTab === "advanced" ? (
+                  <>
+                    <UserAgentFields
+                      fieldClass={fieldClass}
+                      idPrefix="创建"
+                      labelClass={labelClass}
+                      onChange={setApiUserAgent}
+                      value={apiUserAgent}
+                    />
+                    {shouldShowResponsesCustomToolCompatForFormat(activePlatform, apiInterfaceFormat) ? (
+                      <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
+                        <input
+                          aria-label="兼容 custom 工具（Responses 中转）"
+                          checked={apiResponsesCustomToolCompat}
+                          className="mt-0.5"
+                          onChange={(event) => setApiResponsesCustomToolCompat(event.target.checked)}
+                          type="checkbox"
+                        />
+                        <span className="grid gap-1">
+                          <span>兼容 custom 工具（Responses 中转）</span>
+                          <span className="text-[11px] font-medium text-stone-500">
+                            仅当上游为 Responses 中转且不支持 custom 工具时勾选，把 custom 改写成 function。Chat/Anthropic/Gemini 上游会自动处理，无需勾选。
+                          </span>
+                        </span>
+                      </label>
+                    ) : null}
+                    <label className={labelClass}>
+                      预览 JSON（可选）
+                      <textarea
+                        aria-label="预览 JSON"
+                        className={`${monoFieldClass} min-h-20`}
+                        onChange={(event) => setApiPreviewJson(event.target.value)}
+                        value={apiPreviewJson}
+                      />
+                    </label>
+                  </>
+                ) : null}
               </div>
             )}
 
@@ -6952,388 +6999,400 @@ export function AccountsScreen({
               </button>
             </div>
 
+            <div className="mt-4">
+              <FormTabs<EditTab>
+                ariaLabel="编辑账号分组"
+                onChange={setEditTab}
+                tabs={editTabs}
+                value={editTab}
+              />
+            </div>
+
             <div className="mt-4 grid gap-3">
-              <label className={labelClass}>
-                账号名称
-                <input
-                  aria-label="编辑账号名称"
-                  className={fieldClass}
-                  onChange={(event) => setEditName(event.target.value)}
-                  value={editName}
-                />
-              </label>
-              {editingCredential.kind === "official" && (
-                <label className={labelClass}>
-                  邮箱
-                  <input
-                    aria-label="编辑邮箱"
-                    className={fieldClass}
-                    onChange={(event) => setEditEmail(event.target.value)}
-                    value={editEmail}
-                  />
-                </label>
-              )}
-              <label className={labelClass}>
-                状态
-                <select
-                  aria-label="编辑状态"
-                  className={fieldClass}
-                  onChange={(event) => setEditStatus(event.target.value as AccountStatus)}
-                  value={editStatus}
-                >
-                  <option value="ok">正常 (ok)</option>
-                  <option value="warning">警告 (warning)</option>
-                  <option value="error">异常 (error)</option>
-                  <option value="revoked">已失效 (revoked)</option>
-                  <option value="paused">暂停 (paused)</option>
-                </select>
-              </label>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className={labelClass}>
-                  路由优先级
-                  <select
-                    aria-label="编辑路由优先级"
-                    className={fieldClass}
-                    onChange={(event) => setEditPriority(Number(event.target.value))}
-                    value={editPriority}
-                  >
-                    {[1, 2, 3, 4, 5].map((priority) => (
-                      <option key={priority} value={priority}>
-                        {priority}（数字越小优先级越高）
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className={labelClass}>
-                  最大并发数
-                  <input
-                    aria-label="编辑最大并发数"
-                    className={fieldClass}
-                    min={1}
-                    onChange={(event) => setEditMaxConcurrency(event.target.value)}
-                    step={1}
-                    type="number"
-                    value={editMaxConcurrency}
-                  />
-                </label>
-              </div>
-              <section
-                aria-label="账号失败处理策略"
-                className="rounded-xl border border-blue-100 bg-blue-50/60 p-3"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-[13px] font-semibold text-stone-900">失败处理策略</p>
-                    <p className="mt-0.5 text-[11px] font-medium text-stone-500">
-                      此账号在代理请求和模型测试中共用以下规则。
-                    </p>
-                  </div>
-                  <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-blue-700">
-                    按账号生效
-                  </span>
-                </div>
-                <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {editTab === "basic" ? (
+                <>
                   <label className={labelClass}>
-                    额外重试次数
+                    账号名称
                     <input
-                      aria-label="额外重试次数"
+                      aria-label="编辑账号名称"
                       className={fieldClass}
-                      max={10}
-                      min={0}
-                      onChange={(event) => {
-                        setEditRetryCount(event.target.value);
-                        setEditFailurePolicyError(null);
-                      }}
-                      step={1}
-                      type="number"
-                      value={editRetryCount}
+                      onChange={(event) => setEditName(event.target.value)}
+                      value={editName}
                     />
                   </label>
+                  {editingCredential.kind === "official" && (
+                    <label className={labelClass}>
+                      邮箱
+                      <input
+                        aria-label="编辑邮箱"
+                        className={fieldClass}
+                        onChange={(event) => setEditEmail(event.target.value)}
+                        value={editEmail}
+                      />
+                    </label>
+                  )}
                   <label className={labelClass}>
-                    重试间隔（毫秒）
-                    <input
-                      aria-label="重试间隔（毫秒）"
+                    状态
+                    <select
+                      aria-label="编辑状态"
                       className={fieldClass}
-                      max={60_000}
-                      min={0}
-                      onChange={(event) => {
-                        setEditRetryIntervalMs(event.target.value);
-                        setEditFailurePolicyError(null);
-                      }}
-                      step={1}
-                      type="number"
-                      value={editRetryIntervalMs}
-                    />
+                      onChange={(event) => setEditStatus(event.target.value as AccountStatus)}
+                      value={editStatus}
+                    >
+                      <option value="ok">正常 (ok)</option>
+                      <option value="warning">警告 (warning)</option>
+                      <option value="error">异常 (error)</option>
+                      <option value="revoked">已失效 (revoked)</option>
+                      <option value="paused">暂停 (paused)</option>
+                    </select>
                   </label>
-                  <label className={labelClass}>
-                    异常触发次数
-                    <input
-                      aria-label="异常触发次数"
-                      className={fieldClass}
-                      max={1_000}
-                      min={1}
-                      onChange={(event) => {
-                        setEditSemanticErrorThreshold(event.target.value);
-                        setEditFailurePolicyError(null);
-                      }}
-                      step={1}
-                      type="number"
-                      value={editSemanticErrorThreshold}
-                    />
-                  </label>
-                  <label className={labelClass}>
-                    失败冷却（秒）
-                    <input
-                      aria-label="失败冷却（秒）"
-                      className={fieldClass}
-                      max={MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS}
-                      min={1}
-                      onChange={(event) => {
-                        setEditCooldownSeconds(event.target.value);
-                        setEditFailurePolicyError(null);
-                      }}
-                      step={1}
-                      type="number"
-                      value={editCooldownSeconds}
-                    />
-                  </label>
-                </div>
-                {editFailurePolicyError && (
-                  <p className="mt-2 text-[12px] font-semibold text-red-700">
-                    {editFailurePolicyError}
-                  </p>
-                )}
-                <div className="mt-3 grid gap-2">
-                  <label className="flex items-start gap-2 text-[12px] leading-5 text-stone-700">
-                    <input
-                      aria-label="启用失败冷却"
-                      checked={editCooldownEnabled}
-                      className="mt-0.5"
-                      onChange={(event) => setEditCooldownEnabled(event.target.checked)}
-                      type="checkbox"
-                    />
-                    <span>
-                      <span className="font-semibold">启用失败冷却</span>
-                      <span className="block text-[11px] text-stone-600">
-                        开启后每次临时失败都会让账号冷却「失败冷却（秒）」设定的时长（默认 10
-                        秒）暂不参与路由，冷却结束后自动恢复。默认关闭，即失败后立刻仍可被选中。
-                      </span>
-                    </span>
-                  </label>
-                  <label className="flex items-start gap-2 text-[12px] leading-5 text-stone-700">
-                    <input
-                      aria-label="启用异常状态标记"
-                      checked={editErrorStatusEnabled}
-                      className="mt-0.5"
-                      onChange={(event) => setEditErrorStatusEnabled(event.target.checked)}
-                      type="checkbox"
-                    />
-                    <span>
-                      <span className="font-semibold">启用异常状态标记</span>
-                      <span className="block text-[11px] text-stone-600">
-                        开启后连续同类语义错误达到上面的次数时，账号会被标记为异常并停止参与路由。默认开启，因为触发条件严格，通常意味着账号确实不可用。
-                      </span>
-                    </span>
-                  </label>
-                </div>
-                <div className="mt-3 grid gap-2 text-[11px] leading-5 text-stone-600">
-                  <p>
-                    <span className="font-semibold text-emerald-700">会自动重试：</span>
-                    网络连接失败、请求超时、响应读取失败、HTTP 408 / 429 / 5xx，以及 Codex“服务器当前过载”。
-                  </p>
-                  <p>
-                    <span className="font-semibold text-amber-700">会累计为异常：</span>
-                    不可重试的永久语义错误，在 HTTP 状态和规范化错误消息相同且连续达到设定次数后，账号才会标记为异常；成功、临时错误或错误变化会清零。关闭「启用异常状态标记」后仍会累计次数，但不再改变账号状态。
-                  </p>
-                  <p>
-                    <span className="font-semibold text-red-700">不会同账号重试：</span>
-                    HTTP 401 / 403；它们继续按现有鉴权失效和切换账号逻辑处理。
-                  </p>
-                </div>
-              </section>
-              <section
-                aria-label="模型状态"
-                className="rounded-xl border border-orange-100 bg-orange-50/50 p-3"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-[13px] font-semibold text-stone-900">模型状态</p>
-                    <p className="mt-0.5 text-[11px] font-medium text-stone-500">
-                      冷却与异常由失败自动写入，暂停只由你决定。
-                    </p>
-                  </div>
-                  <button
-                    aria-label="解除全部模型冷却"
-                    className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-orange-700 hover:bg-orange-100 disabled:opacity-50"
-                    disabled={clearModelStateMutation.isPending}
-                    onClick={() => {
-                      for (const state of editingCredential.model_states ?? []) {
-                        if (!modelStateIsClearable(state)) {
-                          continue;
-                        }
-                        clearModelStateMutation.mutate({
-                          credentialId: editingCredential.id,
-                          modelKey: state.model_key,
-                        });
-                      }
-                    }}
-                    type="button"
-                  >
-                    全部解除
-                  </button>
-                </div>
-                {(editingCredential.model_states ?? []).length === 0 ? (
-                  <p className="mt-3 text-[11px] font-medium text-stone-500">
-                    暂无模型状态记录。
-                  </p>
-                ) : null}
-                <div className="mt-3 grid gap-2">
-                  {(editingCredential.model_states ?? []).map((state) => {
-                    const cooling =
-                      state.cooldown_until &&
-                      new Date(state.cooldown_until).getTime() > cooldownNow;
-                    const paused = state.status === "paused";
-                    return (
-                      <div
-                        className="flex items-center justify-between gap-2 rounded-lg bg-white px-2 py-1.5"
-                        key={state.model_key}
+                </>
+              ) : null}
+              {editTab === "advanced" ? (
+                <>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className={labelClass}>
+                      路由优先级
+                      <select
+                        aria-label="编辑路由优先级"
+                        className={fieldClass}
+                        onChange={(event) => setEditPriority(Number(event.target.value))}
+                        value={editPriority}
                       >
-                        <div className="min-w-0">
-                          <p className="truncate text-[12px] font-semibold text-stone-900">
-                            {state.model_key}
-                          </p>
-                          <p className="truncate text-[10px] font-medium text-stone-500">
-                            {state.aliases.length > 0 ? state.aliases.join("、") : "已移除映射"}
-                            {paused
-                              ? " · 已暂停"
-                              : state.status === "error"
-                                ? " · 异常"
-                                : cooling
-                                  ? ` · 冷却 ${formatCooldownRemaining(
-                                      new Date(state.cooldown_until as string).getTime() -
-                                        cooldownNow,
-                                    )}`
-                                  : " · 正常"}
-                          </p>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1">
-                          <button
-                            aria-label={`${paused ? "恢复" : "暂停"}模型 ${state.model_key}`}
-                            className="rounded-md border border-stone-200 px-2 py-1 text-[10px] font-semibold text-stone-700 hover:bg-stone-50 disabled:opacity-50"
-                            disabled={modelStatusMutation.isPending}
-                            onClick={() =>
-                              modelStatusMutation.mutate({
-                                credentialId: editingCredential.id,
-                                modelKey: state.model_key,
-                                status: paused ? "ok" : "paused",
-                              })
-                            }
-                            type="button"
-                          >
-                            {paused ? "恢复" : "暂停"}
-                          </button>
-                          <button
-                            aria-label={`解除模型 ${state.model_key}`}
-                            className="rounded-md border border-orange-200 px-2 py-1 text-[10px] font-semibold text-orange-700 hover:bg-orange-50 disabled:opacity-50"
-                            disabled={clearModelStateMutation.isPending}
-                            onClick={() =>
-                              clearModelStateMutation.mutate({
-                                credentialId: editingCredential.id,
-                                modelKey: state.model_key,
-                              })
-                            }
-                            type="button"
-                          >
-                            解除
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
-              <div className="rounded-xl border border-stone-200 bg-stone-50/70 p-3">
-                <label className={labelClass}>
-                  自动恢复
-                  <select
-                    aria-label="自动恢复模式"
-                    className={fieldClass}
-                    onChange={(event) => setEditRecoveryMode(event.target.value as RecoveryMode)}
-                    value={editRecoveryMode}
+                        {[1, 2, 3, 4, 5].map((priority) => (
+                          <option key={priority} value={priority}>
+                            {priority}（数字越小优先级越高）
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className={labelClass}>
+                      最大并发数
+                      <input
+                        aria-label="编辑最大并发数"
+                        className={fieldClass}
+                        min={1}
+                        onChange={(event) => setEditMaxConcurrency(event.target.value)}
+                        step={1}
+                        type="number"
+                        value={editMaxConcurrency}
+                      />
+                    </label>
+                  </div>
+                </>
+              ) : null}
+              {editTab === "failure" ? (
+                <>
+                  <section
+                    aria-label="账号失败处理策略"
+                    className="rounded-xl border border-blue-100 bg-blue-50/60 p-3"
                   >
-                    <option value="off">关闭</option>
-                    <option value="scheduled">每日定时</option>
-                    <option value="healthcheck">探活恢复</option>
-                  </select>
-                </label>
-                {editRecoveryMode === "scheduled" ? (
-                  <div className="mt-3 grid gap-2">
-                    {editRecoveryTimes.map((time, index) => (
-                      <div className="flex items-center gap-2" key={`${index}-${time}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[13px] font-semibold text-stone-900">失败处理策略</p>
+                        <p className="mt-0.5 text-[11px] font-medium text-stone-500">
+                          此账号在代理请求和模型测试中共用以下规则。
+                        </p>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-blue-700">
+                        按账号生效
+                      </span>
+                    </div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      <label className={labelClass}>
+                        额外重试次数
                         <input
-                          aria-label={`恢复时间 ${index + 1}`}
+                          aria-label="额外重试次数"
                           className={fieldClass}
-                          onChange={(event) =>
-                            setEditRecoveryTimes((current) =>
-                              current.map((value, currentIndex) =>
-                                currentIndex === index ? event.target.value : value,
-                              ),
-                            )
-                          }
-                          type="time"
-                          value={time}
+                          max={10}
+                          min={0}
+                          onChange={(event) => {
+                            setEditRetryCount(event.target.value);
+                            setEditFailurePolicyError(null);
+                          }}
+                          step={1}
+                          type="number"
+                          value={editRetryCount}
                         />
-                        <button
-                          aria-label={`删除恢复时间 ${index + 1}`}
-                          className="rounded-lg border border-stone-200 p-2 text-stone-500 hover:bg-white disabled:opacity-50"
-                          disabled={editRecoveryTimes.length <= 1}
-                          onClick={() =>
-                            setEditRecoveryTimes((current) => current.filter((_, currentIndex) => currentIndex !== index))
+                      </label>
+                      <label className={labelClass}>
+                        重试间隔（毫秒）
+                        <input
+                          aria-label="重试间隔（毫秒）"
+                          className={fieldClass}
+                          max={60_000}
+                          min={0}
+                          onChange={(event) => {
+                            setEditRetryIntervalMs(event.target.value);
+                            setEditFailurePolicyError(null);
+                          }}
+                          step={1}
+                          type="number"
+                          value={editRetryIntervalMs}
+                        />
+                      </label>
+                      <label className={labelClass}>
+                        异常触发次数
+                        <input
+                          aria-label="异常触发次数"
+                          className={fieldClass}
+                          max={1_000}
+                          min={1}
+                          onChange={(event) => {
+                            setEditSemanticErrorThreshold(event.target.value);
+                            setEditFailurePolicyError(null);
+                          }}
+                          step={1}
+                          type="number"
+                          value={editSemanticErrorThreshold}
+                        />
+                      </label>
+                      <label className={labelClass}>
+                        失败冷却（秒）
+                        <input
+                          aria-label="失败冷却（秒）"
+                          className={fieldClass}
+                          max={MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS}
+                          min={1}
+                          onChange={(event) => {
+                            setEditCooldownSeconds(event.target.value);
+                            setEditFailurePolicyError(null);
+                          }}
+                          step={1}
+                          type="number"
+                          value={editCooldownSeconds}
+                        />
+                      </label>
+                    </div>
+                    {editFailurePolicyError && (
+                      <p className="mt-2 text-[12px] font-semibold text-red-700">
+                        {editFailurePolicyError}
+                      </p>
+                    )}
+                    <div className="mt-3 grid gap-2">
+                      <label className="flex items-start gap-2 text-[12px] leading-5 text-stone-700">
+                        <input
+                          aria-label="启用失败冷却"
+                          checked={editCooldownEnabled}
+                          className="mt-0.5"
+                          onChange={(event) => setEditCooldownEnabled(event.target.checked)}
+                          type="checkbox"
+                        />
+                        <span>
+                          <span className="font-semibold">启用失败冷却</span>
+                          <span className="block text-[11px] text-stone-600">
+                            开启后每次临时失败都会让账号冷却「失败冷却（秒）」设定的时长（默认 10
+                            秒）暂不参与路由，冷却结束后自动恢复。默认关闭，即失败后立刻仍可被选中。
+                          </span>
+                        </span>
+                      </label>
+                      <label className="flex items-start gap-2 text-[12px] leading-5 text-stone-700">
+                        <input
+                          aria-label="启用异常状态标记"
+                          checked={editErrorStatusEnabled}
+                          className="mt-0.5"
+                          onChange={(event) => setEditErrorStatusEnabled(event.target.checked)}
+                          type="checkbox"
+                        />
+                        <span>
+                          <span className="font-semibold">启用异常状态标记</span>
+                          <span className="block text-[11px] text-stone-600">
+                            开启后连续同类语义错误达到上面的次数时，账号会被标记为异常并停止参与路由。默认开启，因为触发条件严格，通常意味着账号确实不可用。
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+                    <div className="mt-3 grid gap-2 text-[11px] leading-5 text-stone-600">
+                      <p>
+                        <span className="font-semibold text-emerald-700">会自动重试：</span>
+                        网络连接失败、请求超时、响应读取失败、HTTP 408 / 429 / 5xx，以及 Codex“服务器当前过载”。
+                      </p>
+                      <p>
+                        <span className="font-semibold text-amber-700">会累计为异常：</span>
+                        不可重试的永久语义错误，在 HTTP 状态和规范化错误消息相同且连续达到设定次数后，账号才会标记为异常；成功、临时错误或错误变化会清零。关闭「启用异常状态标记」后仍会累计次数，但不再改变账号状态。
+                      </p>
+                      <p>
+                        <span className="font-semibold text-red-700">不会同账号重试：</span>
+                        HTTP 401 / 403；它们继续按现有鉴权失效和切换账号逻辑处理。
+                      </p>
+                    </div>
+                  </section>
+                  <section
+                    aria-label="模型状态"
+                    className="rounded-xl border border-orange-100 bg-orange-50/50 p-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[13px] font-semibold text-stone-900">模型状态</p>
+                        <p className="mt-0.5 text-[11px] font-medium text-stone-500">
+                          冷却与异常由失败自动写入，暂停只由你决定。
+                        </p>
+                      </div>
+                      <button
+                        aria-label="解除全部模型冷却"
+                        className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-orange-700 hover:bg-orange-100 disabled:opacity-50"
+                        disabled={clearModelStateMutation.isPending}
+                        onClick={() => {
+                          for (const state of editingCredential.model_states ?? []) {
+                            if (!modelStateIsClearable(state)) {
+                              continue;
+                            }
+                            clearModelStateMutation.mutate({
+                              credentialId: editingCredential.id,
+                              modelKey: state.model_key,
+                            });
                           }
-                          title="删除恢复时间"
+                        }}
+                        type="button"
+                      >
+                        全部解除
+                      </button>
+                    </div>
+                    {(editingCredential.model_states ?? []).length === 0 ? (
+                      <p className="mt-3 text-[11px] font-medium text-stone-500">
+                        暂无模型状态记录。
+                      </p>
+                    ) : null}
+                    <div className="mt-3 grid gap-2">
+                      {(editingCredential.model_states ?? []).map((state) => {
+                        const cooling =
+                          state.cooldown_until &&
+                          new Date(state.cooldown_until).getTime() > cooldownNow;
+                        const paused = state.status === "paused";
+                        return (
+                          <div
+                            className="flex items-center justify-between gap-2 rounded-lg bg-white px-2 py-1.5"
+                            key={state.model_key}
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-[12px] font-semibold text-stone-900">
+                                {state.model_key}
+                              </p>
+                              <p className="truncate text-[10px] font-medium text-stone-500">
+                                {state.aliases.length > 0 ? state.aliases.join("、") : "已移除映射"}
+                                {paused
+                                  ? " · 已暂停"
+                                  : state.status === "error"
+                                    ? " · 异常"
+                                    : cooling
+                                      ? ` · 冷却 ${formatCooldownRemaining(
+                                          new Date(state.cooldown_until as string).getTime() -
+                                            cooldownNow,
+                                        )}`
+                                      : " · 正常"}
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1">
+                              <button
+                                aria-label={`${paused ? "恢复" : "暂停"}模型 ${state.model_key}`}
+                                className="rounded-md border border-stone-200 px-2 py-1 text-[10px] font-semibold text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+                                disabled={modelStatusMutation.isPending}
+                                onClick={() =>
+                                  modelStatusMutation.mutate({
+                                    credentialId: editingCredential.id,
+                                    modelKey: state.model_key,
+                                    status: paused ? "ok" : "paused",
+                                  })
+                                }
+                                type="button"
+                              >
+                                {paused ? "恢复" : "暂停"}
+                              </button>
+                              <button
+                                aria-label={`解除模型 ${state.model_key}`}
+                                className="rounded-md border border-orange-200 px-2 py-1 text-[10px] font-semibold text-orange-700 hover:bg-orange-50 disabled:opacity-50"
+                                disabled={clearModelStateMutation.isPending}
+                                onClick={() =>
+                                  clearModelStateMutation.mutate({
+                                    credentialId: editingCredential.id,
+                                    modelKey: state.model_key,
+                                  })
+                                }
+                                type="button"
+                              >
+                                解除
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                  <div className="rounded-xl border border-stone-200 bg-stone-50/70 p-3">
+                    <label className={labelClass}>
+                      自动恢复
+                      <select
+                        aria-label="自动恢复模式"
+                        className={fieldClass}
+                        onChange={(event) => setEditRecoveryMode(event.target.value as RecoveryMode)}
+                        value={editRecoveryMode}
+                      >
+                        <option value="off">关闭</option>
+                        <option value="scheduled">每日定时</option>
+                        <option value="healthcheck">探活恢复</option>
+                      </select>
+                    </label>
+                    {editRecoveryMode === "scheduled" ? (
+                      <div className="mt-3 grid gap-2">
+                        {editRecoveryTimes.map((time, index) => (
+                          <div className="flex items-center gap-2" key={`${index}-${time}`}>
+                            <input
+                              aria-label={`恢复时间 ${index + 1}`}
+                              className={fieldClass}
+                              onChange={(event) =>
+                                setEditRecoveryTimes((current) =>
+                                  current.map((value, currentIndex) =>
+                                    currentIndex === index ? event.target.value : value,
+                                  ),
+                                )
+                              }
+                              type="time"
+                              value={time}
+                            />
+                            <button
+                              aria-label={`删除恢复时间 ${index + 1}`}
+                              className="rounded-lg border border-stone-200 p-2 text-stone-500 hover:bg-white disabled:opacity-50"
+                              disabled={editRecoveryTimes.length <= 1}
+                              onClick={() =>
+                                setEditRecoveryTimes((current) => current.filter((_, currentIndex) => currentIndex !== index))
+                              }
+                              title="删除恢复时间"
+                              type="button"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                        <button
+                          aria-label="添加恢复时间"
+                          className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 hover:bg-stone-100"
+                          onClick={() => setEditRecoveryTimes((current) => [...current, "00:00"])}
                           type="button"
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          <Plus className="h-3.5 w-3.5" />
+                          添加时间
                         </button>
                       </div>
-                    ))}
-                    <button
-                      aria-label="添加恢复时间"
-                      className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 hover:bg-stone-100"
-                      onClick={() => setEditRecoveryTimes((current) => [...current, "00:00"])}
-                      type="button"
-                    >
-                      <Plus className="h-3.5 w-3.5" />
-                      添加时间
-                    </button>
+                    ) : null}
+                    {editRecoveryMode === "healthcheck" ? (
+                      <label className={`${labelClass} mt-3`}>
+                        探活间隔（分钟）
+                        <input
+                          aria-label="探活间隔（分钟）"
+                          className={fieldClass}
+                          min={1}
+                          max={1440}
+                          onChange={(event) => setEditRecoveryProbeInterval(event.target.value)}
+                          step={1}
+                          type="number"
+                          value={editRecoveryProbeInterval}
+                        />
+                      </label>
+                    ) : null}
                   </div>
-                ) : null}
-                {editRecoveryMode === "healthcheck" ? (
-                  <label className={`${labelClass} mt-3`}>
-                    探活间隔（分钟）
-                    <input
-                      aria-label="探活间隔（分钟）"
-                      className={fieldClass}
-                      min={1}
-                      max={1440}
-                      onChange={(event) => setEditRecoveryProbeInterval(event.target.value)}
-                      step={1}
-                      type="number"
-                      value={editRecoveryProbeInterval}
-                    />
-                  </label>
-                ) : null}
-              </div>
-              {editingCredential.kind === "official" && (
-                <UserAgentFields
-                  fieldClass={fieldClass}
-                  idPrefix="编辑"
-                  labelClass={labelClass}
-                  onChange={handleEditUserAgentChange}
-                  value={editUserAgent}
-                />
-              )}
-              {editingCredential.kind === "api" ? (
+                </>
+              ) : null}
+              {editTab === "basic" && editingCredential.kind === "api" ? (
                 <>
                   <label className={labelClass}>
                     API Key
@@ -7395,13 +7454,6 @@ export function AccountsScreen({
                       value={editApiBaseUrl}
                     />
                   </label>
-                  <UserAgentFields
-                    fieldClass={fieldClass}
-                    idPrefix="编辑"
-                    labelClass={labelClass}
-                    onChange={handleEditUserAgentChange}
-                    value={editUserAgent}
-                  />
                   {shouldShowInterfaceFormatSelect(activePlatform) ? (
                     <label className={labelClass}>
                       接口格式
@@ -7447,6 +7499,34 @@ export function AccountsScreen({
                       </span>
                     </label>
                   ) : null}
+                  <ModelMappingsEditor
+                    error={editModelMappingsError}
+                    fetchError={editFetchModelsError}
+                    fetchedModels={editFetchedModels}
+                    interfaceFormat={editApiInterfaceFormat}
+                    isFetchingModels={editFetchModelsMutation.isPending}
+                    label="模型映射"
+                    onChange={(next) => {
+                      setEditModelMappings(next);
+                      setEditModelMappingsError(null);
+                    }}
+                    onFetchModels={fetchEditModels}
+                    platform={activePlatform}
+                    value={editModelMappings}
+                  />
+                </>
+              ) : null}
+              {editTab === "advanced" ? (
+                <UserAgentFields
+                  fieldClass={fieldClass}
+                  idPrefix="编辑"
+                  labelClass={labelClass}
+                  onChange={handleEditUserAgentChange}
+                  value={editUserAgent}
+                />
+              ) : null}
+              {editTab === "advanced" && editingCredential.kind === "api" ? (
+                <>
                   {shouldShowResponsesCustomToolCompatForFormat(activePlatform, editApiInterfaceFormat) ? (
                     <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
                       <input
@@ -7513,71 +7593,61 @@ export function AccountsScreen({
                       ) : null}
                     </div>
                   ) : null}
-                  <ModelMappingsEditor
-                    error={editModelMappingsError}
-                    fetchError={editFetchModelsError}
-                    fetchedModels={editFetchedModels}
-                    interfaceFormat={editApiInterfaceFormat}
-                    isFetchingModels={editFetchModelsMutation.isPending}
-                    label="模型映射"
-                    onChange={(next) => {
-                      setEditModelMappings(next);
-                      setEditModelMappingsError(null);
-                    }}
-                    onFetchModels={fetchEditModels}
-                    platform={activePlatform}
-                    value={editModelMappings}
-                  />
                 </>
-              ) : (
+              ) : null}
+              {editTab === "other" ? (
                 <>
+                  {editingCredential.kind === "official" ? (
+                    <>
+                      <label className={labelClass}>
+                        Secret JSON
+                        <textarea
+                          aria-label="编辑 Secret JSON"
+                          className={`${monoFieldClass} min-h-24`}
+                          onChange={(event) => {
+                            setEditSecretJson(event.target.value);
+                            setEditFetchedModels([]);
+                            setEditFetchModelsError(null);
+                          }}
+                          value={editSecretJson}
+                        />
+                      </label>
+                      <label className={labelClass}>
+                        Config JSON
+                        <textarea
+                          aria-label="编辑 Config JSON"
+                          className={`${monoFieldClass} min-h-24`}
+                          onChange={(event) => {
+                            const nextConfigJson = event.target.value;
+                            setEditConfigJson(nextConfigJson);
+                            setEditUserAgent(readUserAgentFromConfig(parseJsonObject(nextConfigJson)));
+                            setEditModelMappings(parseModelMappingsFromConfig(nextConfigJson));
+                            setEditModelMappingsError(null);
+                            setEditFetchedModels([]);
+                            setEditFetchModelsError(null);
+                          }}
+                          value={editConfigJson}
+                        />
+                      </label>
+                    </>
+                  ) : null}
                   <label className={labelClass}>
-                    Secret JSON
+                    Preview JSON
                     <textarea
-                      aria-label="编辑 Secret JSON"
+                      aria-label="编辑 Preview JSON"
                       className={`${monoFieldClass} min-h-24`}
-                      onChange={(event) => {
-                        setEditSecretJson(event.target.value);
-                        setEditFetchedModels([]);
-                        setEditFetchModelsError(null);
-                      }}
-                      value={editSecretJson}
+                      onChange={(event) => setEditPreviewJson(event.target.value)}
+                      readOnly={editingCredential.kind === "api"}
+                      value={editingCredential.kind === "api" ? generatedEditApiPreviewJson : editPreviewJson}
                     />
-                  </label>
-                  <label className={labelClass}>
-                    Config JSON
-                    <textarea
-                      aria-label="编辑 Config JSON"
-                      className={`${monoFieldClass} min-h-24`}
-                      onChange={(event) => {
-                        const nextConfigJson = event.target.value;
-                        setEditConfigJson(nextConfigJson);
-                        setEditUserAgent(readUserAgentFromConfig(parseJsonObject(nextConfigJson)));
-                        setEditModelMappings(parseModelMappingsFromConfig(nextConfigJson));
-                        setEditModelMappingsError(null);
-                        setEditFetchedModels([]);
-                        setEditFetchModelsError(null);
-                      }}
-                      value={editConfigJson}
-                    />
+                    {editingCredential.kind === "api" && (
+                      <span className="text-[11px] font-medium text-stone-500">
+                        API 账号预览会根据 API Key、Base URL、接口格式和模型映射自动同步。
+                      </span>
+                    )}
                   </label>
                 </>
-              )}
-              <label className={labelClass}>
-                Preview JSON
-                <textarea
-                  aria-label="编辑 Preview JSON"
-                  className={`${monoFieldClass} min-h-24`}
-                  onChange={(event) => setEditPreviewJson(event.target.value)}
-                  readOnly={editingCredential.kind === "api"}
-                  value={editingCredential.kind === "api" ? generatedEditApiPreviewJson : editPreviewJson}
-                />
-                {editingCredential.kind === "api" && (
-                  <span className="text-[11px] font-medium text-stone-500">
-                    API 账号预览会根据 API Key、Base URL、接口格式和模型映射自动同步。
-                  </span>
-                )}
-              </label>
+              ) : null}
             </div>
 
             {updateMutation.error && (

@@ -341,6 +341,10 @@ async function selectAccountView(name: "算力池" | "未入池" | "已归档" |
   );
 }
 
+async function openFormTab(name: "基础" | "高级" | "故障处理" | "其他") {
+  await userEvent.click(await screen.findByRole("tab", { name }));
+}
+
 describe("AccountsScreen", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -1850,6 +1854,7 @@ describe("AccountsScreen", () => {
     await userEvent.type(screen.getByLabelText("API Key"), "sk-ua");
     await userEvent.clear(screen.getByLabelText("Base URL"));
     await userEvent.type(screen.getByLabelText("Base URL"), "https://api.upstream.test/v1");
+    await openFormTab("高级");
     await userEvent.selectOptions(screen.getByLabelText("创建 User-Agent 预设"), "grok-workspace");
     await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
 
@@ -2435,6 +2440,7 @@ describe("AccountsScreen", () => {
     await userEvent.clear(screen.getByLabelText("Base URL"));
     await userEvent.type(screen.getByLabelText("Base URL"), "https://api.upstream.test/v1");
     await userEvent.selectOptions(screen.getByLabelText("接口格式"), "openai-responses");
+    await openFormTab("高级");
     await userEvent.click(screen.getByLabelText("兼容 custom 工具（Responses 中转）"));
     await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
 
@@ -2466,6 +2472,7 @@ describe("AccountsScreen", () => {
 
     renderScreen();
     await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
     const checkbox = await screen.findByLabelText("兼容 custom 工具（Responses 中转）");
     expect(checkbox).toBeChecked();
     await userEvent.click(checkbox);
@@ -2491,6 +2498,7 @@ describe("AccountsScreen", () => {
 
     renderScreen();
     await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
 
     // The text field only exists once the box is ticked.
     expect(screen.queryByLabelText("纠偏提醒内容")).not.toBeInTheDocument();
@@ -2520,6 +2528,7 @@ describe("AccountsScreen", () => {
 
     renderScreen();
     await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
 
     const checkbox = await screen.findByLabelText("每轮追加纠偏提醒");
     expect(checkbox).toBeChecked();
@@ -2549,6 +2558,7 @@ describe("AccountsScreen", () => {
 
     renderScreen();
     await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
     await userEvent.click(await screen.findByLabelText("每轮追加纠偏提醒"));
     await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
 
@@ -2575,6 +2585,7 @@ describe("AccountsScreen", () => {
 
     renderScreen();
     await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
 
     expect(screen.getByLabelText("编辑 User-Agent")).toHaveValue("OldBot/1.0");
     await userEvent.clear(screen.getByLabelText("编辑 User-Agent"));
@@ -2734,6 +2745,7 @@ describe("AccountsScreen", () => {
     await userEvent.click(screen.getByLabelText("编辑 Base64 解码 API Key"));
 
     expect(screen.getByLabelText("编辑 API Key")).toHaveValue("sk-edit");
+    await openFormTab("其他");
     expect((screen.getByLabelText("编辑 Preview JSON") as HTMLTextAreaElement).value).toContain("sk-edit");
 
     await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
@@ -2748,6 +2760,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+    await openFormTab("故障处理");
 
     expect(screen.getByLabelText("额外重试次数")).toHaveValue(2);
     expect(screen.getByLabelText("重试间隔（毫秒）")).toHaveValue(200);
@@ -2780,6 +2793,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("故障处理");
     expect(screen.getByLabelText("额外重试次数")).toHaveValue(4);
     expect(screen.getByLabelText("重试间隔（毫秒）")).toHaveValue(750);
     expect(screen.getByLabelText("异常触发次数")).toHaveValue(18);
@@ -2809,6 +2823,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+    await openFormTab("故障处理");
     fireEvent.change(screen.getByLabelText("额外重试次数"), { target: { value: "11" } });
     await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
 
@@ -2838,6 +2853,7 @@ describe("AccountsScreen", () => {
 
     await waitFor(() => expect(recognizeApiKeysFromImageBlob).toHaveBeenCalledWith(imageBlob));
     expect(screen.getByLabelText("编辑 API Key")).toHaveValue("sk-edit-ocr-123456");
+    await openFormTab("其他");
     expect((screen.getByLabelText("编辑 Preview JSON") as HTMLTextAreaElement).value).toContain("sk-edit-ocr-123456");
   });
 
@@ -2868,6 +2884,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+    await openFormTab("故障处理");
     await userEvent.selectOptions(screen.getByLabelText("自动恢复模式"), "scheduled");
     fireEvent.change(screen.getByLabelText("恢复时间 1"), { target: { value: "03:30" } });
     await userEvent.click(screen.getByLabelText("添加恢复时间"));
@@ -2888,6 +2905,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+    await openFormTab("故障处理");
 
     const cooldownToggle = screen.getByLabelText("启用失败冷却");
     const errorStatusToggle = screen.getByLabelText("启用异常状态标记");
@@ -2911,6 +2929,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+    await openFormTab("故障处理");
     fireEvent.change(screen.getByLabelText("失败冷却（秒）"), { target: { value: "0" } });
     await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
 
@@ -2954,6 +2973,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+    await openFormTab("高级");
     await userEvent.selectOptions(screen.getByLabelText("编辑 User-Agent 预设"), "browser");
     await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
 
@@ -4136,6 +4156,7 @@ describe("AccountsScreen", () => {
     vi.mocked(setRouteCredentialModelStatus).mockResolvedValue(credentialsWithModelStates()[1]);
     renderPoolWithModelStates();
     await userEvent.click(await screen.findByLabelText("编辑 API Account"));
+    await openFormTab("故障处理");
 
     const section = await screen.findByLabelText("模型状态");
     // Healthy models are listed too, so a model can be paused before it fails.
@@ -4153,6 +4174,7 @@ describe("AccountsScreen", () => {
     vi.mocked(setRouteCredentialModelStatus).mockResolvedValue(credentialsWithModelStates()[1]);
     renderPoolWithModelStates();
     await userEvent.click(await screen.findByLabelText("编辑 API Account"));
+    await openFormTab("故障处理");
 
     await userEvent.click(await screen.findByLabelText("恢复模型 upstream-held"));
     expect(setRouteCredentialModelStatus).toHaveBeenCalledWith(
@@ -4166,6 +4188,7 @@ describe("AccountsScreen", () => {
     vi.mocked(clearRouteCredentialModelState).mockResolvedValue(credentialsWithModelStates()[1]);
     renderPoolWithModelStates();
     await userEvent.click(await screen.findByLabelText("编辑 API Account"));
+    await openFormTab("故障处理");
 
     await userEvent.click(await screen.findByLabelText("解除模型 upstream-sol"));
     expect(clearRouteCredentialModelState).toHaveBeenCalledWith("cred-api-1", "upstream-sol");
@@ -4175,6 +4198,7 @@ describe("AccountsScreen", () => {
     vi.mocked(clearRouteCredentialModelState).mockResolvedValue(credentialsWithModelStates()[1]);
     renderPoolWithModelStates();
     await userEvent.click(await screen.findByLabelText("编辑 API Account"));
+    await openFormTab("故障处理");
 
     await userEvent.click(await screen.findByLabelText("解除全部模型冷却"));
     // Only the cooling model: a paused one is the user's own decision, and a

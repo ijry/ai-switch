@@ -298,7 +298,7 @@ let policy = RouteCredentialFailurePolicy::from_config_json(&config_json);
 let cooldown_seconds = policy.cooldown_enabled.then_some(policy.cooldown_seconds);
 ```
 
-Cooldown is **per account** and off by default, and its length is **configured per account** too: edit it under the account's failure policy panel as 失败冷却（秒） ("failure cooldown, seconds"). The default is **10 seconds**, and the accepted range is 1-86400 seconds. There is **no per-model cooldown length or threshold**: `failure_policy` is one account-level record that applies to all of that account's models. Split into two accounts when you genuinely need different values.
+Cooldown is **per account** and off by default, and its length is **configured per account** too: edit it under the drawer's 故障处理 ("failure handling") tab, in the failure policy panel, as 失败冷却（秒） ("failure cooldown, seconds"). The default is **10 seconds**, and the accepted range is 1-86400 seconds. There is **no per-model cooldown length or threshold**: `failure_policy` is one account-level record that applies to all of that account's models. Split into two accounts when you genuinely need different values.
 
 | Account setting | Effect of each transient failure |
 | --- | --- |
@@ -317,7 +317,7 @@ Whenever the account's `transient_failure_count` is above 0, its status tag rend
 
 The row's 冷却 N 秒 ("cooling for N seconds") badge now explicitly means an **account-level** cooldown. When models are unavailable, an extra orange badge 模型 N 不可用 ("N models unavailable") appears; the count is "cooling and not yet expired" plus `error` plus `paused`. The two badges do not overlap in meaning: one says "the whole account is backing off", the other "some models are unavailable". Hovering 模型 N 不可用 expands a per-model detail panel: the upstream model name, the client-facing aliases in parentheses (rows whose mapping was deleted show 已移除映射, "mapping removed"), the reason and remaining time, and the most recent failure message.
 
-The edit drawer has a 模型状态 ("model status") section listing every known model — including ones that have never failed, so a healthy model can be paused pre-emptively. Each row carries two actions: a 暂停 / 恢复 ("pause" / "resume") toggle, and 解除 ("clear") to drop that model's cooldown and error state. The section header's 全部解除 ("clear all") only issues requests for models that actually have something to clear: it skips `paused` ones (that is the user's own decision) and skips healthy models with no cooldown and no failure counts.
+The edit drawer's 故障处理 ("failure handling") tab has a 模型状态 ("model status") section listing every known model — including ones that have never failed, so a healthy model can be paused pre-emptively. Each row carries two actions: a 暂停 / 恢复 ("pause" / "resume") toggle, and 解除 ("clear") to drop that model's cooldown and error state. The section header's 全部解除 ("clear all") only issues requests for models that actually have something to clear: it skips `paused` ones (that is the user's own decision) and skips healthy models with no cooldown and no failure counts.
 
 ### The sensitive-word reminder
 
@@ -419,7 +419,7 @@ The sort key is "earliest recovery time", with a stable tiebreak on the original
 | Code | Meaning | What to do |
 | --- | --- | --- |
 | `route_pool.model_unmatched` | **No account maps this model at all** — step 3 emptied the set | Add it to an account's model mappings |
-| `route_pool.model_unavailable` | Accounts do serve this model, but on all of them it is **paused or marked unhealthy** | Clear the pause/error in the edit drawer's 模型状态 section |
+| `route_pool.model_unavailable` | Accounts do serve this model, but on all of them it is **paused or marked unhealthy** | Clear the pause/error in the 模型状态 section under the edit drawer's 故障处理 tab |
 
 A cooldown alone never produces `model_unavailable`: a cooling candidate can still be chosen by the probe fallback, so only hard exclusions can empty the set. Merging the two codes would turn diagnosis into guesswork, which is why they are separate.
 
@@ -546,7 +546,7 @@ That distinction is deliberate. If explicit-test recovery also wiped every model
 | You want full manual control | `off`, and click test when you need to |
 
 ::: tip Manual testing is the fastest recovery there is
-Click one model connectivity test on a single account; success performs full recovery. `paused` accounts can be tested too — the code comments on this explicitly: an explicit test is exactly how a user determines whether a paused account has come back. To clear one model's cooldown or error, 解除 ("clear") in the edit drawer's 模型状态 section is more direct and costs no quota.
+Click one model connectivity test on a single account; success performs full recovery. `paused` accounts can be tested too — the code comments on this explicitly: an explicit test is exactly how a user determines whether a paused account has come back. To clear one model's cooldown or error, 解除 ("clear") in the 模型状态 section under the edit drawer's 故障处理 tab is more direct and costs no quota.
 :::
 
 ### What happens if config gets corrupted
