@@ -95,8 +95,13 @@ pub struct UsageOverviewIntegrity {
     pub unpriced_request_count: i64,
     /// Requests priced from the local table rather than an upstream price.
     pub estimated_price_request_count: i64,
-    /// Proxy rows with no response id, which therefore could not be merged and
-    /// may double count against a transcript entry for the same request.
+    /// Successful proxy rows with no response id. These could not be merged, so
+    /// a transcript entry for the same request is still counted separately.
+    ///
+    /// Counts successes only: a failed request produced no assistant message,
+    /// so no transcript entry exists to double count against. On a real corpus
+    /// 707 of 709 id-less rows were failures — counting them would have put an
+    /// alarming figure in front of the user for a risk that does not exist.
     pub unmatchable_proxy_row_count: i64,
 }
 
@@ -486,9 +491,11 @@ fn assemble_overview(
     page: i64,
     page_size: i64,
 ) -> UsageOverview {
+    // Only successes can double count: a failed request never produced an
+    // assistant message, so the transcripts hold nothing to pair it with.
     let unmatchable_proxy_row_count = proxy_rows
         .iter()
-        .filter(|row| resolve_proxy_response_id(row).is_none())
+        .filter(|row| resolve_proxy_response_id(row).is_none() && proxy_facts(row).success)
         .count() as i64;
 
     let rows = merge_entries(session_entries, proxy_rows);
@@ -588,6 +595,21 @@ mod tests {
 
         assert_eq!(overview.integrity.unmatchable_proxy_row_count, 1);
         assert_eq!(overview.integrity.scanned_file_count, 1_186);
+    }
+
+    #[test]
+    fn a_failed_id_less_proxy_row_is_not_reported_as_a_double_count_risk() {
+        // A failed request produced no assistant message, so the transcripts
+        // hold nothing to pair it with. On a real corpus 707 of 709 id-less
+        // rows were failures; counting them would have shown the user an
+        // alarming number for a risk that does not exist.
+        let mut failed = priced_proxy_row(0, None);
+        failed.metadata_json =
+            r#"{"path":"/v1/messages","status":524,"success":false}"#.to_string();
+
+        let overview = assemble_overview(Vec::new(), vec![failed], 0, false, 1, 20);
+
+        assert_eq!(overview.integrity.unmatchable_proxy_row_count, 0);
     }
 
     fn row_with(
