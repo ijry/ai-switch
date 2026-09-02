@@ -60,6 +60,8 @@ import {
 import {
   createBatch,
   copyRouteCredential,
+  clearRouteCredentialModelState,
+  setRouteCredentialModelStatus,
   setRouteCredentialRecovery,
   createApiRouteCredential,
   archiveRouteCredentials,
@@ -103,6 +105,8 @@ import type {
   RouteCredential,
   RouteCredentialActivityEvent,
   RouteCredentialFailurePolicy,
+  RouteCredentialModelState,
+  RouteCredentialModelStatus,
   RouteCredentialPage,
   RouteCredentialPoolScope,
   RouteCredentialSelectionContext,
@@ -283,6 +287,66 @@ function transientFailureTag(
     label: `错误 ${count} 次`,
     className: "bg-orange-50 text-orange-800 ring-1 ring-orange-200",
   };
+}
+
+type ModelIssue = {
+  state: RouteCredentialModelState;
+  reason: "cooling" | "error" | "paused";
+  remaining: number | null;
+};
+
+// A model is unavailable when it is paused, marked unhealthy, or still cooling.
+// Cooling is time-based so it needs `now`; the other two are verdicts.
+function credentialModelIssues(credential: RouteCredential, now: number): ModelIssue[] {
+  if (terminalAccountStatuses.has(credential.status)) {
+    return [];
+  }
+  const issues: ModelIssue[] = [];
+  for (const state of credential.model_states ?? []) {
+    if (state.status === "paused") {
+      issues.push({ state, reason: "paused", remaining: null });
+      continue;
+    }
+    if (state.status === "error") {
+      issues.push({ state, reason: "error", remaining: null });
+      continue;
+    }
+    if (!state.cooldown_until) {
+      continue;
+    }
+    const deadline = new Date(state.cooldown_until).getTime();
+    if (!Number.isFinite(deadline) || deadline <= now) {
+      continue;
+    }
+    issues.push({ state, reason: "cooling", remaining: deadline - now });
+  }
+  return issues;
+}
+
+function modelIssueLabel(issue: ModelIssue): string {
+  switch (issue.reason) {
+    case "paused":
+      return "已暂停";
+    case "error":
+      return "异常";
+    default:
+      return `冷却 ${formatCooldownRemaining(issue.remaining ?? 0)}`;
+  }
+}
+
+// Whether "解除" has anything to do for this model. A paused model is the user's
+// own decision, and a healthy model with no bookkeeping has no row to delete, so
+// clearing either would be a wasted round trip.
+function modelStateIsClearable(state: RouteCredentialModelState): boolean {
+  if (state.status === "paused") {
+    return false;
+  }
+  return (
+    state.status === "error" ||
+    Boolean(state.cooldown_until) ||
+    state.transient_failure_count > 0 ||
+    state.semantic_failure_streak_count > 0
+  );
 }
 
 const routeStatsPeriods = [
@@ -1237,7 +1301,11 @@ function formatCooldownRemaining(milliseconds: number): string {
 function useCooldownCountdown(credentials: RouteCredential[]) {
   const nextDeadline = useMemo(() => {
     const deadlines = credentials
-      .map((credential) => credential.cooldown_until || credential.next_retry_at)
+      .flatMap((credential) => [
+        credential.cooldown_until || credential.next_retry_at,
+        // Model-level cooldowns tick on the same timer: one interval covers both.
+        ...(credential.model_states ?? []).map((state) => state.cooldown_until),
+      ])
       .filter((raw): raw is string => Boolean(raw))
       .map((raw) => new Date(raw).getTime())
       .filter((time) => Number.isFinite(time));
@@ -3475,6 +3543,46 @@ export function AccountsScreen({
       await invalidateAccountData();
     },
   });
+  const modelStatusMutation = useMutation({
+    mutationFn: ({
+      credentialId,
+      modelKey,
+      status,
+    }: {
+      credentialId: string;
+      modelKey: string;
+      status: RouteCredentialModelStatus;
+    }) => setRouteCredentialModelStatus(credentialId, modelKey, status),
+    onSuccess: (credential) => {
+      // The drawer renders straight off the returned account, so it reflects the
+      // new status without waiting for the list queries to come back.
+      setEditingCredential(credential);
+      void queryClient.invalidateQueries({
+        queryKey: ["route-credential-page", activePlatform],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["route-credentials-all", activePlatform],
+      });
+    },
+  });
+  const clearModelStateMutation = useMutation({
+    mutationFn: ({
+      credentialId,
+      modelKey,
+    }: {
+      credentialId: string;
+      modelKey: string;
+    }) => clearRouteCredentialModelState(credentialId, modelKey),
+    onSuccess: (credential) => {
+      setEditingCredential(credential);
+      void queryClient.invalidateQueries({
+        queryKey: ["route-credential-page", activePlatform],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["route-credentials-all", activePlatform],
+      });
+    },
+  });
   const copyCredentialMutation = useMutation({
     mutationFn: ({
       credential,
@@ -5188,6 +5296,7 @@ export function AccountsScreen({
                     credential.transient_failure_count,
                   );
                   const modelMappings = parseModelMappingsFromConfig(credential.config_json);
+                  const modelIssues = credentialModelIssues(credential, cooldownNow);
                   const baseUrlLink = credentialBaseUrlLink(credential);
                   const isCopyingCredential =
                     copyCredentialMutation.isPending &&
@@ -5387,6 +5496,53 @@ export function AccountsScreen({
                               冷却 {formatCooldownRemaining(cooldownState.remaining)}
                             </span>
                           </CredentialFailureTooltip>
+                        )}
+                        {modelIssues.length > 0 && (
+                          <span
+                            className="group relative inline-flex outline-none focus:ring-2 focus:ring-orange-300"
+                            tabIndex={0}
+                          >
+                            <span
+                              className="rounded-full bg-orange-50 px-2 py-0.5 text-[11px] font-semibold text-orange-800"
+                              data-testid={`credential-model-issues-${credential.id}`}
+                              title="部分模型暂不参与路由"
+                            >
+                              模型 {modelIssues.length} 不可用
+                            </span>
+                            {/* pt-1 rather than mt-1: a margin gap drops :hover
+                                mid-travel and closes the panel before the pointer
+                                arrives. */}
+                            <span
+                              className="absolute left-0 top-full z-50 hidden pt-1 group-hover:block group-focus-within:block"
+                              data-testid={`credential-model-detail-${credential.id}`}
+                            >
+                              <span className="block w-[min(28rem,calc(100vw-2rem))] select-text rounded-lg border border-stone-700 bg-stone-900 px-3 py-2 text-left text-[11px] font-medium leading-5 text-white shadow-xl">
+                                {modelIssues.map((issue) => (
+                                  <span
+                                    className="mt-1 block first:mt-0"
+                                    key={issue.state.model_key}
+                                  >
+                                    <span className="font-semibold">{issue.state.model_key}</span>
+                                    {issue.state.aliases.length > 0 ? (
+                                      <span className="text-stone-400">
+                                        （{issue.state.aliases.join("、")}）
+                                      </span>
+                                    ) : (
+                                      <span className="text-stone-400">（已移除映射）</span>
+                                    )}
+                                    <span className="ml-1 text-orange-200">
+                                      {modelIssueLabel(issue)}
+                                    </span>
+                                    {issue.state.last_failure_message ? (
+                                      <span className="mt-0.5 block break-words text-stone-300">
+                                        {issue.state.last_failure_message}
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                ))}
+                              </span>
+                            </span>
+                          </span>
                         )}
                         {subscriptionType && (
                           <span
@@ -6712,6 +6868,107 @@ export function AccountsScreen({
                     <span className="font-semibold text-red-700">不会同账号重试：</span>
                     HTTP 401 / 403；它们继续按现有鉴权失效和切换账号逻辑处理。
                   </p>
+                </div>
+              </section>
+              <section
+                aria-label="模型状态"
+                className="rounded-xl border border-orange-100 bg-orange-50/50 p-3"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[13px] font-semibold text-stone-900">模型状态</p>
+                    <p className="mt-0.5 text-[11px] font-medium text-stone-500">
+                      冷却与异常由失败自动写入，暂停只由你决定。
+                    </p>
+                  </div>
+                  <button
+                    aria-label="解除全部模型冷却"
+                    className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-orange-700 hover:bg-orange-100 disabled:opacity-50"
+                    disabled={clearModelStateMutation.isPending}
+                    onClick={() => {
+                      for (const state of editingCredential.model_states ?? []) {
+                        if (!modelStateIsClearable(state)) {
+                          continue;
+                        }
+                        clearModelStateMutation.mutate({
+                          credentialId: editingCredential.id,
+                          modelKey: state.model_key,
+                        });
+                      }
+                    }}
+                    type="button"
+                  >
+                    全部解除
+                  </button>
+                </div>
+                {(editingCredential.model_states ?? []).length === 0 ? (
+                  <p className="mt-3 text-[11px] font-medium text-stone-500">
+                    暂无模型状态记录。
+                  </p>
+                ) : null}
+                <div className="mt-3 grid gap-2">
+                  {(editingCredential.model_states ?? []).map((state) => {
+                    const cooling =
+                      state.cooldown_until &&
+                      new Date(state.cooldown_until).getTime() > cooldownNow;
+                    const paused = state.status === "paused";
+                    return (
+                      <div
+                        className="flex items-center justify-between gap-2 rounded-lg bg-white px-2 py-1.5"
+                        key={state.model_key}
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-[12px] font-semibold text-stone-900">
+                            {state.model_key}
+                          </p>
+                          <p className="truncate text-[10px] font-medium text-stone-500">
+                            {state.aliases.length > 0 ? state.aliases.join("、") : "已移除映射"}
+                            {paused
+                              ? " · 已暂停"
+                              : state.status === "error"
+                                ? " · 异常"
+                                : cooling
+                                  ? ` · 冷却 ${formatCooldownRemaining(
+                                      new Date(state.cooldown_until as string).getTime() -
+                                        cooldownNow,
+                                    )}`
+                                  : " · 正常"}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <button
+                            aria-label={`${paused ? "恢复" : "暂停"}模型 ${state.model_key}`}
+                            className="rounded-md border border-stone-200 px-2 py-1 text-[10px] font-semibold text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+                            disabled={modelStatusMutation.isPending}
+                            onClick={() =>
+                              modelStatusMutation.mutate({
+                                credentialId: editingCredential.id,
+                                modelKey: state.model_key,
+                                status: paused ? "ok" : "paused",
+                              })
+                            }
+                            type="button"
+                          >
+                            {paused ? "恢复" : "暂停"}
+                          </button>
+                          <button
+                            aria-label={`解除模型 ${state.model_key}`}
+                            className="rounded-md border border-orange-200 px-2 py-1 text-[10px] font-semibold text-orange-700 hover:bg-orange-50 disabled:opacity-50"
+                            disabled={clearModelStateMutation.isPending}
+                            onClick={() =>
+                              clearModelStateMutation.mutate({
+                                credentialId: editingCredential.id,
+                                modelKey: state.model_key,
+                              })
+                            }
+                            type="button"
+                          >
+                            解除
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </section>
               <div className="rounded-xl border border-stone-200 bg-stone-50/70 p-3">
