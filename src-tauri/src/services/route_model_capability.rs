@@ -224,14 +224,24 @@ pub(crate) fn model_state_key(
 /// Map an upstream model key back to a client-facing alias, for places that must
 /// speak the request vocabulary (the model test takes `mapping.from`).
 pub(crate) fn alias_for_model_key(capability: &ModelCapability, model_key: &str) -> Option<String> {
+    aliases_for_model_key(capability, model_key)
+        .into_iter()
+        .next()
+}
+
+/// Every client-facing alias pointing at this upstream model. A relay config can
+/// route two aliases to one upstream model, and the UI shows them all so users
+/// recognise the row by the name they typed.
+pub(crate) fn aliases_for_model_key(capability: &ModelCapability, model_key: &str) -> Vec<String> {
     capability
         .mappings
         .iter()
-        .find(|mapping| {
+        .filter(|mapping| {
             !is_fallback_mapping(mapping)
                 && strip_one_m_suffix_for_route_lookup(&mapping.to) == model_key
         })
         .map(|mapping| mapping.from.trim().to_string())
+        .collect()
 }
 
 /// Every model key this account could ever produce. Used as the denominator when

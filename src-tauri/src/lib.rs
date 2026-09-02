@@ -31,11 +31,12 @@ use commands::batch_commands::{
 use commands::import_commands::import_example_json;
 use commands::platform_commands::list_platform_capabilities;
 use commands::route_credential_commands::{
-    archive_route_credentials, copy_route_credential, create_api_route_credential,
-    delete_route_credential, get_route_credential, import_official_route_credentials_from_files,
-    import_official_route_credentials_from_text, list_route_credentials,
-    list_route_credentials_page, refresh_route_credential_quota, refresh_route_credentials_quota,
-    reorder_route_credentials, restore_route_credentials, set_route_credential_recovery,
+    archive_route_credentials, clear_route_credential_model_state, copy_route_credential,
+    create_api_route_credential, delete_route_credential, get_route_credential,
+    import_official_route_credentials_from_files, import_official_route_credentials_from_text,
+    list_route_credentials, list_route_credentials_page, refresh_route_credential_quota,
+    refresh_route_credentials_quota, reorder_route_credentials, restore_route_credentials,
+    set_route_credential_model_status, set_route_credential_recovery,
     set_route_credential_statuses, update_route_credential,
 };
 use commands::route_credential_transfer_commands::{
@@ -443,6 +444,8 @@ pub fn run() {
             create_api_route_credential,
             copy_route_credential,
             set_route_credential_recovery,
+            set_route_credential_model_status,
+            clear_route_credential_model_state,
             import_official_route_credentials_from_text,
             import_official_route_credentials_from_files,
             update_route_credential,

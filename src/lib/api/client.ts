@@ -23,6 +23,7 @@ import type {
   RouteCredentialImportOutcome,
   RouteCredentialImportPreview,
   RouteCredential,
+  RouteCredentialModelStatus,
   RouteCredentialPage,
   RouteCredentialPageRequest,
   ReorderRouteCredentialInput,
@@ -347,6 +348,25 @@ export function setRouteCredentialRecovery(
   rule: RecoveryRule,
 ): Promise<RouteCredential> {
   return invoke("set_route_credential_recovery", { id, rule });
+}
+
+export function setRouteCredentialModelStatus(
+  id: string,
+  modelKey: string,
+  status: RouteCredentialModelStatus,
+): Promise<RouteCredential> {
+  return invoke("set_route_credential_model_status", {
+    id,
+    model_key: modelKey,
+    status,
+  });
+}
+
+export function clearRouteCredentialModelState(
+  id: string,
+  modelKey: string,
+): Promise<RouteCredential> {
+  return invoke("clear_route_credential_model_state", { id, model_key: modelKey });
 }
 
 export function deleteRouteCredential(id: string): Promise<void> {

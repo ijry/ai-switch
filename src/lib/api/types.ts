@@ -169,6 +169,23 @@ export type FetchedRouteModel = {
   default_reasoning_level?: string | null;
 };
 
+export type RouteCredentialModelStatus = "ok" | "error" | "paused";
+
+export type RouteCredentialModelState = {
+  route_credential_id: string;
+  model_key: string;
+  aliases: string[];
+  status: RouteCredentialModelStatus;
+  transient_failure_count: number;
+  cooldown_until?: string | null;
+  semantic_failure_streak_count: number;
+  last_failure_kind?: string | null;
+  last_failure_message?: string | null;
+  last_failure_response_json?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type RouteCredential = {
   id: string;
   platform: string;
@@ -201,6 +218,7 @@ export type RouteCredential = {
   last_failure_message?: string | null;
   last_failure_response_json?: string | null;
   active_request_count?: number;
+  model_states?: RouteCredentialModelState[];
   request_count?: number;
   success_count?: number;
   failure_count?: number;

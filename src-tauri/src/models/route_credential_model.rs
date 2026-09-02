@@ -27,6 +27,12 @@ pub struct RouteCredentialModelState {
     pub last_failure_kind: Option<String>,
     pub last_failure_message: Option<String>,
     pub last_failure_response_json: Option<String>,
+    /// Client-facing aliases pointing at this upstream model. Empty when the
+    /// mapping was removed while the row lived on. Filled by the service layer,
+    /// never stored.
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub aliases: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }

@@ -10081,6 +10081,7 @@ data: [DONE]\n\n";
                 last_failure_kind: None,
                 last_failure_message: None,
                 last_failure_response_json: None,
+                aliases: Vec::new(),
                 created_at: "2026-09-02T00:00:00Z".to_string(),
                 updated_at: "2026-09-02T00:00:00Z".to_string(),
             },
