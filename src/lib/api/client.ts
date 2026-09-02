@@ -9,7 +9,10 @@ import type {
   ConfigSnapshotSummary,
   ConfigWriteOutcome,
   CopyRouteCredentialInput,
+  ExternalClientImportOutcome,
+  ExternalClientImportPreview,
   FetchedRouteModel,
+  ImportExternalClientAccountsInput,
   ImportJob,
   CreateApiRouteCredentialInput,
   CreateTerminalSessionInput,
@@ -19,6 +22,7 @@ import type {
   ExportRouteCredentialsInput,
   RouteCredentialExportResult,
   ImportRouteCredentialsInput,
+  PreviewExternalClientImportInput,
   PreviewRouteCredentialImportInput,
   RouteCredentialImportOutcome,
   RouteCredentialImportPreview,
@@ -298,6 +302,18 @@ export function importRouteCredentials(
   input: ImportRouteCredentialsInput,
 ): Promise<RouteCredentialImportOutcome> {
   return invoke("import_route_credentials", { input });
+}
+
+export function previewExternalClientImport(
+  input: PreviewExternalClientImportInput,
+): Promise<ExternalClientImportPreview> {
+  return invoke("preview_external_client_import", { input });
+}
+
+export function importExternalClientAccounts(
+  input: ImportExternalClientAccountsInput,
+): Promise<ExternalClientImportOutcome> {
+  return invoke("import_external_client_accounts", { input });
 }
 
 export function listRouteCredentialPage(input: RouteCredentialPageRequest): Promise<RouteCredentialPage> {

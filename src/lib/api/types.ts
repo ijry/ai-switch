@@ -368,6 +368,66 @@ export type RouteCredentialImportOutcome = {
   restored_pool_members: number;
 };
 
+/** Third-party desktop clients whose accounts AI Switch can read. */
+export type ExternalImportClient = "cc-switch";
+
+export type PreviewExternalClientImportInput = {
+  client: ExternalImportClient;
+  platform: string;
+  /** `null` means "look in the client's default config location". */
+  source_path?: string | null;
+};
+
+export type ImportExternalClientAccountsInput = {
+  client: ExternalImportClient;
+  platform: string;
+  source_path?: string | null;
+  /** The source client's own record ids, taken verbatim from the preview. */
+  source_ids: string[];
+};
+
+export type ExternalClientAccountPreviewItem = {
+  source_id: string;
+  display_name: string;
+  platform: string;
+  interface_format?: string | null;
+  base_url?: string | null;
+  api_key_masked?: string | null;
+  model_mapping_count: number;
+  /** `create` | `overwrite` | `error`. */
+  disposition: string;
+  existing_credential_id?: string | null;
+  existing_display_name?: string | null;
+  issue_codes: string[];
+};
+
+export type ExternalClientImportPreviewCounts = {
+  total: number;
+  importable: number;
+  create: number;
+  overwrite: number;
+  errors: number;
+  other_platform: number;
+  other_platform_counts: Record<string, number>;
+};
+
+export type ExternalClientImportPreview = {
+  client: string;
+  source_path: string;
+  counts: ExternalClientImportPreviewCounts;
+  items: ExternalClientAccountPreviewItem[];
+};
+
+export type ExternalClientImportOutcome = {
+  created: number;
+  overwritten: number;
+  skipped: number;
+  failed: number;
+  imported: RouteCredential[];
+  /** Ids of newly created accounts; overwrites keep their existing pool state. */
+  created_ids: string[];
+};
+
 export type RouteCredentialPage = {
   items: RouteCredential[];
   total: number;

@@ -315,6 +315,10 @@ impl RouteCredentialService {
             &preview_json,
             source.route_priority,
             source.max_concurrency,
+            // A copy is a new local account: leaving the external-source pair
+            // unset keeps the unique index free for the original, so a later
+            // re-import overwrites that row rather than this copy.
+            None,
         )
         .await?;
 

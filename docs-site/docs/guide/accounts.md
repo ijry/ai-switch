@@ -201,6 +201,46 @@ CREATE TABLE IF NOT EXISTS route_credential_transfer_origins (
 
 除自身格式之外，导入还兼容其他账号切换工具的导出格式（兼容导入协议）。`schema_version` 不匹配时返回 `transfer.schema_version_unsupported`，不会尝试猜测字段含义。
 
+## 从其他客户端导入
+
+新增账号对话框的第三个标签「导入其他客户端」直接读取本机另一个切换工具的配置文件，不需要先在那边导出。当前支持 **CC Switch**：
+
+- 读取 `~/.cc-switch/cc-switch.db`（`providers` 表）或旧版 `~/.cc-switch/config.json`；设过 `CC_SWITCH_HOME` 时以该目录为准，也可以在对话框里手动选择文件。
+- 数据库以**只读 + immutable** 方式打开，所以对方正在运行也能读，且不会在别人的目录里留下 `-wal` 文件。
+- 只读取 API 类账号：官方登录条目（`category = official`）和 Claude 桌面版条目会被标为不可导入，并给出原因。
+- 每条条目都会显示 Base URL、掩码后的 API Key、接口方言与模型映射条数，勾选后再导入。API Key 明文不会经过前端。
+- 属于其他平台的条目只计数不列出——账号页是按平台分的，切到对应平台再导入即可。
+
+字段映射按各客户端的原生配置来，方向与写入时相反：CC Switch 把上游模型名直接写在客户端的环境变量里，AI Switch 存的是「别名 → 上游模型」，所以每个环境变量键会还原成对应角色的映射。
+
+| 来源 | 取值 | 落到 AI Switch |
+| --- | --- | --- |
+| `env.ANTHROPIC_AUTH_TOKEN` / `env.ANTHROPIC_API_KEY` | API Key | `api_key`，并据此决定 `api_key_field`（Bearer 还是 `x-api-key`） |
+| `env.ANTHROPIC_BASE_URL` | Base URL | `base_url` |
+| `env.ANTHROPIC_DEFAULT_*_MODEL` | 各角色上游模型 | `claude-*-alias` 映射，`[1M]` 后缀转成 `supports_1m` |
+| `env.CLAUDE_CODE_SUBAGENT_MODEL` / `env.ANTHROPIC_MODEL` | 子代理与兜底模型 | `claude-subagent` / `claude-model` 映射 |
+| `auth.OPENAI_API_KEY` | Codex API Key | `api_key` |
+| `config` 里选中的 `[model_providers.*].base_url` | Codex Base URL | `base_url` |
+| `meta.apiFormat`，回退到 `wire_api` | 接口方言 | `interface_format` |
+| `meta.customUserAgent` | 自定义 UA | `config_json.headers["User-Agent"]` |
+
+### 重复导入即覆盖
+
+去重键是 `(external_source_client, external_source_id)`，其中 source id 是对方的记录主键（按 app 类型加了前缀，因为 CC Switch 的主键是 `(id, app_type)` 组合）：
+
+```sql
+ALTER TABLE route_credentials ADD COLUMN external_source_client TEXT;
+ALTER TABLE route_credentials ADD COLUMN external_source_id TEXT;
+
+CREATE UNIQUE INDEX idx_route_credentials_external_source
+  ON route_credentials(external_source_client, external_source_id)
+  WHERE external_source_client IS NOT NULL AND external_source_id IS NOT NULL;
+```
+
+再导入同一条记录时会**覆盖**上次导入的账号，而不是新增重复项，预览里也会直接标出「覆盖已有」和将被覆盖的账号名。这与前面的凭据传输导入不同：那里遇到被改过的重复项会拒绝导入，而这里外部客户端是它自己那些字段的权威来源。
+
+覆盖只替换对方拥有的内容（名称、密钥、`config_json`、预览）并清空失败计数；本地改过的优先级、并发上限、批次和算力池成员关系都保留。`revoked` 依旧是终态——被吊销的账号不会因为重新导入而复活。「创建后加入算力池」也只作用于本次新增的账号。
+
 ## 存储位置
 
 所有凭据数据都在应用的 SQLite 数据库里：数据目录固定为用户主目录下的 `~/.ai-switch`，数据库文件名为 `ai-switch.db`（开发构建用独立的 `ai-switch-dev.db`，互不干扰）。
@@ -213,7 +253,7 @@ API Key 与官方登录凭据都存放在这个 SQLite 数据库里（`route_cre
 - 建议在开启全盘加密的磁盘上使用
 :::
 
-表结构由 `src-tauri/migrations` 下的 **23 个**只进式迁移脚本定义。与本页相关的主要迁移：
+表结构由 `src-tauri/migrations` 下的 **25 个**只进式迁移脚本定义。与本页相关的主要迁移：
 
 | 迁移 | 内容 |
 | --- | --- |
@@ -224,6 +264,7 @@ API Key 与官方登录凭据都存放在这个 SQLite 数据库里（`route_cre
 | `202608060002_route_usage_breakdown.sql` | `usage_events` 的 token 与价格拆分列 |
 | `202608080002_route_credential_priority_concurrency.sql` | `route_priority`、`max_concurrency` 与调度索引 |
 | `202608130001_route_credential_semantic_failure_streak.sql` | 语义失败连击计数与指纹 |
+| `202609020001_route_credential_external_source.sql` | 外部客户端来源列与去重唯一索引 |
 
 ## 下一步
 

@@ -17,7 +17,7 @@ The accounts screen is not localized yet — its labels appear in Chinese regard
 
 Open AI Switch and click **Codex** under the **Agents** group in the sidebar. That's also the default screen on launch.
 
-Click the **+** button in the top toolbar (tooltip 新增账号, "add account") to open the account dialog. Two tabs sit at the top; stay on **「API 账号」** ("API account"). The other tab, 批量导入 ("bulk import"), is for importing official sign-in state.
+Click the **+** button in the top toolbar (tooltip 新增账号, "add account") to open the account dialog. Three tabs sit at the top; stay on **「API 账号」** ("API account"). 批量导入 ("bulk import") is for importing official sign-in state, and 导入其他客户端 ("import from another client") reads CC Switch's accounts off this machine directly.
 
 Fill in these fields in order.
 

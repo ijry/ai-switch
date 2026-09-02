@@ -1,5 +1,6 @@
 pub mod agent_launch_service;
 pub mod batch_service;
+pub mod cc_switch_import_service;
 pub mod claude_trust_service;
 pub mod client_identity;
 pub mod codex_reasoning_cache;
@@ -8,6 +9,7 @@ pub mod cpa_export_service;
 pub mod cpa_import_service;
 pub mod deeplink_protocol_service;
 pub mod deeplink_service;
+pub mod external_client_import_service;
 pub mod http_client;
 pub mod import_service;
 pub mod mobile_pairing;

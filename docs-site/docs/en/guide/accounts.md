@@ -201,6 +201,46 @@ Each installation also has its own stable identity (`transfer_installation_ident
 
 Beyond its own format, import also accepts export formats from other account switchers (a compatible import protocol). A `schema_version` mismatch returns `transfer.schema_version_unsupported` rather than guessing at field meanings.
 
+## Importing from another client
+
+The add-account dialog's third tab, "导入其他客户端", reads another switcher's config file on this machine directly — no export step on that side. **CC Switch** is supported today:
+
+- Reads `~/.cc-switch/cc-switch.db` (the `providers` table) or the older `~/.cc-switch/config.json`. `CC_SWITCH_HOME` wins when set, and you can also pick a file by hand in the dialog.
+- The database is opened **read-only and immutable**, so it reads fine while the other app is running and never leaves a `-wal` file in someone else's directory.
+- API accounts only: official-login entries (`category = official`) and Claude desktop entries are listed as not importable, with the reason.
+- Each entry shows its base URL, a masked API key, the interface dialect, and the number of model mappings. You tick what you want. The plaintext key never reaches the frontend.
+- Entries belonging to another platform are counted but not listed — the accounts page is per-platform, so switch platforms to import those.
+
+Field mapping follows each client's native config, and runs opposite to how it was written: CC Switch stores the upstream model name directly in the client's env keys, while AI Switch stores `alias → upstream`, so each env key is restored as that role's mapping.
+
+| Source | Value | Lands as |
+| --- | --- | --- |
+| `env.ANTHROPIC_AUTH_TOKEN` / `env.ANTHROPIC_API_KEY` | API key | `api_key`, and which key it was decides `api_key_field` (Bearer vs `x-api-key`) |
+| `env.ANTHROPIC_BASE_URL` | Base URL | `base_url` |
+| `env.ANTHROPIC_DEFAULT_*_MODEL` | Per-role upstream model | `claude-*-alias` mappings; a `[1M]` suffix becomes `supports_1m` |
+| `env.CLAUDE_CODE_SUBAGENT_MODEL` / `env.ANTHROPIC_MODEL` | Subagent and fallback models | `claude-subagent` / `claude-model` mappings |
+| `auth.OPENAI_API_KEY` | Codex API key | `api_key` |
+| The selected `[model_providers.*].base_url` in `config` | Codex base URL | `base_url` |
+| `meta.apiFormat`, falling back to `wire_api` | Interface dialect | `interface_format` |
+| `meta.customUserAgent` | Custom UA | `config_json.headers["User-Agent"]` |
+
+### Re-importing overwrites
+
+The dedupe key is `(external_source_client, external_source_id)`, where the source id is the other tool's own primary key (prefixed by app type, since CC Switch keys providers by the `(id, app_type)` pair):
+
+```sql
+ALTER TABLE route_credentials ADD COLUMN external_source_client TEXT;
+ALTER TABLE route_credentials ADD COLUMN external_source_id TEXT;
+
+CREATE UNIQUE INDEX idx_route_credentials_external_source
+  ON route_credentials(external_source_client, external_source_id)
+  WHERE external_source_client IS NOT NULL AND external_source_id IS NOT NULL;
+```
+
+Importing the same record again **overwrites** the account it produced last time instead of adding a near-copy, and the preview says so up front — "覆盖已有" plus the name of the account that will be replaced. This is the deliberate difference from the credential-transfer import above, which refuses edited duplicates: here the external client is the authority for the fields it owns.
+
+An overwrite replaces only what that client owns (name, secret, `config_json`, preview) and clears the failure counters; locally edited priority, concurrency ceiling, batch, and compute-pool membership all survive. `revoked` stays terminal — a re-import will not resurrect a revoked account. "创建后加入算力池" likewise applies only to accounts newly created by this import.
+
 ## Where this is stored
 
 All credential data lives in the app's SQLite database. The data directory is fixed at `~/.ai-switch` under your home directory, and the database file is `ai-switch.db` (development builds use a separate `ai-switch-dev.db`, so the two never collide).
@@ -213,7 +253,7 @@ API keys and official sign-in credentials are stored in that SQLite database (th
 - Prefer a machine with full-disk encryption enabled
 :::
 
-The schema is defined by the **23** forward-only migrations under `src-tauri/migrations`. The ones relevant to this page:
+The schema is defined by the **25** forward-only migrations under `src-tauri/migrations`. The ones relevant to this page:
 
 | Migration | Contents |
 | --- | --- |
@@ -224,6 +264,7 @@ The schema is defined by the **23** forward-only migrations under `src-tauri/mig
 | `202608060002_route_usage_breakdown.sql` | Token and price breakdown columns on `usage_events` |
 | `202608080002_route_credential_priority_concurrency.sql` | `route_priority`, `max_concurrency`, and the scheduling index |
 | `202608130001_route_credential_semantic_failure_streak.sql` | Semantic-failure streak count and fingerprint |
+| `202609020001_route_credential_external_source.sql` | External-client source columns and the dedupe unique index |
 
 ## Next
 

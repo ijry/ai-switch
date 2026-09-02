@@ -15,6 +15,9 @@ use crate::core::usage_stats::{get_session_usage_stats_core, reload_model_price_
 use crate::database::repositories::config_snapshot_repository::ConfigSnapshotRepository;
 use crate::error::{ApiError, AppError};
 use crate::models::batch::NewBatch;
+use crate::models::external_client_import::{
+    ImportExternalClientAccountsInput, PreviewExternalClientImportInput,
+};
 use crate::models::route_credential::{
     CopyRouteCredentialInput, CreateApiRouteCredentialInput, ImportOfficialFilesInput,
     ImportOfficialTextInput, ReorderRouteCredentialInput, RouteCredentialPageRequest,
@@ -31,6 +34,7 @@ use crate::models::settings::AppSettings;
 use crate::services::agent_launch_service::AgentLaunchService;
 use crate::services::batch_service::BatchService;
 use crate::services::config_write_service::ConfigWriteCoordinator;
+use crate::services::external_client_import_service;
 use crate::services::import_service::{ExampleJsonImportRequest, ImportService};
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_config_service::RouteConfigService;
@@ -54,6 +58,8 @@ pub fn is_sensitive_command(command: &str) -> bool {
         "export_route_credentials"
             | "preview_route_credential_import"
             | "import_route_credentials"
+            | "preview_external_client_import"
+            | "import_external_client_accounts"
             | "get_route_proxy_key"
             | "mcp_install_from_marketplace"
             | "mcp_upsert_local_server"
@@ -608,6 +614,22 @@ pub async fn dispatch_command(
                 )
                 .await
                 .map_err(to_error)?,
+            )
+        }
+        "preview_external_client_import" => {
+            let input: PreviewExternalClientImportInput = parse_arg(&args, "input")?;
+            to_value(
+                external_client_import_service::preview_external_client_import(&state.pool, input)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "import_external_client_accounts" => {
+            let input: ImportExternalClientAccountsInput = parse_arg(&args, "input")?;
+            to_value(
+                external_client_import_service::import_external_client_accounts(&state.pool, input)
+                    .await
+                    .map_err(to_error)?,
             )
         }
         "set_route_pool_members" => {

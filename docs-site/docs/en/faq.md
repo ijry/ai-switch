@@ -166,11 +166,11 @@ MIT means you can use, modify, and redistribute it freely, including commerciall
 
 ## What is the relationship with cc-switch?
 
-**AI Switch is compatible with cc-switch's import protocol**, for exactly one reason: so cc-switch users can migrate their configuration over easily. The desktop app can also optionally enable `ccswitch://` deep-link compatibility (off by default), so import links originally aimed at cc-switch are accepted by AI Switch too.
+**AI Switch is compatible with cc-switch's import protocol**, for exactly one reason: so cc-switch users can migrate their configuration over easily. The add-account dialog's "导入其他客户端" tab also reads config files under `~/.cc-switch` on this machine directly (opened read-only, never modifying their data) and imports the API accounts you tick. The desktop app can additionally enable `ccswitch://` deep-link compatibility (off by default), so import links originally aimed at cc-switch are accepted by AI Switch too.
 
 Beyond that there is no relationship. AI Switch is an independent, from-scratch implementation: **this project only studies public behavior, public documentation, and public file formats; it does not reuse their code.** The "Clean-Room Boundary" section of the repository README states this boundary explicitly.
 
-Put another way: compatibility means "can read the same import format", not "shares an implementation".
+Put another way: compatibility means "can read the same config and import formats", not "shares an implementation".
 
 ## Does the desktop app update itself?
 

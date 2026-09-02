@@ -28,6 +28,9 @@ use commands::batch_commands::{
     create_batch, create_official_account, create_provider, get_official_account,
     list_batch_groups, update_official_account,
 };
+use commands::external_client_import_commands::{
+    import_external_client_accounts, preview_external_client_import,
+};
 use commands::import_commands::import_example_json;
 use commands::platform_commands::list_platform_capabilities;
 use commands::route_credential_commands::{
@@ -456,6 +459,8 @@ pub fn run() {
             preview_route_credential_import,
             import_route_credentials,
             save_route_credential_export,
+            preview_external_client_import,
+            import_external_client_accounts,
             import_example_json,
             get_route_pool,
             set_route_pool_members,

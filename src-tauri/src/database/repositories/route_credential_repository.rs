@@ -20,6 +20,28 @@ pub struct RetryState {
     pub cooldown_until: Option<String>,
 }
 
+/// Where an account came from when it was imported out of another desktop client.
+///
+/// `client` names the tool (`cc-switch`), `source_id` is that tool's own record
+/// id. The pair is unique, which is what makes a repeated import overwrite the
+/// same row instead of adding a near-copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExternalSourceRef<'a> {
+    pub client: &'a str,
+    pub source_id: &'a str,
+}
+
+/// Minimal projection of an already-imported account, enough to tell the user
+/// which local row a re-import would overwrite and to check it is a row this
+/// platform's API tab is allowed to touch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalSourceMatch {
+    pub id: String,
+    pub platform: String,
+    pub kind: String,
+    pub display_name: String,
+}
+
 pub struct RouteCredentialRepository;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -58,6 +80,19 @@ const PAGE_SELECT: &str = "SELECT
    ON ue.route_credential_id = rc.id
   AND ue.source_label IN ('route_proxy', 'route_pool_model_test')
   AND ue.metric_type = 'request'";
+
+const SINGLE_SELECT: &str = "SELECT
+    rc.id, rc.platform, rc.kind, rc.display_name, rc.email, rc.status, rc.sort_order,
+    rc.route_priority, rc.max_concurrency,
+    rc.batch_id, b.name AS batch_name, rc.secret_payload_json, rc.config_json, rc.preview_json,
+    rc.subscription_type, rc.primary_remain, rc.weekly_remain, rc.reset_primary, rc.reset_weekly,
+    rc.transient_failure_count, rc.next_retry_at, rc.cooldown_until, rc.last_failure_kind,
+    rc.last_failure_message, rc.last_failure_response_json,
+    rc.quota_remaining, rc.quota_limit, rc.quota_used, rc.quota_updated_at, rc.archived_at,
+    rc.created_at, rc.updated_at
+ FROM route_credentials rc
+ LEFT JOIN batches b ON b.id = rc.batch_id
+ WHERE rc.id = ?";
 
 fn push_filter_predicate(builder: &mut QueryBuilder<Sqlite>, filters: &[String]) {
     let filters: Vec<&String> = filters
@@ -275,6 +310,7 @@ async fn create_with_connection(
     preview_json: &str,
     route_priority: i64,
     max_concurrency: i64,
+    external_source: Option<ExternalSourceRef<'_>>,
 ) -> Result<RouteCredential, AppError> {
     let now = Utc::now().to_rfc3339();
     let id = Uuid::new_v4().to_string();
@@ -301,11 +337,12 @@ async fn create_with_connection(
             secret_payload_json, config_json, preview_json,
             subscription_type, primary_remain, weekly_remain, reset_primary, reset_weekly,
             quota_remaining, quota_limit, quota_used, quota_updated_at,
+            external_source_client, external_source_id,
             created_at, updated_at
          )
          VALUES (
              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
          )",
     )
     .bind(&id)
@@ -330,6 +367,8 @@ async fn create_with_connection(
     .bind(quota.quota_limit)
     .bind(quota.quota_used)
     .bind(quota.quota_updated_at)
+    .bind(external_source.map(|source| source.client))
+    .bind(external_source.map(|source| source.source_id))
     .bind(&now)
     .bind(&now)
     .execute(&mut *connection)
@@ -416,6 +455,7 @@ impl RouteCredentialRepository {
             preview_json,
             DEFAULT_ROUTE_CREDENTIAL_PRIORITY,
             DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY,
+            None,
         )
         .await
     }
@@ -433,6 +473,7 @@ impl RouteCredentialRepository {
         preview_json: &str,
         route_priority: i64,
         max_concurrency: i64,
+        external_source: Option<ExternalSourceRef<'_>>,
     ) -> Result<RouteCredential, AppError> {
         let mut tx = pool.begin().await.map_err(|err| AppError::Database {
             code: "database.route_credential_create_tx",
@@ -453,6 +494,7 @@ impl RouteCredentialRepository {
             preview_json,
             route_priority,
             max_concurrency,
+            external_source,
         )
         .await?;
 
@@ -478,6 +520,36 @@ impl RouteCredentialRepository {
         config_json: &str,
         preview_json: &str,
     ) -> Result<RouteCredential, AppError> {
+        Self::create_tx_with_external_source(
+            tx,
+            platform,
+            kind,
+            display_name,
+            email,
+            status,
+            batch_id,
+            secret_payload_json,
+            config_json,
+            preview_json,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_tx_with_external_source(
+        tx: &mut Transaction<'_, Sqlite>,
+        platform: &str,
+        kind: &str,
+        display_name: &str,
+        email: Option<String>,
+        status: &str,
+        batch_id: Option<String>,
+        secret_payload_json: &str,
+        config_json: &str,
+        preview_json: &str,
+        external_source: Option<ExternalSourceRef<'_>>,
+    ) -> Result<RouteCredential, AppError> {
         create_with_connection(
             &mut **tx,
             platform,
@@ -491,58 +563,148 @@ impl RouteCredentialRepository {
             preview_json,
             DEFAULT_ROUTE_CREDENTIAL_PRIORITY,
             DEFAULT_ROUTE_CREDENTIAL_MAX_CONCURRENCY,
+            external_source,
         )
         .await
     }
 
-    pub async fn get(pool: &SqlitePool, id: &str) -> Result<RouteCredential, AppError> {
-        sqlx::query_as::<_, RouteCredential>(
-            "SELECT
-                rc.id,
-                rc.platform,
-                rc.kind,
-                rc.display_name,
-                rc.email,
-                rc.status,
-                rc.sort_order,
-                rc.route_priority,
-                rc.max_concurrency,
-                rc.batch_id,
-                b.name AS batch_name,
-                rc.secret_payload_json,
-                rc.config_json,
-                rc.preview_json,
-                rc.subscription_type,
-                rc.primary_remain,
-                rc.weekly_remain,
-                rc.reset_primary,
-                rc.reset_weekly,
-                rc.transient_failure_count,
-                rc.next_retry_at,
-                rc.cooldown_until,
-                rc.last_failure_kind,
-                rc.last_failure_message,
-                rc.last_failure_response_json,
-                rc.quota_remaining,
-                rc.quota_limit,
-                rc.quota_used,
-                rc.quota_updated_at,
-                rc.archived_at,
-                rc.created_at,
-                rc.updated_at
-             FROM route_credentials rc
-             LEFT JOIN batches b ON b.id = rc.batch_id
-             WHERE rc.id = ?",
+    /// Accounts already imported from `client`, keyed by the source's own id.
+    ///
+    /// The import preview needs every match up front — one query beats one
+    /// round-trip per previewed item.
+    pub async fn external_source_matches(
+        pool: &SqlitePool,
+        client: &str,
+    ) -> Result<Vec<(String, ExternalSourceMatch)>, AppError> {
+        let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
+            "SELECT external_source_id, id, platform, kind, display_name
+             FROM route_credentials
+             WHERE external_source_client = ? AND external_source_id IS NOT NULL",
         )
-        .bind(id)
-        .fetch_one(pool)
+        .bind(client)
+        .fetch_all(pool)
         .await
-        .map_err(|err| AppError::Database {
-            code: "database.route_credential_get",
-            message: "Could not load route credential".to_string(),
-            details: Some(err.to_string()),
-            recoverable: true,
-        })
+        .map_err(|err| {
+            database_error(
+                "database.route_credential_external_source_list",
+                "Could not load imported external accounts",
+                err,
+            )
+        })?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(source_id, id, platform, kind, display_name)| {
+                (
+                    source_id,
+                    ExternalSourceMatch {
+                        id,
+                        platform,
+                        kind,
+                        display_name,
+                    },
+                )
+            })
+            .collect())
+    }
+
+    /// Overwrites an account previously imported from the same external record.
+    ///
+    /// Deliberately narrower than [`Self::update`]: it replaces the payload the
+    /// external client owns (name, secret, config, preview) and leaves local
+    /// edits — priority, concurrency, pool membership, batch — alone. It also
+    /// clears the failure bookkeeping, since a refreshed key deserves a clean
+    /// slate. `status` is left as-is unless it is `revoked`; a revoked account
+    /// stays revoked so a re-import cannot silently resurrect it.
+    pub async fn overwrite_from_external_source(
+        tx: &mut Transaction<'_, Sqlite>,
+        id: &str,
+        display_name: &str,
+        secret_payload_json: &str,
+        config_json: &str,
+        preview_json: &str,
+    ) -> Result<(), AppError> {
+        let now = Utc::now().to_rfc3339();
+        let quota = quota_columns_from_config_json(config_json);
+        let result = sqlx::query(
+            "UPDATE route_credentials
+             SET display_name = ?, secret_payload_json = ?, config_json = ?, preview_json = ?,
+                 status = CASE WHEN status = 'revoked' THEN status ELSE 'ok' END,
+                 transient_failure_count = 0, next_retry_at = NULL, cooldown_until = NULL,
+                 semantic_failure_streak_count = 0, semantic_failure_streak_fingerprint = NULL,
+                 last_failure_kind = NULL, last_failure_message = NULL,
+                 last_failure_response_json = NULL,
+                 subscription_type = ?, primary_remain = ?, weekly_remain = ?,
+                 reset_primary = ?, reset_weekly = ?,
+                 quota_remaining = ?, quota_limit = ?, quota_used = ?, quota_updated_at = ?,
+                 updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(display_name)
+        .bind(secret_payload_json)
+        .bind(config_json)
+        .bind(preview_json)
+        .bind(quota.subscription_type)
+        .bind(quota.primary_remain)
+        .bind(quota.weekly_remain)
+        .bind(quota.reset_primary)
+        .bind(quota.reset_weekly)
+        .bind(quota.quota_remaining)
+        .bind(quota.quota_limit)
+        .bind(quota.quota_used)
+        .bind(quota.quota_updated_at)
+        .bind(&now)
+        .bind(id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| {
+            database_error(
+                "database.route_credential_external_source_overwrite",
+                "Could not overwrite the imported account",
+                err,
+            )
+        })?;
+
+        if result.rows_affected() == 0 {
+            return Err(AppError::Validation {
+                code: "validation.route_credential_not_found",
+                message: "Route credential does not exist".to_string(),
+                details: Some(id.to_string()),
+                recoverable: true,
+            });
+        }
+        Ok(())
+    }
+
+    pub async fn get(pool: &SqlitePool, id: &str) -> Result<RouteCredential, AppError> {
+        sqlx::query_as::<_, RouteCredential>(SINGLE_SELECT)
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.route_credential_get",
+                message: "Could not load route credential".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })
+    }
+
+    /// Same as [`Self::get`] but inside a caller's transaction, so an import can
+    /// return the row it just wrote without committing first.
+    pub async fn get_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        id: &str,
+    ) -> Result<RouteCredential, AppError> {
+        sqlx::query_as::<_, RouteCredential>(SINGLE_SELECT)
+            .bind(id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.route_credential_get",
+                message: "Could not load route credential".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })
     }
 
     pub async fn list_by_ids(
@@ -1830,6 +1992,241 @@ mod tests {
             filters: Vec::new(),
             pool_scope,
         }
+    }
+
+    #[tokio::test]
+    async fn external_source_pair_is_unique_and_looked_up_by_source_id() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        let imported = RouteCredentialRepository::create_tx_with_external_source(
+            &mut tx,
+            "claude",
+            "api",
+            "goRouter",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-one"}"#,
+            r#"{"base_url":"https://one.example","interface_format":"anthropic"}"#,
+            "{}",
+            Some(ExternalSourceRef {
+                client: "cc-switch",
+                source_id: "provider-1",
+            }),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let matches = RouteCredentialRepository::external_source_matches(&pool, "cc-switch")
+            .await
+            .unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].0, "provider-1");
+        assert_eq!(matches[0].1.id, imported.id);
+        assert_eq!(matches[0].1.display_name, "goRouter");
+
+        // A different client with the same source id is a different account.
+        let mut tx = pool.begin().await.unwrap();
+        RouteCredentialRepository::create_tx_with_external_source(
+            &mut tx,
+            "claude",
+            "api",
+            "Other tool",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-two"}"#,
+            "{}",
+            "{}",
+            Some(ExternalSourceRef {
+                client: "other-tool",
+                source_id: "provider-1",
+            }),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        // Re-inserting the same pair must fail: the import path overwrites
+        // instead, and the index is what makes that the only option.
+        let mut tx = pool.begin().await.unwrap();
+        let duplicate = RouteCredentialRepository::create_tx_with_external_source(
+            &mut tx,
+            "claude",
+            "api",
+            "goRouter again",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-one"}"#,
+            "{}",
+            "{}",
+            Some(ExternalSourceRef {
+                client: "cc-switch",
+                source_id: "provider-1",
+            }),
+        )
+        .await
+        .expect_err("duplicate external source pair must be rejected");
+        tx.rollback().await.unwrap();
+        assert!(matches!(
+            duplicate,
+            AppError::Database {
+                code: "database.route_credential_create",
+                ..
+            }
+        ));
+
+        // Hand-made accounts leave the pair NULL, so any number of them coexist.
+        for name in ["Manual one", "Manual two"] {
+            create_api_credential(&pool, "claude", name).await;
+        }
+        assert_eq!(
+            RouteCredentialRepository::external_source_matches(&pool, "cc-switch")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn overwrite_from_external_source_replaces_payload_and_keeps_local_edits() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        let imported = RouteCredentialRepository::create_tx_with_external_source(
+            &mut tx,
+            "claude",
+            "api",
+            "goRouter",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-old"}"#,
+            r#"{"base_url":"https://old.example","interface_format":"anthropic"}"#,
+            "{}",
+            Some(ExternalSourceRef {
+                client: "cc-switch",
+                source_id: "provider-1",
+            }),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        // Local routing edits plus a failure streak, both of which a re-import
+        // must not undo (routing) and must clear (failure state).
+        RouteCredentialRepository::update(
+            &pool,
+            &imported.id,
+            &UpdateRouteCredentialInput {
+                display_name: "goRouter".to_string(),
+                email: None,
+                status: "error".to_string(),
+                route_priority: 5,
+                max_concurrency: 9,
+                secret_payload_json: r#"{"api_key":"sk-old"}"#.to_string(),
+                config_json: r#"{"base_url":"https://old.example","interface_format":"anthropic"}"#
+                    .to_string(),
+                preview_json: "{}".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        RouteCredentialRepository::record_transient_failure(
+            &pool,
+            &imported.id,
+            "http_5xx",
+            "upstream down",
+            None,
+        )
+        .await
+        .unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        RouteCredentialRepository::overwrite_from_external_source(
+            &mut tx,
+            &imported.id,
+            "goRouter renamed",
+            r#"{"api_key":"sk-new"}"#,
+            r#"{"base_url":"https://new.example","interface_format":"anthropic"}"#,
+            r#"{"settings_json":"{}"}"#,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let updated = RouteCredentialRepository::get(&pool, &imported.id)
+            .await
+            .unwrap();
+        assert_eq!(updated.display_name, "goRouter renamed");
+        assert!(updated.secret_payload_json.contains("sk-new"));
+        assert!(updated.config_json.contains("https://new.example"));
+        assert_eq!(updated.preview_json, r#"{"settings_json":"{}"}"#);
+        assert_eq!(updated.route_priority, 5);
+        assert_eq!(updated.max_concurrency, 9);
+        assert_eq!(updated.status, "ok");
+        assert_eq!(updated.transient_failure_count, 0);
+        assert!(updated.last_failure_kind.is_none());
+        assert!(updated.cooldown_until.is_none());
+        // The row is still bound to the same source, so the next import finds it.
+        let matches = RouteCredentialRepository::external_source_matches(&pool, "cc-switch")
+            .await
+            .unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].1.id, imported.id);
+    }
+
+    #[tokio::test]
+    async fn overwrite_from_external_source_keeps_revoked_accounts_revoked() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        let imported = RouteCredentialRepository::create_tx_with_external_source(
+            &mut tx,
+            "claude",
+            "api",
+            "Revoked",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-old"}"#,
+            "{}",
+            "{}",
+            Some(ExternalSourceRef {
+                client: "cc-switch",
+                source_id: "provider-1",
+            }),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        RouteCredentialRepository::update_status(&pool, &imported.id, "revoked")
+            .await
+            .unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        RouteCredentialRepository::overwrite_from_external_source(
+            &mut tx,
+            &imported.id,
+            "Revoked",
+            r#"{"api_key":"sk-new"}"#,
+            "{}",
+            "{}",
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let updated = RouteCredentialRepository::get(&pool, &imported.id)
+            .await
+            .unwrap();
+        assert_eq!(updated.status, "revoked");
+        assert!(updated.secret_payload_json.contains("sk-new"));
     }
 
     #[tokio::test]

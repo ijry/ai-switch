@@ -43,6 +43,12 @@ import {
 } from "react";
 import { PlatformSupportBadge } from "../components/platform/PlatformSupportBadge";
 import { baselineModelsForPlatform, expandDisplayModelMappings, ModelMappingSummary } from "../components/accounts/ModelMappingSummary";
+import {
+  ExternalClientImportPanel,
+  EXTERNAL_IMPORT_CLIENT_LABELS,
+  isImportableExternalItem,
+  useExternalClientImportPreview,
+} from "../components/accounts/ExternalClientImportPanel";
 import { RouteCredentialExportDialog } from "../components/accounts/RouteCredentialExportDialog";
 import { CopyRouteCredentialDialog } from "../components/accounts/CopyRouteCredentialDialog";
 import { neighborsForDrop } from "../lib/accountReorder";
@@ -69,6 +75,7 @@ import {
   getSessionUsageStats,
   getRouteProxyKey,
   getRouteProxyStatus,
+  importExternalClientAccounts,
   importOfficialRouteCredentialsFromFiles,
   importOfficialRouteCredentialsFromText,
   listRouteCredentials,
@@ -95,6 +102,8 @@ import type {
   AnthropicApiKeyField,
   ConfigWriteOutcome,
   CopyRouteCredentialInput,
+  ExternalClientImportOutcome,
+  ExternalImportClient,
   FetchedRouteModel,
   InterfaceFormat,
   ModelMapping,
@@ -164,7 +173,7 @@ import {
 const DEFAULT_MAX_CONCURRENCY = 5;
 
 type PlatformKey = PlatformId;
-type CreateMode = "api" | "official";
+type CreateMode = "api" | "official" | "external";
 type AccountView = "in_pool" | "out_of_pool" | "archived" | "stats";
 type RowAction = {
   key: string;
@@ -2050,6 +2059,9 @@ export function AccountsScreen({
   const [officialText, setOfficialText] = useState(() => defaultOfficialJson(activePlatform));
   const [officialBatchName, setOfficialBatchName] = useState("");
   const [officialFilePaths, setOfficialFilePaths] = useState<string[]>([]);
+  const [externalClient, setExternalClient] = useState<ExternalImportClient>("cc-switch");
+  const [externalSourcePath, setExternalSourcePath] = useState<string | null>(null);
+  const [externalSelectedIds, setExternalSelectedIds] = useState<Set<string>>(() => new Set());
   const [apiName, setApiName] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [apiKeyDecodeError, setApiKeyDecodeError] = useState<string | null>(null);
@@ -2248,6 +2260,9 @@ export function AccountsScreen({
     setCopiedCredentialId(null);
     setConfigWriteError(null);
     setBatchStatus("");
+    // Source ids are platform-scoped in the preview, so a leftover selection
+    // would submit ids that belong to the platform the user just left.
+    setExternalSelectedIds(new Set());
   }, [activePlatform]);
 
   useEffect(() => () => {
@@ -2259,6 +2274,34 @@ export function AccountsScreen({
       setCreateMode("api");
     }
   }, [capabilitiesQuery.isSuccess, createMode, officialImportEnabled]);
+
+  const externalImportPreviewQuery = useExternalClientImportPreview({
+    client: externalClient,
+    platform: activePlatform,
+    sourcePath: externalSourcePath,
+    // Only read another app's config while the user is looking at that tab.
+    enabled: createOpen && createMode === "external",
+  });
+  const externalImportPreview = externalImportPreviewQuery.data ?? null;
+
+  // Prune the selection whenever the preview changes, and pre-check every
+  // importable row: the common case is "take everything", and a stale id would
+  // otherwise be submitted and then reported as skipped.
+  useEffect(() => {
+    if (!externalImportPreview) {
+      return;
+    }
+    const importable = externalImportPreview.items
+      .filter(isImportableExternalItem)
+      .map((item) => item.source_id);
+    setExternalSelectedIds((current) => {
+      if (current.size === 0) {
+        return new Set(importable);
+      }
+      const next = new Set(importable.filter((sourceId) => current.has(sourceId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [externalImportPreview]);
 
   useEffect(() => {
     if (!accountFilterMenuOpen) {
@@ -3018,6 +3061,20 @@ export function AccountsScreen({
 
   const createMutation = useMutation({
     mutationFn: async () => {
+      if (createMode === "external") {
+        const sourceIds = Array.from(externalSelectedIds);
+        if (sourceIds.length === 0) {
+          throw new Error("请先勾选要导入的账号。");
+        }
+        const outcome = await importExternalClientAccounts({
+          client: externalClient,
+          platform: activePlatform,
+          source_path: externalSourcePath,
+          source_ids: sourceIds,
+        });
+        return { imported: outcome.imported, failed: [], external: outcome };
+      }
+
       if (createMode === "official") {
         if (!officialImportEnabled) {
           throw new Error(officialImportReason);
@@ -3097,13 +3154,31 @@ export function AccountsScreen({
       if (result && typeof result === "object" && "imported" in result) {
         mergeCredentialsIntoCache(imported);
       }
-      if (imported.length > 0) {
+      const external =
+        result && typeof result === "object" && "external" in result
+          ? (result as { external: ExternalClientImportOutcome }).external
+          : null;
+      if (external) {
+        setExternalSelectedIds(new Set());
+        setRoutePoolFeedback({
+          type: "success",
+          message: `已从 ${EXTERNAL_IMPORT_CLIENT_LABELS[externalClient]} 导入：新增 ${external.created} 个，覆盖 ${external.overwritten} 个${
+            external.failed > 0 ? `，失败 ${external.failed} 个` : ""
+          }。`,
+        });
+      }
+      // An overwritten account keeps whatever pool state it already had —
+      // re-importing a key is not a request to move it in or out of the pool.
+      const poolCandidateIds = external
+        ? external.created_ids
+        : imported.map((credential) => credential.id);
+      if (poolCandidateIds.length > 0) {
         const nextPoolIds = new Set(draftPoolIds);
-        for (const credential of imported) {
+        for (const credentialId of poolCandidateIds) {
           if (joinPoolOnCreate) {
-            nextPoolIds.add(credential.id);
+            nextPoolIds.add(credentialId);
           } else {
-            nextPoolIds.delete(credential.id);
+            nextPoolIds.delete(credentialId);
           }
         }
         setDraftPoolIds(nextPoolIds);
@@ -3113,10 +3188,10 @@ export function AccountsScreen({
             account_ids: Array.from(nextPoolIds),
           });
           setDraftPoolIds(new Set(state.account_ids));
-          if (joinPoolOnCreate) {
+          if (joinPoolOnCreate && !external) {
             setRoutePoolFeedback({
               type: "success",
-              message: `已新增 ${imported.length} 个账号并加入算力池。`,
+              message: `已新增 ${poolCandidateIds.length} 个账号并加入算力池。`,
             });
           }
         } catch (error) {
@@ -4090,6 +4165,45 @@ export function AccountsScreen({
     if (typeof selected === "string") {
       setOfficialFilePaths([selected]);
     }
+  };
+
+  const chooseExternalClientSource = async () => {
+    const selected = await open({
+      multiple: false,
+      title: `选择 ${EXTERNAL_IMPORT_CLIENT_LABELS[externalClient]} 配置文件`,
+      filters: [{ name: "配置文件", extensions: ["db", "json"] }],
+    });
+    const path = Array.isArray(selected) ? selected[0] : selected;
+    if (typeof path === "string" && path.trim()) {
+      // A new file means a new provider list, so drop the old selection rather
+      // than carrying ids that may not exist there.
+      setExternalSelectedIds(new Set());
+      setExternalSourcePath(path);
+    }
+  };
+
+  const toggleExternalSelection = (sourceId: string) => {
+    setExternalSelectedIds((current) => {
+      const next = new Set(current);
+      if (!next.delete(sourceId)) {
+        next.add(sourceId);
+      }
+      return next;
+    });
+  };
+
+  const toggleAllExternalSelections = (checked: boolean) => {
+    if (!checked) {
+      setExternalSelectedIds(new Set());
+      return;
+    }
+    setExternalSelectedIds(
+      new Set(
+        (externalImportPreview?.items ?? [])
+          .filter(isImportableExternalItem)
+          .map((item) => item.source_id),
+      ),
+    );
   };
 
   const fieldClass =
@@ -6143,10 +6257,11 @@ export function AccountsScreen({
               </button>
             </div>
 
-            <div className="mt-4 grid gap-1 rounded-xl bg-stone-100 p-1 sm:grid-cols-2">
+            <div className="mt-4 grid gap-1 rounded-xl bg-stone-100 p-1 sm:grid-cols-3">
               {[
                 ["api", "API 账号"],
                 ["official", "批量导入"],
+                ["external", "导入其他客户端"],
               ].map(([mode, label]) => (
                 <button
                   className={`rounded-lg px-3 py-1.5 text-[13px] font-semibold transition-colors ${
@@ -6175,10 +6290,36 @@ export function AccountsScreen({
               <span className="grid gap-0.5">
                 <span>创建后加入算力池</span>
                 <span className="text-[11px] font-medium text-stone-500">
-                  创建成功后自动切换到对应列表；取消则放入未入池。
+                  {createMode === "external"
+                    ? "只作用于本次新增的账号；覆盖已有账号时保持其原有入池状态。"
+                    : "创建成功后自动切换到对应列表；取消则放入未入池。"}
                 </span>
               </span>
             </label>
+
+            {createMode === "external" && (
+              <ExternalClientImportPanel
+                client={externalClient}
+                error={
+                  externalImportPreviewQuery.isError
+                    ? formatApiError(externalImportPreviewQuery.error, "读取客户端账号失败。")
+                    : null
+                }
+                labelClass={labelClass}
+                loading={externalImportPreviewQuery.isFetching}
+                onChooseSourcePath={() => void chooseExternalClientSource()}
+                onRefresh={() => void externalImportPreviewQuery.refetch()}
+                onResetSourcePath={() => {
+                  setExternalSelectedIds(new Set());
+                  setExternalSourcePath(null);
+                }}
+                onToggleAll={toggleAllExternalSelections}
+                onToggleItem={toggleExternalSelection}
+                preview={externalImportPreview}
+                selectedIds={externalSelectedIds}
+                sourcePath={externalSourcePath}
+              />
+            )}
 
             {createMode === "api" && (
               <div className="mt-4 grid gap-3">
@@ -6483,11 +6624,19 @@ export function AccountsScreen({
               </button>
               <button
                 className={primaryButtonClass}
-                disabled={createMutation.isPending || (createMode === "official" && !officialImportEnabled)}
+                disabled={
+                  createMutation.isPending ||
+                  (createMode === "official" && !officialImportEnabled) ||
+                  (createMode === "external" && externalSelectedIds.size === 0)
+                }
                 onClick={() => createMutation.mutate()}
                 type="button"
               >
-                {createMutation.isPending ? "正在保存..." : "保存账号"}
+                {createMutation.isPending
+                  ? "正在保存..."
+                  : createMode === "external"
+                    ? `导入所选账号${externalSelectedIds.size > 0 ? `（${externalSelectedIds.size}）` : ""}`
+                    : "保存账号"}
               </button>
             </div>
           </div>

@@ -15,6 +15,7 @@ import {
   getRouteProxyStatus,
   getSessionUsageStats,
   getSettings,
+  importExternalClientAccounts,
   importOfficialRouteCredentialsFromFiles,
   importOfficialRouteCredentialsFromText,
   listPlatformCapabilities,
@@ -35,6 +36,7 @@ import {
   updateRouteCredential,
   routeConfigWriteIsStale,
   writeRouteProxyConfigs,
+  previewExternalClientImport,
 } from "../src/lib/api/client";
 import { recognizeApiKeysFromImageBlob } from "../src/lib/ocr/apiKeyOcr";
 import { CODEX_MODEL_TEST_ENDPOINT_STORAGE_KEY } from "../src/lib/codexModelTestEndpoint";
@@ -47,6 +49,8 @@ import { fetchRouteProxyModels } from "../src/lib/routeProxyModels";
 import type {
   CapabilityAvailability,
   CapabilityRule,
+  ExternalClientAccountPreviewItem,
+  ExternalClientImportPreview,
   PlatformCapability,
   PlatformId,
   RouteCredential,
@@ -71,6 +75,7 @@ vi.mock("../src/lib/api/client", () => ({
   getRouteProxyKey: vi.fn(),
   getRouteProxyStatus: vi.fn(),
   getSessionUsageStats: vi.fn(),
+  importExternalClientAccounts: vi.fn(),
   importOfficialRouteCredentialsFromFiles: vi.fn(),
   importOfficialRouteCredentialsFromText: vi.fn(),
   listPlatformCapabilities: vi.fn(),
@@ -92,6 +97,7 @@ vi.mock("../src/lib/api/client", () => ({
   updateRouteCredential: vi.fn(),
   routeConfigWriteIsStale: vi.fn(),
   writeRouteProxyConfigs: vi.fn(),
+  previewExternalClientImport: vi.fn(),
 }));
 
 const transportTestState = vi.hoisted(() => ({
@@ -172,6 +178,49 @@ const credentialsFixture: RouteCredential[] = [
 ];
 
 let poolStateByPlatform = new Map<string, string[]>();
+
+function externalPreviewItemFixture(
+  overrides: Partial<ExternalClientAccountPreviewItem> = {},
+): ExternalClientAccountPreviewItem {
+  return {
+    source_id: "codex:p1",
+    display_name: "kktoken",
+    platform: "codex",
+    interface_format: "openai-responses",
+    base_url: "https://kktoken.cc/v1",
+    api_key_masked: "sk-1***7890",
+    model_mapping_count: 1,
+    disposition: "create",
+    existing_credential_id: null,
+    existing_display_name: null,
+    issue_codes: [],
+    ...overrides,
+  };
+}
+
+function externalPreviewFixture(
+  items: ExternalClientAccountPreviewItem[],
+  overrides: Partial<ExternalClientImportPreview["counts"]> = {},
+): ExternalClientImportPreview {
+  const importable = items.filter(
+    (item) => item.disposition === "create" || item.disposition === "overwrite",
+  );
+  return {
+    client: "cc-switch",
+    source_path: "C:/Users/example/.cc-switch/cc-switch.db",
+    counts: {
+      total: items.length,
+      importable: importable.length,
+      create: items.filter((item) => item.disposition === "create").length,
+      overwrite: items.filter((item) => item.disposition === "overwrite").length,
+      errors: items.filter((item) => item.disposition === "error").length,
+      other_platform: 0,
+      other_platform_counts: {},
+      ...overrides,
+    },
+    items,
+  };
+}
 
 function statsFixture(overrides: Partial<RoutePoolStats> = {}): RoutePoolStats {
   return {
@@ -295,8 +344,13 @@ describe("AccountsScreen", () => {
       scanned_file_count: 0,
       truncated: false,
     });
+    vi.mocked(importExternalClientAccounts).mockReset();
     vi.mocked(importOfficialRouteCredentialsFromFiles).mockReset();
     vi.mocked(importOfficialRouteCredentialsFromText).mockReset();
+    vi.mocked(previewExternalClientImport).mockReset();
+    // The panel only reads another app's config when its tab is open, so the
+    // default is an empty preview rather than a rejection.
+    vi.mocked(previewExternalClientImport).mockResolvedValue(externalPreviewFixture([]));
     vi.mocked(listPlatformCapabilities).mockReset();
     vi.mocked(listRouteCredentials).mockReset();
     vi.mocked(listRouteCredentialPage).mockReset();
@@ -1484,6 +1538,148 @@ describe("AccountsScreen", () => {
         batch_name: "File Batch",
       }),
     );
+  });
+
+  it("imports selected cc-switch accounts and joins only the new ones to the pool", async () => {
+    vi.mocked(previewExternalClientImport).mockResolvedValue(
+      externalPreviewFixture([
+        externalPreviewItemFixture(),
+        externalPreviewItemFixture({
+          source_id: "codex:p2",
+          display_name: "gorouter",
+          disposition: "overwrite",
+          existing_credential_id: "cred-api-1",
+          existing_display_name: "API Account",
+        }),
+      ]),
+    );
+    const created: RouteCredential = {
+      ...credentialsFixture[1],
+      id: "cred-api-new",
+      display_name: "kktoken",
+    };
+    vi.mocked(importExternalClientAccounts).mockResolvedValue({
+      created: 1,
+      overwritten: 1,
+      skipped: 0,
+      failed: 0,
+      imported: [created, credentialsFixture[1]],
+      created_ids: [created.id],
+    });
+    vi.mocked(setRoutePoolMembers).mockImplementation(async ({ platform, account_ids }) => {
+      poolStateByPlatform.set(platform, [...account_ids]);
+      return {
+        platform,
+        account_ids: [...account_ids],
+        stats: statsFixture({ member_count: account_ids.length }),
+      };
+    });
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "导入其他客户端" }));
+
+    await waitFor(() =>
+      expect(previewExternalClientImport).toHaveBeenCalledWith({
+        client: "cc-switch",
+        platform: "codex",
+        source_path: null,
+      }),
+    );
+    expect(await screen.findByText("kktoken")).toBeInTheDocument();
+    expect(screen.getByText("覆盖已有")).toBeInTheDocument();
+    expect(screen.getByText(/将覆盖「API Account」/)).toBeInTheDocument();
+    // Everything importable starts checked, so the default action is "take all".
+    expect(screen.getByRole("checkbox", { name: "导入 kktoken" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "导入 gorouter" })).toBeChecked();
+
+    await userEvent.click(screen.getByRole("button", { name: /导入所选账号/ }));
+
+    await waitFor(() =>
+      expect(importExternalClientAccounts).toHaveBeenCalledWith({
+        client: "cc-switch",
+        platform: "codex",
+        source_path: null,
+        source_ids: ["codex:p1", "codex:p2"],
+      }),
+    );
+    // Only the created id joins the pool: an overwrite must not move an account
+    // the user had deliberately left out.
+    await waitFor(() =>
+      expect(setRoutePoolMembers).toHaveBeenCalledWith({
+        platform: "codex",
+        account_ids: ["cred-api-new"],
+      }),
+    );
+    expect(await screen.findByText(/新增 1 个，覆盖 1 个/)).toBeInTheDocument();
+  });
+
+  it("keeps unpickable cc-switch entries out of the import selection", async () => {
+    vi.mocked(previewExternalClientImport).mockResolvedValue(
+      externalPreviewFixture([
+        externalPreviewItemFixture({
+          source_id: "codex:broken",
+          display_name: "No key",
+          base_url: null,
+          api_key_masked: null,
+          interface_format: null,
+          model_mapping_count: 0,
+          disposition: "error",
+          issue_codes: ["external_import.api_key_missing"],
+        }),
+      ]),
+    );
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "导入其他客户端" }));
+
+    expect(await screen.findByText("No key")).toBeInTheDocument();
+    expect(screen.getByText("缺少 API Key")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "导入 No key" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "全选可导入账号" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "导入所选账号" })).toBeDisabled();
+  });
+
+  it("re-reads the preview from a hand-picked config file", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "导入其他客户端" }));
+    await waitFor(() => expect(previewExternalClientImport).toHaveBeenCalledTimes(1));
+
+    vi.mocked(open).mockResolvedValue("D:\\backup\\cc-switch.db");
+    vi.mocked(previewExternalClientImport).mockResolvedValue(
+      externalPreviewFixture([externalPreviewItemFixture({ display_name: "from backup" })]),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "选择客户端配置文件" }));
+
+    await waitFor(() =>
+      expect(previewExternalClientImport).toHaveBeenLastCalledWith({
+        client: "cc-switch",
+        platform: "codex",
+        source_path: "D:\\backup\\cc-switch.db",
+      }),
+    );
+    expect(await screen.findByText("from backup")).toBeInTheDocument();
+  });
+
+  it("shows the backend error when the client config cannot be read", async () => {
+    vi.mocked(previewExternalClientImport).mockRejectedValue({
+      code: "external_import.source_not_found",
+      message: "Could not find a cc-switch configuration on this machine",
+      details: "C:/Users/example/.cc-switch",
+      recoverable: true,
+    });
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "导入其他客户端" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not find a cc-switch configuration on this machine",
+    );
+    expect(screen.getByRole("button", { name: "导入所选账号" })).toBeDisabled();
   });
 
   it("shows readable interface format labels for OpenAI and Claude options", async () => {
