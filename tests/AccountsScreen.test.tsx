@@ -17,6 +17,7 @@ import {
   getSettings,
   importOfficialRouteCredentialsFromFiles,
   importOfficialRouteCredentialsFromText,
+  listConfigWriteClients,
   listPlatformCapabilities,
   listRouteCredentials,
   listRouteCredentialPage,
@@ -47,6 +48,7 @@ import { fetchRouteProxyModels } from "../src/lib/routeProxyModels";
 import type {
   CapabilityAvailability,
   CapabilityRule,
+  ConfigWriteClientStatus,
   PlatformCapability,
   PlatformId,
   RouteCredential,
@@ -73,6 +75,7 @@ vi.mock("../src/lib/api/client", () => ({
   getSessionUsageStats: vi.fn(),
   importOfficialRouteCredentialsFromFiles: vi.fn(),
   importOfficialRouteCredentialsFromText: vi.fn(),
+  listConfigWriteClients: vi.fn(),
   listPlatformCapabilities: vi.fn(),
   listRouteCredentials: vi.fn(),
   listRouteCredentialPage: vi.fn(),
@@ -172,6 +175,32 @@ const credentialsFixture: RouteCredential[] = [
 ];
 
 let poolStateByPlatform = new Map<string, string[]>();
+
+/** What `list_config_write_clients` returns for Codex once ZCode is seeded. */
+const configWriteClientsFixture: ConfigWriteClientStatus[] = [
+  {
+    client_key: "codex",
+    display_name: "Codex CLI",
+    native: true,
+    restart_required: false,
+    target_key: "codex",
+    platform: "codex",
+    config_path: "/home/u/.codex/config.toml",
+    file_status: "managed",
+    error_code: null,
+  },
+  {
+    client_key: "zcode",
+    display_name: "ZCode",
+    native: false,
+    restart_required: true,
+    target_key: "zcode_codex",
+    platform: "codex",
+    config_path: "/home/u/.zcode/v2/config.json",
+    file_status: "unmanaged",
+    error_code: null,
+  },
+];
 
 function statsFixture(overrides: Partial<RoutePoolStats> = {}): RoutePoolStats {
   return {
@@ -297,6 +326,8 @@ describe("AccountsScreen", () => {
     });
     vi.mocked(importOfficialRouteCredentialsFromFiles).mockReset();
     vi.mocked(importOfficialRouteCredentialsFromText).mockReset();
+    vi.mocked(listConfigWriteClients).mockReset();
+    vi.mocked(listConfigWriteClients).mockResolvedValue(configWriteClientsFixture);
     vi.mocked(listPlatformCapabilities).mockReset();
     vi.mocked(listRouteCredentials).mockReset();
     vi.mocked(listRouteCredentialPage).mockReset();
@@ -3616,6 +3647,9 @@ describe("AccountsScreen", () => {
     // Writing clears the nudge.
     vi.mocked(routeConfigWriteIsStale).mockResolvedValue(false);
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
+    // The button now only opens the dialog; the write happens on confirm.
+    await screen.findByText("选择要写入的客户端");
+    await userEvent.click(screen.getByRole("button", { name: "写入" }));
     await waitFor(() =>
       expect(screen.queryByText("配置已变更，需重新写入")).not.toBeInTheDocument(),
     );
@@ -3628,8 +3662,11 @@ describe("AccountsScreen", () => {
     await userEvent.click(screen.getByLabelText("启动本地路由代理"));
     expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
 
+    await userEvent.click(screen.getByLabelText("写入路由配置文件"));
+    await screen.findByText("选择要写入的客户端");
+
     vi.useFakeTimers();
-    fireEvent.click(screen.getByLabelText("写入路由配置文件"));
+    fireEvent.click(screen.getByRole("button", { name: "写入" }));
     await act(async () => {
       await Promise.resolve();
     });
@@ -3648,6 +3685,107 @@ describe("AccountsScreen", () => {
       vi.advanceTimersByTime(1);
     });
     expect(screen.queryByText("配置写入结果")).not.toBeInTheDocument();
+  });
+
+  it("opens the client dialog instead of writing immediately", async () => {
+    renderScreen();
+
+    await screen.findByText("本地代理：未启动");
+    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
+    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("写入路由配置文件"));
+
+    expect(await screen.findByText("选择要写入的客户端")).toBeInTheDocument();
+    // The dialog is the confirmation step, so nothing is written yet.
+    expect(writeRouteProxyConfigs).not.toHaveBeenCalled();
+  });
+
+  it("writes the selected clients and persists the choice", async () => {
+    renderScreen();
+
+    await screen.findByText("本地代理：未启动");
+    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
+    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("写入路由配置文件"));
+    await screen.findByText("选择要写入的客户端");
+    await userEvent.click(await screen.findByRole("checkbox", { name: /ZCode/ }));
+    await userEvent.click(screen.getByRole("button", { name: "写入" }));
+
+    await waitFor(() =>
+      expect(writeRouteProxyConfigs).toHaveBeenCalledWith("http://127.0.0.1:43111", "codex", [
+        "codex",
+        "zcode",
+      ]),
+    );
+    // The choice is remembered so the next write does not need re-picking.
+    await waitFor(() =>
+      expect(saveSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config_write_clients_json: JSON.stringify({ codex: ["codex", "zcode"] }),
+        }),
+      ),
+    );
+  });
+
+  it("labels write results by client name rather than target key", async () => {
+    vi.mocked(writeRouteProxyConfigs).mockResolvedValue([
+      {
+        operation_id: "operation-1",
+        snapshot_id: "snapshot-1",
+        target_app_id: "target-zcode",
+        target_key: "zcode_codex",
+        platform: "codex",
+        path: "/home/u/.zcode/v2/config.json",
+        status: "succeeded",
+        before_hash: null,
+        after_hash: "after-hash",
+        error_code: null,
+      },
+    ]);
+    renderScreen();
+
+    await screen.findByText("本地代理：未启动");
+    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
+    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("写入路由配置文件"));
+    await screen.findByText("选择要写入的客户端");
+    await userEvent.click(screen.getByRole("button", { name: "写入" }));
+
+    expect(await screen.findByText("配置写入结果")).toBeInTheDocument();
+    // `zcode_codex` is an internal key and means nothing to the user.
+    expect(screen.queryByText(/zcode_codex/)).not.toBeInTheDocument();
+    expect(screen.getByText(/ZCode · codex/)).toBeInTheDocument();
+    // The user very likely switched windows already, so repeat the notice here.
+    expect(screen.getByText(/需重启 ZCode/)).toBeInTheDocument();
+    // Same guarantee the existing outcome test makes: no credential in the panel.
+    expect(screen.queryByText(/sk-ai-switch/)).not.toBeInTheDocument();
+  });
+
+  it("explains that a corrupt ZCode config was refused rather than overwritten", async () => {
+    vi.mocked(writeRouteProxyConfigs).mockRejectedValue({
+      code: "validation.route_config_existing_invalid",
+      message: "Existing CLI configuration is invalid; refusing to overwrite it",
+      details: "/home/u/.zcode/v2/config.json (JSON): syntax is invalid",
+      recoverable: true,
+    });
+    renderScreen();
+
+    await screen.findByText("本地代理：未启动");
+    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
+    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("写入路由配置文件"));
+    await screen.findByText("选择要写入的客户端");
+    await userEvent.click(screen.getByRole("button", { name: "写入" }));
+
+    // The stakes are specific here: a bad parse makes ZCode fall back and lose
+    // every provider, so the message has to say we did not touch the file.
+    expect(
+      await screen.findByText(/现有配置文件无法解析，已拒绝覆盖以免丢失你的 provider 配置/),
+    ).toBeInTheDocument();
   });
 
   it("uses distinct service start, stop, and send-test controls", async () => {

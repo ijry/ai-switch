@@ -43,6 +43,7 @@ import {
 } from "react";
 import { PlatformSupportBadge } from "../components/platform/PlatformSupportBadge";
 import { baselineModelsForPlatform, expandDisplayModelMappings, ModelMappingSummary } from "../components/accounts/ModelMappingSummary";
+import { ConfigWriteTargetsDialog } from "../components/accounts/ConfigWriteTargetsDialog";
 import { RouteCredentialExportDialog } from "../components/accounts/RouteCredentialExportDialog";
 import { CopyRouteCredentialDialog } from "../components/accounts/CopyRouteCredentialDialog";
 import { neighborsForDrop } from "../lib/accountReorder";
@@ -71,6 +72,7 @@ import {
   getRouteProxyStatus,
   importOfficialRouteCredentialsFromFiles,
   importOfficialRouteCredentialsFromText,
+  listConfigWriteClients,
   listRouteCredentials,
   listRouteCredentialPage,
   reorderRouteCredentials,
@@ -93,6 +95,7 @@ import {
 import type {
   AccountStatus,
   AnthropicApiKeyField,
+  ConfigWriteClientStatus,
   ConfigWriteOutcome,
   CopyRouteCredentialInput,
   FetchedRouteModel,
@@ -231,6 +234,30 @@ function formatApiError(error: unknown, fallback: string): string {
     return error;
   }
   return fallback;
+}
+
+/**
+ * Chinese copy for config-write failures whose backend message does not convey
+ * the consequence. Keyed by error code so the wording stays with the reason.
+ */
+const configWriteErrorMessages: Record<string, string> = {
+  // A failed parse makes a client fall back to its defaults and end up with an
+  // empty provider list, so "we did not touch it" is the load-bearing part.
+  "validation.route_config_existing_invalid":
+    "现有配置文件无法解析，已拒绝覆盖以免丢失你的 provider 配置。请先修复该文件再重试。",
+  "config.concurrent_modification":
+    "配置文件在写入期间被其他程序修改，未做改动。请重试。",
+  "config.pool_models_empty": "算力池中没有可用模型，请先向池中加入账号。",
+  "config.client_unavailable": "所选客户端不支持当前平台。",
+};
+
+/** Prefers a code-specific Chinese message over the backend's raw text. */
+function formatConfigWriteError(error: unknown): string {
+  const code =
+    error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
+      ? (error as { code: string }).code
+      : "";
+  return configWriteErrorMessages[code] ?? formatApiError(error, "配置写入失败。");
 }
 
 function accountStatusLabel(status: string): string {
@@ -2122,6 +2149,7 @@ export function AccountsScreen({
   const [modelTestOutcome, setModelTestOutcome] = useState<RoutePoolModelTestOutcome | null>(null);
   const [configWriteOutcomes, setConfigWriteOutcomes] = useState<ConfigWriteOutcome[]>([]);
   const [configWriteError, setConfigWriteError] = useState<string | null>(null);
+  const [configWriteDialogOpen, setConfigWriteDialogOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<
     { kind: "single"; id: string; name: string } | { kind: "batch"; count: number } | null
   >(null);
@@ -3251,23 +3279,80 @@ export function AccountsScreen({
       setConfigWriteOutcomes([]);
     },
   });
+  // Pool-wide client behavior switches. Claude Code reads these from its own
+  // settings file, which the whole pool shares, so they cannot be per-account.
+  const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: getSettings });
+  // Kept enabled while outcomes are on screen: the result panel outlives the
+  // dialog and needs these display names to label its rows.
+  const configWriteClientsQuery = useQuery({
+    queryKey: ["config-write-clients", activePlatform],
+    queryFn: () => listConfigWriteClients(activePlatform),
+    enabled: configWriteDialogOpen || configWriteOutcomes.length > 0,
+  });
+  const clientByTargetKey = useMemo(() => {
+    const map = new Map<string, ConfigWriteClientStatus>();
+    for (const client of configWriteClientsQuery.data ?? []) {
+      map.set(client.target_key, client);
+    }
+    return map;
+  }, [configWriteClientsQuery.data]);
+  /** `null` until the user picks, so the dialog defaults to the native client. */
+  const storedClientSelection = useMemo(() => {
+    const raw = settingsQuery.data?.config_write_clients_json;
+    if (!raw) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as Record<string, string[]>;
+      const stored = parsed[activePlatform];
+      return Array.isArray(stored) && stored.length > 0 ? stored : null;
+    } catch {
+      // A corrupt preference must not block writing.
+      return null;
+    }
+  }, [settingsQuery.data?.config_write_clients_json, activePlatform]);
   const writeConfigsMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async (clientKeys: string[]) => {
       if (!configWriteEnabled) {
         throw new Error(configWriteReason);
       }
-      return writeRouteProxyConfigs(routeProxyQuery.data?.base_url ?? null, activePlatform);
+      const outcomes = await writeRouteProxyConfigs(
+        routeProxyQuery.data?.base_url ?? null,
+        activePlatform,
+        clientKeys,
+      );
+      // Remember the choice so the next write does not need re-picking, and so
+      // the staleness nudge covers exactly the clients that were written.
+      const settings = settingsQuery.data;
+      if (settings) {
+        let existing: Record<string, string[]> = {};
+        try {
+          existing = settings.config_write_clients_json
+            ? (JSON.parse(settings.config_write_clients_json) as Record<string, string[]>)
+            : {};
+        } catch {
+          // A corrupt preference must not block writing.
+          existing = {};
+        }
+        const updated = await saveSettings({
+          ...settings,
+          config_write_clients_json: JSON.stringify({
+            ...existing,
+            [activePlatform]: clientKeys,
+          }),
+        });
+        queryClient.setQueryData(["settings"], updated);
+      }
+      return outcomes;
     },
     onMutate: () => setConfigWriteError(null),
     onSuccess: (outcomes) => {
       setConfigWriteOutcomes(outcomes);
+      setConfigWriteDialogOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["route-config-stale"] });
     },
-    onError: (error) => setConfigWriteError(formatApiError(error, "配置写入失败。")),
+    onError: (error) => setConfigWriteError(formatConfigWriteError(error)),
   });
-  // Pool-wide client behavior switches. Claude Code reads these from its own
-  // settings file, which the whole pool shares, so they cannot be per-account.
-  const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   // Config is written on demand, so mapping and client-config edits sit unapplied
   // until the user asks for a write. The backend answers this by rendering through
   // the real adapter and diffing against disk, so the hint cannot drift from what
@@ -3281,9 +3366,14 @@ export function AccountsScreen({
       // account list version changes rather than hand-listing every mutation.
       allCredentialsQuery.dataUpdatedAt,
       settingsQuery.data?.claude_client_config_json ?? null,
+      storedClientSelection,
     ],
     queryFn: () =>
-      routeConfigWriteIsStale(routeProxyQuery.data?.base_url ?? null, activePlatform),
+      routeConfigWriteIsStale(
+        routeProxyQuery.data?.base_url ?? null,
+        activePlatform,
+        storedClientSelection,
+      ),
     enabled: Boolean(routeProxyQuery.data?.running) && configWriteEnabled,
     staleTime: 0,
   });
@@ -4219,8 +4309,12 @@ export function AccountsScreen({
                     ? "border-amber-400 text-amber-700"
                     : "border-stone-300 text-stone-700"
                 }`}
-                disabled={!routeProxyQuery.data?.running || !configWriteEnabled || writeConfigsMutation.isPending}
-                onClick={() => writeConfigsMutation.mutate()}
+                disabled={
+                  !routeProxyQuery.data?.running ||
+                  !configWriteEnabled ||
+                  writeConfigsMutation.isPending
+                }
+                onClick={() => setConfigWriteDialogOpen(true)}
                 title={
                   !configWriteEnabled
                     ? configWriteReason
@@ -4405,7 +4499,8 @@ export function AccountsScreen({
                 key={`${outcome.operation_id}:${outcome.target_key}:${outcome.snapshot_id ?? "none"}`}
               >
                 <p>
-                  {outcome.target_key} · {outcome.platform}: {outcome.path || "未解析路径"} ({outcome.status})
+                  {clientByTargetKey.get(outcome.target_key)?.display_name ?? outcome.target_key} ·{" "}
+                  {outcome.platform}: {outcome.path || "未解析路径"} ({outcome.status})
                 </p>
                 <p className="mt-1 font-mono text-[11px] text-stone-500">
                   operation {outcome.operation_id} · snapshot {outcome.snapshot_id ?? "none"}
@@ -4418,9 +4513,29 @@ export function AccountsScreen({
                 ) : null}
               </div>
             ))}
+            {/* The dialog is gone by now and the user likely switched windows, so
+                the restart requirement has to be repeated here. */}
+            {configWriteOutcomes.some(
+              (outcome) => clientByTargetKey.get(outcome.target_key)?.restart_required,
+            ) ? (
+              <p className="text-[11px] text-stone-500">
+                写入后需重启{" "}
+                {Array.from(
+                  new Set(
+                    configWriteOutcomes
+                      .map((outcome) => clientByTargetKey.get(outcome.target_key))
+                      .filter((client) => client?.restart_required)
+                      .map((client) => client?.display_name ?? ""),
+                  ),
+                ).join("、")}{" "}
+                才生效（它不监听配置文件变化）。
+              </p>
+            ) : null}
           </div>
         )}
-        {configWriteError ? (
+        {/* The dialog stays open on failure and shows this same sentence, so
+            rendering it here too would duplicate it on screen. */}
+        {configWriteError && !configWriteDialogOpen ? (
           <p
             className="mx-4 mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700"
             role="alert"
@@ -6078,6 +6193,23 @@ export function AccountsScreen({
           </div>
         </div>
       )}
+
+      {configWriteDialogOpen ? (
+        <ConfigWriteTargetsDialog
+          capabilityDisabledReason={configWriteEnabled ? undefined : configWriteReason}
+          clients={configWriteClientsQuery.data ?? []}
+          error={configWriteError}
+          initialSelection={storedClientSelection}
+          loading={writeConfigsMutation.isPending}
+          onClose={() => {
+            if (!writeConfigsMutation.isPending) {
+              setConfigWriteDialogOpen(false);
+            }
+          }}
+          onSubmit={(clientKeys) => writeConfigsMutation.mutate(clientKeys)}
+          platform={activePlatform}
+        />
+      ) : null}
 
       {exportRequest ? (
         <RouteCredentialExportDialog
