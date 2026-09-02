@@ -17,7 +17,7 @@
 - `cargo` 前置：`src-tauri/build.rs` 会校验 `src-tauri/binaries/ai-switch-tsnet-x86_64-pc-windows-msvc.exe` 与仓库根 `dist/` 存在，缺任一个都报 `resource path ... doesn't exist`（看起来像编译错误但与代码无关）。本 worktree 两者**都缺**：sidecar 构建见 `src-tauri/binaries/README.md`（在 `sidecar/ai-switch-tsnet` 里 `go build`），`dist/` 可用 `pnpm build` 生成，或直接建一个空目录让 build script 通过。两者都在 .gitignore 内，建好后不要删。
 - 前端测试：`pnpm test:run`（Vitest）。类型检查：`pnpm typecheck`。本 worktree 缺 `node_modules`，需先 `pnpm install`。
 - **绝对不要修改已发布的迁移文件**。sqlx 按字节哈希校验 `.sql`，改动会让所有用户的库被隔离（v0.7.3 的行尾归一化清空过全部用户账号列表）。只新增迁移。
-- 新迁移文件名固定为 `202609020002_usage_upstream_response_id.sql`（`202609020001` 已被 `route_credential_external_source` 占用）。
+- 新迁移文件名固定为 `202609020003_usage_upstream_response_id.sql`（`202609020001` 与 `202609020002` 已被 main 分支的 `route_credential_external_source` 与 `route_credential_models` 占用——版本号是 sqlx 的主键，撞号会让用户的库被隔离）。
 - 金额单位：USD micros（1 USD = 1_000_000）。CNY→USD 固定汇率 `model_pricing::CNY_PER_USD = 7.1`。
 - 界面文案用简体中文，与现有统计面板一致。`AccountsScreen` 未接 i18n，新面板同样用硬编码中文。
 - 数字单位严格三档：≥10_000 用「万」（1 位小数），≥1_000_000 用「百万」（2 位小数），≥100_000_000 用「亿」（2 位小数），小于 10_000 原样带千分位。档位由**原值**决定，不因小数进位跨档。
@@ -31,7 +31,7 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `src-tauri/migrations/202609020002_usage_upstream_response_id.sql` | 加 `upstream_response_id` 列与索引 |
+| `src-tauri/migrations/202609020003_usage_upstream_response_id.sql` | 加 `upstream_response_id` 列与索引 |
 | `src-tauri/src/services/upstream_response_id.rs` | 从响应字节抽取上游响应 id（四种形态），代理写入与历史行回退共用 |
 | `src-tauri/src/services/usage_overview_service.rs` | 合并去重、汇总、四维分组、分页 |
 | `src-tauri/src/core/usage_overview.rs` | Tauri 命令与 web 分发器共用的入口（沿用 `core::usage_stats` 的模式） |
@@ -453,7 +453,7 @@ git commit -m "feat: 用量数字改用万/百万/亿单位"
 加新列，并让三个写入点把上游响应 id 存进去。
 
 **Files:**
-- Create: `src-tauri/migrations/202609020002_usage_upstream_response_id.sql`
+- Create: `src-tauri/migrations/202609020003_usage_upstream_response_id.sql`
 - Modify: `src-tauri/src/database/repositories/route_pool_repository.rs:332-369`（`insert_request_event`）
 - Modify: `src-tauri/src/services/route_proxy_service.rs:5086-5100`（`insert_route_credential_request_event`）
 - Modify: `src-tauri/src/services/route_model_test_service.rs:1372-1379`
@@ -469,7 +469,7 @@ git commit -m "feat: 用量数字改用万/百万/亿单位"
 
 - [ ] **Step 1: 写迁移**
 
-创建 `src-tauri/migrations/202609020002_usage_upstream_response_id.sql`：
+创建 `src-tauri/migrations/202609020003_usage_upstream_response_id.sql`：
 
 ```sql
 -- The upstream response id is the join key between a proxied request and the CLI
@@ -632,7 +632,7 @@ cd src-tauri && CARGO_TARGET_DIR=target-codex cargo test
 - [ ] **Step 7: 提交**
 
 ```bash
-git add src-tauri/migrations/202609020002_usage_upstream_response_id.sql \
+git add src-tauri/migrations/202609020003_usage_upstream_response_id.sql \
         src-tauri/src/models/route_pool.rs \
         src-tauri/src/database/repositories/route_pool_repository.rs \
         src-tauri/src/services/route_proxy_service.rs \

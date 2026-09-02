@@ -260,7 +260,7 @@ codex 行的去重键取自 rollout 中 `response_item` 的 id：`rs_<uuid>` / `
 
 **新建**
 
-- `src-tauri/migrations/202609020002_usage_upstream_response_id.sql`
+- `src-tauri/migrations/202609020003_usage_upstream_response_id.sql`
 - `src/lib/usageFormat.ts` 与对应测试
 - `src/components/accounts/UsageOverviewPanel.tsx` 与对应测试
 - Rust 侧的合并服务（`services/usage_overview_service.rs`）与命令
