@@ -73,6 +73,9 @@ pub async fn write_route_proxy_configs(
         &state.config_writes,
         &resolved,
         &platform,
+        // Task 6 threads the dialog's selection through; today's callers keep
+        // writing the platform's native CLI only.
+        None,
     )
     .await
     .map_err(ApiError::from)
@@ -99,8 +102,12 @@ pub async fn route_config_write_is_stale(
         return Ok(false);
     };
 
-    Ok(
-        RouteConfigService::config_write_is_stale(&state.paths, &state.pool, &resolved, &platform)
-            .await,
+    Ok(RouteConfigService::config_write_is_stale(
+        &state.paths,
+        &state.pool,
+        &resolved,
+        &platform,
+        None,
     )
+    .await)
 }

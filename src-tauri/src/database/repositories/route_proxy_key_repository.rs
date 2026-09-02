@@ -107,6 +107,31 @@ impl RouteProxyKeyRepository {
             .collect())
     }
 
+    /// Keys this platform used before rotation. Adoption uses them to recognize
+    /// a client entry the user wired up with an older key.
+    pub async fn list_aliases_for_platform(
+        pool: &SqlitePool,
+        platform: &str,
+    ) -> Result<Vec<String>, AppError> {
+        let rows = sqlx::query(
+            "SELECT proxy_key FROM route_proxy_key_aliases WHERE platform = ? ORDER BY created_at DESC",
+        )
+        .bind(platform)
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_proxy_key_alias_list",
+            message: "Could not load route proxy key aliases".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| row.get::<String, _>("proxy_key"))
+            .collect())
+    }
+
     pub async fn get_existing_platform_key(
         pool: &SqlitePool,
         platform: &str,

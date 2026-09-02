@@ -766,6 +766,7 @@ pub async fn dispatch_command(
                     &state.config_writes,
                     &resolved,
                     &platform,
+                    None,
                 )
                 .await
                 .map_err(to_error)?,
@@ -792,6 +793,7 @@ pub async fn dispatch_command(
                         &state.pool,
                         &resolved,
                         &platform,
+                        None,
                     )
                     .await,
                 ),
