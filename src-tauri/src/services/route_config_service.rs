@@ -1,5 +1,6 @@
 use crate::adapters::route_config::{
-    codex_model_catalog_path, ClaudeEnvPlan, RouteConfigInput, TargetAdapter, TargetAdapterRegistry,
+    codex_model_catalog_path, ClaudeEnvPlan, ClientModel, RouteConfigInput, TargetAdapter,
+    TargetAdapterRegistry,
 };
 use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
@@ -18,7 +19,7 @@ use crate::services::config_write_service::{
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_model_capability::{
-    codex_model_catalog_payload, parse_model_capability,
+    advertised_model_catalog_entries, codex_model_catalog_payload, parse_model_capability,
 };
 use crate::services::settings_service::SettingsService;
 use directories::BaseDirs;
@@ -37,19 +38,11 @@ impl RouteConfigService {
         runtime: &ConfigWriteRuntimeState,
         base_url: &str,
         platform: &str,
+        client_keys: Option<&[String]>,
     ) -> Result<Vec<ConfigWriteOutcome>, AppError> {
-        let base_url = normalize_base_url(base_url)?;
-
-        let home = BaseDirs::new()
-            .map(|dirs| dirs.home_dir().to_path_buf())
-            .ok_or_else(|| AppError::Filesystem {
-                code: "filesystem.home_not_found",
-                message: "Could not resolve the current user home directory".to_string(),
-                details: None,
-                recoverable: false,
-            })?;
-
-        Self::write_configs_for_home(paths, pool, runtime, base_url, platform, &home).await
+        let home = resolve_home_dir()?;
+        Self::write_configs_for_home(paths, pool, runtime, base_url, platform, &home, client_keys)
+            .await
     }
 
     pub(crate) async fn write_configs_for_home(
@@ -59,11 +52,12 @@ impl RouteConfigService {
         base_url: &str,
         platform: &str,
         home: &Path,
+        client_keys: Option<&[String]>,
     ) -> Result<Vec<ConfigWriteOutcome>, AppError> {
         let base_url = normalize_base_url(base_url)?;
         let platform = PlatformId::parse(platform)?;
         PlatformCapabilityService::require(platform, PlatformOperation::ConfigWrite)?;
-        let adapter = route_config_adapter(platform)?;
+        let adapters = Self::resolve_write_clients(paths, platform, client_keys).await?;
         let platform_key = platform.as_str();
 
         let existing_route_proxy_key =
@@ -74,22 +68,16 @@ impl RouteConfigService {
             &generate_route_proxy_key(),
         )
         .await?;
-        if platform == PlatformId::Codex {
-            Self::write_codex_model_catalog(pool, home).await?;
-        }
+
         let claude_env = Self::resolve_claude_env_plan(paths, pool, platform).await?;
-        let request = ConfigWriteRequest {
-            adapter,
-            home: home.to_path_buf(),
-            input: RouteConfigInput {
-                base_url: base_url.to_string(),
-                route_proxy_key: route_proxy_key.clone(),
-                claude_env,
-            },
-        };
-        match ConfigWriteCoordinator::write_group(paths, pool, runtime, vec![request]).await {
-            Ok(outcomes) => Ok(outcomes),
-            Err(error) => {
+        let needs_models = adapters
+            .iter()
+            .any(|adapter| adapter.requires_client_models());
+        let client_models = if needs_models {
+            let models = Self::resolve_client_models(pool, platform).await?;
+            if models.is_empty() {
+                // A models-less provider is unselectable in ZCode, so writing one
+                // would report success and leave a dead entry.
                 if existing_route_proxy_key.is_none() {
                     let _ = RouteProxyKeyRepository::delete_if_matches(
                         pool,
@@ -98,9 +86,78 @@ impl RouteConfigService {
                     )
                     .await;
                 }
-                Err(error)
+                return Err(AppError::Validation {
+                    code: "config.pool_models_empty",
+                    message: "The pool advertises no models for this platform".to_string(),
+                    details: Some(platform_key.to_string()),
+                    recoverable: true,
+                });
+            }
+            models
+        } else {
+            Vec::new()
+        };
+
+        // The Codex CLI's config.toml references this catalog, so it belongs to
+        // that client and not to the platform.
+        if adapters
+            .iter()
+            .any(|adapter| adapter.client_key() == "codex")
+        {
+            Self::write_codex_model_catalog(pool, home).await?;
+        }
+
+        let aliases =
+            RouteProxyKeyRepository::list_aliases_for_platform(pool, platform_key).await?;
+
+        // One group per client: `write_group` aborts the whole group when any
+        // prepare fails, so grouping them would let a corrupt ZCode config cost
+        // the user their working CLI write.
+        let mut outcomes = Vec::new();
+        let mut last_error = None;
+        let mut any_succeeded = false;
+        for adapter in adapters {
+            let target_key = adapter.target_key();
+            let request = ConfigWriteRequest {
+                adapter,
+                home: home.to_path_buf(),
+                input: RouteConfigInput {
+                    base_url: base_url.to_string(),
+                    route_proxy_key: route_proxy_key.clone(),
+                    route_proxy_key_aliases: aliases.clone(),
+                    claude_env: claude_env.clone(),
+                    client_models: client_models.clone(),
+                },
+            };
+            match ConfigWriteCoordinator::write_group(paths, pool, runtime, vec![request]).await {
+                Ok(group) => {
+                    any_succeeded |= group.iter().any(|outcome| outcome.status == "succeeded");
+                    outcomes.extend(group);
+                }
+                Err(error) => {
+                    // A failed group produces no outcome row, so the result panel
+                    // would silently omit this client.
+                    outcomes.push(failed_client_outcome(target_key, platform_key, &error));
+                    last_error = Some(error);
+                }
             }
         }
+
+        if !any_succeeded {
+            if existing_route_proxy_key.is_none() {
+                let _ = RouteProxyKeyRepository::delete_if_matches(
+                    pool,
+                    platform_key,
+                    &route_proxy_key,
+                )
+                .await;
+            }
+            if let Some(error) = last_error {
+                return Err(error);
+            }
+        }
+
+        Ok(outcomes)
     }
 
     /// Rewrites only platforms that already own a managed proxy key. This is
@@ -148,7 +205,12 @@ impl RouteConfigService {
                 ));
                 continue;
             }
-            let Some(adapter) = registry.for_platform(parsed) else {
+            let Some(adapter) = registry
+                .clients_for_platform(parsed)
+                .into_iter()
+                .find(|client| client.native)
+                .and_then(|client| registry.by_client_and_platform(&client.client_key, parsed))
+            else {
                 skipped.push(skipped_outcome(
                     &platform,
                     parsed.as_str(),
@@ -178,7 +240,9 @@ impl RouteConfigService {
                 input: RouteConfigInput {
                     base_url: base_url.to_string(),
                     route_proxy_key,
+                    route_proxy_key_aliases: Vec::new(),
                     claude_env,
+                    client_models: Vec::new(),
                 },
             });
         }
@@ -210,12 +274,14 @@ impl RouteConfigService {
         pool: &SqlitePool,
         base_url: &str,
         platform: &str,
+        client_keys: Option<&[String]>,
     ) -> bool {
         let home = match resolve_home_dir() {
             Ok(home) => home,
             Err(_) => return false,
         };
-        Self::config_write_is_stale_for_home(paths, pool, base_url, platform, &home).await
+        Self::config_write_is_stale_for_home(paths, pool, base_url, platform, &home, client_keys)
+            .await
     }
 
     pub(crate) async fn config_write_is_stale_for_home(
@@ -224,8 +290,9 @@ impl RouteConfigService {
         base_url: &str,
         platform: &str,
         home: &Path,
+        client_keys: Option<&[String]>,
     ) -> bool {
-        Self::rendered_config_differs(paths, pool, base_url, platform, home)
+        Self::rendered_config_differs(paths, pool, base_url, platform, home, client_keys)
             .await
             .unwrap_or(false)
     }
@@ -236,6 +303,7 @@ impl RouteConfigService {
         base_url: &str,
         platform: &str,
         home: &Path,
+        client_keys: Option<&[String]>,
     ) -> Result<bool, AppError> {
         let base_url = normalize_base_url(base_url)?;
         let platform = PlatformId::parse(platform)?;
@@ -248,32 +316,45 @@ impl RouteConfigService {
             return Ok(false);
         };
 
-        let adapter = route_config_adapter(platform)?;
-        let path = adapter.resolve_path(home);
-        let existing = tokio::fs::read(&path).await.ok();
-        if existing.is_none() {
-            // The file we manage is gone; writing would recreate it.
-            return Ok(true);
+        let adapters = Self::resolve_write_clients(paths, platform, client_keys).await?;
+        let claude_env = Self::resolve_claude_env_plan(paths, pool, platform).await?;
+        let needs_models = adapters
+            .iter()
+            .any(|adapter| adapter.requires_client_models());
+        let client_models = if needs_models {
+            Self::resolve_client_models(pool, platform).await?
+        } else {
+            Vec::new()
+        };
+        let aliases =
+            RouteProxyKeyRepository::list_aliases_for_platform(pool, platform.as_str()).await?;
+
+        for adapter in adapters {
+            let path = adapter.resolve_path(home);
+            let Ok(existing) = tokio::fs::read(&path).await else {
+                // A file we manage is gone; writing would recreate it.
+                return Ok(true);
+            };
+            let input = RouteConfigInput {
+                base_url: base_url.to_string(),
+                route_proxy_key: route_proxy_key.clone(),
+                route_proxy_key_aliases: aliases.clone(),
+                claude_env: claude_env.clone(),
+                client_models: client_models.clone(),
+            };
+            // One client's render error must not hide another client's real drift.
+            let Ok(rendered) = adapter.render(&path, Some(&existing), &input) else {
+                continue;
+            };
+            // Compare parsed content, not bytes: `render` pretty-prints whatever
+            // it parsed, so a file the coordinator previously wrote compact would
+            // look "stale" forever on formatting alone.
+            if config_content_differs(&existing, &rendered) {
+                return Ok(true);
+            }
         }
 
-        let claude_env = Self::resolve_claude_env_plan(paths, pool, platform).await?;
-        let rendered = adapter.render(
-            &path,
-            existing.as_deref(),
-            &RouteConfigInput {
-                base_url: base_url.to_string(),
-                route_proxy_key,
-                claude_env,
-            },
-        )?;
-
-        // Compare parsed content, not bytes: `render` pretty-prints whatever it
-        // parsed, so a file the coordinator previously wrote compact would look
-        // "stale" forever on formatting alone.
-        Ok(config_content_differs(
-            existing.as_deref().unwrap_or_default(),
-            &rendered,
-        ))
+        Ok(false)
     }
 
     pub(crate) async fn write_existing_config_for_home(
@@ -290,12 +371,14 @@ impl RouteConfigService {
         PlatformCapabilityService::require(platform, PlatformOperation::ConfigWrite)?;
         let claude_env = Self::resolve_claude_env_plan(paths, pool, platform).await?;
         let request = ConfigWriteRequest {
-            adapter: route_config_adapter(platform)?,
+            adapter: route_config_adapter(&native_client_key(platform)?, platform)?,
             home: home.to_path_buf(),
             input: RouteConfigInput {
                 base_url: base_url.to_string(),
                 route_proxy_key: route_proxy_key.to_string(),
+                route_proxy_key_aliases: Vec::new(),
                 claude_env,
+                client_models: Vec::new(),
             },
         };
         if platform == PlatformId::Codex {
@@ -410,6 +493,79 @@ impl RouteConfigService {
         (!object.is_empty()).then(|| object.clone())
     }
 
+    /// Adapters to write for this platform. Explicit `requested` wins; otherwise
+    /// the stored per-platform selection; otherwise the platform's native CLI so
+    /// callers that predate client selection behave exactly as before.
+    pub(crate) async fn resolve_write_clients(
+        paths: &AppPaths,
+        platform: PlatformId,
+        requested: Option<&[String]>,
+    ) -> Result<Vec<Arc<dyn TargetAdapter>>, AppError> {
+        let keys = match requested {
+            Some(keys) if !keys.is_empty() => keys.to_vec(),
+            _ => Self::stored_write_client_keys(paths, platform).await,
+        };
+        if keys.is_empty() {
+            return Ok(vec![route_config_adapter(
+                &native_client_key(platform)?,
+                platform,
+            )?]);
+        }
+
+        keys.iter()
+            .map(|key| route_config_adapter(key, platform))
+            .collect()
+    }
+
+    /// Stored selection for this platform, or empty when absent, malformed, or
+    /// empty. A corrupt preference must never block a write.
+    async fn stored_write_client_keys(paths: &AppPaths, platform: PlatformId) -> Vec<String> {
+        let Ok(settings) = SettingsService::load(paths).await else {
+            return Vec::new();
+        };
+        let Some(raw) = settings.config_write_clients_json else {
+            return Vec::new();
+        };
+        serde_json::from_str::<Map<String, Value>>(&raw)
+            .ok()
+            .and_then(|map| map.get(platform.as_str()).cloned())
+            .and_then(|value| serde_json::from_value::<Vec<String>>(value).ok())
+            .unwrap_or_default()
+    }
+
+    /// Models this platform's pool advertises, shaped for client configs that
+    /// must carry the list themselves.
+    pub(crate) async fn resolve_client_models(
+        pool: &SqlitePool,
+        platform: PlatformId,
+    ) -> Result<Vec<ClientModel>, AppError> {
+        let ids = RoutePoolRepository::list_member_ids(pool, platform.as_str()).await?;
+        let credentials = RouteCredentialRepository::list_by_ids(
+            pool,
+            &ids,
+            &RouteCredentialSelectionContext {
+                platform: platform.as_str().to_string(),
+                pool_scope: RouteCredentialPoolScope::InPool,
+            },
+        )
+        .await?;
+        let capabilities = credentials
+            .iter()
+            .map(|credential| parse_model_capability(&credential.config_json))
+            .collect::<Vec<_>>();
+
+        Ok(
+            advertised_model_catalog_entries(platform.as_str(), &capabilities)
+                .into_iter()
+                .map(|model| ClientModel {
+                    context_window: client_model_context_window(&model.id),
+                    max_output_tokens: CLIENT_MODEL_MAX_OUTPUT_TOKENS,
+                    id: model.id,
+                })
+                .collect(),
+        )
+    }
+
     /// Builds the Claude-only env plan for a config write. Non-Claude platforms
     /// get an empty plan, which clears every managed key.
     async fn resolve_claude_env_plan(
@@ -500,9 +656,45 @@ fn skipped_outcome(target_key: &str, platform: &str, error_code: &str) -> Config
     }
 }
 
-fn route_config_adapter(platform: PlatformId) -> Result<Arc<dyn TargetAdapter>, AppError> {
+/// A client whose group write errored has no outcome row of its own, so the
+/// result panel would silently omit it.
+fn failed_client_outcome(target_key: &str, platform: &str, error: &AppError) -> ConfigWriteOutcome {
+    ConfigWriteOutcome {
+        operation_id: String::new(),
+        snapshot_id: None,
+        target_app_id: None,
+        target_key: target_key.to_string(),
+        platform: platform.to_string(),
+        path: String::new(),
+        status: "failed".to_string(),
+        before_hash: None,
+        after_hash: None,
+        error_code: Some(error.code().to_string()),
+    }
+}
+
+fn route_config_adapter(
+    client_key: &str,
+    platform: PlatformId,
+) -> Result<Arc<dyn TargetAdapter>, AppError> {
     TargetAdapterRegistry::new()
-        .for_platform(platform)
+        .by_client_and_platform(client_key, platform)
+        .ok_or_else(|| AppError::Validation {
+            code: "config.client_unavailable",
+            message: "No verified configuration adapter is available for this client".to_string(),
+            details: Some(format!("{client_key}:{}", platform.as_str())),
+            recoverable: true,
+        })
+}
+
+/// The platform's first-party CLI client key. Used by call sites that predate
+/// explicit client selection so their behavior is unchanged.
+fn native_client_key(platform: PlatformId) -> Result<String, AppError> {
+    TargetAdapterRegistry::new()
+        .clients_for_platform(platform)
+        .into_iter()
+        .find(|client| client.native)
+        .map(|client| client.client_key)
         .ok_or_else(|| AppError::Validation {
             code: "config.adapter_unavailable",
             message: "No verified native configuration adapter is available".to_string(),
@@ -552,12 +744,30 @@ pub fn generate_route_proxy_key() -> String {
     format!("sk-ai-switch-{}", Uuid::new_v4().simple())
 }
 
+const CLIENT_MODEL_MAX_OUTPUT_TOKENS: u32 = 128_000;
+const CLIENT_MODEL_CONTEXT_WINDOW: u32 = 200_000;
+const CLIENT_MODEL_ONE_M_CONTEXT_WINDOW: u32 = 1_000_000;
+
+/// The `[1m]` suffix is how the pool advertises a 1M-context variant of a
+/// model, so the written limit has to follow it rather than the base id.
+fn client_model_context_window(model_id: &str) -> u32 {
+    if model_id.trim().to_ascii_lowercase().ends_with("[1m]") {
+        CLIENT_MODEL_ONE_M_CONTEXT_WINDOW
+    } else {
+        CLIENT_MODEL_CONTEXT_WINDOW
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config_writer::ConfigWriter;
     use crate::database::{create_memory_pool, run_migrations};
+    use crate::models::settings::AppSettings;
     use crate::services::config_write_service::ConfigWriteRuntimeState;
+    use chrono::Utc;
+
+    const BASE_URL: &str = "http://127.0.0.1:43111";
 
     #[test]
     fn generated_route_proxy_key_uses_sk_shape() {
@@ -580,6 +790,7 @@ mod tests {
             "http://127.0.0.1:43111",
             "opencode",
             temp.path(),
+            None,
         )
         .await
         .expect_err("unsupported target");
@@ -627,6 +838,7 @@ mod tests {
             "http://127.0.0.1:43111",
             "hermes",
             &home,
+            None,
         )
         .await
         .unwrap_err();
@@ -684,6 +896,7 @@ mod tests {
             "http://127.0.0.1:43111",
             "codex",
             home.path(),
+            None,
         )
         .await
         .expect_err("invalid config must fail");
@@ -954,6 +1167,7 @@ command = "npx"
             "http://127.0.0.1:43111",
             "claude",
             home,
+            None,
         )
         .await
         .expect("write claude config");
@@ -1224,6 +1438,7 @@ command = "npx"
                 base_url,
                 "claude",
                 home.path(),
+                None,
             )
         };
 
@@ -1483,6 +1698,526 @@ command = "npx"
                 .await
                 .expect("read grok"),
             grok_original
+        );
+    }
+
+    #[test]
+    fn one_m_suffixed_models_get_the_larger_context_window() {
+        assert_eq!(client_model_context_window("gpt-5.6-sol"), 200_000);
+        assert_eq!(
+            client_model_context_window("claude-sonnet-alias[1m]"),
+            1_000_000
+        );
+        assert_eq!(
+            client_model_context_window("Claude-Sonnet-Alias[1M]"),
+            1_000_000
+        );
+    }
+
+    #[tokio::test]
+    async fn write_clients_default_to_the_native_cli_when_never_chosen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
+
+        let clients = RouteConfigService::resolve_write_clients(&paths, PlatformId::Codex, None)
+            .await
+            .expect("clients");
+
+        // Unchanged behavior for users who never open the dialog.
+        assert_eq!(
+            clients
+                .iter()
+                .map(|adapter| adapter.client_key())
+                .collect::<Vec<_>>(),
+            vec!["codex"]
+        );
+    }
+
+    #[tokio::test]
+    async fn stored_selection_is_honored_per_platform() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
+        let mut settings = AppSettings::defaults_for_data_dir(paths.data_dir.display().to_string());
+        settings.config_write_clients_json =
+            Some(r#"{"codex":["codex","zcode"],"claude":["claude_code"]}"#.to_string());
+        SettingsService::save(&paths, &settings)
+            .await
+            .expect("save");
+
+        let codex = RouteConfigService::resolve_write_clients(&paths, PlatformId::Codex, None)
+            .await
+            .expect("codex clients");
+        assert_eq!(
+            codex
+                .iter()
+                .map(|adapter| adapter.target_key())
+                .collect::<Vec<_>>(),
+            vec!["codex", "zcode_codex"]
+        );
+
+        // The stored codex selection must not leak into another platform.
+        let claude = RouteConfigService::resolve_write_clients(&paths, PlatformId::Claude, None)
+            .await
+            .expect("claude clients");
+        assert_eq!(
+            claude
+                .iter()
+                .map(|adapter| adapter.target_key())
+                .collect::<Vec<_>>(),
+            vec!["claude_code"]
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_request_overrides_storage_and_rejects_unknown_clients() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
+
+        let requested = vec!["zcode".to_string()];
+        let clients =
+            RouteConfigService::resolve_write_clients(&paths, PlatformId::Codex, Some(&requested))
+                .await
+                .expect("clients");
+        assert_eq!(
+            clients
+                .iter()
+                .map(|adapter| adapter.target_key())
+                .collect::<Vec<_>>(),
+            vec!["zcode_codex"]
+        );
+
+        // Fail loudly: silently skipping an unknown key would look like a
+        // successful write that did nothing.
+        let unknown = vec!["not-a-client".to_string()];
+        // `Vec<Arc<dyn TargetAdapter>>` is not `Debug`, so `expect_err` is out.
+        let Err(error) =
+            RouteConfigService::resolve_write_clients(&paths, PlatformId::Codex, Some(&unknown))
+                .await
+        else {
+            panic!("an unknown client key must be rejected");
+        };
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "config.client_unavailable",
+                ..
+            }
+        ));
+
+        // A client that exists but not for this platform is equally a mismatch.
+        let wrong_platform = vec!["claude_code".to_string()];
+        assert!(RouteConfigService::resolve_write_clients(
+            &paths,
+            PlatformId::Codex,
+            Some(&wrong_platform)
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn malformed_selection_json_falls_back_to_the_native_cli() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
+        let mut settings = AppSettings::defaults_for_data_dir(paths.data_dir.display().to_string());
+        settings.config_write_clients_json = Some("{not json".to_string());
+        SettingsService::save(&paths, &settings)
+            .await
+            .expect("save");
+
+        // A corrupt preference must never be the thing that blocks a write.
+        let clients = RouteConfigService::resolve_write_clients(&paths, PlatformId::Codex, None)
+            .await
+            .expect("clients");
+        assert_eq!(
+            clients
+                .iter()
+                .map(|adapter| adapter.client_key())
+                .collect::<Vec<_>>(),
+            vec!["codex"]
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_stored_selection_falls_back_to_the_native_cli() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(dir.path().to_path_buf());
+        paths.ensure().await.expect("paths");
+        let mut settings = AppSettings::defaults_for_data_dir(paths.data_dir.display().to_string());
+        settings.config_write_clients_json = Some(r#"{"codex":[]}"#.to_string());
+        SettingsService::save(&paths, &settings)
+            .await
+            .expect("save");
+
+        // An empty list would otherwise write nothing and report success.
+        let clients = RouteConfigService::resolve_write_clients(&paths, PlatformId::Codex, None)
+            .await
+            .expect("clients");
+        assert_eq!(
+            clients
+                .iter()
+                .map(|adapter| adapter.client_key())
+                .collect::<Vec<_>>(),
+            vec!["codex"]
+        );
+    }
+
+    struct ServiceFixture {
+        _temp: tempfile::TempDir,
+        paths: AppPaths,
+        pool: SqlitePool,
+        runtime: ConfigWriteRuntimeState,
+        home: PathBuf,
+    }
+
+    impl ServiceFixture {
+        async fn new() -> Self {
+            let temp = tempfile::tempdir().expect("temp dir");
+            let paths = AppPaths::from_data_dir(temp.path().join("app-data"));
+            paths.ensure().await.expect("paths");
+            let pool = create_memory_pool().await.expect("pool");
+            run_migrations(&pool).await.expect("migrations");
+            let home = temp.path().join("home");
+            tokio::fs::create_dir_all(&home).await.expect("home");
+
+            Self {
+                _temp: temp,
+                paths,
+                pool,
+                runtime: ConfigWriteRuntimeState::default(),
+                home,
+            }
+        }
+    }
+
+    /// An in-pool api credential mapping one model to itself, which is the
+    /// minimum for the pool to advertise anything.
+    async fn seed_codex_pool_member(pool: &SqlitePool, model: &str) {
+        let credential_id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let config_json = serde_json::json!({
+            "model_mappings": [{ "from": model, "to": model }]
+        })
+        .to_string();
+        sqlx::query(
+            "INSERT INTO route_credentials (id, platform, kind, display_name, secret_payload_json, config_json, preview_json, created_at, updated_at)
+             VALUES (?, 'codex', 'api', 'seed', '{}', ?, '{}', ?, ?)",
+        )
+        .bind(&credential_id)
+        .bind(&config_json)
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await
+        .expect("insert credential");
+        sqlx::query(
+            "INSERT INTO route_pool_members (id, platform, route_credential_id, created_at, updated_at)
+             VALUES (?, 'codex', ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&credential_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await
+        .expect("insert pool member");
+    }
+
+    /// The sk the Codex CLI config was written with, read back from disk.
+    async fn codex_written_key(home: &Path) -> String {
+        let raw = tokio::fs::read_to_string(home.join(".codex/config.toml"))
+            .await
+            .expect("read config.toml");
+        raw.lines()
+            .find_map(|line| line.trim().strip_prefix("experimental_bearer_token = "))
+            .map(|value| value.trim().trim_matches('"').to_string())
+            .expect("bearer token")
+    }
+
+    #[tokio::test]
+    async fn zcode_only_write_leaves_the_codex_cli_files_untouched() {
+        let fixture = ServiceFixture::new().await;
+        seed_codex_pool_member(&fixture.pool, "gpt-5.6-sol").await;
+
+        let outcomes = RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            BASE_URL,
+            "codex",
+            &fixture.home,
+            Some(&["zcode".to_string()]),
+        )
+        .await
+        .expect("write");
+
+        assert_eq!(
+            outcomes
+                .iter()
+                .map(|o| o.target_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["zcode_codex"]
+        );
+        assert!(fixture.home.join(".zcode/v2/config.json").exists());
+        // Neither the CLI config nor the catalog it references belongs to this write.
+        assert!(!fixture.home.join(".codex/config.toml").exists());
+        assert!(!fixture
+            .home
+            .join(".codex/ai-switch-model-catalog.json")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn a_corrupt_zcode_config_does_not_block_the_codex_cli_write() {
+        let fixture = ServiceFixture::new().await;
+        seed_codex_pool_member(&fixture.pool, "gpt-5.6-sol").await;
+        let zcode_path = fixture.home.join(".zcode/v2/config.json");
+        tokio::fs::create_dir_all(zcode_path.parent().unwrap())
+            .await
+            .expect("dir");
+        tokio::fs::write(&zcode_path, b"{not json")
+            .await
+            .expect("corrupt");
+
+        let outcomes = RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            BASE_URL,
+            "codex",
+            &fixture.home,
+            Some(&["codex".to_string(), "zcode".to_string()]),
+        )
+        .await
+        .expect("partial success is not an error");
+
+        // Independent client configs are not one transaction: one broken file
+        // must not cost the user their working Codex setup.
+        let codex = outcomes
+            .iter()
+            .find(|o| o.target_key == "codex")
+            .expect("codex");
+        assert_eq!(codex.status, "succeeded");
+        let zcode = outcomes
+            .iter()
+            .find(|o| o.target_key == "zcode_codex")
+            .expect("zcode");
+        assert_ne!(zcode.status, "succeeded");
+        assert!(fixture.home.join(".codex/config.toml").exists());
+        // Refused, not overwritten.
+        assert_eq!(
+            tokio::fs::read(&zcode_path).await.expect("read"),
+            b"{not json"
+        );
+
+        // The key backs a write that did land, so it must survive.
+        assert_eq!(
+            RouteProxyKeyRepository::get_existing_platform_key(&fixture.pool, "codex")
+                .await
+                .expect("key"),
+            Some(codex_written_key(&fixture.home).await)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_key_is_removed_only_when_every_client_fails() {
+        let fixture = ServiceFixture::new().await;
+        seed_codex_pool_member(&fixture.pool, "gpt-5.6-sol").await;
+        let zcode_path = fixture.home.join(".zcode/v2/config.json");
+        tokio::fs::create_dir_all(zcode_path.parent().unwrap())
+            .await
+            .expect("dir");
+        tokio::fs::write(&zcode_path, b"{not json")
+            .await
+            .expect("corrupt");
+
+        let error = RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            BASE_URL,
+            "codex",
+            &fixture.home,
+            Some(&["zcode".to_string()]),
+        )
+        .await
+        .expect_err("only client failed");
+
+        assert!(matches!(
+            error,
+            AppError::Validation { .. } | AppError::Filesystem { .. }
+        ));
+        // Nothing was written, so the key we minted has no reason to exist.
+        assert!(
+            RouteProxyKeyRepository::get_existing_platform_key(&fixture.pool, "codex")
+                .await
+                .expect("key")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn writing_zcode_without_pool_models_is_refused() {
+        let fixture = ServiceFixture::new().await;
+        // No pool member: nothing to advertise.
+
+        let error = RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            BASE_URL,
+            "codex",
+            &fixture.home,
+            Some(&["zcode".to_string()]),
+        )
+        .await
+        .expect_err("must refuse");
+
+        // A models-less provider is unselectable in ZCode, so writing one would
+        // look like success and behave like a dead entry.
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "config.pool_models_empty",
+                ..
+            }
+        ));
+        assert!(!fixture.home.join(".zcode/v2/config.json").exists());
+    }
+
+    #[tokio::test]
+    async fn zcode_write_carries_the_pool_models_and_rotated_key_aliases() {
+        let fixture = ServiceFixture::new().await;
+        seed_codex_pool_member(&fixture.pool, "gpt-5.6-sol").await;
+
+        RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            BASE_URL,
+            "codex",
+            &fixture.home,
+            Some(&["zcode".to_string()]),
+        )
+        .await
+        .expect("write");
+
+        let raw = tokio::fs::read(fixture.home.join(".zcode/v2/config.json"))
+            .await
+            .expect("read");
+        let json: Value = serde_json::from_slice(&raw).expect("json");
+        let entry = &json["provider"]["ai-switch-codex"];
+        assert_eq!(entry["models"]["gpt-5.6-sol"]["limit"]["output"], 128000);
+        assert_eq!(entry["aiSwitch"]["platform"], "codex");
+    }
+
+    #[tokio::test]
+    async fn stale_check_covers_every_selected_client() {
+        let fixture = ServiceFixture::new().await;
+        seed_codex_pool_member(&fixture.pool, "gpt-5.6-sol").await;
+        let clients = vec!["codex".to_string(), "zcode".to_string()];
+
+        RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            BASE_URL,
+            "codex",
+            &fixture.home,
+            Some(&clients),
+        )
+        .await
+        .expect("write");
+
+        assert!(
+            !RouteConfigService::config_write_is_stale_for_home(
+                &fixture.paths,
+                &fixture.pool,
+                BASE_URL,
+                "codex",
+                &fixture.home,
+                Some(&clients),
+            )
+            .await
+        );
+
+        // A ZCode-only drift still has to surface on the shared nudge.
+        tokio::fs::remove_file(fixture.home.join(".zcode/v2/config.json"))
+            .await
+            .expect("remove");
+        assert!(
+            RouteConfigService::config_write_is_stale_for_home(
+                &fixture.paths,
+                &fixture.pool,
+                BASE_URL,
+                "codex",
+                &fixture.home,
+                Some(&clients),
+            )
+            .await
+        );
+
+        // Narrowing the selection back to the intact client clears the nudge.
+        assert!(
+            !RouteConfigService::config_write_is_stale_for_home(
+                &fixture.paths,
+                &fixture.pool,
+                BASE_URL,
+                "codex",
+                &fixture.home,
+                Some(&["codex".to_string()]),
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pool_mapping_change_marks_the_zcode_config_stale() {
+        let fixture = ServiceFixture::new().await;
+        seed_codex_pool_member(&fixture.pool, "gpt-5.6-sol").await;
+        let clients = vec!["zcode".to_string()];
+
+        RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            BASE_URL,
+            "codex",
+            &fixture.home,
+            Some(&clients),
+        )
+        .await
+        .expect("write");
+
+        assert!(
+            !RouteConfigService::config_write_is_stale_for_home(
+                &fixture.paths,
+                &fixture.pool,
+                BASE_URL,
+                "codex",
+                &fixture.home,
+                Some(&clients),
+            )
+            .await
+        );
+
+        // ZCode's model list lives in the config file, so a pool mapping change
+        // leaves the file advertising a stale set until the user writes again.
+        seed_codex_pool_member(&fixture.pool, "gpt-5.6-terra").await;
+        assert!(
+            RouteConfigService::config_write_is_stale_for_home(
+                &fixture.paths,
+                &fixture.pool,
+                BASE_URL,
+                "codex",
+                &fixture.home,
+                Some(&clients),
+            )
+            .await
         );
     }
 

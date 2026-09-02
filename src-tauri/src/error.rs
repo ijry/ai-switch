@@ -32,6 +32,19 @@ pub enum AppError {
     },
 }
 
+impl AppError {
+    /// The stable error code. Mirrors what `ApiError` surfaces, for call sites
+    /// that need the code without converting the whole error.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Validation { code, .. }
+            | Self::Filesystem { code, .. }
+            | Self::Database { code, .. }
+            | Self::Secret { code, .. } => code,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ApiError {
     pub code: String,

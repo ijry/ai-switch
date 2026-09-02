@@ -32,6 +32,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  Fragment,
   useCallback,
   useEffect,
   useId,
@@ -49,10 +50,13 @@ import {
   isImportableExternalItem,
   useExternalClientImportPreview,
 } from "../components/accounts/ExternalClientImportPanel";
+import { ConfigWriteTargetsDialog } from "../components/accounts/ConfigWriteTargetsDialog";
+import { FormTabs, type FormTab } from "../components/accounts/FormTabs";
 import { RouteCredentialExportDialog } from "../components/accounts/RouteCredentialExportDialog";
 import { CopyRouteCredentialDialog } from "../components/accounts/CopyRouteCredentialDialog";
 import { UsageOverviewPanel } from "../components/accounts/UsageOverviewPanel";
 import { neighborsForDrop } from "../lib/accountReorder";
+import { useDragSort } from "../lib/useDragSort";
 import {
   claudeAliasSupportsOneM,
   CLAUDE_FALLBACK_ALIAS,
@@ -67,6 +71,8 @@ import {
 import {
   createBatch,
   copyRouteCredential,
+  clearRouteCredentialModelState,
+  setRouteCredentialModelStatus,
   setRouteCredentialRecovery,
   createApiRouteCredential,
   archiveRouteCredentials,
@@ -78,6 +84,7 @@ import {
   importExternalClientAccounts,
   importOfficialRouteCredentialsFromFiles,
   importOfficialRouteCredentialsFromText,
+  listConfigWriteClients,
   listRouteCredentials,
   listRouteCredentialPage,
   reorderRouteCredentials,
@@ -100,6 +107,7 @@ import {
 import type {
   AccountStatus,
   AnthropicApiKeyField,
+  ConfigWriteClientStatus,
   ConfigWriteOutcome,
   CopyRouteCredentialInput,
   ExternalClientImportOutcome,
@@ -112,6 +120,8 @@ import type {
   RouteCredential,
   RouteCredentialActivityEvent,
   RouteCredentialFailurePolicy,
+  RouteCredentialModelState,
+  RouteCredentialModelStatus,
   RouteCredentialPage,
   RouteCredentialPoolScope,
   RouteCredentialSelectionContext,
@@ -174,6 +184,8 @@ const DEFAULT_MAX_CONCURRENCY = 5;
 type PlatformKey = PlatformId;
 type CreateMode = "api" | "official" | "external";
 type AccountView = "in_pool" | "out_of_pool" | "archived" | "stats";
+type CreateTab = "basic" | "advanced";
+type EditTab = "basic" | "advanced" | "failure" | "other";
 type RowAction = {
   key: string;
   ariaLabel: string;
@@ -208,6 +220,18 @@ const defaultRouteCredentialFailurePolicy: RouteCredentialFailurePolicy = {
   error_status_enabled: true,
 };
 
+const createTabs: Array<FormTab<CreateTab>> = [
+  { value: "basic", label: "基础" },
+  { value: "advanced", label: "高级" },
+];
+
+const editTabs: Array<FormTab<EditTab>> = [
+  { value: "basic", label: "基础" },
+  { value: "advanced", label: "高级" },
+  { value: "failure", label: "故障处理" },
+  { value: "other", label: "其他" },
+];
+
 function formatApiError(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim()) {
     return error.message;
@@ -239,6 +263,30 @@ function formatApiError(error: unknown, fallback: string): string {
     return error;
   }
   return fallback;
+}
+
+/**
+ * Chinese copy for config-write failures whose backend message does not convey
+ * the consequence. Keyed by error code so the wording stays with the reason.
+ */
+const configWriteErrorMessages: Record<string, string> = {
+  // A failed parse makes a client fall back to its defaults and end up with an
+  // empty provider list, so "we did not touch it" is the load-bearing part.
+  "validation.route_config_existing_invalid":
+    "现有配置文件无法解析，已拒绝覆盖以免丢失你的 provider 配置。请先修复该文件再重试。",
+  "config.concurrent_modification":
+    "配置文件在写入期间被其他程序修改，未做改动。请重试。",
+  "config.pool_models_empty": "算力池中没有可用模型，请先向池中加入账号。",
+  "config.client_unavailable": "所选客户端不支持当前平台。",
+};
+
+/** Prefers a code-specific Chinese message over the backend's raw text. */
+function formatConfigWriteError(error: unknown): string {
+  const code =
+    error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
+      ? (error as { code: string }).code
+      : "";
+  return configWriteErrorMessages[code] ?? formatApiError(error, "配置写入失败。");
 }
 
 function accountStatusLabel(status: string): string {
@@ -293,6 +341,65 @@ function transientFailureTag(
   };
 }
 
+type ModelIssue = {
+  state: RouteCredentialModelState;
+  reason: "cooling" | "error" | "paused";
+  remaining: number | null;
+};
+
+// A model is unavailable when it is paused, marked unhealthy, or still cooling.
+// Cooling is time-based so it needs `now`; the other two are verdicts.
+function credentialModelIssues(credential: RouteCredential, now: number): ModelIssue[] {
+  if (terminalAccountStatuses.has(credential.status)) {
+    return [];
+  }
+  const issues: ModelIssue[] = [];
+  for (const state of credential.model_states ?? []) {
+    if (state.status === "paused") {
+      issues.push({ state, reason: "paused", remaining: null });
+      continue;
+    }
+    if (state.status === "error") {
+      issues.push({ state, reason: "error", remaining: null });
+      continue;
+    }
+    if (!state.cooldown_until) {
+      continue;
+    }
+    const deadline = new Date(state.cooldown_until).getTime();
+    if (!Number.isFinite(deadline) || deadline <= now) {
+      continue;
+    }
+    issues.push({ state, reason: "cooling", remaining: deadline - now });
+  }
+  return issues;
+}
+
+function modelIssueLabel(issue: ModelIssue): string {
+  switch (issue.reason) {
+    case "paused":
+      return "已暂停";
+    case "error":
+      return "异常";
+    default:
+      return `冷却 ${formatCooldownRemaining(issue.remaining ?? 0)}`;
+  }
+}
+
+// Whether "解除" has anything to do for this model. A paused model is the user's
+// own decision, and a healthy model with no bookkeeping has no row to delete, so
+// clearing either would be a wasted round trip.
+function modelStateIsClearable(state: RouteCredentialModelState): boolean {
+  if (state.status === "paused") {
+    return false;
+  }
+  return (
+    state.status === "error" ||
+    Boolean(state.cooldown_until) ||
+    state.transient_failure_count > 0 ||
+    state.semantic_failure_streak_count > 0
+  );
+}
 
 const accountViewOptions: Array<{ key: AccountView; label: string }> = [
   { key: "in_pool", label: "算力池" },
@@ -996,7 +1103,11 @@ function formatCooldownRemaining(milliseconds: number): string {
 function useCooldownCountdown(credentials: RouteCredential[]) {
   const nextDeadline = useMemo(() => {
     const deadlines = credentials
-      .map((credential) => credential.cooldown_until || credential.next_retry_at)
+      .flatMap((credential) => [
+        credential.cooldown_until || credential.next_retry_at,
+        // Model-level cooldowns tick on the same timer: one interval covers both.
+        ...(credential.model_states ?? []).map((state) => state.cooldown_until),
+      ])
       .filter((raw): raw is string => Boolean(raw))
       .map((raw) => new Date(raw).getTime())
       .filter((time) => Number.isFinite(time));
@@ -1572,6 +1683,18 @@ function prettyJsonOrText(value: string) {
 }
 
 const SENSITIVE_WORDS_ERROR_CODE = "sensitive_words_detected";
+/**
+ * How a relay opens `error.message` once the **shared** budget pool behind the
+ * account runs dry. Worth calling out because the wording reads like a personal
+ * quota problem, so users go looking for a top-up that would not help.
+ *
+ * Lowercase because it is compared case-insensitively, the way the backend's own
+ * `quota has been exhausted` rule treats this string family. Matched anywhere in
+ * the stored failure rather than as a prefix: the phrase reaches this row both
+ * verbatim in `last_failure_message` and nested inside the raw body, whose shape
+ * varies (plain JSON, an SSE frame, truncated at 8 KiB) too much to re-parse.
+ */
+const BUDGET_POOL_EXHAUSTED_MESSAGE = "budget pool quota has been exhausted";
 
 function CredentialFailureTooltip({
   credential,
@@ -1587,6 +1710,9 @@ function CredentialFailureTooltip({
   }
   const sensitiveWords = [response, credential.last_failure_message].some((value) =>
     value?.includes(SENSITIVE_WORDS_ERROR_CODE),
+  );
+  const budgetPoolExhausted = [response, credential.last_failure_message].some((value) =>
+    value?.toLowerCase().includes(BUDGET_POOL_EXHAUSTED_MESSAGE),
   );
 
   return (
@@ -1618,6 +1744,14 @@ function CredentialFailureTooltip({
               data-testid={`credential-sensitive-words-hint-${credential.id}`}
             >
               友情提醒：当前中转站似乎对项目存在关键词检测，您的项目可能存在敏感词，也不排除是中转站误判。
+            </span>
+          ) : null}
+          {budgetPoolExhausted ? (
+            <span
+              className="mt-2 block rounded-md border border-sky-400/60 bg-sky-500/15 px-2 py-1.5 text-sky-100"
+              data-testid={`credential-budget-pool-hint-${credential.id}`}
+            >
+              友情提醒：当前中转站公共池额度耗尽，并非你个人额度耗尽，请等待下一次公共池补充额度。
             </span>
           ) : null}
           <pre className="mt-2 select-text whitespace-pre-wrap break-words font-mono text-[10px] leading-4 text-stone-100">
@@ -1765,9 +1899,11 @@ export function AccountsScreen({
   const [accountFilters, setAccountFilters] = useState<string[]>([]);
   const [accountPage, setAccountPage] = useState(1);
   const [accountPageSize, setAccountPageSize] = useState(20);
-  const [draggedAccountId, setDraggedAccountId] = useState<string | null>(null);
-  const [dragTargetIndex, setDragTargetIndex] = useState<number | null>(null);
+  // Keyboard reordering keeps its own "picked up" row; the pointer drag tracks its
+  // own active row inside useDragSort.
+  const [keyboardDragId, setKeyboardDragId] = useState<string | null>(null);
   const accountEdgeTimerRef = useRef<number | null>(null);
+  const accountScrollRef = useRef<HTMLDivElement | null>(null);
   const [accountFilterMenuOpen, setAccountFilterMenuOpen] = useState(false);
   const [refreshMenuOpen, setRefreshMenuOpen] = useState(false);
   const [modelTestMenuOpen, setModelTestMenuOpen] = useState(false);
@@ -1802,6 +1938,8 @@ export function AccountsScreen({
   const toolbarAutoHideEligibleRef = useRef(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [createMode, setCreateMode] = useState<CreateMode>("api");
+  const [createTab, setCreateTab] = useState<CreateTab>("basic");
+  const [editTab, setEditTab] = useState<EditTab>("basic");
   const [joinPoolOnCreate, setJoinPoolOnCreate] = useState(true);
   const [officialText, setOfficialText] = useState(() => defaultOfficialJson(activePlatform));
   const [officialBatchName, setOfficialBatchName] = useState("");
@@ -1894,6 +2032,7 @@ export function AccountsScreen({
   const [modelTestOutcome, setModelTestOutcome] = useState<RoutePoolModelTestOutcome | null>(null);
   const [configWriteOutcomes, setConfigWriteOutcomes] = useState<ConfigWriteOutcome[]>([]);
   const [configWriteError, setConfigWriteError] = useState<string | null>(null);
+  const [configWriteDialogOpen, setConfigWriteDialogOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<
     { kind: "single"; id: string; name: string } | { kind: "batch"; count: number } | null
   >(null);
@@ -2123,8 +2262,7 @@ export function AccountsScreen({
   useEffect(() => {
     setAccountPage(1);
     setSelectedAccountIds(new Set());
-    setDraggedAccountId(null);
-    setDragTargetIndex(null);
+    setKeyboardDragId(null);
     setAccountFilterMenuOpen(false);
     setRefreshMenuOpen(false);
     setModelTestMenuOpen(false);
@@ -2809,15 +2947,18 @@ export function AccountsScreen({
       }
 
       if (!apiName.trim()) {
+        setCreateTab("basic");
         throw new Error("API 账号名称不能为空");
       }
       const apiKeys = apiKeyLines(apiKey);
       if (apiKeys.length === 0) {
+        setCreateTab("basic");
         throw new Error("至少需要一个 API Key");
       }
       const normalizedMappings = normalizeModelMappings(apiMappings, activePlatform);
       if (normalizedMappings.error) {
         setApiMappingsError(normalizedMappings.error);
+        setCreateTab("basic");
         throw new Error(normalizedMappings.error);
       }
       setApiMappingsError(null);
@@ -3047,23 +3188,80 @@ export function AccountsScreen({
       setConfigWriteOutcomes([]);
     },
   });
+  // Pool-wide client behavior switches. Claude Code reads these from its own
+  // settings file, which the whole pool shares, so they cannot be per-account.
+  const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: getSettings });
+  // Kept enabled while outcomes are on screen: the result panel outlives the
+  // dialog and needs these display names to label its rows.
+  const configWriteClientsQuery = useQuery({
+    queryKey: ["config-write-clients", activePlatform],
+    queryFn: () => listConfigWriteClients(activePlatform),
+    enabled: configWriteDialogOpen || configWriteOutcomes.length > 0,
+  });
+  const clientByTargetKey = useMemo(() => {
+    const map = new Map<string, ConfigWriteClientStatus>();
+    for (const client of configWriteClientsQuery.data ?? []) {
+      map.set(client.target_key, client);
+    }
+    return map;
+  }, [configWriteClientsQuery.data]);
+  /** `null` until the user picks, so the dialog defaults to the native client. */
+  const storedClientSelection = useMemo(() => {
+    const raw = settingsQuery.data?.config_write_clients_json;
+    if (!raw) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as Record<string, string[]>;
+      const stored = parsed[activePlatform];
+      return Array.isArray(stored) && stored.length > 0 ? stored : null;
+    } catch {
+      // A corrupt preference must not block writing.
+      return null;
+    }
+  }, [settingsQuery.data?.config_write_clients_json, activePlatform]);
   const writeConfigsMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async (clientKeys: string[]) => {
       if (!configWriteEnabled) {
         throw new Error(configWriteReason);
       }
-      return writeRouteProxyConfigs(routeProxyQuery.data?.base_url ?? null, activePlatform);
+      const outcomes = await writeRouteProxyConfigs(
+        routeProxyQuery.data?.base_url ?? null,
+        activePlatform,
+        clientKeys,
+      );
+      // Remember the choice so the next write does not need re-picking, and so
+      // the staleness nudge covers exactly the clients that were written.
+      const settings = settingsQuery.data;
+      if (settings) {
+        let existing: Record<string, string[]> = {};
+        try {
+          existing = settings.config_write_clients_json
+            ? (JSON.parse(settings.config_write_clients_json) as Record<string, string[]>)
+            : {};
+        } catch {
+          // A corrupt preference must not block writing.
+          existing = {};
+        }
+        const updated = await saveSettings({
+          ...settings,
+          config_write_clients_json: JSON.stringify({
+            ...existing,
+            [activePlatform]: clientKeys,
+          }),
+        });
+        queryClient.setQueryData(["settings"], updated);
+      }
+      return outcomes;
     },
     onMutate: () => setConfigWriteError(null),
     onSuccess: (outcomes) => {
       setConfigWriteOutcomes(outcomes);
+      setConfigWriteDialogOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["route-config-stale"] });
     },
-    onError: (error) => setConfigWriteError(formatApiError(error, "配置写入失败。")),
+    onError: (error) => setConfigWriteError(formatConfigWriteError(error)),
   });
-  // Pool-wide client behavior switches. Claude Code reads these from its own
-  // settings file, which the whole pool shares, so they cannot be per-account.
-  const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   // Config is written on demand, so mapping and client-config edits sit unapplied
   // until the user asks for a write. The backend answers this by rendering through
   // the real adapter and diffing against disk, so the hint cannot drift from what
@@ -3077,9 +3275,14 @@ export function AccountsScreen({
       // account list version changes rather than hand-listing every mutation.
       allCredentialsQuery.dataUpdatedAt,
       settingsQuery.data?.claude_client_config_json ?? null,
+      storedClientSelection,
     ],
     queryFn: () =>
-      routeConfigWriteIsStale(routeProxyQuery.data?.base_url ?? null, activePlatform),
+      routeConfigWriteIsStale(
+        routeProxyQuery.data?.base_url ?? null,
+        activePlatform,
+        storedClientSelection,
+      ),
     enabled: Boolean(routeProxyQuery.data?.running) && configWriteEnabled,
     staleTime: 0,
   });
@@ -3134,21 +3337,26 @@ export function AccountsScreen({
       const normalizedMappings = normalizeModelMappings(editModelMappings, activePlatform);
       if (editingCredential.kind === "api" && normalizedMappings.error) {
         setEditModelMappingsError(normalizedMappings.error);
+        setEditTab("basic");
         throw new Error(normalizedMappings.error);
       }
       if (editingCredential.kind === "api") {
         if (!editApiKey.trim()) {
+          setEditTab("basic");
           throw new Error("API Key 不能为空");
         }
         if (!editApiBaseUrl.trim()) {
+          setEditTab("basic");
           throw new Error("Base URL 不能为空");
         }
       }
       if (!Number.isInteger(editPriority) || editPriority < 1 || editPriority > 5) {
+        setEditTab("advanced");
         throw new Error("路由优先级必须是 1-5 的整数");
       }
       const maxConcurrency = Number(editMaxConcurrency);
       if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
+        setEditTab("advanced");
         throw new Error("最大并发数必须是大于等于 1 的整数");
       }
       const retryCount = Number(editRetryCount);
@@ -3179,6 +3387,7 @@ export function AccountsScreen({
       }
       if (failurePolicyError) {
         setEditFailurePolicyError(failurePolicyError);
+        setEditTab("failure");
         throw new Error(failurePolicyError);
       }
       const failurePolicy: RouteCredentialFailurePolicy = {
@@ -3258,6 +3467,46 @@ export function AccountsScreen({
       await invalidateAccountData();
     },
   });
+  const modelStatusMutation = useMutation({
+    mutationFn: ({
+      credentialId,
+      modelKey,
+      status,
+    }: {
+      credentialId: string;
+      modelKey: string;
+      status: RouteCredentialModelStatus;
+    }) => setRouteCredentialModelStatus(credentialId, modelKey, status),
+    onSuccess: (credential) => {
+      // The drawer renders straight off the returned account, so it reflects the
+      // new status without waiting for the list queries to come back.
+      setEditingCredential(credential);
+      void queryClient.invalidateQueries({
+        queryKey: ["route-credential-page", activePlatform],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["route-credentials-all", activePlatform],
+      });
+    },
+  });
+  const clearModelStateMutation = useMutation({
+    mutationFn: ({
+      credentialId,
+      modelKey,
+    }: {
+      credentialId: string;
+      modelKey: string;
+    }) => clearRouteCredentialModelState(credentialId, modelKey),
+    onSuccess: (credential) => {
+      setEditingCredential(credential);
+      void queryClient.invalidateQueries({
+        queryKey: ["route-credential-page", activePlatform],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["route-credentials-all", activePlatform],
+      });
+    },
+  });
   const copyCredentialMutation = useMutation({
     mutationFn: ({
       credential,
@@ -3330,8 +3579,7 @@ export function AccountsScreen({
       void invalidateAccountData();
     },
     onSettled: () => {
-      setDraggedAccountId(null);
-      setDragTargetIndex(null);
+      setKeyboardDragId(null);
     },
   });
   const routePoolModelsMutation = useMutation({
@@ -3493,7 +3741,7 @@ export function AccountsScreen({
   };
 
   const scheduleAccountEdgePage = (direction: -1 | 1) => {
-    if (accountEdgeTimerRef.current != null || !accountPageData || !draggedAccountId) return;
+    if (accountEdgeTimerRef.current != null || !accountPageData) return;
     const nextPage = accountPageData.page + direction;
     if (nextPage < 1 || nextPage > accountPageData.page_count) return;
     accountEdgeTimerRef.current = window.setTimeout(() => {
@@ -3501,6 +3749,36 @@ export function AccountsScreen({
       setAccountPage(nextPage);
     }, 600);
   };
+
+  const cancelAccountEdgePage = () => {
+    if (accountEdgeTimerRef.current == null) return;
+    window.clearTimeout(accountEdgeTimerRef.current);
+    accountEdgeTimerRef.current = null;
+  };
+
+  const accountIds = useMemo(() => credentials.map((credential) => credential.id), [credentials]);
+  const accountDragSort = useDragSort({
+    itemIds: accountIds,
+    onCommit: commitAccountReorder,
+    getScrollContainer: () => accountScrollRef.current,
+    onEdgeHold: scheduleAccountEdgePage,
+    onEdgeLeave: cancelAccountEdgePage,
+    disabled: reorderMutation.isPending,
+  });
+  const dragMovedIndex = accountDragSort.activeId
+    ? accountIds.indexOf(accountDragSort.activeId)
+    : -1;
+  const dropPlaceholderAtEnd =
+    accountDragSort.insertIndex != null &&
+    accountDragSort.insertIndex >= credentials.length - (dragMovedIndex >= 0 ? 1 : 0);
+  const dropPlaceholder = accountDragSort.insertIndex == null ? null : (
+    <div
+      aria-hidden="true"
+      className="mx-1 mb-0.5 rounded-md border-2 border-dashed border-blue-400 bg-blue-50/70"
+      data-testid="account-drop-placeholder"
+      style={{ height: accountDragSort.placeholderHeight }}
+    />
+  );
 
   const addSelectedToPool = () => {
     if (selectedAccountIds.size === 0 || routePoolMutation.isPending) {
@@ -4046,8 +4324,12 @@ export function AccountsScreen({
                     ? "border-amber-400 text-amber-700"
                     : "border-stone-300 text-stone-700"
                 }`}
-                disabled={!routeProxyQuery.data?.running || !configWriteEnabled || writeConfigsMutation.isPending}
-                onClick={() => writeConfigsMutation.mutate()}
+                disabled={
+                  !routeProxyQuery.data?.running ||
+                  !configWriteEnabled ||
+                  writeConfigsMutation.isPending
+                }
+                onClick={() => setConfigWriteDialogOpen(true)}
                 title={
                   !configWriteEnabled
                     ? configWriteReason
@@ -4222,6 +4504,7 @@ export function AccountsScreen({
         <div
           className="min-h-0 overflow-y-auto overscroll-contain bg-transparent"
           data-testid="account-workspace-scroll-region"
+          ref={accountScrollRef}
         >
         {configWriteOutcomes.length > 0 && (
           <div className="mx-4 mb-3 space-y-1 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] text-stone-600">
@@ -4232,7 +4515,8 @@ export function AccountsScreen({
                 key={`${outcome.operation_id}:${outcome.target_key}:${outcome.snapshot_id ?? "none"}`}
               >
                 <p>
-                  {outcome.target_key} · {outcome.platform}: {outcome.path || "未解析路径"} ({outcome.status})
+                  {clientByTargetKey.get(outcome.target_key)?.display_name ?? outcome.target_key} ·{" "}
+                  {outcome.platform}: {outcome.path || "未解析路径"} ({outcome.status})
                 </p>
                 <p className="mt-1 font-mono text-[11px] text-stone-500">
                   operation {outcome.operation_id} · snapshot {outcome.snapshot_id ?? "none"}
@@ -4245,9 +4529,29 @@ export function AccountsScreen({
                 ) : null}
               </div>
             ))}
+            {/* The dialog is gone by now and the user likely switched windows, so
+                the restart requirement has to be repeated here. */}
+            {configWriteOutcomes.some(
+              (outcome) => clientByTargetKey.get(outcome.target_key)?.restart_required,
+            ) ? (
+              <p className="text-[11px] text-stone-500">
+                写入后需重启{" "}
+                {Array.from(
+                  new Set(
+                    configWriteOutcomes
+                      .map((outcome) => clientByTargetKey.get(outcome.target_key))
+                      .filter((client) => client?.restart_required)
+                      .map((client) => client?.display_name ?? ""),
+                  ),
+                ).join("、")}{" "}
+                才生效（它不监听配置文件变化）。
+              </p>
+            ) : null}
           </div>
         )}
-        {configWriteError ? (
+        {/* The dialog stays open on failure and shows this same sentence, so
+            rendering it here too would duplicate it on screen. */}
+        {configWriteError && !configWriteDialogOpen ? (
           <p
             className="mx-4 mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700"
             role="alert"
@@ -4498,6 +4802,7 @@ export function AccountsScreen({
               className="grid h-7 w-7 place-items-center border border-stone-700 bg-stone-800 text-white transition-colors hover:bg-stone-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-400"
               onClick={() => {
                 setJoinPoolOnCreate(true);
+                setCreateTab("basic");
                 setCreateOpen(true);
               }}
               title="新增账号"
@@ -4712,16 +5017,7 @@ export function AccountsScreen({
               {formatApiError(batchStatusMutation.error, "批量设置状态失败。")}
             </p>
           )}
-          <div
-            ref={attachAccountList}
-            onDragOver={(event) => {
-              if (!draggedAccountId) return;
-              event.preventDefault();
-              const rect = event.currentTarget.getBoundingClientRect();
-              if (event.clientY <= rect.top + 20) scheduleAccountEdgePage(-1);
-              if (event.clientY >= rect.bottom - 20) scheduleAccountEdgePage(1);
-            }}
-          >
+          <div ref={attachAccountList}>
           {credentials.map((credential, credentialIndex) => {
                   const subscriptionType = officialSubscriptionType(credential);
                   const primaryRemain = officialPrimaryRemain(credential);
@@ -4734,6 +5030,7 @@ export function AccountsScreen({
                     credential.transient_failure_count,
                   );
                   const modelMappings = parseModelMappingsFromConfig(credential.config_json);
+                  const modelIssues = credentialModelIssues(credential, cooldownNow);
                   const baseUrlLink = credentialBaseUrlLink(credential);
                   const isCopyingCredential =
                     copyCredentialMutation.isPending &&
@@ -4800,64 +5097,53 @@ export function AccountsScreen({
                     onClick: () => {
                       updateMutation.reset();
                       deleteMutation.reset();
+                      setEditTab("basic");
                       setEditingCredential(credential);
                     },
                     inlineToneClass: "border-stone-200 text-stone-700 hover:bg-stone-50",
                     icon: <Edit3 aria-hidden="true" className="h-3.5 w-3.5" />,
                   });
                   const actionMenuOpen = openActionMenuId === credential.id;
+                  const isDragged = accountDragSort.activeId === credential.id;
+                  // Slot this row falls into once the dragged row is out of the list,
+                  // which is where the placeholder has to show up for "lands here".
+                  const dropSlot =
+                    dragMovedIndex >= 0 && credentialIndex > dragMovedIndex
+                      ? credentialIndex - 1
+                      : credentialIndex;
                   return (
+                  <Fragment key={credential.id}>
+                  {!isDragged && accountDragSort.insertIndex === dropSlot ? dropPlaceholder : null}
                   <div
                     aria-label={`放置在 ${credential.display_name} 前`}
                     className={`mx-1 mb-0.5 grid grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-3 py-2.5 transition-colors last:mb-0 ${
-                      draggedAccountId &&
-                      draggedAccountId !== credential.id &&
-                      dragTargetIndex === credentialIndex
-                        ? "border-blue-400 bg-blue-50/70"
-                        : "border-stone-200 bg-white"
+                      isDragged
+                        ? "border-blue-400 bg-white shadow-lg"
+                        : keyboardDragId === credential.id
+                          ? "border-blue-400 bg-blue-50/70"
+                          : "border-stone-200 bg-white"
                     }`}
-                    key={credential.id}
-                    onDragOver={(event) => {
-                      if (!draggedAccountId || draggedAccountId === credential.id) return;
-                      event.preventDefault();
-                      event.dataTransfer.dropEffect = "move";
-                      setDragTargetIndex(credentialIndex);
-                    }}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      if (draggedAccountId && draggedAccountId !== credential.id) {
-                        commitAccountReorder(draggedAccountId, credentialIndex);
-                      }
-                      setDraggedAccountId(null);
-                      setDragTargetIndex(null);
-                    }}
+                    ref={accountDragSort.registerItem(credential.id)}
                   >
                     <button
-                      aria-grabbed={draggedAccountId === credential.id}
+                      aria-grabbed={isDragged || keyboardDragId === credential.id}
                       aria-label={`拖动 ${credential.display_name}`}
-                      className={`grid h-7 w-7 shrink-0 place-items-center rounded border border-stone-200 px-0 text-stone-400 hover:bg-stone-50 ${
-                        draggedAccountId === credential.id ? "cursor-grabbing bg-stone-100" : "cursor-grab"
+                      className={`grid h-7 w-7 shrink-0 touch-none place-items-center rounded border border-stone-200 px-0 text-stone-400 hover:bg-stone-50 ${
+                        isDragged ? "cursor-grabbing bg-stone-100" : "cursor-grab"
                       }`}
-                      draggable
-                      onDragEnd={() => { setDraggedAccountId(null); setDragTargetIndex(null); }}
-                      onDragStart={(event) => {
-                        event.dataTransfer.effectAllowed = "move";
-                        event.dataTransfer.setData("text/plain", credential.id);
-                        setDraggedAccountId(credential.id);
-                        setDragTargetIndex(credentialIndex);
-                      }}
+                      onPointerDown={(event) => accountDragSort.startDrag(credential.id, event)}
                       onKeyDown={(event) => {
                         if (event.key === " " || event.key === "Enter") {
                           event.preventDefault();
-                          setDraggedAccountId((current) => current === credential.id ? null : credential.id);
-                        } else if (draggedAccountId === credential.id && event.key === "ArrowUp") {
+                          setKeyboardDragId((current) => current === credential.id ? null : credential.id);
+                        } else if (keyboardDragId === credential.id && event.key === "ArrowUp") {
                           event.preventDefault();
                           commitAccountReorder(credential.id, Math.max(0, credentialIndex - 1));
-                        } else if (draggedAccountId === credential.id && event.key === "ArrowDown") {
+                        } else if (keyboardDragId === credential.id && event.key === "ArrowDown") {
                           event.preventDefault();
                           commitAccountReorder(credential.id, Math.min(credentials.length - 1, credentialIndex + 1));
                         } else if (event.key === "Escape") {
-                          setDraggedAccountId(null);
+                          setKeyboardDragId(null);
                         }
                       }}
                       type="button"
@@ -4933,6 +5219,53 @@ export function AccountsScreen({
                               冷却 {formatCooldownRemaining(cooldownState.remaining)}
                             </span>
                           </CredentialFailureTooltip>
+                        )}
+                        {modelIssues.length > 0 && (
+                          <span
+                            className="group relative inline-flex outline-none focus:ring-2 focus:ring-orange-300"
+                            tabIndex={0}
+                          >
+                            <span
+                              className="rounded-full bg-orange-50 px-2 py-0.5 text-[11px] font-semibold text-orange-800"
+                              data-testid={`credential-model-issues-${credential.id}`}
+                              title="部分模型暂不参与路由"
+                            >
+                              模型 {modelIssues.length} 不可用
+                            </span>
+                            {/* pt-1 rather than mt-1: a margin gap drops :hover
+                                mid-travel and closes the panel before the pointer
+                                arrives. */}
+                            <span
+                              className="absolute left-0 top-full z-50 hidden pt-1 group-hover:block group-focus-within:block"
+                              data-testid={`credential-model-detail-${credential.id}`}
+                            >
+                              <span className="block w-[min(28rem,calc(100vw-2rem))] select-text rounded-lg border border-stone-700 bg-stone-900 px-3 py-2 text-left text-[11px] font-medium leading-5 text-white shadow-xl">
+                                {modelIssues.map((issue) => (
+                                  <span
+                                    className="mt-1 block first:mt-0"
+                                    key={issue.state.model_key}
+                                  >
+                                    <span className="font-semibold">{issue.state.model_key}</span>
+                                    {issue.state.aliases.length > 0 ? (
+                                      <span className="text-stone-400">
+                                        （{issue.state.aliases.join("、")}）
+                                      </span>
+                                    ) : (
+                                      <span className="text-stone-400">（已移除映射）</span>
+                                    )}
+                                    <span className="ml-1 text-orange-200">
+                                      {modelIssueLabel(issue)}
+                                    </span>
+                                    {issue.state.last_failure_message ? (
+                                      <span className="mt-0.5 block break-words text-stone-300">
+                                        {issue.state.last_failure_message}
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                ))}
+                              </span>
+                            </span>
+                          </span>
                         )}
                         {subscriptionType && (
                           <span
@@ -5057,10 +5390,11 @@ export function AccountsScreen({
                       )}
                     </div>
                   </div>
+                  </Fragment>
                   );
                 })}
+          {dropPlaceholderAtEnd ? dropPlaceholder : null}
           </div>
-          <div data-testid="account-list-edge-bottom" className="h-1" onDragOver={(event) => { event.preventDefault(); scheduleAccountEdgePage(1); }} />
           {accountPageData && accountPageData.total > 0 && (
             <div className="hidden flex-wrap items-center justify-between gap-2 border-t border-stone-100 pt-3">
               <label className="flex items-center gap-2 text-[12px] font-semibold text-stone-600">
@@ -5613,6 +5947,23 @@ export function AccountsScreen({
         </div>
       )}
 
+      {configWriteDialogOpen ? (
+        <ConfigWriteTargetsDialog
+          capabilityDisabledReason={configWriteEnabled ? undefined : configWriteReason}
+          clients={configWriteClientsQuery.data ?? []}
+          error={configWriteError}
+          initialSelection={storedClientSelection}
+          loading={writeConfigsMutation.isPending}
+          onClose={() => {
+            if (!writeConfigsMutation.isPending) {
+              setConfigWriteDialogOpen(false);
+            }
+          }}
+          onSubmit={(clientKeys) => writeConfigsMutation.mutate(clientKeys)}
+          platform={activePlatform}
+        />
+      ) : null}
+
       {exportRequest ? (
         <RouteCredentialExportDialog
           open
@@ -5729,186 +6080,205 @@ export function AccountsScreen({
             )}
 
             {createMode === "api" && (
+              <div className="mt-4">
+                <FormTabs<CreateTab>
+                  ariaLabel="新增账号分组"
+                  onChange={setCreateTab}
+                  tabs={createTabs}
+                  value={createTab}
+                />
+              </div>
+            )}
+
+            {createMode === "api" && (
               <div className="mt-4 grid gap-3">
-                <PresetFields
-                  baseUrl={apiBaseUrl}
-                  fieldClass={fieldClass}
-                  idPrefix="创建"
-                  labelClass={labelClass}
-                  onApply={(preset) => {
-                    setApiBaseUrl(preset.baseUrl);
-                    setApiInterfaceFormat(preset.interfaceFormat);
-                    setApiMappings(preset.modelMappings.map((mapping) => ({ ...mapping })));
-                    setApiName((current) => (current.trim() ? current : preset.defaultName));
-                    setApiFetchedModels([]);
-                    setApiFetchModelsError(null);
-                    setApiMappingsError(null);
-                  }}
-                  platform={activePlatform}
-                />
-                <label className={labelClass}>
-                  账号名称
-                  <input
-                    aria-label="API 账号名称"
-                    className={fieldClass}
-                    onChange={(event) => setApiName(event.target.value)}
-                    value={apiName}
-                  />
-                </label>
-                <label className={labelClass}>
-                  API Key
-                  <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-                    <textarea
-                      aria-label="API Key"
-                      className={`${monoFieldClass} min-h-24`}
-                      onChange={(event) => {
-                        setApiKey(event.target.value);
-                        setApiKeyDecodeError(null);
-                        setApiKeyOcrError(null);
+                {createTab === "basic" ? (
+                  <>
+                    <PresetFields
+                      baseUrl={apiBaseUrl}
+                      fieldClass={fieldClass}
+                      idPrefix="创建"
+                      labelClass={labelClass}
+                      onApply={(preset) => {
+                        setApiBaseUrl(preset.baseUrl);
+                        setApiInterfaceFormat(preset.interfaceFormat);
+                        setApiMappings(preset.modelMappings.map((mapping) => ({ ...mapping })));
+                        setApiName((current) => (current.trim() ? current : preset.defaultName));
                         setApiFetchedModels([]);
                         setApiFetchModelsError(null);
+                        setApiMappingsError(null);
                       }}
-                      placeholder={"每行一个 API Key；多行会自动创建为同一批量。\nsk-...\nsk-..."}
-                      value={apiKey}
+                      platform={activePlatform}
                     />
-                    <div className="flex flex-col gap-2 sm:w-28">
-                      <button
-                        aria-label="Base64 解码 API Key"
-                        className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:bg-white"
-                        onClick={decodeApiKey}
-                        type="button"
-                      >
-                        Base64 解码
-                      </button>
-                      <button
-                        aria-label="OCR识别 API Key"
-                        className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] font-semibold text-blue-700 transition-colors hover:bg-white disabled:opacity-50"
-                        disabled={apiKeyOcrRecognizing}
-                        onClick={runApiKeyOcr}
-                        type="button"
-                      >
-                        <ScanText className="h-3.5 w-3.5" />
-                        {apiKeyOcrRecognizing ? "识别中..." : "OCR识别"}
-                      </button>
+                    <label className={labelClass}>
+                      账号名称
                       <input
-                        accept="image/*"
-                        aria-label="选择图片识别 API Key"
-                        className="sr-only"
-                        onChange={handleApiKeyOcrFileChange}
-                        ref={apiKeyOcrFileInputRef}
-                        type="file"
+                        aria-label="API 账号名称"
+                        className={fieldClass}
+                        onChange={(event) => setApiName(event.target.value)}
+                        value={apiName}
                       />
-                    </div>
-                  </div>
-                  {apiKeyDecodeError && <span className="text-[12px] font-semibold text-red-700">{apiKeyDecodeError}</span>}
-                  {apiKeyOcrError && <span className="text-[12px] font-semibold text-red-700">{apiKeyOcrError}</span>}
-                </label>
-                <label className={labelClass}>
-                  Base URL
-                  <input
-                    aria-label="Base URL"
-                    className={fieldClass}
-                    onChange={(event) => {
-                      setApiBaseUrl(event.target.value);
-                      setApiFetchedModels([]);
-                      setApiFetchModelsError(null);
-                    }}
-                    value={apiBaseUrl}
-                  />
-                </label>
-                <UserAgentFields
-                  fieldClass={fieldClass}
-                  idPrefix="创建"
-                  labelClass={labelClass}
-                  onChange={setApiUserAgent}
-                  value={apiUserAgent}
-                />
-                {shouldShowInterfaceFormatSelect(activePlatform) ? (
-                  <label className={labelClass}>
-                    接口格式
-                    <select
-                      aria-label="接口格式"
-                      className={fieldClass}
-                      onChange={(event) => {
-                        setApiInterfaceFormat(event.target.value as InterfaceFormat);
-                        setApiFetchedModels([]);
-                        setApiFetchModelsError(null);
+                    </label>
+                    <label className={labelClass}>
+                      API Key
+                      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                        <textarea
+                          aria-label="API Key"
+                          className={`${monoFieldClass} min-h-24`}
+                          onChange={(event) => {
+                            setApiKey(event.target.value);
+                            setApiKeyDecodeError(null);
+                            setApiKeyOcrError(null);
+                            setApiFetchedModels([]);
+                            setApiFetchModelsError(null);
+                          }}
+                          placeholder={"每行一个 API Key；多行会自动创建为同一批量。\nsk-...\nsk-..."}
+                          value={apiKey}
+                        />
+                        <div className="flex flex-col gap-2 sm:w-28">
+                          <button
+                            aria-label="Base64 解码 API Key"
+                            className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:bg-white"
+                            onClick={decodeApiKey}
+                            type="button"
+                          >
+                            Base64 解码
+                          </button>
+                          <button
+                            aria-label="OCR识别 API Key"
+                            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] font-semibold text-blue-700 transition-colors hover:bg-white disabled:opacity-50"
+                            disabled={apiKeyOcrRecognizing}
+                            onClick={runApiKeyOcr}
+                            type="button"
+                          >
+                            <ScanText className="h-3.5 w-3.5" />
+                            {apiKeyOcrRecognizing ? "识别中..." : "OCR识别"}
+                          </button>
+                          <input
+                            accept="image/*"
+                            aria-label="选择图片识别 API Key"
+                            className="sr-only"
+                            onChange={handleApiKeyOcrFileChange}
+                            ref={apiKeyOcrFileInputRef}
+                            type="file"
+                          />
+                        </div>
+                      </div>
+                      {apiKeyDecodeError && <span className="text-[12px] font-semibold text-red-700">{apiKeyDecodeError}</span>}
+                      {apiKeyOcrError && <span className="text-[12px] font-semibold text-red-700">{apiKeyOcrError}</span>}
+                    </label>
+                    <label className={labelClass}>
+                      Base URL
+                      <input
+                        aria-label="Base URL"
+                        className={fieldClass}
+                        onChange={(event) => {
+                          setApiBaseUrl(event.target.value);
+                          setApiFetchedModels([]);
+                          setApiFetchModelsError(null);
+                        }}
+                        value={apiBaseUrl}
+                      />
+                    </label>
+                    {shouldShowInterfaceFormatSelect(activePlatform) ? (
+                      <label className={labelClass}>
+                        接口格式
+                        <select
+                          aria-label="接口格式"
+                          className={fieldClass}
+                          onChange={(event) => {
+                            setApiInterfaceFormat(event.target.value as InterfaceFormat);
+                            setApiFetchedModels([]);
+                            setApiFetchModelsError(null);
+                          }}
+                          value={apiInterfaceFormat}
+                        >
+                          {interfaceFormatsForPlatform(activePlatform).map((format) => (
+                            <option key={format} value={format}>
+                              {interfaceFormatLabel(format)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : null}
+                    {isAnthropicInterfaceFormat(apiInterfaceFormat) ? (
+                      <label className={labelClass}>
+                        Claude 鉴权字段
+                        <select
+                          aria-label="Claude 鉴权字段"
+                          className={fieldClass}
+                          onChange={(event) => {
+                            setApiKeyField(event.target.value as AnthropicApiKeyField);
+                            setApiFetchedModels([]);
+                            setApiFetchModelsError(null);
+                          }}
+                          value={apiKeyField}
+                        >
+                          {anthropicApiKeyFields.map((field) => (
+                            <option key={field.value} value={field.value}>
+                              {field.label}
+                            </option>
+                          ))}
+                        </select>
+                        <span className="text-[11px] font-medium text-stone-500">
+                          {anthropicApiKeyFieldDescription(apiKeyField)}
+                        </span>
+                      </label>
+                    ) : null}
+                    <ModelMappingsEditor
+                      error={apiMappingsError}
+                      fetchError={apiFetchModelsError}
+                      fetchedModels={apiFetchedModels}
+                      interfaceFormat={apiInterfaceFormat}
+                      isFetchingModels={apiFetchModelsMutation.isPending}
+                      label="模型映射"
+                      onChange={(next) => {
+                        setApiMappings(next);
+                        setApiMappingsError(null);
                       }}
-                      value={apiInterfaceFormat}
-                    >
-                      {interfaceFormatsForPlatform(activePlatform).map((format) => (
-                        <option key={format} value={format}>
-                          {interfaceFormatLabel(format)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ) : null}
-                {isAnthropicInterfaceFormat(apiInterfaceFormat) ? (
-                  <label className={labelClass}>
-                    Claude 鉴权字段
-                    <select
-                      aria-label="Claude 鉴权字段"
-                      className={fieldClass}
-                      onChange={(event) => {
-                        setApiKeyField(event.target.value as AnthropicApiKeyField);
-                        setApiFetchedModels([]);
-                        setApiFetchModelsError(null);
-                      }}
-                      value={apiKeyField}
-                    >
-                      {anthropicApiKeyFields.map((field) => (
-                        <option key={field.value} value={field.value}>
-                          {field.label}
-                        </option>
-                      ))}
-                    </select>
-                    <span className="text-[11px] font-medium text-stone-500">
-                      {anthropicApiKeyFieldDescription(apiKeyField)}
-                    </span>
-                  </label>
-                ) : null}
-                {shouldShowResponsesCustomToolCompatForFormat(activePlatform, apiInterfaceFormat) ? (
-                  <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
-                    <input
-                      aria-label="兼容 custom 工具（Responses 中转）"
-                      checked={apiResponsesCustomToolCompat}
-                      className="mt-0.5"
-                      onChange={(event) => setApiResponsesCustomToolCompat(event.target.checked)}
-                      type="checkbox"
+                      onFetchModels={fetchApiModels}
+                      platform={activePlatform}
+                      value={apiMappings}
                     />
-                    <span className="grid gap-1">
-                      <span>兼容 custom 工具（Responses 中转）</span>
-                      <span className="text-[11px] font-medium text-stone-500">
-                        仅当上游为 Responses 中转且不支持 custom 工具时勾选，把 custom 改写成 function。Chat/Anthropic/Gemini 上游会自动处理，无需勾选。
-                      </span>
-                    </span>
-                  </label>
+                  </>
                 ) : null}
-                <ModelMappingsEditor
-                  error={apiMappingsError}
-                  fetchError={apiFetchModelsError}
-                  fetchedModels={apiFetchedModels}
-                  interfaceFormat={apiInterfaceFormat}
-                  isFetchingModels={apiFetchModelsMutation.isPending}
-                  label="模型映射"
-                  onChange={(next) => {
-                    setApiMappings(next);
-                    setApiMappingsError(null);
-                  }}
-                  onFetchModels={fetchApiModels}
-                  platform={activePlatform}
-                  value={apiMappings}
-                />
-                <label className={labelClass}>
-                  预览 JSON（可选）
-                  <textarea
-                    aria-label="预览 JSON"
-                    className={`${monoFieldClass} min-h-20`}
-                    onChange={(event) => setApiPreviewJson(event.target.value)}
-                    value={apiPreviewJson}
-                  />
-                </label>
+                {createTab === "advanced" ? (
+                  <>
+                    <UserAgentFields
+                      fieldClass={fieldClass}
+                      idPrefix="创建"
+                      labelClass={labelClass}
+                      onChange={setApiUserAgent}
+                      value={apiUserAgent}
+                    />
+                    {shouldShowResponsesCustomToolCompatForFormat(activePlatform, apiInterfaceFormat) ? (
+                      <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
+                        <input
+                          aria-label="兼容 custom 工具（Responses 中转）"
+                          checked={apiResponsesCustomToolCompat}
+                          className="mt-0.5"
+                          onChange={(event) => setApiResponsesCustomToolCompat(event.target.checked)}
+                          type="checkbox"
+                        />
+                        <span className="grid gap-1">
+                          <span>兼容 custom 工具（Responses 中转）</span>
+                          <span className="text-[11px] font-medium text-stone-500">
+                            仅当上游为 Responses 中转且不支持 custom 工具时勾选，把 custom 改写成 function。Chat/Anthropic/Gemini 上游会自动处理，无需勾选。
+                          </span>
+                        </span>
+                      </label>
+                    ) : null}
+                    <label className={labelClass}>
+                      预览 JSON（可选）
+                      <textarea
+                        aria-label="预览 JSON"
+                        className={`${monoFieldClass} min-h-20`}
+                        onChange={(event) => setApiPreviewJson(event.target.value)}
+                        value={apiPreviewJson}
+                      />
+                    </label>
+                  </>
+                ) : null}
               </div>
             )}
 
@@ -6071,287 +6441,400 @@ export function AccountsScreen({
               </button>
             </div>
 
+            <div className="mt-4">
+              <FormTabs<EditTab>
+                ariaLabel="编辑账号分组"
+                onChange={setEditTab}
+                tabs={editTabs}
+                value={editTab}
+              />
+            </div>
+
             <div className="mt-4 grid gap-3">
-              <label className={labelClass}>
-                账号名称
-                <input
-                  aria-label="编辑账号名称"
-                  className={fieldClass}
-                  onChange={(event) => setEditName(event.target.value)}
-                  value={editName}
-                />
-              </label>
-              {editingCredential.kind === "official" && (
-                <label className={labelClass}>
-                  邮箱
-                  <input
-                    aria-label="编辑邮箱"
-                    className={fieldClass}
-                    onChange={(event) => setEditEmail(event.target.value)}
-                    value={editEmail}
-                  />
-                </label>
-              )}
-              <label className={labelClass}>
-                状态
-                <select
-                  aria-label="编辑状态"
-                  className={fieldClass}
-                  onChange={(event) => setEditStatus(event.target.value as AccountStatus)}
-                  value={editStatus}
-                >
-                  <option value="ok">正常 (ok)</option>
-                  <option value="warning">警告 (warning)</option>
-                  <option value="error">异常 (error)</option>
-                  <option value="revoked">已失效 (revoked)</option>
-                  <option value="paused">暂停 (paused)</option>
-                </select>
-              </label>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className={labelClass}>
-                  路由优先级
-                  <select
-                    aria-label="编辑路由优先级"
-                    className={fieldClass}
-                    onChange={(event) => setEditPriority(Number(event.target.value))}
-                    value={editPriority}
-                  >
-                    {[1, 2, 3, 4, 5].map((priority) => (
-                      <option key={priority} value={priority}>
-                        {priority}（数字越小优先级越高）
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className={labelClass}>
-                  最大并发数
-                  <input
-                    aria-label="编辑最大并发数"
-                    className={fieldClass}
-                    min={1}
-                    onChange={(event) => setEditMaxConcurrency(event.target.value)}
-                    step={1}
-                    type="number"
-                    value={editMaxConcurrency}
-                  />
-                </label>
-              </div>
-              <section
-                aria-label="账号失败处理策略"
-                className="rounded-xl border border-blue-100 bg-blue-50/60 p-3"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-[13px] font-semibold text-stone-900">失败处理策略</p>
-                    <p className="mt-0.5 text-[11px] font-medium text-stone-500">
-                      此账号在代理请求和模型测试中共用以下规则。
-                    </p>
+              {editTab === "basic" ? (
+                <>
+                  <label className={labelClass}>
+                    账号名称
+                    <input
+                      aria-label="编辑账号名称"
+                      className={fieldClass}
+                      onChange={(event) => setEditName(event.target.value)}
+                      value={editName}
+                    />
+                  </label>
+                  {editingCredential.kind === "official" && (
+                    <label className={labelClass}>
+                      邮箱
+                      <input
+                        aria-label="编辑邮箱"
+                        className={fieldClass}
+                        onChange={(event) => setEditEmail(event.target.value)}
+                        value={editEmail}
+                      />
+                    </label>
+                  )}
+                  <label className={labelClass}>
+                    状态
+                    <select
+                      aria-label="编辑状态"
+                      className={fieldClass}
+                      onChange={(event) => setEditStatus(event.target.value as AccountStatus)}
+                      value={editStatus}
+                    >
+                      <option value="ok">正常 (ok)</option>
+                      <option value="warning">警告 (warning)</option>
+                      <option value="error">异常 (error)</option>
+                      <option value="revoked">已失效 (revoked)</option>
+                      <option value="paused">暂停 (paused)</option>
+                    </select>
+                  </label>
+                </>
+              ) : null}
+              {editTab === "advanced" ? (
+                <>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className={labelClass}>
+                      路由优先级
+                      <select
+                        aria-label="编辑路由优先级"
+                        className={fieldClass}
+                        onChange={(event) => setEditPriority(Number(event.target.value))}
+                        value={editPriority}
+                      >
+                        {[1, 2, 3, 4, 5].map((priority) => (
+                          <option key={priority} value={priority}>
+                            {priority}（数字越小优先级越高）
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className={labelClass}>
+                      最大并发数
+                      <input
+                        aria-label="编辑最大并发数"
+                        className={fieldClass}
+                        min={1}
+                        onChange={(event) => setEditMaxConcurrency(event.target.value)}
+                        step={1}
+                        type="number"
+                        value={editMaxConcurrency}
+                      />
+                    </label>
                   </div>
-                  <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-blue-700">
-                    按账号生效
-                  </span>
-                </div>
-                <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                  <label className={labelClass}>
-                    额外重试次数
-                    <input
-                      aria-label="额外重试次数"
-                      className={fieldClass}
-                      max={10}
-                      min={0}
-                      onChange={(event) => {
-                        setEditRetryCount(event.target.value);
-                        setEditFailurePolicyError(null);
-                      }}
-                      step={1}
-                      type="number"
-                      value={editRetryCount}
-                    />
-                  </label>
-                  <label className={labelClass}>
-                    重试间隔（毫秒）
-                    <input
-                      aria-label="重试间隔（毫秒）"
-                      className={fieldClass}
-                      max={60_000}
-                      min={0}
-                      onChange={(event) => {
-                        setEditRetryIntervalMs(event.target.value);
-                        setEditFailurePolicyError(null);
-                      }}
-                      step={1}
-                      type="number"
-                      value={editRetryIntervalMs}
-                    />
-                  </label>
-                  <label className={labelClass}>
-                    异常触发次数
-                    <input
-                      aria-label="异常触发次数"
-                      className={fieldClass}
-                      max={1_000}
-                      min={1}
-                      onChange={(event) => {
-                        setEditSemanticErrorThreshold(event.target.value);
-                        setEditFailurePolicyError(null);
-                      }}
-                      step={1}
-                      type="number"
-                      value={editSemanticErrorThreshold}
-                    />
-                  </label>
-                  <label className={labelClass}>
-                    失败冷却（秒）
-                    <input
-                      aria-label="失败冷却（秒）"
-                      className={fieldClass}
-                      max={MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS}
-                      min={1}
-                      onChange={(event) => {
-                        setEditCooldownSeconds(event.target.value);
-                        setEditFailurePolicyError(null);
-                      }}
-                      step={1}
-                      type="number"
-                      value={editCooldownSeconds}
-                    />
-                  </label>
-                </div>
-                {editFailurePolicyError && (
-                  <p className="mt-2 text-[12px] font-semibold text-red-700">
-                    {editFailurePolicyError}
-                  </p>
-                )}
-                <div className="mt-3 grid gap-2">
-                  <label className="flex items-start gap-2 text-[12px] leading-5 text-stone-700">
-                    <input
-                      aria-label="启用失败冷却"
-                      checked={editCooldownEnabled}
-                      className="mt-0.5"
-                      onChange={(event) => setEditCooldownEnabled(event.target.checked)}
-                      type="checkbox"
-                    />
-                    <span>
-                      <span className="font-semibold">启用失败冷却</span>
-                      <span className="block text-[11px] text-stone-600">
-                        开启后每次临时失败都会让账号冷却「失败冷却（秒）」设定的时长（默认 10
-                        秒）暂不参与路由，冷却结束后自动恢复。默认关闭，即失败后立刻仍可被选中。
-                      </span>
-                    </span>
-                  </label>
-                  <label className="flex items-start gap-2 text-[12px] leading-5 text-stone-700">
-                    <input
-                      aria-label="启用异常状态标记"
-                      checked={editErrorStatusEnabled}
-                      className="mt-0.5"
-                      onChange={(event) => setEditErrorStatusEnabled(event.target.checked)}
-                      type="checkbox"
-                    />
-                    <span>
-                      <span className="font-semibold">启用异常状态标记</span>
-                      <span className="block text-[11px] text-stone-600">
-                        开启后连续同类语义错误达到上面的次数时，账号会被标记为异常并停止参与路由。默认开启，因为触发条件严格，通常意味着账号确实不可用。
-                      </span>
-                    </span>
-                  </label>
-                </div>
-                <div className="mt-3 grid gap-2 text-[11px] leading-5 text-stone-600">
-                  <p>
-                    <span className="font-semibold text-emerald-700">会自动重试：</span>
-                    网络连接失败、请求超时、响应读取失败、HTTP 408 / 429 / 5xx，以及 Codex“服务器当前过载”。
-                  </p>
-                  <p>
-                    <span className="font-semibold text-amber-700">会累计为异常：</span>
-                    不可重试的永久语义错误，在 HTTP 状态和规范化错误消息相同且连续达到设定次数后，账号才会标记为异常；成功、临时错误或错误变化会清零。关闭「启用异常状态标记」后仍会累计次数，但不再改变账号状态。
-                  </p>
-                  <p>
-                    <span className="font-semibold text-red-700">不会同账号重试：</span>
-                    HTTP 401 / 403；它们继续按现有鉴权失效和切换账号逻辑处理。
-                  </p>
-                </div>
-              </section>
-              <div className="rounded-xl border border-stone-200 bg-stone-50/70 p-3">
-                <label className={labelClass}>
-                  自动恢复
-                  <select
-                    aria-label="自动恢复模式"
-                    className={fieldClass}
-                    onChange={(event) => setEditRecoveryMode(event.target.value as RecoveryMode)}
-                    value={editRecoveryMode}
+                </>
+              ) : null}
+              {editTab === "failure" ? (
+                <>
+                  <section
+                    aria-label="账号失败处理策略"
+                    className="rounded-xl border border-blue-100 bg-blue-50/60 p-3"
                   >
-                    <option value="off">关闭</option>
-                    <option value="scheduled">每日定时</option>
-                    <option value="healthcheck">探活恢复</option>
-                  </select>
-                </label>
-                {editRecoveryMode === "scheduled" ? (
-                  <div className="mt-3 grid gap-2">
-                    {editRecoveryTimes.map((time, index) => (
-                      <div className="flex items-center gap-2" key={`${index}-${time}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[13px] font-semibold text-stone-900">失败处理策略</p>
+                        <p className="mt-0.5 text-[11px] font-medium text-stone-500">
+                          此账号在代理请求和模型测试中共用以下规则。
+                        </p>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-blue-700">
+                        按账号生效
+                      </span>
+                    </div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      <label className={labelClass}>
+                        额外重试次数
                         <input
-                          aria-label={`恢复时间 ${index + 1}`}
+                          aria-label="额外重试次数"
                           className={fieldClass}
-                          onChange={(event) =>
-                            setEditRecoveryTimes((current) =>
-                              current.map((value, currentIndex) =>
-                                currentIndex === index ? event.target.value : value,
-                              ),
-                            )
-                          }
-                          type="time"
-                          value={time}
+                          max={10}
+                          min={0}
+                          onChange={(event) => {
+                            setEditRetryCount(event.target.value);
+                            setEditFailurePolicyError(null);
+                          }}
+                          step={1}
+                          type="number"
+                          value={editRetryCount}
                         />
-                        <button
-                          aria-label={`删除恢复时间 ${index + 1}`}
-                          className="rounded-lg border border-stone-200 p-2 text-stone-500 hover:bg-white disabled:opacity-50"
-                          disabled={editRecoveryTimes.length <= 1}
-                          onClick={() =>
-                            setEditRecoveryTimes((current) => current.filter((_, currentIndex) => currentIndex !== index))
+                      </label>
+                      <label className={labelClass}>
+                        重试间隔（毫秒）
+                        <input
+                          aria-label="重试间隔（毫秒）"
+                          className={fieldClass}
+                          max={60_000}
+                          min={0}
+                          onChange={(event) => {
+                            setEditRetryIntervalMs(event.target.value);
+                            setEditFailurePolicyError(null);
+                          }}
+                          step={1}
+                          type="number"
+                          value={editRetryIntervalMs}
+                        />
+                      </label>
+                      <label className={labelClass}>
+                        异常触发次数
+                        <input
+                          aria-label="异常触发次数"
+                          className={fieldClass}
+                          max={1_000}
+                          min={1}
+                          onChange={(event) => {
+                            setEditSemanticErrorThreshold(event.target.value);
+                            setEditFailurePolicyError(null);
+                          }}
+                          step={1}
+                          type="number"
+                          value={editSemanticErrorThreshold}
+                        />
+                      </label>
+                      <label className={labelClass}>
+                        失败冷却（秒）
+                        <input
+                          aria-label="失败冷却（秒）"
+                          className={fieldClass}
+                          max={MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS}
+                          min={1}
+                          onChange={(event) => {
+                            setEditCooldownSeconds(event.target.value);
+                            setEditFailurePolicyError(null);
+                          }}
+                          step={1}
+                          type="number"
+                          value={editCooldownSeconds}
+                        />
+                      </label>
+                    </div>
+                    {editFailurePolicyError && (
+                      <p className="mt-2 text-[12px] font-semibold text-red-700">
+                        {editFailurePolicyError}
+                      </p>
+                    )}
+                    <div className="mt-3 grid gap-2">
+                      <label className="flex items-start gap-2 text-[12px] leading-5 text-stone-700">
+                        <input
+                          aria-label="启用失败冷却"
+                          checked={editCooldownEnabled}
+                          className="mt-0.5"
+                          onChange={(event) => setEditCooldownEnabled(event.target.checked)}
+                          type="checkbox"
+                        />
+                        <span>
+                          <span className="font-semibold">启用失败冷却</span>
+                          <span className="block text-[11px] text-stone-600">
+                            开启后每次临时失败都会让账号冷却「失败冷却（秒）」设定的时长（默认 10
+                            秒）暂不参与路由，冷却结束后自动恢复。默认关闭，即失败后立刻仍可被选中。
+                          </span>
+                        </span>
+                      </label>
+                      <label className="flex items-start gap-2 text-[12px] leading-5 text-stone-700">
+                        <input
+                          aria-label="启用异常状态标记"
+                          checked={editErrorStatusEnabled}
+                          className="mt-0.5"
+                          onChange={(event) => setEditErrorStatusEnabled(event.target.checked)}
+                          type="checkbox"
+                        />
+                        <span>
+                          <span className="font-semibold">启用异常状态标记</span>
+                          <span className="block text-[11px] text-stone-600">
+                            开启后连续同类语义错误达到上面的次数时，账号会被标记为异常并停止参与路由。默认开启，因为触发条件严格，通常意味着账号确实不可用。
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+                    <div className="mt-3 grid gap-2 text-[11px] leading-5 text-stone-600">
+                      <p>
+                        <span className="font-semibold text-emerald-700">会自动重试：</span>
+                        网络连接失败、请求超时、响应读取失败、HTTP 408 / 429 / 5xx，以及 Codex“服务器当前过载”。
+                      </p>
+                      <p>
+                        <span className="font-semibold text-amber-700">会累计为异常：</span>
+                        不可重试的永久语义错误，在 HTTP 状态和规范化错误消息相同且连续达到设定次数后，账号才会标记为异常；成功、临时错误或错误变化会清零。关闭「启用异常状态标记」后仍会累计次数，但不再改变账号状态。
+                      </p>
+                      <p>
+                        <span className="font-semibold text-red-700">不会同账号重试：</span>
+                        HTTP 401 / 403；它们继续按现有鉴权失效和切换账号逻辑处理。
+                      </p>
+                    </div>
+                  </section>
+                  <section
+                    aria-label="模型状态"
+                    className="rounded-xl border border-orange-100 bg-orange-50/50 p-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[13px] font-semibold text-stone-900">模型状态</p>
+                        <p className="mt-0.5 text-[11px] font-medium text-stone-500">
+                          冷却与异常由失败自动写入，暂停只由你决定。
+                        </p>
+                      </div>
+                      <button
+                        aria-label="解除全部模型冷却"
+                        className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-orange-700 hover:bg-orange-100 disabled:opacity-50"
+                        disabled={clearModelStateMutation.isPending}
+                        onClick={() => {
+                          for (const state of editingCredential.model_states ?? []) {
+                            if (!modelStateIsClearable(state)) {
+                              continue;
+                            }
+                            clearModelStateMutation.mutate({
+                              credentialId: editingCredential.id,
+                              modelKey: state.model_key,
+                            });
                           }
-                          title="删除恢复时间"
+                        }}
+                        type="button"
+                      >
+                        全部解除
+                      </button>
+                    </div>
+                    {(editingCredential.model_states ?? []).length === 0 ? (
+                      <p className="mt-3 text-[11px] font-medium text-stone-500">
+                        暂无模型状态记录。
+                      </p>
+                    ) : null}
+                    <div className="mt-3 grid gap-2">
+                      {(editingCredential.model_states ?? []).map((state) => {
+                        const cooling =
+                          state.cooldown_until &&
+                          new Date(state.cooldown_until).getTime() > cooldownNow;
+                        const paused = state.status === "paused";
+                        return (
+                          <div
+                            className="flex items-center justify-between gap-2 rounded-lg bg-white px-2 py-1.5"
+                            key={state.model_key}
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-[12px] font-semibold text-stone-900">
+                                {state.model_key}
+                              </p>
+                              <p className="truncate text-[10px] font-medium text-stone-500">
+                                {state.aliases.length > 0 ? state.aliases.join("、") : "已移除映射"}
+                                {paused
+                                  ? " · 已暂停"
+                                  : state.status === "error"
+                                    ? " · 异常"
+                                    : cooling
+                                      ? ` · 冷却 ${formatCooldownRemaining(
+                                          new Date(state.cooldown_until as string).getTime() -
+                                            cooldownNow,
+                                        )}`
+                                      : " · 正常"}
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1">
+                              <button
+                                aria-label={`${paused ? "恢复" : "暂停"}模型 ${state.model_key}`}
+                                className="rounded-md border border-stone-200 px-2 py-1 text-[10px] font-semibold text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+                                disabled={modelStatusMutation.isPending}
+                                onClick={() =>
+                                  modelStatusMutation.mutate({
+                                    credentialId: editingCredential.id,
+                                    modelKey: state.model_key,
+                                    status: paused ? "ok" : "paused",
+                                  })
+                                }
+                                type="button"
+                              >
+                                {paused ? "恢复" : "暂停"}
+                              </button>
+                              <button
+                                aria-label={`解除模型 ${state.model_key}`}
+                                className="rounded-md border border-orange-200 px-2 py-1 text-[10px] font-semibold text-orange-700 hover:bg-orange-50 disabled:opacity-50"
+                                disabled={clearModelStateMutation.isPending}
+                                onClick={() =>
+                                  clearModelStateMutation.mutate({
+                                    credentialId: editingCredential.id,
+                                    modelKey: state.model_key,
+                                  })
+                                }
+                                type="button"
+                              >
+                                解除
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                  <div className="rounded-xl border border-stone-200 bg-stone-50/70 p-3">
+                    <label className={labelClass}>
+                      自动恢复
+                      <select
+                        aria-label="自动恢复模式"
+                        className={fieldClass}
+                        onChange={(event) => setEditRecoveryMode(event.target.value as RecoveryMode)}
+                        value={editRecoveryMode}
+                      >
+                        <option value="off">关闭</option>
+                        <option value="scheduled">每日定时</option>
+                        <option value="healthcheck">探活恢复</option>
+                      </select>
+                    </label>
+                    {editRecoveryMode === "scheduled" ? (
+                      <div className="mt-3 grid gap-2">
+                        {editRecoveryTimes.map((time, index) => (
+                          <div className="flex items-center gap-2" key={`${index}-${time}`}>
+                            <input
+                              aria-label={`恢复时间 ${index + 1}`}
+                              className={fieldClass}
+                              onChange={(event) =>
+                                setEditRecoveryTimes((current) =>
+                                  current.map((value, currentIndex) =>
+                                    currentIndex === index ? event.target.value : value,
+                                  ),
+                                )
+                              }
+                              type="time"
+                              value={time}
+                            />
+                            <button
+                              aria-label={`删除恢复时间 ${index + 1}`}
+                              className="rounded-lg border border-stone-200 p-2 text-stone-500 hover:bg-white disabled:opacity-50"
+                              disabled={editRecoveryTimes.length <= 1}
+                              onClick={() =>
+                                setEditRecoveryTimes((current) => current.filter((_, currentIndex) => currentIndex !== index))
+                              }
+                              title="删除恢复时间"
+                              type="button"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                        <button
+                          aria-label="添加恢复时间"
+                          className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 hover:bg-stone-100"
+                          onClick={() => setEditRecoveryTimes((current) => [...current, "00:00"])}
                           type="button"
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          <Plus className="h-3.5 w-3.5" />
+                          添加时间
                         </button>
                       </div>
-                    ))}
-                    <button
-                      aria-label="添加恢复时间"
-                      className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 hover:bg-stone-100"
-                      onClick={() => setEditRecoveryTimes((current) => [...current, "00:00"])}
-                      type="button"
-                    >
-                      <Plus className="h-3.5 w-3.5" />
-                      添加时间
-                    </button>
+                    ) : null}
+                    {editRecoveryMode === "healthcheck" ? (
+                      <label className={`${labelClass} mt-3`}>
+                        探活间隔（分钟）
+                        <input
+                          aria-label="探活间隔（分钟）"
+                          className={fieldClass}
+                          min={1}
+                          max={1440}
+                          onChange={(event) => setEditRecoveryProbeInterval(event.target.value)}
+                          step={1}
+                          type="number"
+                          value={editRecoveryProbeInterval}
+                        />
+                      </label>
+                    ) : null}
                   </div>
-                ) : null}
-                {editRecoveryMode === "healthcheck" ? (
-                  <label className={`${labelClass} mt-3`}>
-                    探活间隔（分钟）
-                    <input
-                      aria-label="探活间隔（分钟）"
-                      className={fieldClass}
-                      min={1}
-                      max={1440}
-                      onChange={(event) => setEditRecoveryProbeInterval(event.target.value)}
-                      step={1}
-                      type="number"
-                      value={editRecoveryProbeInterval}
-                    />
-                  </label>
-                ) : null}
-              </div>
-              {editingCredential.kind === "official" && (
-                <UserAgentFields
-                  fieldClass={fieldClass}
-                  idPrefix="编辑"
-                  labelClass={labelClass}
-                  onChange={handleEditUserAgentChange}
-                  value={editUserAgent}
-                />
-              )}
-              {editingCredential.kind === "api" ? (
+                </>
+              ) : null}
+              {editTab === "basic" && editingCredential.kind === "api" ? (
                 <>
                   <label className={labelClass}>
                     API Key
@@ -6413,13 +6896,6 @@ export function AccountsScreen({
                       value={editApiBaseUrl}
                     />
                   </label>
-                  <UserAgentFields
-                    fieldClass={fieldClass}
-                    idPrefix="编辑"
-                    labelClass={labelClass}
-                    onChange={handleEditUserAgentChange}
-                    value={editUserAgent}
-                  />
                   {shouldShowInterfaceFormatSelect(activePlatform) ? (
                     <label className={labelClass}>
                       接口格式
@@ -6465,6 +6941,34 @@ export function AccountsScreen({
                       </span>
                     </label>
                   ) : null}
+                  <ModelMappingsEditor
+                    error={editModelMappingsError}
+                    fetchError={editFetchModelsError}
+                    fetchedModels={editFetchedModels}
+                    interfaceFormat={editApiInterfaceFormat}
+                    isFetchingModels={editFetchModelsMutation.isPending}
+                    label="模型映射"
+                    onChange={(next) => {
+                      setEditModelMappings(next);
+                      setEditModelMappingsError(null);
+                    }}
+                    onFetchModels={fetchEditModels}
+                    platform={activePlatform}
+                    value={editModelMappings}
+                  />
+                </>
+              ) : null}
+              {editTab === "advanced" ? (
+                <UserAgentFields
+                  fieldClass={fieldClass}
+                  idPrefix="编辑"
+                  labelClass={labelClass}
+                  onChange={handleEditUserAgentChange}
+                  value={editUserAgent}
+                />
+              ) : null}
+              {editTab === "advanced" && editingCredential.kind === "api" ? (
+                <>
                   {shouldShowResponsesCustomToolCompatForFormat(activePlatform, editApiInterfaceFormat) ? (
                     <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
                       <input
@@ -6531,71 +7035,61 @@ export function AccountsScreen({
                       ) : null}
                     </div>
                   ) : null}
-                  <ModelMappingsEditor
-                    error={editModelMappingsError}
-                    fetchError={editFetchModelsError}
-                    fetchedModels={editFetchedModels}
-                    interfaceFormat={editApiInterfaceFormat}
-                    isFetchingModels={editFetchModelsMutation.isPending}
-                    label="模型映射"
-                    onChange={(next) => {
-                      setEditModelMappings(next);
-                      setEditModelMappingsError(null);
-                    }}
-                    onFetchModels={fetchEditModels}
-                    platform={activePlatform}
-                    value={editModelMappings}
-                  />
                 </>
-              ) : (
+              ) : null}
+              {editTab === "other" ? (
                 <>
+                  {editingCredential.kind === "official" ? (
+                    <>
+                      <label className={labelClass}>
+                        Secret JSON
+                        <textarea
+                          aria-label="编辑 Secret JSON"
+                          className={`${monoFieldClass} min-h-24`}
+                          onChange={(event) => {
+                            setEditSecretJson(event.target.value);
+                            setEditFetchedModels([]);
+                            setEditFetchModelsError(null);
+                          }}
+                          value={editSecretJson}
+                        />
+                      </label>
+                      <label className={labelClass}>
+                        Config JSON
+                        <textarea
+                          aria-label="编辑 Config JSON"
+                          className={`${monoFieldClass} min-h-24`}
+                          onChange={(event) => {
+                            const nextConfigJson = event.target.value;
+                            setEditConfigJson(nextConfigJson);
+                            setEditUserAgent(readUserAgentFromConfig(parseJsonObject(nextConfigJson)));
+                            setEditModelMappings(parseModelMappingsFromConfig(nextConfigJson));
+                            setEditModelMappingsError(null);
+                            setEditFetchedModels([]);
+                            setEditFetchModelsError(null);
+                          }}
+                          value={editConfigJson}
+                        />
+                      </label>
+                    </>
+                  ) : null}
                   <label className={labelClass}>
-                    Secret JSON
+                    Preview JSON
                     <textarea
-                      aria-label="编辑 Secret JSON"
+                      aria-label="编辑 Preview JSON"
                       className={`${monoFieldClass} min-h-24`}
-                      onChange={(event) => {
-                        setEditSecretJson(event.target.value);
-                        setEditFetchedModels([]);
-                        setEditFetchModelsError(null);
-                      }}
-                      value={editSecretJson}
+                      onChange={(event) => setEditPreviewJson(event.target.value)}
+                      readOnly={editingCredential.kind === "api"}
+                      value={editingCredential.kind === "api" ? generatedEditApiPreviewJson : editPreviewJson}
                     />
-                  </label>
-                  <label className={labelClass}>
-                    Config JSON
-                    <textarea
-                      aria-label="编辑 Config JSON"
-                      className={`${monoFieldClass} min-h-24`}
-                      onChange={(event) => {
-                        const nextConfigJson = event.target.value;
-                        setEditConfigJson(nextConfigJson);
-                        setEditUserAgent(readUserAgentFromConfig(parseJsonObject(nextConfigJson)));
-                        setEditModelMappings(parseModelMappingsFromConfig(nextConfigJson));
-                        setEditModelMappingsError(null);
-                        setEditFetchedModels([]);
-                        setEditFetchModelsError(null);
-                      }}
-                      value={editConfigJson}
-                    />
+                    {editingCredential.kind === "api" && (
+                      <span className="text-[11px] font-medium text-stone-500">
+                        API 账号预览会根据 API Key、Base URL、接口格式和模型映射自动同步。
+                      </span>
+                    )}
                   </label>
                 </>
-              )}
-              <label className={labelClass}>
-                Preview JSON
-                <textarea
-                  aria-label="编辑 Preview JSON"
-                  className={`${monoFieldClass} min-h-24`}
-                  onChange={(event) => setEditPreviewJson(event.target.value)}
-                  readOnly={editingCredential.kind === "api"}
-                  value={editingCredential.kind === "api" ? generatedEditApiPreviewJson : editPreviewJson}
-                />
-                {editingCredential.kind === "api" && (
-                  <span className="text-[11px] font-medium text-stone-500">
-                    API 账号预览会根据 API Key、Base URL、接口格式和模型映射自动同步。
-                  </span>
-                )}
-              </label>
+              ) : null}
             </div>
 
             {updateMutation.error && (

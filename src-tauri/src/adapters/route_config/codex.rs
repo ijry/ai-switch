@@ -19,6 +19,26 @@ impl TargetAdapter for CodexAdapter {
         "codex"
     }
 
+    fn client_key(&self) -> &'static str {
+        "codex"
+    }
+
+    fn client_display_name(&self) -> &'static str {
+        "Codex CLI"
+    }
+
+    fn native(&self) -> bool {
+        true
+    }
+
+    fn restart_required(&self) -> bool {
+        false
+    }
+
+    fn requires_client_models(&self) -> bool {
+        false
+    }
+
     fn platform(&self) -> PlatformId {
         PlatformId::Codex
     }

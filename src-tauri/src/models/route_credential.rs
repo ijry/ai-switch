@@ -1,3 +1,4 @@
+use crate::models::route_credential_model::RouteCredentialModelState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::FromRow;
@@ -135,6 +136,12 @@ pub struct RouteCredential {
     pub last_failure_response_json: Option<String>,
     #[sqlx(default)]
     pub active_request_count: i64,
+    /// Per-model failure state, one entry per known model. Filled by the service
+    /// layer from `route_credential_models` plus the account's mappings, so a
+    /// healthy model the user may want to pause is listed too.
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub model_states: Vec<RouteCredentialModelState>,
     #[sqlx(default)]
     pub request_count: i64,
     #[sqlx(default)]
@@ -163,6 +170,10 @@ pub struct RecoveryCandidate {
     pub config_json: String,
     pub next_retry_at: Option<String>,
     pub cooldown_until: Option<String>,
+    /// 1 when the account has non-paused model rows. An account can look healthy
+    /// at the account level while one of its models is parked, and that case must
+    /// still reach the scheduler.
+    pub has_model_failures: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

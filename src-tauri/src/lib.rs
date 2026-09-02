@@ -34,11 +34,12 @@ use commands::external_client_import_commands::{
 use commands::import_commands::import_example_json;
 use commands::platform_commands::list_platform_capabilities;
 use commands::route_credential_commands::{
-    archive_route_credentials, copy_route_credential, create_api_route_credential,
-    delete_route_credential, get_route_credential, import_official_route_credentials_from_files,
-    import_official_route_credentials_from_text, list_route_credentials,
-    list_route_credentials_page, refresh_route_credential_quota, refresh_route_credentials_quota,
-    reorder_route_credentials, restore_route_credentials, set_route_credential_recovery,
+    archive_route_credentials, clear_route_credential_model_state, copy_route_credential,
+    create_api_route_credential, delete_route_credential, get_route_credential,
+    import_official_route_credentials_from_files, import_official_route_credentials_from_text,
+    list_route_credentials, list_route_credentials_page, refresh_route_credential_quota,
+    refresh_route_credentials_quota, reorder_route_credentials, restore_route_credentials,
+    set_route_credential_model_status, set_route_credential_recovery,
     set_route_credential_statuses, update_route_credential,
 };
 use commands::route_credential_transfer_commands::{
@@ -62,7 +63,8 @@ use commands::route_proxy_https_commands::{
 use commands::session_commands::{get_session_messages, list_sessions, open_session_terminal};
 use commands::settings_commands::{get_settings, save_settings};
 use commands::target_commands::{
-    list_config_snapshots, list_target_apps, list_target_config_statuses, rollback_config_snapshot,
+    list_config_snapshots, list_config_write_clients, list_target_apps,
+    list_target_config_statuses, rollback_config_snapshot,
 };
 use commands::terminal_commands::{
     create_terminal_session, kill_terminal_session, list_agent_launch_options,
@@ -448,6 +450,8 @@ pub fn run() {
             create_api_route_credential,
             copy_route_credential,
             set_route_credential_recovery,
+            set_route_credential_model_status,
+            clear_route_credential_model_state,
             import_official_route_credentials_from_text,
             import_official_route_credentials_from_files,
             update_route_credential,
@@ -493,6 +497,7 @@ pub fn run() {
             reload_model_price_overrides,
             list_target_apps,
             list_target_config_statuses,
+            list_config_write_clients,
             list_config_snapshots,
             rollback_config_snapshot,
             create_terminal_session,

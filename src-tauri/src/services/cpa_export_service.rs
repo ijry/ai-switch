@@ -722,6 +722,7 @@ mod tests {
             last_failure_message: None,
             last_failure_response_json: None,
             active_request_count: 0,
+            model_states: Vec::new(),
             request_count: 0,
             success_count: 0,
             failure_count: 0,

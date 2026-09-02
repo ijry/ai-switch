@@ -46,6 +46,7 @@ pub async fn write_route_proxy_configs(
     state: State<'_, AppState>,
     base_url: Option<String>,
     platform: String,
+    client_keys: Option<Vec<String>>,
 ) -> Result<Vec<ConfigWriteOutcome>, ApiError> {
     let status = RouteProxyService::status(&state.route_proxy).await;
     let resolved = base_url
@@ -73,6 +74,7 @@ pub async fn write_route_proxy_configs(
         &state.config_writes,
         &resolved,
         &platform,
+        client_keys.as_deref(),
     )
     .await
     .map_err(ApiError::from)
@@ -86,6 +88,7 @@ pub async fn route_config_write_is_stale(
     state: State<'_, AppState>,
     base_url: Option<String>,
     platform: String,
+    client_keys: Option<Vec<String>>,
 ) -> Result<bool, ApiError> {
     let status = RouteProxyService::status(&state.route_proxy).await;
     let Some(resolved) = base_url
@@ -99,8 +102,12 @@ pub async fn route_config_write_is_stale(
         return Ok(false);
     };
 
-    Ok(
-        RouteConfigService::config_write_is_stale(&state.paths, &state.pool, &resolved, &platform)
-            .await,
+    Ok(RouteConfigService::config_write_is_stale(
+        &state.paths,
+        &state.pool,
+        &resolved,
+        &platform,
+        client_keys.as_deref(),
     )
+    .await)
 }

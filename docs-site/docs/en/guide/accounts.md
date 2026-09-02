@@ -49,6 +49,19 @@ Secrets and non-secrets are stored separately: the API key lands in `secret_payl
 
 What each dialect means, and how it decides the shape a request gets rewritten into, is covered in [Protocol Routing and Bridging](/en/guide/protocol-routing).
 
+## How the add and edit panels are grouped
+
+The field count outgrew a single scroll, so both the add dialog and the edit drawer group fields into tabs. Switching tabs never discards what you have typed:
+
+| Tab | Edit drawer | Add dialog (API account mode) |
+| --- | --- | --- |
+| 基础 ("basics") | Name, email (official accounts), status, API Key, Base URL, interface format, Claude auth field, model mappings | Account preset, name, API Key, Base URL, interface format, Claude auth field, model mappings |
+| 高级 ("advanced") | Route priority, max concurrency, User-Agent, custom-tool compat, inline remote images, per-turn reminder | User-Agent, custom-tool compat, preview JSON |
+| 故障处理 ("failure handling") | Failure policy, model status, auto recovery | None — those fields only exist after creation |
+| 其他 ("other") | Secret JSON, Config JSON (official accounts), Preview JSON | None |
+
+Only the add dialog's "API account" mode is tabbed; the batch-import and external-client-import modes have few enough fields to stay as they were. When save validation fails, the panel jumps to the tab that owns the offending field instead of leaving a bottom-of-panel error with no hint where to look.
+
 ## The status machine
 
 Status is restricted to five values (enforced by `validate_route_credential_status`):
@@ -70,6 +83,8 @@ The database default is `ok`. Three classes of event drive transitions:
 `revoked` is the only terminal state: the reactivation SQL carries `WHERE id = ? AND status != 'revoked'`, and the auto-recovery scheduler skips it too. Reviving a revoked account means re-importing it or changing the credential itself.
 
 **A `paused` account can still be tested explicitly.** That is deliberate: running one test is exactly how you find out whether a paused account has come back.
+
+**Beyond account status there is a second layer of model status.** Every model on an account has its own `ok` / `error` / `paused` state and its own cooldown window, stored in `route_credential_models`. An account-level `paused` takes the whole account out of scheduling; a model-level `paused` takes out only that one model. The two are independent. The edit drawer's 模型状态 ("model status") section, under the 故障处理 ("failure handling") tab, pauses, resumes, or clears the cooldown of each model individually.
 
 Full failure classification, backoff durations, and thresholds live in [Reliability and Auto Recovery](/en/guide/reliability).
 
@@ -97,12 +112,14 @@ The column default is still 1, but the account-creation write path binds 5 expli
 
 Picking an account for one proxy request goes like this:
 
-1. **Gather candidates.** The SQL requires: in the pool and enabled (`route_pool_members.enabled = 1`), not archived (`archived_at IS NULL`), status `ok`, and quota columns (`primary_remain`, `weekly_remain`) either null or greater than zero.
+1. **Gather candidates.** The SQL requires: in the pool and enabled (`route_pool_members.enabled = 1`), not archived (`archived_at IS NULL`), status `ok`, and quota columns (`primary_remain`, `weekly_remain`) either null or greater than zero. This step does not judge cooldown.
 2. **Sort.** `ORDER BY route_priority ASC, sort_order ASC, created_at ASC` — priority first, then your manual in-pool ordering, then creation time.
 3. **Round-robin within groups.** Candidates are grouped by `route_priority` and polled from a persisted cursor (the `route_pool_cursors` table stores `next_index` per platform). Persisting the cursor means a restart does not send everything at the first account again.
-4. **Drop cooling accounts.** Anything carrying a future `next_retry_at` or `cooldown_until` leaves the eligible set. If that empties the set entirely, the scheduler keeps **only the single soonest-recovering cooling account** to try, rather than failing the request outright.
-5. **Filter by model.** One more pass against platform capability rules and the model named in the request.
+4. **Filter by model and resolve the model key.** One pass against platform capability rules and the model named in the request, which also computes the upstream model key each survivor will be charged under (the mapping's `to`; official accounts keep the requested name). An empty result returns `route_pool.model_unmatched`.
+5. **Read model state and drop what is cooling.** `route_credential_models` is read in one batch keyed by `(account id, model key)`, then: models that are paused or marked unhealthy are **hard-excluded** and cannot be reached by any fallback; anything whose account-level or model-level cooldown has not expired goes to the cooling bucket. If that empties the eligible set, the scheduler keeps **only the single soonest-recovering cooling account** to try, rather than failing the request outright; if not even a fallback remains (everything was hard-excluded), it returns `route_pool.model_unavailable`.
 6. **Take a concurrency lease.** `try_acquire(platform, id, max_concurrency)` is attempted per candidate; failing to get a lease moves on to the next account in the retry queue.
+
+**Step 4 must precede step 5.** Whether something counts as cooling depends on which model was asked for, so it cannot be partitioned before the model is known. Full rules in [Reliability and Auto Recovery](/en/guide/reliability).
 
 The composite index behind this query is:
 
@@ -111,7 +128,12 @@ CREATE INDEX IF NOT EXISTS idx_route_credentials_routing_priority
   ON route_credentials(platform, route_priority, status, next_retry_at, cooldown_until);
 ```
 
-Its column order *is* the scheduling semantics: **pools are split by platform, ordered by priority within a platform, and cooling accounts are excluded.**
+Its column order *is* the scheduling semantics: **pools are split by platform, ordered by priority within a platform, and cooling accounts are excluded.** Model-level state has an index of its own:
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_route_credential_models_lookup
+  ON route_credential_models(route_credential_id, status, cooldown_until);
+```
 
 ### How to actually set these
 

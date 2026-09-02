@@ -7,6 +7,7 @@ import type {
   Batch,
   BatchGroup,
   ConfigSnapshotSummary,
+  ConfigWriteClientStatus,
   ConfigWriteOutcome,
   CopyRouteCredentialInput,
   ExternalClientImportOutcome,
@@ -27,6 +28,7 @@ import type {
   RouteCredentialImportOutcome,
   RouteCredentialImportPreview,
   RouteCredential,
+  RouteCredentialModelStatus,
   RouteCredentialPage,
   RouteCredentialPageRequest,
   ReorderRouteCredentialInput,
@@ -279,8 +281,13 @@ export function openRouteProxyHttpsCertificateDirectory(): Promise<void> {
 export function writeRouteProxyConfigs(
   baseUrl: string | null | undefined,
   platform: string,
+  clientKeys?: string[] | null,
 ): Promise<ConfigWriteOutcome[]> {
-  return invoke("write_route_proxy_configs", { baseUrl: baseUrl ?? null, platform });
+  return invoke("write_route_proxy_configs", {
+    baseUrl: baseUrl ?? null,
+    platform,
+    clientKeys: clientKeys ?? null,
+  });
 }
 
 /// Whether writing config now would change the file on disk. Config is written
@@ -289,8 +296,19 @@ export function writeRouteProxyConfigs(
 export function routeConfigWriteIsStale(
   baseUrl: string | null | undefined,
   platform: string,
+  clientKeys?: string[] | null,
 ): Promise<boolean> {
-  return invoke("route_config_write_is_stale", { baseUrl: baseUrl ?? null, platform });
+  return invoke("route_config_write_is_stale", {
+    baseUrl: baseUrl ?? null,
+    platform,
+    clientKeys: clientKeys ?? null,
+  });
+}
+
+/// Clients this platform can write config for, with each one's current file
+/// state. Drives the write dialog's checkbox list.
+export function listConfigWriteClients(platform: string): Promise<ConfigWriteClientStatus[]> {
+  return invoke("list_config_write_clients", { platform });
 }
 
 export function listRouteCredentials(platform: string): Promise<RouteCredential[]> {
@@ -384,6 +402,25 @@ export function setRouteCredentialRecovery(
   rule: RecoveryRule,
 ): Promise<RouteCredential> {
   return invoke("set_route_credential_recovery", { id, rule });
+}
+
+export function setRouteCredentialModelStatus(
+  id: string,
+  modelKey: string,
+  status: RouteCredentialModelStatus,
+): Promise<RouteCredential> {
+  return invoke("set_route_credential_model_status", {
+    id,
+    model_key: modelKey,
+    status,
+  });
+}
+
+export function clearRouteCredentialModelState(
+  id: string,
+  modelKey: string,
+): Promise<RouteCredential> {
+  return invoke("clear_route_credential_model_state", { id, model_key: modelKey });
 }
 
 export function deleteRouteCredential(id: string): Promise<void> {

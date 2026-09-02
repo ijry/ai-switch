@@ -1,8 +1,10 @@
+use crate::database::repositories::route_credential_model_repository::RouteCredentialModelRepository;
 use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::error::AppError;
 use crate::models::route_credential::RouteCredential;
 use crate::models::route_pool::RoutePoolModelTestRequest;
 use crate::services::route_credential_activity::RouteCredentialActivityRegistry;
+use crate::services::route_model_capability::{alias_for_model_key, parse_model_capability};
 use crate::services::route_model_test_service::RouteModelTestService;
 use chrono::{DateTime, Local, TimeZone, Timelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -114,6 +116,7 @@ impl RouteRecoveryService {
                 &candidate.status,
                 candidate.next_retry_at.as_deref(),
                 candidate.cooldown_until.as_deref(),
+                candidate.has_model_failures != 0,
             );
             match rule.mode {
                 RecoveryMode::Off => {}
@@ -133,6 +136,24 @@ impl RouteRecoveryService {
                         .unwrap_or(DEFAULT_PROBE_INTERVAL_MINUTES)
                         .max(1);
                     if down && probe_is_due(probe_state, &candidate.id, interval, now_utc).await {
+                        // Probe the model that has been parked longest rather than
+                        // whichever mapping happens to be first: the account may be
+                        // in recovery precisely because of the third one.
+                        let model = RouteCredentialModelRepository::oldest_recoverable_key(
+                            pool,
+                            &candidate.id,
+                            &now_utc.to_rfc3339(),
+                        )
+                        .await
+                        .ok()
+                        .flatten();
+                        // The repository speaks upstream keys, the model test takes
+                        // request-side names (`mapping.from`). Fall back to the key
+                        // itself for official and empty-mapping accounts, whose key
+                        // already is the requested name.
+                        let capability = parse_model_capability(&candidate.config_json);
+                        let model = model
+                            .and_then(|key| alias_for_model_key(&capability, &key).or(Some(key)));
                         // A successful explicit test auto-recovers the account via
                         // recover_after_explicit_test inside test_model.
                         let _ = RouteModelTestService::test_model_with_activity(
@@ -141,7 +162,7 @@ impl RouteRecoveryService {
                             RoutePoolModelTestRequest {
                                 platform: candidate.platform.clone(),
                                 account_id: Some(candidate.id.clone()),
-                                model: None,
+                                model,
                                 interface_format: None,
                             },
                         )
@@ -162,12 +183,18 @@ pub fn parse_recovery_rule(config_json: &str) -> RecoveryRule {
 }
 
 /// True when a non-revoked account is not fully healthy: status is not "ok"
-/// (paused/error/warning) or it still carries a retry/cooldown window.
-fn needs_recovery(status: &str, next_retry_at: Option<&str>, cooldown_until: Option<&str>) -> bool {
+/// (paused/error/warning), it still carries a retry/cooldown window, or one of
+/// its models is parked.
+fn needs_recovery(
+    status: &str,
+    next_retry_at: Option<&str>,
+    cooldown_until: Option<&str>,
+    has_model_failures: bool,
+) -> bool {
     if status == "revoked" {
         return false;
     }
-    status != "ok" || next_retry_at.is_some() || cooldown_until.is_some()
+    status != "ok" || next_retry_at.is_some() || cooldown_until.is_some() || has_model_failures
 }
 
 fn parse_hhmm(value: &str) -> Option<chrono::NaiveTime> {
@@ -339,16 +366,35 @@ mod tests {
 
     #[test]
     fn needs_recovery_matrix() {
-        assert!(needs_recovery("paused", None, None));
-        assert!(needs_recovery("error", None, None));
-        assert!(needs_recovery("warning", None, None));
-        assert!(needs_recovery("ok", None, Some("2026-08-11T15:00:00Z")));
-        assert!(!needs_recovery("ok", None, None));
+        assert!(needs_recovery("paused", None, None, false));
+        assert!(needs_recovery("error", None, None, false));
+        assert!(needs_recovery("warning", None, None, false));
+        assert!(needs_recovery(
+            "ok",
+            None,
+            Some("2026-08-11T15:00:00Z"),
+            false
+        ));
+        assert!(!needs_recovery("ok", None, None, false));
         assert!(!needs_recovery(
             "revoked",
             None,
-            Some("2026-08-11T15:00:00Z")
+            Some("2026-08-11T15:00:00Z"),
+            false
         ));
+    }
+
+    #[test]
+    fn an_account_with_only_model_failures_still_needs_recovery() {
+        // Account-level columns look healthy, but one model is parked — without
+        // this the scheduler would never probe it and only live traffic would.
+        assert!(needs_recovery("ok", None, None, true));
+        assert!(!needs_recovery("ok", None, None, false));
+    }
+
+    #[test]
+    fn a_revoked_account_is_never_recovered_even_with_model_failures() {
+        assert!(!needs_recovery("revoked", None, None, true));
     }
 
     #[test]

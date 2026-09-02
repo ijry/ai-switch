@@ -142,6 +142,20 @@ The location is **not configurable**. `AI_SWITCH_DATA_DIR`, which appears in the
 
 If the actual goal is moving accounts to another device, the built-in **credential export/import** is a better tool than copying directories, since it records provenance information.
 
+## My account list is empty after upgrading to 0.7.3 — is the data gone?
+
+**No.** Nothing was deleted. The database was moved into `~/.ai-switch/backups/` under a name like `ai-switch.db.migration-conflict-<timestamp>`.
+
+The cause: 0.7.3 changed the line endings of two database migration scripts from CRLF to LF. Not a single SQL statement changed, but migration checksums are computed over the file's raw bytes, so every existing install decided at startup that a migration had been modified — which triggered the fallback of the day: move the whole database into `backups/` and create a fresh, empty one.
+
+From 0.7.4 on:
+
+- a checksum mismatch caused only by line endings is **repaired in place**, with no quarantine;
+- if the live database is empty and a quarantined one exists in `backups/`, it is **restored automatically** at startup (validated on a copy first, and never over accounts you created after the quarantine);
+- when a migration's contents genuinely changed and the database holds data, the app **refuses to start** instead of replacing it.
+
+So opening the app after upgrading to 0.7.4 should bring your accounts back. If it does not, quit the app and copy the newest `migration-conflict` file from `backups/` back to `~/.ai-switch/ai-switch.db`, then start it again.
+
 ## Which operating systems are supported?
 
 Windows, macOS, and Linux. Every release is built by CI on all three:

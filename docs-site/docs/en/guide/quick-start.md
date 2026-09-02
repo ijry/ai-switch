@@ -56,7 +56,7 @@ Click **「保存账号」** ("save account"). On success you'll see a toast rea
 
 The account is already in the pool. Now tune its routing parameters.
 
-Find the new account in the list and click **「编辑账号」** ("edit account") at the end of its row; a panel slides out on the right. Two fields matter most.
+Find the new account in the list and click **「编辑账号」** ("edit account") at the end of its row; a panel slides out on the right. Switch to the **「高级」** ("advanced") tab — two fields there matter most.
 
 **路由优先级** ("route priority") — 1 to 5, **default 3**, lower numbers win. The proxy tiers strictly: every priority-1 account must be unavailable before a priority-2 account is used.
 
@@ -239,7 +239,7 @@ Once traffic flows, these are the usual next moves.
 
 **Add more accounts and lay out the priorities.** This is where the pool earns its keep — the primary dies and traffic drops down without you noticing. See [Accounts and the Pool](/en/guide/accounts).
 
-**Set up auto recovery for failed accounts.** The 自动恢复 ("auto recovery") setting in the edit panel supports daily schedules and health-check probing, so a rate-limited account returns to the pool on its own. See [Reliability and Auto Recovery](/en/guide/reliability).
+**Set up auto recovery for failed accounts.** The 自动恢复 ("auto recovery") setting under the edit panel's 故障处理 ("failure handling") tab supports daily schedules and health-check probing, so a rate-limited account returns to the pool on its own. See [Reliability and Auto Recovery](/en/guide/reliability).
 
 **Configure your other CLIs.** Switch to another platform in the sidebar and repeat. Each platform has its own pool and its own proxy key. Check [Platform Support Matrix](/en/guide/platform-support) first for what's supported.
 

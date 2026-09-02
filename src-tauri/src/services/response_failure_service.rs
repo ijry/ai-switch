@@ -3,6 +3,10 @@ use serde_json::Value;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticResponseFailure {
     pub code: Option<String>,
+    /// The upstream's `error.type`. Gateways that omit `error.code` often still
+    /// name the error family here, which is the only way to tell their own
+    /// errors apart from the ones they relay.
+    pub error_type: Option<String>,
     pub message: String,
 }
 
@@ -17,10 +21,39 @@ pub fn is_transient_response_failure(message: &str) -> bool {
         .contains("our servers are currently overloaded")
 }
 
+/// The `error.type` new-api style gateways stamp on their own errors, as
+/// opposed to the ones they relay from a real upstream.
+const NEW_API_ERROR_TYPE: &str = "new_api_error";
+/// How those gateways open the message once the account's balance is spent.
+const NEW_API_INSUFFICIENT_BALANCE_PREFIX: &str = "用户额度不足";
+
+/// Returns whether a new-api gateway is reporting a spent account balance.
+///
+/// These bodies carry no `error.code` at all — only `error.type` — so the
+/// code-based rules cannot see them, and the message is too specific to match
+/// on alone (the same gateway relays upstream 用户额度不足 text for other
+/// accounts). Requiring both keeps the rule narrow. By the time this arrives
+/// the remaining balance is already negative, which makes it every bit as
+/// deterministic as a quota reset boundary.
+fn is_new_api_insufficient_balance(failure: &SemanticResponseFailure) -> bool {
+    failure
+        .error_type
+        .as_deref()
+        .is_some_and(|error_type| error_type.trim().eq_ignore_ascii_case(NEW_API_ERROR_TYPE))
+        && failure
+            .message
+            .trim_start()
+            .starts_with(NEW_API_INSUFFICIENT_BALANCE_PREFIX)
+}
+
 /// Returns whether an upstream error is a definitive quota exhaustion signal.
 /// These errors should mark the account as abnormal immediately instead of
 /// spending the configured retry budget.
 pub fn is_quota_exhaustion_failure(failure: &SemanticResponseFailure) -> bool {
+    if is_new_api_insufficient_balance(failure) {
+        return true;
+    }
+
     let code = failure
         .code
         .as_deref()
@@ -126,6 +159,7 @@ pub fn detect_response_failed(body: &[u8]) -> Option<SemanticResponseFailure> {
     if is_known_error_text && !normalized.is_empty() {
         return Some(SemanticResponseFailure {
             code: None,
+            error_type: None,
             message: normalized.chars().take(512).collect(),
         });
     }
@@ -157,6 +191,15 @@ fn detect_value(value: &Value) -> Option<SemanticResponseFailure> {
         .map(str::trim)
         .filter(|code| !code.is_empty())
         .map(str::to_string);
+    // Only the error object's own `type` — a top-level one names the envelope
+    // (`error`, `response.failed`), not the error family.
+    let error_type = value
+        .pointer("/response/error/type")
+        .or_else(|| value.pointer("/error/type"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|error_type| !error_type.is_empty())
+        .map(str::to_string);
     let message = value
         .pointer("/response/error/message")
         .or_else(|| value.pointer("/error/message"))
@@ -168,7 +211,11 @@ fn detect_value(value: &Value) -> Option<SemanticResponseFailure> {
         .chars()
         .take(512)
         .collect();
-    Some(SemanticResponseFailure { code, message })
+    Some(SemanticResponseFailure {
+        code,
+        error_type,
+        message,
+    })
 }
 
 /// Upstream `error.code` values that mean the account should be auto-paused
@@ -266,6 +313,54 @@ data: {"type":"response.failed","error":{"message":"down"}}
         )
         .expect("plain text stream error");
         assert_eq!(failure.message, STREAM_DISCONNECTED_FAILURE_MESSAGE);
+    }
+
+    #[test]
+    fn treats_new_api_insufficient_user_balance_as_quota_exhaustion() {
+        let failure = detect_response_failed(
+            r#"{"error":{"type":"new_api_error","message":"用户额度不足, 剩余额度: ＄-0.398052 (request id: 202609020218166141364498268d9d6A3V7Qkt0)"},"type":"error"}"#
+                .as_bytes(),
+        )
+        .expect("semantic failure");
+        assert!(is_quota_exhaustion_failure(&failure));
+    }
+
+    /// A relay whose shared budget pool ran dry answers with this body, and the
+    /// generic `quota has been exhausted` message rule already catches it. The
+    /// account list explains the difference to the user in a hover hint, and that
+    /// copy only makes sense on an 异常 account — so pin the classification here.
+    #[test]
+    fn treats_an_exhausted_shared_budget_pool_as_quota_exhaustion() {
+        let failure = detect_response_failed(
+            r#"{"error":{"message":"Budget pool quota has been exhausted. Please ask an administrator to increase the limit or select another budget pool.","type":"bad_response_status_code","param":"","code":"bad_response_status_code"}}"#
+                .as_bytes(),
+        )
+        .expect("semantic failure");
+        assert!(is_quota_exhaustion_failure(&failure));
+    }
+
+    #[test]
+    fn new_api_quota_rule_requires_the_error_type_and_the_message_prefix() {
+        let other_new_api_error = detect_response_failed(
+            r#"{"error":{"type":"new_api_error","message":"当前分组 default 下对于模型 gpt-5.5 无可用渠道"}}"#
+                .as_bytes(),
+        )
+        .expect("semantic failure");
+        assert!(!is_quota_exhaustion_failure(&other_new_api_error));
+
+        let other_error_type = detect_response_failed(
+            r#"{"error":{"type":"invalid_request_error","message":"用户额度不足, 剩余额度: ＄-0.398052"}}"#
+                .as_bytes(),
+        )
+        .expect("semantic failure");
+        assert!(!is_quota_exhaustion_failure(&other_error_type));
+
+        let prefix_only_in_the_middle = detect_response_failed(
+            r#"{"error":{"type":"new_api_error","message":"上游渠道报错：用户额度不足"}}"#
+                .as_bytes(),
+        )
+        .expect("semantic failure");
+        assert!(!is_quota_exhaustion_failure(&prefix_only_in_the_middle));
     }
 
     #[test]

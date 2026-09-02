@@ -8,8 +8,8 @@ pub(crate) struct ModelCapability {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct AdvertisedModel {
-    id: String,
+pub(crate) struct AdvertisedModel {
+    pub(crate) id: String,
     description: String,
 }
 
@@ -196,6 +196,80 @@ pub(crate) fn resolve_mapping_target<'a>(
         .map(|mapping| mapping.to.as_str())
 }
 
+/// The key a `(account, model)` failure state is recorded under.
+///
+/// For `api` accounts this is the upstream model the request is rewritten to, so
+/// a relay that rate-limits one upstream model parks exactly that one — and a
+/// catch-all mapping funnels every client alias onto a single key instead of
+/// letting each alias hit the wall separately.
+///
+/// `official` accounts never get their model rewritten
+/// (`build_official_upstream_request`), so their key is the requested name.
+pub(crate) fn model_state_key(
+    platform: &str,
+    capability: &ModelCapability,
+    kind: &str,
+    requested_model: &str,
+) -> String {
+    let requested = strip_one_m_suffix_for_route_lookup(requested_model);
+    if kind == "official" {
+        return requested.to_string();
+    }
+    let _ = platform;
+    resolve_mapping_target(&capability.mappings, requested)
+        .map(|target| strip_one_m_suffix_for_route_lookup(target).to_string())
+        .unwrap_or_else(|| requested.to_string())
+}
+
+/// Map an upstream model key back to a client-facing alias, for places that must
+/// speak the request vocabulary (the model test takes `mapping.from`).
+pub(crate) fn alias_for_model_key(capability: &ModelCapability, model_key: &str) -> Option<String> {
+    aliases_for_model_key(capability, model_key)
+        .into_iter()
+        .next()
+}
+
+/// Every client-facing alias pointing at this upstream model. A relay config can
+/// route two aliases to one upstream model, and the UI shows them all so users
+/// recognise the row by the name they typed.
+pub(crate) fn aliases_for_model_key(capability: &ModelCapability, model_key: &str) -> Vec<String> {
+    capability
+        .mappings
+        .iter()
+        .filter(|mapping| {
+            !is_fallback_mapping(mapping)
+                && strip_one_m_suffix_for_route_lookup(&mapping.to) == model_key
+        })
+        .map(|mapping| mapping.from.trim().to_string())
+        .collect()
+}
+
+/// Every model key this account could ever produce. Used as the denominator when
+/// deciding whether an account-level escalation is due, and to list models the
+/// user may pause before any of them has failed.
+pub(crate) fn known_upstream_models(
+    platform: &str,
+    capability: &ModelCapability,
+    kind: &str,
+) -> Vec<String> {
+    if kind == "official" || capability.mappings.is_empty() {
+        return default_client_models(platform)
+            .iter()
+            .map(|model| (*model).to_string())
+            .collect();
+    }
+
+    let mut models = Vec::new();
+    for mapping in &capability.mappings {
+        let target = strip_one_m_suffix_for_route_lookup(&mapping.to);
+        if target.is_empty() || models.iter().any(|model| model == target) {
+            continue;
+        }
+        models.push(target.to_string());
+    }
+    models
+}
+
 pub(crate) fn advertised_model_ids(
     platform: &str,
     capabilities: &[ModelCapability],
@@ -206,7 +280,7 @@ pub(crate) fn advertised_model_ids(
         .collect()
 }
 
-fn advertised_model_catalog_entries(
+pub(crate) fn advertised_model_catalog_entries(
     platform: &str,
     capabilities: &[ModelCapability],
 ) -> Vec<AdvertisedModel> {
@@ -344,11 +418,12 @@ fn is_claude_route_model(model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        advertised_model_ids, codex_model_catalog_payload, codex_reasoning_profile,
-        parse_model_capability, requested_model_from_body, resolve_mapping_target,
-        supports_requested_model,
+        advertised_model_catalog_entries, advertised_model_ids, alias_for_model_key,
+        codex_model_catalog_payload, codex_reasoning_profile, known_upstream_models,
+        model_state_key, parse_model_capability, requested_model_from_body, resolve_mapping_target,
+        supports_requested_model, ModelCapability,
     };
-    use crate::models::route_credential::FALLBACK_MODEL_ALIAS;
+    use crate::models::route_credential::{ModelMapping, FALLBACK_MODEL_ALIAS};
 
     #[test]
     fn codex_baseline_models_use_distinct_reasoning_profiles() {
@@ -611,6 +686,31 @@ mod tests {
     }
 
     #[test]
+    fn catalog_entries_are_shared_with_client_config_writers() {
+        let mapping = ModelMapping {
+            from: "gpt-5.6-sol".to_string(),
+            to: "gpt-5.6-sol".to_string(),
+            label: None,
+            supports_1m: None,
+        };
+        let capability = ModelCapability {
+            mappings: vec![mapping],
+        };
+
+        // Same source of truth the Codex catalog uses, so a client config and
+        // the catalog can never advertise different models.
+        let entries = advertised_model_catalog_entries("codex", &[capability]);
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gpt-5.6-sol"]
+        );
+    }
+
+    #[test]
     fn subagent_alias_is_advertised_and_matched_without_special_casing() {
         let capability = parse_model_capability(
             r#"{"model_mappings":[{"from":"claude-subagent","to":"provider-haiku"}]}"#,
@@ -629,5 +729,107 @@ mod tests {
             resolve_mapping_target(&capability.mappings, "claude-subagent"),
             Some("provider-haiku")
         );
+    }
+
+    #[test]
+    fn model_state_key_uses_the_mapped_upstream_model_for_api_accounts() {
+        let capability = parse_model_capability(
+            r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"upstream-sol"}]}"#,
+        );
+        assert_eq!(
+            model_state_key("codex", &capability, "api", "gpt-5.6-sol"),
+            "upstream-sol"
+        );
+    }
+
+    #[test]
+    fn model_state_key_collapses_catch_all_aliases_onto_one_key() {
+        let capability = parse_model_capability(&format!(
+            r#"{{"model_mappings":[{{"from":"{FALLBACK_MODEL_ALIAS}","to":"upstream-any"}}]}}"#
+        ));
+        // Every client-side name funnels into the same upstream model, so one
+        // failure parks it for all of them instead of once per alias.
+        assert_eq!(
+            model_state_key("claude", &capability, "api", "claude-sonnet-alias"),
+            "upstream-any"
+        );
+        assert_eq!(
+            model_state_key("claude", &capability, "api", "whatever-else"),
+            "upstream-any"
+        );
+    }
+
+    #[test]
+    fn model_state_key_keeps_the_requested_name_for_official_and_empty_mappings() {
+        let empty = parse_model_capability(r#"{"model_mappings":[]}"#);
+        assert_eq!(
+            model_state_key("codex", &empty, "api", "gpt-5.6-sol"),
+            "gpt-5.6-sol"
+        );
+
+        // build_official_upstream_request never rewrites the model, so an
+        // official account's key must be the name the client sent.
+        let official = parse_model_capability(
+            r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"upstream-sol"}]}"#,
+        );
+        assert_eq!(
+            model_state_key("codex", &official, "official", "gpt-5.6-sol"),
+            "gpt-5.6-sol"
+        );
+    }
+
+    #[test]
+    fn model_state_key_strips_the_one_m_suffix() {
+        let empty = parse_model_capability(r#"{"model_mappings":[]}"#);
+        // Same upstream model, only a different beta header — one cooldown.
+        assert_eq!(
+            model_state_key("claude", &empty, "api", "claude-sonnet-alias[1m]"),
+            model_state_key("claude", &empty, "api", "claude-sonnet-alias")
+        );
+    }
+
+    #[test]
+    fn known_upstream_models_returns_the_platform_baseline_without_mappings() {
+        let empty = parse_model_capability(r#"{"model_mappings":[]}"#);
+        let models = known_upstream_models("codex", &empty, "api");
+        assert!(models.contains(&"gpt-5.6-sol".to_string()));
+        assert!(models.contains(&"gpt-5.5".to_string()));
+    }
+
+    #[test]
+    fn known_upstream_models_dedupes_targets_and_includes_the_catch_all_target() {
+        let capability = parse_model_capability(&format!(
+            r#"{{"model_mappings":[
+                {{"from":"gpt-5.6-sol","to":"upstream-a"}},
+                {{"from":"glm-5.3","to":"upstream-a"}},
+                {{"from":"gpt-5.5","to":"upstream-b"}},
+                {{"from":"{FALLBACK_MODEL_ALIAS}","to":"upstream-any"}}
+            ]}}"#
+        ));
+        let mut models = known_upstream_models("codex", &capability, "api");
+        models.sort();
+        assert_eq!(models, vec!["upstream-a", "upstream-any", "upstream-b"]);
+    }
+
+    #[test]
+    fn known_upstream_models_ignores_mappings_for_official_accounts() {
+        let capability = parse_model_capability(
+            r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"upstream-sol"}]}"#,
+        );
+        let models = known_upstream_models("codex", &capability, "official");
+        assert!(models.contains(&"gpt-5.6-sol".to_string()));
+        assert!(!models.contains(&"upstream-sol".to_string()));
+    }
+
+    #[test]
+    fn alias_for_model_key_maps_upstream_names_back_to_client_aliases() {
+        let capability = parse_model_capability(
+            r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"upstream-sol"}]}"#,
+        );
+        assert_eq!(
+            alias_for_model_key(&capability, "upstream-sol").as_deref(),
+            Some("gpt-5.6-sol")
+        );
+        assert!(alias_for_model_key(&capability, "unknown").is_none());
     }
 }

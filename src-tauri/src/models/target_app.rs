@@ -50,3 +50,19 @@ pub struct TargetConfigStatus {
     pub snapshot_count: i64,
     pub latest_snapshot: Option<ConfigSnapshotSummary>,
 }
+
+/// One client the user can write config for, plus the current state of that
+/// client's config file. Narrower than `TargetConfigStatus`: it carries the
+/// client identity the write dialog needs and skips snapshot bookkeeping.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConfigWriteClientStatus {
+    pub client_key: String,
+    pub display_name: String,
+    pub native: bool,
+    pub restart_required: bool,
+    pub target_key: String,
+    pub platform: String,
+    pub config_path: Option<String>,
+    pub file_status: String,
+    pub error_code: Option<String>,
+}

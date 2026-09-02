@@ -169,6 +169,23 @@ export type FetchedRouteModel = {
   default_reasoning_level?: string | null;
 };
 
+export type RouteCredentialModelStatus = "ok" | "error" | "paused";
+
+export type RouteCredentialModelState = {
+  route_credential_id: string;
+  model_key: string;
+  aliases: string[];
+  status: RouteCredentialModelStatus;
+  transient_failure_count: number;
+  cooldown_until?: string | null;
+  semantic_failure_streak_count: number;
+  last_failure_kind?: string | null;
+  last_failure_message?: string | null;
+  last_failure_response_json?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type RouteCredential = {
   id: string;
   platform: string;
@@ -201,6 +218,7 @@ export type RouteCredential = {
   last_failure_message?: string | null;
   last_failure_response_json?: string | null;
   active_request_count?: number;
+  model_states?: RouteCredentialModelState[];
   request_count?: number;
   success_count?: number;
   failure_count?: number;
@@ -860,6 +878,19 @@ export type TargetConfigStatus = {
   latest_snapshot?: ConfigSnapshotSummary | null;
 };
 
+/** One client the platform can write config for, plus that file's current state. */
+export type ConfigWriteClientStatus = {
+  client_key: string;
+  display_name: string;
+  native: boolean;
+  restart_required: boolean;
+  target_key: string;
+  platform: string;
+  config_path?: string | null;
+  file_status: string;
+  error_code?: string | null;
+};
+
 export type AppSettings = {
   language: string;
   theme: string;
@@ -874,6 +905,13 @@ export type AppSettings = {
    * shares, so unlike model mappings they cannot be per-account.
    */
   claude_client_config_json?: string | null;
+  /**
+   * Which clients each platform writes config for, as
+   * `{"codex":["codex","zcode"]}`. Recorded per platform because the dialog
+   * always opens in one platform's context. Absent or empty means the
+   * platform's native CLI only.
+   */
+  config_write_clients_json?: string | null;
 };
 
 export type AppSettingsView = AppSettings & {

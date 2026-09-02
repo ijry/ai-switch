@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   archiveRouteCredentials,
+  clearRouteCredentialModelState,
   createBatch,
   copyRouteCredential,
   createApiRouteCredential,
@@ -18,6 +19,7 @@ import {
   importExternalClientAccounts,
   importOfficialRouteCredentialsFromFiles,
   importOfficialRouteCredentialsFromText,
+  listConfigWriteClients,
   listPlatformCapabilities,
   listRouteCredentials,
   listRouteCredentialPage,
@@ -27,6 +29,7 @@ import {
   routePoolTestModel,
   saveSettings,
   setRouteCredentialRecovery,
+  setRouteCredentialModelStatus,
   setRouteCredentialStatuses,
   setRoutePoolMembers,
   startRouteProxy,
@@ -49,12 +52,14 @@ import { fetchRouteProxyModels } from "../src/lib/routeProxyModels";
 import type {
   CapabilityAvailability,
   CapabilityRule,
+  ConfigWriteClientStatus,
   ExternalClientAccountPreviewItem,
   ExternalClientImportPreview,
   PlatformCapability,
   PlatformId,
   RouteCredential,
   RouteCredentialActivityEvent,
+  RouteCredentialModelState,
   RoutePoolModelTestOutcome,
   RoutePoolStats,
   RoutePoolUsageLog,
@@ -66,6 +71,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 vi.mock("../src/lib/api/client", () => ({
   archiveRouteCredentials: vi.fn(),
+  clearRouteCredentialModelState: vi.fn(),
   createBatch: vi.fn(),
   copyRouteCredential: vi.fn(),
   createApiRouteCredential: vi.fn(),
@@ -78,6 +84,7 @@ vi.mock("../src/lib/api/client", () => ({
   importExternalClientAccounts: vi.fn(),
   importOfficialRouteCredentialsFromFiles: vi.fn(),
   importOfficialRouteCredentialsFromText: vi.fn(),
+  listConfigWriteClients: vi.fn(),
   listPlatformCapabilities: vi.fn(),
   listRouteCredentials: vi.fn(),
   listRouteCredentialPage: vi.fn(),
@@ -88,6 +95,7 @@ vi.mock("../src/lib/api/client", () => ({
   getSettings: vi.fn(),
   saveSettings: vi.fn(),
   setRouteCredentialRecovery: vi.fn(),
+  setRouteCredentialModelStatus: vi.fn(),
   setRouteCredentialStatuses: vi.fn(),
   setRoutePoolMembers: vi.fn(),
   startRouteProxy: vi.fn(),
@@ -222,6 +230,32 @@ function externalPreviewFixture(
   };
 }
 
+/** What `list_config_write_clients` returns for Codex once ZCode is seeded. */
+const configWriteClientsFixture: ConfigWriteClientStatus[] = [
+  {
+    client_key: "codex",
+    display_name: "Codex CLI",
+    native: true,
+    restart_required: false,
+    target_key: "codex",
+    platform: "codex",
+    config_path: "/home/u/.codex/config.toml",
+    file_status: "managed",
+    error_code: null,
+  },
+  {
+    client_key: "zcode",
+    display_name: "ZCode",
+    native: false,
+    restart_required: true,
+    target_key: "zcode_codex",
+    platform: "codex",
+    config_path: "/home/u/.zcode/v2/config.json",
+    file_status: "unmanaged",
+    error_code: null,
+  },
+];
+
 function statsFixture(overrides: Partial<RoutePoolStats> = {}): RoutePoolStats {
   return {
     member_count: 0,
@@ -307,6 +341,52 @@ async function selectAccountView(name: "算力池" | "未入池" | "已归档" |
   );
 }
 
+async function openFormTab(name: "基础" | "高级" | "故障处理" | "其他") {
+  await userEvent.click(await screen.findByRole("tab", { name }));
+}
+
+// jsdom has no layout, and the pointer drag reads row geometry to decide where the
+// placeholder goes, so the rows under test get their rects handed to them.
+function stubRect(element: HTMLElement, top: number, height: number) {
+  element.getBoundingClientRect = () =>
+    ({
+      top,
+      bottom: top + height,
+      height,
+      left: 0,
+      right: 320,
+      width: 320,
+      x: 0,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+}
+
+const ROW_HEIGHT = 40;
+const ROW_PITCH = 42;
+
+function stubAccountRowGeometry(rows: HTMLElement[]) {
+  stubRect(screen.getByTestId("account-workspace-scroll-region"), 0, 600);
+  rows.forEach((row, index) => stubRect(row, index * ROW_PITCH, ROW_HEIGHT));
+}
+
+function dispatchPointerEvent(
+  target: EventTarget,
+  type: "pointerdown" | "pointermove" | "pointerup",
+  { button = 0, clientX = 0, clientY = 0, pointerId = 1 } = {},
+) {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    button: { configurable: true, value: button },
+    clientX: { configurable: true, value: clientX },
+    clientY: { configurable: true, value: clientY },
+    pointerId: { configurable: true, value: pointerId },
+  });
+  act(() => {
+    target.dispatchEvent(event);
+  });
+}
+
 describe("AccountsScreen", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -358,6 +438,8 @@ describe("AccountsScreen", () => {
     // The panel only reads another app's config when its tab is open, so the
     // default is an empty preview rather than a rejection.
     vi.mocked(previewExternalClientImport).mockResolvedValue(externalPreviewFixture([]));
+    vi.mocked(listConfigWriteClients).mockReset();
+    vi.mocked(listConfigWriteClients).mockResolvedValue(configWriteClientsFixture);
     vi.mocked(listPlatformCapabilities).mockReset();
     vi.mocked(listRouteCredentials).mockReset();
     vi.mocked(listRouteCredentialPage).mockReset();
@@ -366,6 +448,8 @@ describe("AccountsScreen", () => {
     vi.mocked(restoreRouteCredentials).mockReset();
     vi.mocked(routePoolTestModel).mockReset();
     vi.mocked(setRouteCredentialRecovery).mockReset();
+    vi.mocked(setRouteCredentialModelStatus).mockReset();
+    vi.mocked(clearRouteCredentialModelState).mockReset();
     transportTestState.activityHandler = null;
     transportTestState.statusHandler = null;
     transportTestState.liveLogHandler = null;
@@ -973,24 +1057,24 @@ describe("AccountsScreen", () => {
     expect(screen.getByTestId("workspace-toolbar-leading")).toHaveClass("hidden", "max-[599px]:hidden");
   });
 
-  it("reorders accounts when dragging a handle onto another account row", async () => {
+  it("reorders accounts when a dragged handle is released over the placeholder slot", async () => {
     renderScreen();
 
     const dragHandle = await screen.findByLabelText("拖动 Team Account");
-    const dropTarget = screen.getByLabelText("放置在 API Account 前");
-    const dataTransfer = {
-      dropEffect: "none",
-      effectAllowed: "all",
-      setData: vi.fn(),
-    };
+    const firstRow = screen.getByLabelText("放置在 Team Account 前");
+    const secondRow = screen.getByLabelText("放置在 API Account 前");
+    stubAccountRowGeometry([firstRow, secondRow]);
 
-    fireEvent.dragStart(dragHandle, { dataTransfer });
-    await waitFor(() => expect(dragHandle).toHaveAttribute("aria-grabbed", "true"));
-    expect(dataTransfer.setData).toHaveBeenCalledWith("text/plain", "cred-official-1");
+    dispatchPointerEvent(dragHandle, "pointerdown", { clientY: 20 });
+    dispatchPointerEvent(document, "pointermove", { clientY: 70 });
 
-    fireEvent.dragOver(dropTarget, { dataTransfer });
-    expect(dropTarget).toHaveClass("border-blue-400", "bg-blue-50/70");
-    fireEvent.drop(dropTarget, { dataTransfer });
+    expect(dragHandle).toHaveAttribute("aria-grabbed", "true");
+    expect(firstRow.style.position).toBe("fixed");
+    // The placeholder marks the slot the row lands in, below the row it passed.
+    const placeholder = screen.getByTestId("account-drop-placeholder");
+    expect(placeholder.previousElementSibling).toBe(secondRow);
+
+    dispatchPointerEvent(document, "pointerup", { clientY: 70 });
 
     await waitFor(() =>
       expect(reorderRouteCredentials).toHaveBeenCalledWith({
@@ -1003,6 +1087,53 @@ describe("AccountsScreen", () => {
         page_size: 20,
       }),
     );
+    expect(screen.queryByTestId("account-drop-placeholder")).not.toBeInTheDocument();
+    expect(firstRow.style.position).toBe("");
+  });
+
+  it("moves the last account to the front when dragged over the first row", async () => {
+    renderScreen();
+
+    const dragHandle = await screen.findByLabelText("拖动 API Account");
+    const firstRow = screen.getByLabelText("放置在 Team Account 前");
+    const secondRow = screen.getByLabelText("放置在 API Account 前");
+    stubAccountRowGeometry([firstRow, secondRow]);
+
+    dispatchPointerEvent(dragHandle, "pointerdown", { clientY: 60 });
+    dispatchPointerEvent(document, "pointermove", { clientY: 8 });
+
+    const placeholder = screen.getByTestId("account-drop-placeholder");
+    expect(placeholder.nextElementSibling).toBe(firstRow);
+
+    dispatchPointerEvent(document, "pointerup", { clientY: 8 });
+
+    await waitFor(() =>
+      expect(reorderRouteCredentials).toHaveBeenCalledWith({
+        platform: "codex",
+        moved_account_id: "cred-api-1",
+        previous_account_id: null,
+        next_account_id: "cred-official-1",
+        filters: [],
+        pool_scope: "out_of_pool",
+        page_size: 20,
+      }),
+    );
+  });
+
+  it("leaves the order alone when a drag is released where it started", async () => {
+    renderScreen();
+
+    const dragHandle = await screen.findByLabelText("拖动 API Account");
+    stubAccountRowGeometry([
+      screen.getByLabelText("放置在 Team Account 前"),
+      screen.getByLabelText("放置在 API Account 前"),
+    ]);
+
+    dispatchPointerEvent(dragHandle, "pointerdown", { clientY: 60 });
+    dispatchPointerEvent(document, "pointermove", { clientY: 52 });
+    dispatchPointerEvent(document, "pointerup", { clientY: 52 });
+
+    expect(reorderRouteCredentials).not.toHaveBeenCalled();
   });
 
   it("keeps side toolbar content visible when the window is not pinned to the top", () => {
@@ -1445,6 +1576,54 @@ describe("AccountsScreen", () => {
     expect(within(secondRow).queryByText(/关键词检测/)).not.toBeInTheDocument();
   });
 
+  it("explains that an exhausted budget pool is the relay's, not the user's own quota", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      {
+        ...credentialsFixture[0],
+        status: "error",
+        last_failure_kind: "semantic_response_failed",
+        last_failure_message:
+          "Budget pool quota has been exhausted. Please ask an administrator to increase the limit or select another budget pool.",
+        last_failure_response_json:
+          '{"error":{"message":"Budget pool quota has been exhausted. Please ask an administrator to increase the limit or select another budget pool.","type":"bad_response_status_code","param":"","code":"bad_response_status_code"}}',
+      },
+      {
+        // The user's own balance running out must NOT get the reassurance.
+        ...credentialsFixture[1],
+        status: "error",
+        last_failure_kind: "semantic_response_failed",
+        last_failure_message: "用户额度不足, 剩余额度: ＄-0.398052",
+        last_failure_response_json:
+          '{"error":{"type":"new_api_error","message":"用户额度不足, 剩余额度: ＄-0.398052"}}',
+      },
+      {
+        // Recorded by status code, so the original wording survives only in the
+        // body — and a relay may not capitalize it the way the sample did.
+        ...credentialsFixture[0],
+        id: "cred-pool-by-status",
+        display_name: "Status Coded Account",
+        status: "error",
+        last_failure_kind: "upstream_status",
+        last_failure_message: "upstream returned 429",
+        last_failure_response_json:
+          '{"error":{"message":"budget pool quota has been exhausted, please ask an administrator"}}',
+      },
+    ]);
+
+    renderScreen();
+
+    const firstRow = await screen.findByLabelText("放置在 Team Account 前");
+    const secondRow = screen.getByLabelText("放置在 API Account 前");
+    const thirdRow = screen.getByLabelText("放置在 Status Coded Account 前");
+    expect(
+      within(firstRow).getByText(
+        /当前中转站公共池额度耗尽，并非你个人额度耗尽，请等待下一次公共池补充额度。/,
+      ),
+    ).toBeInTheDocument();
+    expect(within(secondRow).queryByText(/公共池/)).not.toBeInTheDocument();
+    expect(within(thirdRow).getByText(/公共池额度耗尽/)).toBeInTheDocument();
+  });
+
   it("keeps the failure tooltip hoverable so its text can be selected", async () => {
     vi.mocked(listRouteCredentials).mockResolvedValue([
       {
@@ -1819,6 +1998,7 @@ describe("AccountsScreen", () => {
     await userEvent.type(screen.getByLabelText("API Key"), "sk-ua");
     await userEvent.clear(screen.getByLabelText("Base URL"));
     await userEvent.type(screen.getByLabelText("Base URL"), "https://api.upstream.test/v1");
+    await openFormTab("高级");
     await userEvent.selectOptions(screen.getByLabelText("创建 User-Agent 预设"), "grok-workspace");
     await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
 
@@ -2404,6 +2584,7 @@ describe("AccountsScreen", () => {
     await userEvent.clear(screen.getByLabelText("Base URL"));
     await userEvent.type(screen.getByLabelText("Base URL"), "https://api.upstream.test/v1");
     await userEvent.selectOptions(screen.getByLabelText("接口格式"), "openai-responses");
+    await openFormTab("高级");
     await userEvent.click(screen.getByLabelText("兼容 custom 工具（Responses 中转）"));
     await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
 
@@ -2435,6 +2616,7 @@ describe("AccountsScreen", () => {
 
     renderScreen();
     await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
     const checkbox = await screen.findByLabelText("兼容 custom 工具（Responses 中转）");
     expect(checkbox).toBeChecked();
     await userEvent.click(checkbox);
@@ -2460,6 +2642,7 @@ describe("AccountsScreen", () => {
 
     renderScreen();
     await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
 
     // The text field only exists once the box is ticked.
     expect(screen.queryByLabelText("纠偏提醒内容")).not.toBeInTheDocument();
@@ -2489,6 +2672,7 @@ describe("AccountsScreen", () => {
 
     renderScreen();
     await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
 
     const checkbox = await screen.findByLabelText("每轮追加纠偏提醒");
     expect(checkbox).toBeChecked();
@@ -2518,6 +2702,7 @@ describe("AccountsScreen", () => {
 
     renderScreen();
     await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
     await userEvent.click(await screen.findByLabelText("每轮追加纠偏提醒"));
     await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
 
@@ -2544,6 +2729,7 @@ describe("AccountsScreen", () => {
 
     renderScreen();
     await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
 
     expect(screen.getByLabelText("编辑 User-Agent")).toHaveValue("OldBot/1.0");
     await userEvent.clear(screen.getByLabelText("编辑 User-Agent"));
@@ -2703,6 +2889,7 @@ describe("AccountsScreen", () => {
     await userEvent.click(screen.getByLabelText("编辑 Base64 解码 API Key"));
 
     expect(screen.getByLabelText("编辑 API Key")).toHaveValue("sk-edit");
+    await openFormTab("其他");
     expect((screen.getByLabelText("编辑 Preview JSON") as HTMLTextAreaElement).value).toContain("sk-edit");
 
     await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
@@ -2717,6 +2904,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+    await openFormTab("故障处理");
 
     expect(screen.getByLabelText("额外重试次数")).toHaveValue(2);
     expect(screen.getByLabelText("重试间隔（毫秒）")).toHaveValue(200);
@@ -2749,6 +2937,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("故障处理");
     expect(screen.getByLabelText("额外重试次数")).toHaveValue(4);
     expect(screen.getByLabelText("重试间隔（毫秒）")).toHaveValue(750);
     expect(screen.getByLabelText("异常触发次数")).toHaveValue(18);
@@ -2778,6 +2967,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+    await openFormTab("故障处理");
     fireEvent.change(screen.getByLabelText("额外重试次数"), { target: { value: "11" } });
     await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
 
@@ -2807,6 +2997,7 @@ describe("AccountsScreen", () => {
 
     await waitFor(() => expect(recognizeApiKeysFromImageBlob).toHaveBeenCalledWith(imageBlob));
     expect(screen.getByLabelText("编辑 API Key")).toHaveValue("sk-edit-ocr-123456");
+    await openFormTab("其他");
     expect((screen.getByLabelText("编辑 Preview JSON") as HTMLTextAreaElement).value).toContain("sk-edit-ocr-123456");
   });
 
@@ -2837,6 +3028,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+    await openFormTab("故障处理");
     await userEvent.selectOptions(screen.getByLabelText("自动恢复模式"), "scheduled");
     fireEvent.change(screen.getByLabelText("恢复时间 1"), { target: { value: "03:30" } });
     await userEvent.click(screen.getByLabelText("添加恢复时间"));
@@ -2857,6 +3049,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+    await openFormTab("故障处理");
 
     const cooldownToggle = screen.getByLabelText("启用失败冷却");
     const errorStatusToggle = screen.getByLabelText("启用异常状态标记");
@@ -2880,6 +3073,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+    await openFormTab("故障处理");
     fireEvent.change(screen.getByLabelText("失败冷却（秒）"), { target: { value: "0" } });
     await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
 
@@ -2923,6 +3117,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+    await openFormTab("高级");
     await userEvent.selectOptions(screen.getByLabelText("编辑 User-Agent 预设"), "browser");
     await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
 
@@ -3494,6 +3689,9 @@ describe("AccountsScreen", () => {
     // Writing clears the nudge.
     vi.mocked(routeConfigWriteIsStale).mockResolvedValue(false);
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
+    // The button now only opens the dialog; the write happens on confirm.
+    await screen.findByText("选择要写入的客户端");
+    await userEvent.click(screen.getByRole("button", { name: "写入" }));
     await waitFor(() =>
       expect(screen.queryByText("配置已变更，需重新写入")).not.toBeInTheDocument(),
     );
@@ -3506,8 +3704,11 @@ describe("AccountsScreen", () => {
     await userEvent.click(screen.getByLabelText("启动本地路由代理"));
     expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
 
+    await userEvent.click(screen.getByLabelText("写入路由配置文件"));
+    await screen.findByText("选择要写入的客户端");
+
     vi.useFakeTimers();
-    fireEvent.click(screen.getByLabelText("写入路由配置文件"));
+    fireEvent.click(screen.getByRole("button", { name: "写入" }));
     await act(async () => {
       await Promise.resolve();
     });
@@ -3528,6 +3729,107 @@ describe("AccountsScreen", () => {
     expect(screen.queryByText("配置写入结果")).not.toBeInTheDocument();
   });
 
+  it("opens the client dialog instead of writing immediately", async () => {
+    renderScreen();
+
+    await screen.findByText("本地代理：未启动");
+    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
+    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("写入路由配置文件"));
+
+    expect(await screen.findByText("选择要写入的客户端")).toBeInTheDocument();
+    // The dialog is the confirmation step, so nothing is written yet.
+    expect(writeRouteProxyConfigs).not.toHaveBeenCalled();
+  });
+
+  it("writes the selected clients and persists the choice", async () => {
+    renderScreen();
+
+    await screen.findByText("本地代理：未启动");
+    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
+    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("写入路由配置文件"));
+    await screen.findByText("选择要写入的客户端");
+    await userEvent.click(await screen.findByRole("checkbox", { name: /ZCode/ }));
+    await userEvent.click(screen.getByRole("button", { name: "写入" }));
+
+    await waitFor(() =>
+      expect(writeRouteProxyConfigs).toHaveBeenCalledWith("http://127.0.0.1:43111", "codex", [
+        "codex",
+        "zcode",
+      ]),
+    );
+    // The choice is remembered so the next write does not need re-picking.
+    await waitFor(() =>
+      expect(saveSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config_write_clients_json: JSON.stringify({ codex: ["codex", "zcode"] }),
+        }),
+      ),
+    );
+  });
+
+  it("labels write results by client name rather than target key", async () => {
+    vi.mocked(writeRouteProxyConfigs).mockResolvedValue([
+      {
+        operation_id: "operation-1",
+        snapshot_id: "snapshot-1",
+        target_app_id: "target-zcode",
+        target_key: "zcode_codex",
+        platform: "codex",
+        path: "/home/u/.zcode/v2/config.json",
+        status: "succeeded",
+        before_hash: null,
+        after_hash: "after-hash",
+        error_code: null,
+      },
+    ]);
+    renderScreen();
+
+    await screen.findByText("本地代理：未启动");
+    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
+    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("写入路由配置文件"));
+    await screen.findByText("选择要写入的客户端");
+    await userEvent.click(screen.getByRole("button", { name: "写入" }));
+
+    expect(await screen.findByText("配置写入结果")).toBeInTheDocument();
+    // `zcode_codex` is an internal key and means nothing to the user.
+    expect(screen.queryByText(/zcode_codex/)).not.toBeInTheDocument();
+    expect(screen.getByText(/ZCode · codex/)).toBeInTheDocument();
+    // The user very likely switched windows already, so repeat the notice here.
+    expect(screen.getByText(/需重启 ZCode/)).toBeInTheDocument();
+    // Same guarantee the existing outcome test makes: no credential in the panel.
+    expect(screen.queryByText(/sk-ai-switch/)).not.toBeInTheDocument();
+  });
+
+  it("explains that a corrupt ZCode config was refused rather than overwritten", async () => {
+    vi.mocked(writeRouteProxyConfigs).mockRejectedValue({
+      code: "validation.route_config_existing_invalid",
+      message: "Existing CLI configuration is invalid; refusing to overwrite it",
+      details: "/home/u/.zcode/v2/config.json (JSON): syntax is invalid",
+      recoverable: true,
+    });
+    renderScreen();
+
+    await screen.findByText("本地代理：未启动");
+    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
+    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("写入路由配置文件"));
+    await screen.findByText("选择要写入的客户端");
+    await userEvent.click(screen.getByRole("button", { name: "写入" }));
+
+    // The stakes are specific here: a bad parse makes ZCode fall back and lose
+    // every provider, so the message has to say we did not touch the file.
+    expect(
+      await screen.findByText(/现有配置文件无法解析，已拒绝覆盖以免丢失你的 provider 配置/),
+    ).toBeInTheDocument();
+  });
+
   it("uses distinct service start, stop, and send-test controls", async () => {
     poolStateByPlatform.set("codex", ["cred-official-1"]);
     renderScreen("codex", "in_pool");
@@ -3543,5 +3845,167 @@ describe("AccountsScreen", () => {
 
     await userEvent.click(stopButton);
     await waitFor(() => expect(stopRouteProxy).toHaveBeenCalledTimes(1));
+  });
+
+  // Per-model cooldown: the row badge, its hover detail and the drawer section.
+  // Built per call rather than once: the cooling deadline is relative to now, and
+  // this suite is long enough that a shared constant could expire mid-run.
+  function modelStatesFixture(): RouteCredentialModelState[] {
+    return [
+      {
+        route_credential_id: "cred-api-1",
+        model_key: "upstream-sol",
+        aliases: ["gpt-5.6-sol"],
+        status: "ok",
+        transient_failure_count: 2,
+        cooldown_until: new Date(Date.now() + 45_000).toISOString(),
+        semantic_failure_streak_count: 0,
+        last_failure_kind: "upstream_status",
+        last_failure_message: "upstream returned 429",
+        last_failure_response_json: null,
+        created_at: "2026-09-02T00:00:00Z",
+        updated_at: "2026-09-02T00:00:00Z",
+      },
+      {
+        route_credential_id: "cred-api-1",
+        model_key: "upstream-glm",
+        aliases: ["glm-5.3"],
+        status: "ok",
+        transient_failure_count: 0,
+        cooldown_until: null,
+        semantic_failure_streak_count: 0,
+        last_failure_kind: null,
+        last_failure_message: null,
+        last_failure_response_json: null,
+        created_at: "2026-09-02T00:00:00Z",
+        updated_at: "2026-09-02T00:00:00Z",
+      },
+      {
+        route_credential_id: "cred-api-1",
+        model_key: "upstream-held",
+        aliases: ["held-model"],
+        status: "paused",
+        transient_failure_count: 0,
+        cooldown_until: null,
+        semantic_failure_streak_count: 0,
+        last_failure_kind: null,
+        last_failure_message: null,
+        last_failure_response_json: null,
+        created_at: "2026-09-02T00:00:00Z",
+        updated_at: "2026-09-02T00:00:00Z",
+      },
+    ];
+  }
+
+  function credentialsWithModelStates(
+    states: RouteCredentialModelState[] = modelStatesFixture(),
+  ): RouteCredential[] {
+    return credentialsFixture.map((credential) =>
+      credential.id === "cred-api-1" ? { ...credential, model_states: states } : credential,
+    );
+  }
+
+  // The pool segment is empty by default, so seed membership before asserting on
+  // a row rendered under 算力池.
+  function renderPoolWithModelStates(credentials = credentialsWithModelStates()) {
+    vi.mocked(listRouteCredentials).mockResolvedValue(credentials);
+    poolStateByPlatform.set("codex", ["cred-api-1"]);
+    return renderScreen("codex", "in_pool");
+  }
+
+  it("在账号行显示不可用模型的汇总徽章", async () => {
+    renderPoolWithModelStates();
+
+    const badge = await screen.findByTestId("credential-model-issues-cred-api-1");
+    // One cooling model plus one paused model; the healthy one is not counted.
+    expect(badge).toHaveTextContent("模型 2 不可用");
+  });
+
+  it("不为全部模型健康的账号显示模型徽章", async () => {
+    renderPoolWithModelStates(credentialsWithModelStates([modelStatesFixture()[1]]));
+
+    expect(await screen.findByText("API Account")).toBeInTheDocument();
+    expect(screen.queryByTestId("credential-model-issues-cred-api-1")).toBeNull();
+  });
+
+  it("悬停徽章时展示逐模型明细", async () => {
+    renderPoolWithModelStates();
+
+    const detail = await screen.findByTestId("credential-model-detail-cred-api-1");
+    expect(detail).toHaveTextContent("upstream-sol");
+    // Aliases matter: the user configured "gpt-5.6-sol", not the upstream name.
+    expect(detail).toHaveTextContent("gpt-5.6-sol");
+    expect(detail).toHaveTextContent("upstream-held");
+    expect(detail).toHaveTextContent("已暂停");
+    expect(detail).not.toHaveTextContent("upstream-glm");
+  });
+
+  it("在编辑抽屉里列出全部已知模型并可暂停", async () => {
+    vi.mocked(setRouteCredentialModelStatus).mockResolvedValue(credentialsWithModelStates()[1]);
+    renderPoolWithModelStates();
+    await userEvent.click(await screen.findByLabelText("编辑 API Account"));
+    await openFormTab("故障处理");
+
+    const section = await screen.findByLabelText("模型状态");
+    // Healthy models are listed too, so a model can be paused before it fails.
+    expect(section).toHaveTextContent("upstream-glm");
+
+    await userEvent.click(screen.getByLabelText("暂停模型 upstream-glm"));
+    expect(setRouteCredentialModelStatus).toHaveBeenCalledWith(
+      "cred-api-1",
+      "upstream-glm",
+      "paused",
+    );
+  });
+
+  it("可恢复已暂停的模型", async () => {
+    vi.mocked(setRouteCredentialModelStatus).mockResolvedValue(credentialsWithModelStates()[1]);
+    renderPoolWithModelStates();
+    await userEvent.click(await screen.findByLabelText("编辑 API Account"));
+    await openFormTab("故障处理");
+
+    await userEvent.click(await screen.findByLabelText("恢复模型 upstream-held"));
+    expect(setRouteCredentialModelStatus).toHaveBeenCalledWith(
+      "cred-api-1",
+      "upstream-held",
+      "ok",
+    );
+  });
+
+  it("可解除单个模型的冷却", async () => {
+    vi.mocked(clearRouteCredentialModelState).mockResolvedValue(credentialsWithModelStates()[1]);
+    renderPoolWithModelStates();
+    await userEvent.click(await screen.findByLabelText("编辑 API Account"));
+    await openFormTab("故障处理");
+
+    await userEvent.click(await screen.findByLabelText("解除模型 upstream-sol"));
+    expect(clearRouteCredentialModelState).toHaveBeenCalledWith("cred-api-1", "upstream-sol");
+  });
+
+  it("一次解除全部非暂停模型", async () => {
+    vi.mocked(clearRouteCredentialModelState).mockResolvedValue(credentialsWithModelStates()[1]);
+    renderPoolWithModelStates();
+    await userEvent.click(await screen.findByLabelText("编辑 API Account"));
+    await openFormTab("故障处理");
+
+    await userEvent.click(await screen.findByLabelText("解除全部模型冷却"));
+    // Only the cooling model: a paused one is the user's own decision, and a
+    // healthy model has no state to clear.
+    expect(clearRouteCredentialModelState).toHaveBeenCalledTimes(1);
+    expect(clearRouteCredentialModelState).toHaveBeenCalledWith("cred-api-1", "upstream-sol");
+  });
+
+  it("已失效账号不显示模型徽章", async () => {
+    renderPoolWithModelStates(
+      credentialsFixture.map((credential) =>
+        credential.id === "cred-api-1"
+          ? { ...credential, status: "revoked" as const, model_states: modelStatesFixture() }
+          : credential,
+      ),
+    );
+
+    // The account itself is dead; per-model detail would only add noise.
+    expect(await screen.findByText("API Account")).toBeInTheDocument();
+    expect(screen.queryByTestId("credential-model-issues-cred-api-1")).toBeNull();
   });
 });
