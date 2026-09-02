@@ -246,13 +246,45 @@ impl DeepLinkProtocolRegistrar for TauriDeepLinkRegistrar {
     }
 }
 
+/// Record why the app cannot start, then exit.
+///
+/// Release builds set `windows_subsystem = "windows"` (see `main.rs`), so
+/// panicking here shows the user nothing whatsoever: no console, no window, no
+/// trace. The failures that reach this point are the ones most worth reporting —
+/// a migration conflict deliberately leaves a populated database untouched and
+/// explains that in its message — so the reason has to land somewhere findable.
+fn report_fatal_startup_error(paths: &AppPaths, error: &crate::error::AppError) -> ! {
+    let report = format!(
+        "[{}] AI Switch could not start: {error} ({})\n{error:?}\n",
+        chrono::Utc::now().to_rfc3339(),
+        error.code(),
+    );
+    eprintln!("{report}");
+
+    let _ = std::fs::create_dir_all(&paths.logs_dir);
+    let log_path = paths.logs_dir.join("startup-error.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        use std::io::Write;
+        let _ = file.write_all(report.as_bytes());
+    }
+
+    std::process::exit(1);
+}
+
 pub fn run() {
     let paths = AppPaths::resolve().expect("failed to resolve app paths");
     let pool = tauri::async_runtime::block_on(async {
-        paths.ensure().await.expect("failed to ensure app paths");
-        open_migrated_pool(&paths.database_file, &paths.backups_dir)
-            .await
-            .expect("failed to open database after migration repair")
+        if let Err(error) = paths.ensure().await {
+            report_fatal_startup_error(&paths, &error);
+        }
+        match open_migrated_pool(&paths.database_file, &paths.backups_dir).await {
+            Ok(pool) => pool,
+            Err(error) => report_fatal_startup_error(&paths, &error),
+        }
     });
 
     let launched_from_autostart = is_autostart_launch(std::env::args().skip(1));
