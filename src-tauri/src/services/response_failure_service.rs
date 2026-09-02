@@ -325,6 +325,20 @@ data: {"type":"response.failed","error":{"message":"down"}}
         assert!(is_quota_exhaustion_failure(&failure));
     }
 
+    /// A relay whose shared budget pool ran dry answers with this body, and the
+    /// generic `quota has been exhausted` message rule already catches it. The
+    /// account list explains the difference to the user in a hover hint, and that
+    /// copy only makes sense on an 异常 account — so pin the classification here.
+    #[test]
+    fn treats_an_exhausted_shared_budget_pool_as_quota_exhaustion() {
+        let failure = detect_response_failed(
+            r#"{"error":{"message":"Budget pool quota has been exhausted. Please ask an administrator to increase the limit or select another budget pool.","type":"bad_response_status_code","param":"","code":"bad_response_status_code"}}"#
+                .as_bytes(),
+        )
+        .expect("semantic failure");
+        assert!(is_quota_exhaustion_failure(&failure));
+    }
+
     #[test]
     fn new_api_quota_rule_requires_the_error_type_and_the_message_prefix() {
         let other_new_api_error = detect_response_failed(

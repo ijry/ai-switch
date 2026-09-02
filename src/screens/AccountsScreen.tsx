@@ -1932,6 +1932,18 @@ function prettyJsonOrText(value: string) {
 }
 
 const SENSITIVE_WORDS_ERROR_CODE = "sensitive_words_detected";
+/**
+ * How a relay opens `error.message` once the **shared** budget pool behind the
+ * account runs dry. Worth calling out because the wording reads like a personal
+ * quota problem, so users go looking for a top-up that would not help.
+ *
+ * Lowercase because it is compared case-insensitively, the way the backend's own
+ * `quota has been exhausted` rule treats this string family. Matched anywhere in
+ * the stored failure rather than as a prefix: the phrase reaches this row both
+ * verbatim in `last_failure_message` and nested inside the raw body, whose shape
+ * varies (plain JSON, an SSE frame, truncated at 8 KiB) too much to re-parse.
+ */
+const BUDGET_POOL_EXHAUSTED_MESSAGE = "budget pool quota has been exhausted";
 
 function CredentialFailureTooltip({
   credential,
@@ -1947,6 +1959,9 @@ function CredentialFailureTooltip({
   }
   const sensitiveWords = [response, credential.last_failure_message].some((value) =>
     value?.includes(SENSITIVE_WORDS_ERROR_CODE),
+  );
+  const budgetPoolExhausted = [response, credential.last_failure_message].some((value) =>
+    value?.toLowerCase().includes(BUDGET_POOL_EXHAUSTED_MESSAGE),
   );
 
   return (
@@ -1978,6 +1993,14 @@ function CredentialFailureTooltip({
               data-testid={`credential-sensitive-words-hint-${credential.id}`}
             >
               友情提醒：当前中转站似乎对项目存在关键词检测，您的项目可能存在敏感词，也不排除是中转站误判。
+            </span>
+          ) : null}
+          {budgetPoolExhausted ? (
+            <span
+              className="mt-2 block rounded-md border border-sky-400/60 bg-sky-500/15 px-2 py-1.5 text-sky-100"
+              data-testid={`credential-budget-pool-hint-${credential.id}`}
+            >
+              友情提醒：当前中转站公共池额度耗尽，并非你个人额度耗尽，请等待下一次公共池补充额度。
             </span>
           ) : null}
           <pre className="mt-2 select-text whitespace-pre-wrap break-words font-mono text-[10px] leading-4 text-stone-100">
