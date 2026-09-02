@@ -43,4 +43,5 @@ pub mod tailscale_sidecar;
 pub mod tailscale_types;
 pub mod target_service;
 pub mod upstream_response_id;
+pub mod usage_overview_service;
 pub mod web_service;
