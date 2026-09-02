@@ -113,6 +113,12 @@ impl RouteCredentialModelRepository {
         let now_text = now.to_rfc3339();
         let cooldown_until = cooldown_seconds
             .map(|seconds| (now + chrono::Duration::seconds(i64::from(seconds))).to_rfc3339());
+        // With cooldown switched off the account has opted out of automatic
+        // parking, so a streak may only count. Flipping `status` there would be
+        // a verdict with no expiry: `partition_by_cooldown` drops `error` models
+        // outright and never probes them, and `RecoveryMode` defaults to `Off`,
+        // so the model would stay unusable until someone cleared it by hand.
+        let error_status_enabled = error_status_enabled && cooldown_seconds.is_some();
         let fingerprint = semantic_failure_fingerprint(response_status, message);
         let threshold = semantic_error_threshold.max(1);
         let message = truncate_failure_message(message);
@@ -515,6 +521,42 @@ mod tests {
             .expect("list");
         assert_eq!(states[0].transient_failure_count, 1);
         assert!(states[0].cooldown_until.is_none());
+    }
+
+    #[tokio::test]
+    async fn disabled_cooldown_never_flips_the_model_to_error() {
+        let pool = create_memory_pool().await.unwrap();
+        run_migrations(&pool).await.unwrap();
+        let id = seed(&pool).await;
+
+        for expected in 1..=4 {
+            let mut conn = pool.acquire().await.expect("conn");
+            RouteCredentialModelRepository::record_transient_failure(
+                &mut conn,
+                &id,
+                "upstream-sol",
+                "semantic_response_transient",
+                "content blocked",
+                None,
+                None,
+                Some(200),
+                3,
+                true,
+            )
+            .await
+            .expect("record");
+            drop(conn);
+
+            let states = RouteCredentialModelRepository::list_for_credentials(&pool, &[id.clone()])
+                .await
+                .expect("list");
+            // The streak still accumulates, but `error` is a verdict with no
+            // expiry: nothing parks the model, nothing probes it back, so with
+            // cooldown off the account has to stay selectable.
+            assert_eq!(states[0].semantic_failure_streak_count, expected.min(3));
+            assert_eq!(states[0].status, MODEL_STATUS_OK);
+            assert!(states[0].cooldown_until.is_none());
+        }
     }
 
     #[tokio::test]
