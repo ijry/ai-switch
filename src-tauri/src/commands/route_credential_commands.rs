@@ -117,6 +117,41 @@ pub async fn set_route_credential_recovery(
         .map_err(ApiError::from)
 }
 
+// `rename_all` because `model_key` travels over the wire as-is: the default
+// camelCase rewrite would look for `modelKey` and reject the client's payload.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn set_route_credential_model_status(
+    state: State<'_, AppState>,
+    id: String,
+    model_key: String,
+    status: String,
+) -> Result<RouteCredential, ApiError> {
+    let credential = RouteCredentialService::set_model_status(&state.pool, id, model_key, status)
+        .await
+        .map_err(ApiError::from)?;
+    state
+        .route_proxy
+        .activity()
+        .notify_status_change(&credential.platform, &credential.id);
+    Ok(credential)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn clear_route_credential_model_state(
+    state: State<'_, AppState>,
+    id: String,
+    model_key: String,
+) -> Result<RouteCredential, ApiError> {
+    let credential = RouteCredentialService::clear_model_state(&state.pool, id, model_key)
+        .await
+        .map_err(ApiError::from)?;
+    state
+        .route_proxy
+        .activity()
+        .notify_status_change(&credential.platform, &credential.id);
+    Ok(credential)
+}
+
 #[tauri::command]
 pub async fn delete_route_credential(
     state: State<'_, AppState>,

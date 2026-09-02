@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   archiveRouteCredentials,
+  clearRouteCredentialModelState,
   createBatch,
   copyRouteCredential,
   createApiRouteCredential,
@@ -28,6 +29,7 @@ import {
   routePoolTestModel,
   saveSettings,
   setRouteCredentialRecovery,
+  setRouteCredentialModelStatus,
   setRouteCredentialStatuses,
   setRoutePoolMembers,
   startRouteProxy,
@@ -57,6 +59,7 @@ import type {
   PlatformId,
   RouteCredential,
   RouteCredentialActivityEvent,
+  RouteCredentialModelState,
   RoutePoolModelTestOutcome,
   RoutePoolStats,
   RoutePoolUsageLog,
@@ -68,6 +71,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 vi.mock("../src/lib/api/client", () => ({
   archiveRouteCredentials: vi.fn(),
+  clearRouteCredentialModelState: vi.fn(),
   createBatch: vi.fn(),
   copyRouteCredential: vi.fn(),
   createApiRouteCredential: vi.fn(),
@@ -91,6 +95,7 @@ vi.mock("../src/lib/api/client", () => ({
   getSettings: vi.fn(),
   saveSettings: vi.fn(),
   setRouteCredentialRecovery: vi.fn(),
+  setRouteCredentialModelStatus: vi.fn(),
   setRouteCredentialStatuses: vi.fn(),
   setRoutePoolMembers: vi.fn(),
   startRouteProxy: vi.fn(),
@@ -390,6 +395,8 @@ describe("AccountsScreen", () => {
     vi.mocked(restoreRouteCredentials).mockReset();
     vi.mocked(routePoolTestModel).mockReset();
     vi.mocked(setRouteCredentialRecovery).mockReset();
+    vi.mocked(setRouteCredentialModelStatus).mockReset();
+    vi.mocked(clearRouteCredentialModelState).mockReset();
     transportTestState.activityHandler = null;
     transportTestState.statusHandler = null;
     transportTestState.liveLogHandler = null;
@@ -4030,5 +4037,163 @@ describe("AccountsScreen", () => {
 
     await userEvent.click(stopButton);
     await waitFor(() => expect(stopRouteProxy).toHaveBeenCalledTimes(1));
+  });
+
+  // Per-model cooldown: the row badge, its hover detail and the drawer section.
+  // Built per call rather than once: the cooling deadline is relative to now, and
+  // this suite is long enough that a shared constant could expire mid-run.
+  function modelStatesFixture(): RouteCredentialModelState[] {
+    return [
+      {
+        route_credential_id: "cred-api-1",
+        model_key: "upstream-sol",
+        aliases: ["gpt-5.6-sol"],
+        status: "ok",
+        transient_failure_count: 2,
+        cooldown_until: new Date(Date.now() + 45_000).toISOString(),
+        semantic_failure_streak_count: 0,
+        last_failure_kind: "upstream_status",
+        last_failure_message: "upstream returned 429",
+        last_failure_response_json: null,
+        created_at: "2026-09-02T00:00:00Z",
+        updated_at: "2026-09-02T00:00:00Z",
+      },
+      {
+        route_credential_id: "cred-api-1",
+        model_key: "upstream-glm",
+        aliases: ["glm-5.3"],
+        status: "ok",
+        transient_failure_count: 0,
+        cooldown_until: null,
+        semantic_failure_streak_count: 0,
+        last_failure_kind: null,
+        last_failure_message: null,
+        last_failure_response_json: null,
+        created_at: "2026-09-02T00:00:00Z",
+        updated_at: "2026-09-02T00:00:00Z",
+      },
+      {
+        route_credential_id: "cred-api-1",
+        model_key: "upstream-held",
+        aliases: ["held-model"],
+        status: "paused",
+        transient_failure_count: 0,
+        cooldown_until: null,
+        semantic_failure_streak_count: 0,
+        last_failure_kind: null,
+        last_failure_message: null,
+        last_failure_response_json: null,
+        created_at: "2026-09-02T00:00:00Z",
+        updated_at: "2026-09-02T00:00:00Z",
+      },
+    ];
+  }
+
+  function credentialsWithModelStates(
+    states: RouteCredentialModelState[] = modelStatesFixture(),
+  ): RouteCredential[] {
+    return credentialsFixture.map((credential) =>
+      credential.id === "cred-api-1" ? { ...credential, model_states: states } : credential,
+    );
+  }
+
+  // The pool segment is empty by default, so seed membership before asserting on
+  // a row rendered under 算力池.
+  function renderPoolWithModelStates(credentials = credentialsWithModelStates()) {
+    vi.mocked(listRouteCredentials).mockResolvedValue(credentials);
+    poolStateByPlatform.set("codex", ["cred-api-1"]);
+    return renderScreen("codex", "in_pool");
+  }
+
+  it("在账号行显示不可用模型的汇总徽章", async () => {
+    renderPoolWithModelStates();
+
+    const badge = await screen.findByTestId("credential-model-issues-cred-api-1");
+    // One cooling model plus one paused model; the healthy one is not counted.
+    expect(badge).toHaveTextContent("模型 2 不可用");
+  });
+
+  it("不为全部模型健康的账号显示模型徽章", async () => {
+    renderPoolWithModelStates(credentialsWithModelStates([modelStatesFixture()[1]]));
+
+    expect(await screen.findByText("API Account")).toBeInTheDocument();
+    expect(screen.queryByTestId("credential-model-issues-cred-api-1")).toBeNull();
+  });
+
+  it("悬停徽章时展示逐模型明细", async () => {
+    renderPoolWithModelStates();
+
+    const detail = await screen.findByTestId("credential-model-detail-cred-api-1");
+    expect(detail).toHaveTextContent("upstream-sol");
+    // Aliases matter: the user configured "gpt-5.6-sol", not the upstream name.
+    expect(detail).toHaveTextContent("gpt-5.6-sol");
+    expect(detail).toHaveTextContent("upstream-held");
+    expect(detail).toHaveTextContent("已暂停");
+    expect(detail).not.toHaveTextContent("upstream-glm");
+  });
+
+  it("在编辑抽屉里列出全部已知模型并可暂停", async () => {
+    vi.mocked(setRouteCredentialModelStatus).mockResolvedValue(credentialsWithModelStates()[1]);
+    renderPoolWithModelStates();
+    await userEvent.click(await screen.findByLabelText("编辑 API Account"));
+
+    const section = await screen.findByLabelText("模型状态");
+    // Healthy models are listed too, so a model can be paused before it fails.
+    expect(section).toHaveTextContent("upstream-glm");
+
+    await userEvent.click(screen.getByLabelText("暂停模型 upstream-glm"));
+    expect(setRouteCredentialModelStatus).toHaveBeenCalledWith(
+      "cred-api-1",
+      "upstream-glm",
+      "paused",
+    );
+  });
+
+  it("可恢复已暂停的模型", async () => {
+    vi.mocked(setRouteCredentialModelStatus).mockResolvedValue(credentialsWithModelStates()[1]);
+    renderPoolWithModelStates();
+    await userEvent.click(await screen.findByLabelText("编辑 API Account"));
+
+    await userEvent.click(await screen.findByLabelText("恢复模型 upstream-held"));
+    expect(setRouteCredentialModelStatus).toHaveBeenCalledWith(
+      "cred-api-1",
+      "upstream-held",
+      "ok",
+    );
+  });
+
+  it("可解除单个模型的冷却", async () => {
+    vi.mocked(clearRouteCredentialModelState).mockResolvedValue(credentialsWithModelStates()[1]);
+    renderPoolWithModelStates();
+    await userEvent.click(await screen.findByLabelText("编辑 API Account"));
+
+    await userEvent.click(await screen.findByLabelText("解除模型 upstream-sol"));
+    expect(clearRouteCredentialModelState).toHaveBeenCalledWith("cred-api-1", "upstream-sol");
+  });
+
+  it("一次解除全部非暂停模型", async () => {
+    vi.mocked(clearRouteCredentialModelState).mockResolvedValue(credentialsWithModelStates()[1]);
+    renderPoolWithModelStates();
+    await userEvent.click(await screen.findByLabelText("编辑 API Account"));
+
+    await userEvent.click(await screen.findByLabelText("解除全部模型冷却"));
+    // Only the cooling model: a paused one is the user's own decision, and a
+    // healthy model has no state to clear.
+    expect(clearRouteCredentialModelState).toHaveBeenCalledTimes(1);
+    expect(clearRouteCredentialModelState).toHaveBeenCalledWith("cred-api-1", "upstream-sol");
+  });
+
+  it("已失效账号不显示模型徽章", async () => {
+    renderPoolWithModelStates(
+      credentialsFixture.map((credential) =>
+        credential.id === "cred-api-1"
+          ? { ...credential, status: "revoked" as const, model_states: modelStatesFixture() }
+          : credential,
+      ),
+    );
+
+    // The account itself is dead; per-model detail would only add noise.
+    expect(await screen.findByText("API Account")).toBeInTheDocument();
+    expect(screen.queryByTestId("credential-model-issues-cred-api-1")).toBeNull();
   });
 });

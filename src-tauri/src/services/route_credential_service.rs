@@ -1,5 +1,6 @@
 use self::sub2api_import_service::{is_sub2api_shape_error, parse_sub2api_text};
 use crate::database::repositories::batch_repository::BatchRepository;
+use crate::database::repositories::route_credential_model_repository::RouteCredentialModelRepository;
 use crate::database::repositories::route_credential_repository::RouteCredentialRepository;
 use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::error::AppError;
@@ -12,6 +13,9 @@ use crate::models::route_credential::{
     RouteCredentialImportResult, RouteCredentialPage, RouteCredentialPageRequest,
     UpdateRouteCredentialInput,
 };
+use crate::models::route_credential_model::{
+    RouteCredentialModelState, MODEL_STATUS_OK, MODEL_STATUS_PAUSED,
+};
 use crate::models::route_credential_transfer::TransferPlatformChoice;
 use crate::models::route_pool::FetchedRouteModel;
 use crate::services::cpa_import_service::{parse_cpa_text, ParsedOfficialCredential};
@@ -19,6 +23,9 @@ use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_credential_activity::RouteCredentialActivityRegistry;
 use crate::services::route_credential_transfer_import_service::{
     normalize_transfer_items, NormalizedImportItem,
+};
+use crate::services::route_model_capability::{
+    aliases_for_model_key, known_upstream_models, parse_model_capability,
 };
 use crate::services::route_preview_service::RoutePreviewService;
 use chrono::Utc;
@@ -43,7 +50,9 @@ impl RouteCredentialService {
     ) -> Result<Vec<RouteCredential>, AppError> {
         let platform = PlatformId::parse(&platform)?;
         PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
-        RouteCredentialRepository::list_by_platform(pool, platform.as_str()).await
+        let credentials =
+            RouteCredentialRepository::list_by_platform(pool, platform.as_str()).await?;
+        attach_model_states(pool, credentials).await
     }
 
     pub async fn list_with_activity(
@@ -56,7 +65,11 @@ impl RouteCredentialService {
     }
 
     pub async fn get(pool: &SqlitePool, id: String) -> Result<RouteCredential, AppError> {
-        RouteCredentialRepository::get(pool, &id).await
+        let credential = RouteCredentialRepository::get(pool, &id).await?;
+        Ok(attach_model_states(pool, vec![credential])
+            .await?
+            .pop()
+            .expect("attach_model_states keeps every credential"))
     }
 
     pub async fn get_with_activity(
@@ -75,14 +88,16 @@ impl RouteCredentialService {
     ) -> Result<RouteCredentialPage, AppError> {
         let platform = PlatformId::parse(&request.platform)?;
         PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
-        RouteCredentialRepository::page(
+        let mut page = RouteCredentialRepository::page(
             pool,
             RouteCredentialPageRequest {
                 platform: platform.as_str().to_string(),
                 ..request
             },
         )
-        .await
+        .await?;
+        page.items = attach_model_states(pool, page.items).await?;
+        Ok(page)
     }
 
     pub async fn page_with_activity(
@@ -362,6 +377,90 @@ impl RouteCredentialService {
     ) -> Result<(), AppError> {
         RouteCredentialRepository::set_statuses(pool, &ids, &status).await
     }
+
+    pub async fn set_model_status(
+        pool: &SqlitePool,
+        id: String,
+        model_key: String,
+        status: String,
+    ) -> Result<RouteCredential, AppError> {
+        // `error` is reached only through a semantic failure streak, so accepting
+        // it here would let the UI fake a verdict the system never reached.
+        if status != MODEL_STATUS_OK && status != MODEL_STATUS_PAUSED {
+            return Err(AppError::Validation {
+                code: "validation.route_credential_model_status",
+                message: "Model status must be 'ok' or 'paused'".to_string(),
+                details: Some(status),
+                recoverable: true,
+            });
+        }
+        RouteCredentialModelRepository::set_status(pool, &id, &model_key, &status).await?;
+        Self::get(pool, id).await
+    }
+
+    pub async fn clear_model_state(
+        pool: &SqlitePool,
+        id: String,
+        model_key: String,
+    ) -> Result<RouteCredential, AppError> {
+        RouteCredentialModelRepository::clear(pool, &id, &model_key).await?;
+        Self::get(pool, id).await
+    }
+}
+
+/// Attach per-model state to each account: every known model gets an entry, with
+/// healthy ones synthesised so the UI can pause a model that has never failed.
+async fn attach_model_states(
+    pool: &SqlitePool,
+    mut credentials: Vec<RouteCredential>,
+) -> Result<Vec<RouteCredential>, AppError> {
+    if credentials.is_empty() {
+        return Ok(credentials);
+    }
+    let ids: Vec<String> = credentials
+        .iter()
+        .map(|credential| credential.id.clone())
+        .collect();
+    let mut rows = RouteCredentialModelRepository::list_for_credentials(pool, &ids).await?;
+
+    for credential in &mut credentials {
+        let capability = parse_model_capability(&credential.config_json);
+        let known = known_upstream_models(&credential.platform, &capability, &credential.kind);
+        let mut states: Vec<RouteCredentialModelState> = Vec::new();
+
+        let (mine, rest): (Vec<_>, Vec<_>) = rows
+            .into_iter()
+            .partition(|row| row.route_credential_id == credential.id);
+        rows = rest;
+
+        for mut row in mine {
+            row.aliases = aliases_for_model_key(&capability, &row.model_key);
+            states.push(row);
+        }
+        for model_key in known {
+            if states.iter().any(|state| state.model_key == model_key) {
+                continue;
+            }
+            states.push(RouteCredentialModelState {
+                route_credential_id: credential.id.clone(),
+                aliases: aliases_for_model_key(&capability, &model_key),
+                model_key,
+                status: MODEL_STATUS_OK.to_string(),
+                transient_failure_count: 0,
+                cooldown_until: None,
+                semantic_failure_streak_count: 0,
+                semantic_failure_streak_fingerprint: None,
+                last_failure_kind: None,
+                last_failure_message: None,
+                last_failure_response_json: None,
+                created_at: credential.created_at.clone(),
+                updated_at: credential.updated_at.clone(),
+            });
+        }
+        states.sort_by(|left, right| left.model_key.cmp(&right.model_key));
+        credential.model_states = states;
+    }
+    Ok(credentials)
 }
 
 fn duplicated_display_name(name: &str) -> String {
@@ -959,6 +1058,167 @@ fn parse_fetched_models_json(value: Option<&str>) -> Result<Vec<FetchedRouteMode
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::repositories::route_credential_model_repository::RouteCredentialModelRepository;
+    use crate::database::{create_memory_pool, run_migrations};
+    use crate::models::route_credential_model::MODEL_STATUS_ERROR;
+
+    async fn dual_model_credential(pool: &SqlitePool) -> String {
+        RouteCredentialRepository::create(
+            pool,
+            "codex",
+            "api",
+            "Dual",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-test"}"#,
+            &serde_json::json!({
+                "base_url": "https://example.com",
+                "interface_format": "openai",
+                "model_mappings": [
+                    {"from": "gpt-5.6-sol", "to": "upstream-sol"},
+                    {"from": "glm-5.3", "to": "upstream-glm"}
+                ]
+            })
+            .to_string(),
+            "{}",
+        )
+        .await
+        .expect("create")
+        .id
+    }
+
+    #[tokio::test]
+    async fn listing_accounts_reports_every_known_model_including_healthy_ones() {
+        let pool = create_memory_pool().await.unwrap();
+        run_migrations(&pool).await.unwrap();
+        let id = dual_model_credential(&pool).await;
+
+        let mut conn = pool.acquire().await.expect("conn");
+        RouteCredentialModelRepository::record_transient_failure(
+            &mut conn,
+            &id,
+            "upstream-sol",
+            "upstream_status",
+            "boom",
+            None,
+            Some(600),
+            Some(429),
+            10,
+            true,
+        )
+        .await
+        .expect("park");
+        drop(conn);
+
+        let credentials = RouteCredentialService::list(&pool, "codex".to_string())
+            .await
+            .expect("list");
+        let states = &credentials[0].model_states;
+        // Healthy models must be listed too, otherwise the UI cannot offer to
+        // pause a model that has never failed.
+        assert_eq!(states.len(), 2);
+        let parked = states
+            .iter()
+            .find(|state| state.model_key == "upstream-sol")
+            .expect("parked model");
+        assert!(parked.cooldown_until.is_some());
+        let healthy = states
+            .iter()
+            .find(|state| state.model_key == "upstream-glm")
+            .expect("healthy model");
+        assert_eq!(healthy.status, MODEL_STATUS_OK);
+        assert!(healthy.cooldown_until.is_none());
+        assert_eq!(healthy.aliases, vec!["glm-5.3".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn an_orphan_row_survives_a_mapping_removal_with_no_aliases() {
+        let pool = create_memory_pool().await.unwrap();
+        run_migrations(&pool).await.unwrap();
+        let id = dual_model_credential(&pool).await;
+
+        RouteCredentialModelRepository::set_status(
+            &pool,
+            &id,
+            "upstream-gone",
+            MODEL_STATUS_PAUSED,
+        )
+        .await
+        .expect("pause a model that is not mapped any more");
+
+        let credentials = RouteCredentialService::list(&pool, "codex".to_string())
+            .await
+            .expect("list");
+        let orphan = credentials[0]
+            .model_states
+            .iter()
+            .find(|state| state.model_key == "upstream-gone")
+            .expect("orphan row is still reported");
+        // Silently dropping the user's pause would be worse than showing a row
+        // they can explicitly clear.
+        assert!(orphan.aliases.is_empty());
+        assert_eq!(orphan.status, MODEL_STATUS_PAUSED);
+    }
+
+    #[tokio::test]
+    async fn setting_a_model_back_to_ok_removes_its_row() {
+        let pool = create_memory_pool().await.unwrap();
+        run_migrations(&pool).await.unwrap();
+        let id = dual_model_credential(&pool).await;
+
+        RouteCredentialService::set_model_status(
+            &pool,
+            id.clone(),
+            "upstream-sol".to_string(),
+            MODEL_STATUS_PAUSED.to_string(),
+        )
+        .await
+        .expect("pause");
+        let paused = RouteCredentialModelRepository::list_for_credentials(&pool, &[id.clone()])
+            .await
+            .expect("rows");
+        assert_eq!(paused.len(), 1);
+
+        RouteCredentialService::set_model_status(
+            &pool,
+            id.clone(),
+            "upstream-sol".to_string(),
+            MODEL_STATUS_OK.to_string(),
+        )
+        .await
+        .expect("resume");
+        assert!(
+            RouteCredentialModelRepository::list_for_credentials(&pool, &[id])
+                .await
+                .expect("rows")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn setting_a_model_to_error_is_rejected() {
+        let pool = create_memory_pool().await.unwrap();
+        run_migrations(&pool).await.unwrap();
+        let id = dual_model_credential(&pool).await;
+
+        // `error` is reached only through a semantic failure streak.
+        let error = RouteCredentialService::set_model_status(
+            &pool,
+            id,
+            "upstream-sol".to_string(),
+            MODEL_STATUS_ERROR.to_string(),
+        )
+        .await
+        .expect_err("error is not a user-settable status");
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "validation.route_credential_model_status",
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn accepts_empty_model_mappings() {

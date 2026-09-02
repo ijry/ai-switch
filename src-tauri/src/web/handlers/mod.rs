@@ -542,6 +542,25 @@ pub async fn dispatch_command(
                     .map_err(to_error)?,
             )
         }
+        "set_route_credential_model_status" => {
+            let id = required_string_arg(&args, "id")?;
+            let model_key = required_string_arg(&args, "model_key")?;
+            let status = required_string_arg(&args, "status")?;
+            to_value(
+                RouteCredentialService::set_model_status(&state.pool, id, model_key, status)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "clear_route_credential_model_state" => {
+            let id = required_string_arg(&args, "id")?;
+            let model_key = required_string_arg(&args, "model_key")?;
+            to_value(
+                RouteCredentialService::clear_model_state(&state.pool, id, model_key)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
         "delete_route_credential" => {
             let id = required_string_arg(&args, "id")?;
             RouteCredentialService::delete(&state.pool, id)

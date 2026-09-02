@@ -40,3 +40,80 @@ async fn migrations_create_foundation_tables() {
     assert_eq!(mapping("grok").as_deref(), Some("grok"));
     assert_eq!(mapping("hermes").as_deref(), Some("hermes"));
 }
+
+#[tokio::test]
+async fn migrations_create_route_credential_models_table() {
+    let pool = create_memory_pool().await.expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let columns = sqlx::query("PRAGMA table_info(route_credential_models)")
+        .fetch_all(&pool)
+        .await
+        .expect("model cooldown columns");
+    let names: Vec<String> = columns
+        .iter()
+        .map(|column| column.get::<String, _>("name"))
+        .collect();
+    for expected in [
+        "route_credential_id",
+        "model_key",
+        "status",
+        "transient_failure_count",
+        "cooldown_until",
+        "semantic_failure_streak_count",
+        "semantic_failure_streak_fingerprint",
+        "last_failure_kind",
+        "last_failure_message",
+        "last_failure_response_json",
+        "created_at",
+        "updated_at",
+    ] {
+        assert!(
+            names.iter().any(|name| name == expected),
+            "missing {expected}"
+        );
+    }
+
+    // status is constrained to the three model-level states.
+    sqlx::query(
+        "INSERT INTO route_credentials
+         (id, platform, kind, display_name, status, sort_order, secret_payload_json,
+          config_json, preview_json, created_at, updated_at)
+         VALUES ('cred-1', 'codex', 'api', 'Fixture', 'ok', 0, '{}', '{}', '{}', '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed credential");
+    let rejected = sqlx::query(
+        "INSERT INTO route_credential_models
+         (route_credential_id, model_key, status, created_at, updated_at)
+         VALUES ('cred-1', 'gpt-5.6-sol', 'revoked', '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(
+        rejected.is_err(),
+        "status must reject values outside the three model states"
+    );
+
+    sqlx::query(
+        "INSERT INTO route_credential_models
+         (route_credential_id, model_key, status, created_at, updated_at)
+         VALUES ('cred-1', 'gpt-5.6-sol', 'paused', '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert paused model");
+    sqlx::query("DELETE FROM route_credentials WHERE id = 'cred-1'")
+        .execute(&pool)
+        .await
+        .expect("delete credential");
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM route_credential_models")
+        .fetch_one(&pool)
+        .await
+        .expect("count after cascade");
+    assert_eq!(
+        remaining, 0,
+        "deleting an account must cascade its model rows"
+    );
+}

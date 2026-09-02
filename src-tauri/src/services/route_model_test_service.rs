@@ -5,6 +5,7 @@ use crate::models::platform::{ApiDialect, CapabilityRule, PlatformId, PlatformOp
 use crate::models::route_credential::{
     is_fallback_mapping, ModelMapping, RouteCredentialFailurePolicy,
 };
+use crate::models::route_credential_model::FailureScope;
 use crate::models::route_pool::{
     RoutePoolModelTestOutcome, RoutePoolModelTestRequest, RouteUsageBreakdown,
 };
@@ -19,6 +20,10 @@ use crate::services::response_failure_service::{
 };
 use crate::services::route_credential_activity::{
     RouteCredentialActivityLease, RouteCredentialActivityRegistry,
+};
+use crate::services::route_failure_scope::is_account_scoped_failure;
+use crate::services::route_model_capability::{
+    known_upstream_models, model_state_key, parse_model_capability,
 };
 use crate::services::route_protocol_bridge::transform_response as transform_protocol_bridge_response;
 use crate::services::route_proxy_service::{
@@ -50,6 +55,9 @@ pub struct ModelTestRequestParts {
     pub base_url: Option<String>,
     pub target_url: Option<String>,
     pub request_body_json: String,
+    /// The model this probe actually asks for, i.e. what the upstream judges.
+    /// Empty when the request could not be built, since nothing was sent then.
+    pub model: String,
 }
 
 impl RouteModelTestService {
@@ -675,6 +683,7 @@ pub fn build_model_test_request(
         target_url: None,
         request_body_json: serde_json::to_string_pretty(&request_body)
             .map_err(|err| format!("Could not serialize test request body: {err}"))?,
+        model,
     })
 }
 
@@ -1294,12 +1303,34 @@ async fn finish_outcome(
     if !response_body.trim().is_empty() {
         let _ = maybe_persist_official_quota_from_response(pool, &credential, &response_body).await;
     }
+    // The key this test's result should be charged to. `parts.model` is what the
+    // probe actually sent, which is what the upstream judged; it is empty only
+    // when the request could not be built, and then nothing reached an upstream.
+    let capability = parse_model_capability(&credential.config_json);
+    let model_key = (!parts.model.trim().is_empty())
+        .then(|| model_state_key(platform, &capability, &credential.kind, &parts.model));
     if success {
-        let _ = RouteCredentialRepository::clear_transient_failure(pool, &credential.id).await;
+        let _ = RouteCredentialRepository::clear_transient_failure(
+            pool,
+            &credential.id,
+            model_key.as_deref(),
+        )
+        .await;
         if should_restore_model_test_account_status(&credential.status) {
             RouteCredentialRepository::update_status(pool, &credential.id, "ok").await?;
         }
     } else {
+        let siblings = known_upstream_models(platform, &capability, &credential.kind);
+        let scope_for = |kind: &str, status: Option<u16>| match (
+            &model_key,
+            is_account_scoped_failure(kind, status),
+        ) {
+            (Some(key), false) => FailureScope::Model {
+                key: key.as_str(),
+                siblings: &siblings,
+            },
+            _ => FailureScope::Account,
+        };
         let status = response_status.and_then(|value| axum::http::StatusCode::from_u16(value).ok());
         let quota_failure = detect_response_failed(response_body.as_bytes())
             .is_some_and(|failure| is_quota_exhaustion_failure(&failure));
@@ -1316,6 +1347,7 @@ async fn finish_outcome(
                 "model_test_status",
                 &message,
                 Some(response_body.as_bytes()),
+                scope_for("model_test_status", Some(status.as_u16())),
             )
             .await?;
         } else if let Some(failure) = detect_response_failed(response_body.as_bytes()) {
@@ -1325,6 +1357,7 @@ async fn finish_outcome(
                 "semantic_response_transient",
                 &failure.message,
                 Some(response_body.as_bytes()),
+                scope_for("semantic_response_transient", Some(200)),
             )
             .await?;
         } else {
@@ -1349,6 +1382,9 @@ async fn finish_outcome(
                         "model_test",
                         message,
                         Some(response_body.as_bytes()),
+                        // A transport failure says nothing about the model, so the
+                        // scope table charges it to the account.
+                        scope_for("model_test", None),
                     )
                     .await;
                 }
@@ -1525,6 +1561,8 @@ fn fallback_request_parts(
         base_url: string_value(&config, "base_url").map(str::to_string),
         target_url: None,
         request_body_json: String::new(),
+        // Nothing was sent, so there is no model to charge a failure to.
+        model: String::new(),
     }
 }
 
@@ -3197,5 +3235,144 @@ mod tests {
             kept.iter().map(|m| m.from.as_str()).collect::<Vec<_>>(),
             vec!["claude-model", "claude-subagent"]
         );
+    }
+
+    async fn create_dual_model_credential(
+        pool: &SqlitePool,
+        base_url: &str,
+        extra: Value,
+    ) -> String {
+        let mut config = json!({
+            "base_url": base_url,
+            "interface_format": "openai",
+            "model_mappings": [
+                {"from": "gpt-5.6-sol", "to": "upstream-sol"},
+                {"from": "glm-5.3", "to": "upstream-glm"}
+            ]
+        });
+        if let (Some(config), Some(extra)) = (config.as_object_mut(), extra.as_object()) {
+            config.extend(extra.clone());
+        }
+        RouteCredentialRepository::create(
+            pool,
+            "codex",
+            "api",
+            "Dual",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-test"}"#,
+            &config.to_string(),
+            "{}",
+        )
+        .await
+        .expect("create")
+        .id
+    }
+
+    #[tokio::test]
+    async fn a_successful_model_test_only_clears_the_model_it_tested() {
+        use crate::database::repositories::route_credential_model_repository::RouteCredentialModelRepository;
+
+        let upstream = start_json_test_server(
+            axum::http::StatusCode::OK,
+            json!({"choices": [{"message": {"content": "ai-switch-ok"}}]}),
+        )
+        .await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_dual_model_credential(&pool, &upstream, json!({})).await;
+
+        // Park both models, then test only one of them.
+        let mut conn = pool.acquire().await.expect("conn");
+        for key in ["upstream-sol", "upstream-glm"] {
+            RouteCredentialModelRepository::record_transient_failure(
+                &mut conn,
+                &credential_id,
+                key,
+                "upstream_status",
+                "boom",
+                None,
+                Some(600),
+                Some(429),
+                10,
+                true,
+            )
+            .await
+            .expect("park");
+        }
+        drop(conn);
+
+        RouteModelTestService::test_model(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "codex".to_string(),
+                account_id: Some(credential_id.clone()),
+                model: Some("glm-5.3".to_string()),
+                interface_format: None,
+            },
+        )
+        .await
+        .expect("test");
+
+        let states = RouteCredentialModelRepository::list_for_credentials(
+            &pool,
+            std::slice::from_ref(&credential_id),
+        )
+        .await
+        .expect("states");
+        // Proving glm-5.3 works says nothing about gpt-5.6-sol.
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].model_key, "upstream-sol");
+    }
+
+    #[tokio::test]
+    async fn a_failing_model_test_parks_only_that_model() {
+        use crate::database::repositories::route_credential_model_repository::RouteCredentialModelRepository;
+
+        let upstream = start_json_test_server(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            json!({"error": {"message": "rate limited"}}),
+        )
+        .await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_dual_model_credential(
+            &pool,
+            &upstream,
+            json!({
+                "failure_policy": {
+                    "cooldown_enabled": true,
+                    "cooldown_seconds": 600,
+                    "retry_count": 0
+                }
+            }),
+        )
+        .await;
+
+        let _ = RouteModelTestService::test_model(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "codex".to_string(),
+                account_id: Some(credential_id.clone()),
+                model: Some("gpt-5.6-sol".to_string()),
+                interface_format: None,
+            },
+        )
+        .await;
+
+        let states = RouteCredentialModelRepository::list_for_credentials(
+            &pool,
+            std::slice::from_ref(&credential_id),
+        )
+        .await
+        .expect("states");
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].model_key, "upstream-sol");
+        let account = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("account");
+        // 429 is the upstream's verdict on one model, not on the key.
+        assert!(account.cooldown_until.is_none());
     }
 }
