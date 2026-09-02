@@ -38,7 +38,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `src-tauri/migrations/202609020001_route_credential_models.sql` | 建 `route_credential_models` 表与查询索引 |
+| `src-tauri/migrations/202609020002_route_credential_models.sql` | 建 `route_credential_models` 表与查询索引 |
 | `src-tauri/src/models/route_credential_model.rs` | `RouteCredentialModelState` 行结构、`ModelStatus` 常量、`FailureScope` 枚举 |
 | `src-tauri/src/database/repositories/route_credential_model_repository.rs` | 模型级状态的全部 SQL：批量读、写冷却、写语义连击、清除、设状态、按账号列出 |
 | `src-tauri/src/services/route_failure_scope.rs` | `is_account_scoped_failure(kind, status)` 分级判定，纯函数 + 单测 |
@@ -73,7 +73,7 @@
 ### Task 1: 建表与行结构
 
 **Files:**
-- Create: `src-tauri/migrations/202609020001_route_credential_models.sql`
+- Create: `src-tauri/migrations/202609020002_route_credential_models.sql`
 - Create: `src-tauri/src/models/route_credential_model.rs`
 - Modify: `src-tauri/src/models/mod.rs`
 - Test: `src-tauri/src/database/test_support.rs`（追加一个 `#[tokio::test]`）
@@ -167,7 +167,7 @@ Expected: FAIL —— `PRAGMA table_info` 返回空表，`missing route_credenti
 
 - [ ] **Step 3: 写迁移**
 
-创建 `src-tauri/migrations/202609020001_route_credential_models.sql`：
+创建 `src-tauri/migrations/202609020002_route_credential_models.sql`：
 
 ```sql
 PRAGMA foreign_keys = ON;
@@ -251,7 +251,7 @@ Expected: PASS，无 fmt 差异。
 - [ ] **Step 7: 提交**
 
 ```bash
-git add src-tauri/migrations/202609020001_route_credential_models.sql src-tauri/src/models/route_credential_model.rs src-tauri/src/models/mod.rs src-tauri/src/database/test_support.rs
+git add src-tauri/migrations/202609020002_route_credential_models.sql src-tauri/src/models/route_credential_model.rs src-tauri/src/models/mod.rs src-tauri/src/database/test_support.rs
 git commit -m "feat: 新增模型级失败状态表"
 ```
 

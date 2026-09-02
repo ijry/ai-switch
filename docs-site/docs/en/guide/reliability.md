@@ -48,7 +48,7 @@ These columns now explicitly mean **account-level** state: only a failure judged
 ### Model level: `route_credential_models`
 
 ```sql
--- 202609020001_route_credential_models.sql
+-- 202609020002_route_credential_models.sql
 CREATE TABLE IF NOT EXISTS route_credential_models (
   route_credential_id TEXT NOT NULL,
   model_key TEXT NOT NULL,

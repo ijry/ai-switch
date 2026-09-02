@@ -25,7 +25,7 @@
 
 ## 1. 数据模型
 
-新增 migration `202609020001_route_credential_models.sql`：
+新增 migration `202609020002_route_credential_models.sql`：
 
 ```sql
 PRAGMA foreign_keys = ON;
