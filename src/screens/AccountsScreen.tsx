@@ -1097,6 +1097,7 @@ function relayBalanceFormFromConfig(config: Record<string, unknown>): RelayBalan
 function writeRelayBalanceToConfig(
   config: Record<string, unknown>,
   form: RelayBalanceFormState,
+  snapshot: RelayBalanceSnapshot | null,
 ): Record<string, unknown> {
   const next = { ...config };
   if (form.provider === "none") {
@@ -1127,6 +1128,13 @@ function writeRelayBalanceToConfig(
     }
   }
   next.relay_balance = block;
+  // The drawer's reading can be newer than the config text the form was
+  // hydrated from: a query started from inside the drawer stores the snapshot
+  // server-side without touching that text, so saving it verbatim would erase
+  // the number the user just fetched.
+  if (snapshot) {
+    next.relay_balance_snapshot = snapshot;
+  }
   return next;
 }
 
@@ -2937,13 +2945,22 @@ export function AccountsScreen({
     setEditFetchedModels(parseFetchedModelsFromConfig(editingCredential.config_json));
     setEditFetchModelsError(null);
     setEditPreviewJson(parseJsonPreview(editingCredential.preview_json, editingCredential.preview_json));
-  }, [editingCredential]);
+    // Keyed on the id, not the object: pausing a model replaces
+    // `editingCredential` with a fresh row mid-edit, and re-running this would
+    // overwrite every field the user has typed but not saved yet. The model
+    // list in the drawer reads the new object directly, so it still refreshes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingCredential?.id]);
 
   useEffect(() => {
     if (configWriteOutcomes.length === 0) {
       return;
     }
-
+    // Anything the user still has to act on stays on screen. Only a clean run
+    // is safe to tidy away by itself.
+    if (configWriteOutcomes.some((outcome) => outcome.status !== "succeeded")) {
+      return;
+    }
     const timeout = window.setTimeout(() => {
       setConfigWriteOutcomes([]);
     }, 3000);
@@ -3669,6 +3686,18 @@ export function AccountsScreen({
     onSuccess: (outcomes) => {
       setConfigWriteOutcomes(outcomes);
       setConfigWriteDialogOpen(false);
+      // A group resolves as long as one client succeeded, so a partial failure
+      // arrives here rather than in `onError`. Without this the only trace is
+      // the result panel, which clears itself a few seconds later.
+      const failed = outcomes.filter((outcome) => outcome.status !== "succeeded");
+      if (failed.length > 0) {
+        const names = failed.map((outcome) => {
+          const label =
+            clientByTargetKey.get(outcome.target_key)?.display_name ?? outcome.target_key;
+          return outcome.error_code ? `${label}（${outcome.error_code}）` : label;
+        });
+        setConfigWriteError(`以下客户端没有写入成功：${names.join("、")}`);
+      }
       void queryClient.invalidateQueries({ queryKey: ["route-config-stale"] });
     },
     onError: (error) => setConfigWriteError(formatConfigWriteError(error)),
@@ -3849,7 +3878,11 @@ export function AccountsScreen({
           : baseConfig;
       const configWithRelayBalance =
         editingCredential.kind === "api"
-          ? writeRelayBalanceToConfig(configWithFetchedModels, editRelayBalance)
+          ? writeRelayBalanceToConfig(
+              configWithFetchedModels,
+              editRelayBalance,
+              editRelayBalanceSnapshot,
+            )
           : configWithFetchedModels;
       const nextConfigJson = JSON.stringify(
         writeFailurePolicyToConfig(configWithRelayBalance, failurePolicy),

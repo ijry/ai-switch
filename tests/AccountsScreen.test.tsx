@@ -3918,6 +3918,53 @@ describe("AccountsScreen", () => {
     expect(screen.queryByText(/sk-ai-switch/)).not.toBeInTheDocument();
   });
 
+  it("flags a client that failed while another one succeeded", async () => {
+    // The backend resolves a group as long as one client got written, so a
+    // partial failure never reaches onError. Without a banner the only trace is
+    // the result panel, which used to clear itself after three seconds.
+    vi.mocked(writeRouteProxyConfigs).mockResolvedValue([
+      {
+        operation_id: "operation-1",
+        snapshot_id: "snapshot-1",
+        target_app_id: "target-codex",
+        target_key: "codex",
+        platform: "codex",
+        path: "/home/u/.codex/config.toml",
+        status: "succeeded",
+        before_hash: null,
+        after_hash: "after-hash",
+        error_code: null,
+      },
+      {
+        operation_id: "operation-2",
+        snapshot_id: null,
+        target_app_id: "target-zcode",
+        target_key: "zcode_codex",
+        platform: "codex",
+        path: "/home/u/.zcode/v2/config.json",
+        status: "failed",
+        before_hash: null,
+        after_hash: null,
+        error_code: "config.pool_models_empty",
+      },
+    ]);
+    renderScreen();
+
+    await screen.findByText("本地代理：未启动");
+    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
+    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("写入路由配置文件"));
+    await screen.findByText("选择要写入的客户端");
+    await userEvent.click(screen.getByRole("button", { name: "写入" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("没有写入成功");
+    // Named by client, with the code to look up, not by internal target key.
+    expect(alert).toHaveTextContent("ZCode");
+    expect(alert).toHaveTextContent("config.pool_models_empty");
+  });
+
   it("explains that a corrupt ZCode config was refused rather than overwritten", async () => {
     vi.mocked(writeRouteProxyConfigs).mockRejectedValue({
       code: "validation.route_config_existing_invalid",
@@ -4082,6 +4129,25 @@ describe("AccountsScreen", () => {
       "upstream-held",
       "ok",
     );
+  });
+
+  it("暂停模型不会丢弃抽屉里未保存的修改", async () => {
+    // The mutation hands back a fresh account row so the model list can update.
+    // Re-hydrating the whole form from it would silently throw away whatever the
+    // user has typed but not saved.
+    vi.mocked(setRouteCredentialModelStatus).mockResolvedValue(credentialsWithModelStates()[1]);
+    renderPoolWithModelStates();
+    await userEvent.click(await screen.findByLabelText("编辑 API Account"));
+
+    await userEvent.clear(screen.getByLabelText("编辑账号名称"));
+    await userEvent.type(screen.getByLabelText("编辑账号名称"), "Renamed But Unsaved");
+
+    await openFormTab("故障处理");
+    await userEvent.click(await screen.findByLabelText("暂停模型 upstream-glm"));
+    await waitFor(() => expect(setRouteCredentialModelStatus).toHaveBeenCalled());
+
+    await openFormTab("基础");
+    expect(screen.getByLabelText("编辑账号名称")).toHaveValue("Renamed But Unsaved");
   });
 
   it("可解除单个模型的冷却", async () => {
