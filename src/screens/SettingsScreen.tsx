@@ -9,6 +9,7 @@ import {
 import type { ComponentType } from "react";
 import { getSettings, saveSettings } from "../lib/api/client";
 import { normalizeLanguage, supportedLanguages, useI18n, type Language } from "../lib/i18n";
+import { isDesktop } from "../lib/transport";
 import { AutostartSettings } from "../components/settings/autostart-settings";
 import { RouteProxyHttpsSettings } from "../components/settings/route-proxy-https-settings";
 import { WebServiceSettings } from "../components/settings/web-service-settings";
@@ -87,6 +88,8 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
   }
 
   const settings = settingsQuery.data;
+  const isMacDesktop =
+    isDesktop() && /Macintosh|Mac OS X/i.test(navigator.userAgent);
   const handleLanguageChange = (nextLanguage: Language) => {
     setLanguage(nextLanguage);
     saveMutation.mutate({ ...settings, language: nextLanguage });
@@ -149,6 +152,29 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
           {t("settings.dataDir", { path: settings.data_dir })}
         </p>
         <AutostartSettings />
+        {isMacDesktop ? (
+          <label className="flex max-w-xl items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-[12px] font-semibold text-stone-700">
+            <input
+              aria-label={t("settings.closeToTray.label")}
+              checked={settings.close_to_tray !== false}
+              className="mt-0.5"
+              disabled={saveMutation.isPending}
+              onChange={(event) =>
+                saveMutation.mutate({
+                  ...settings,
+                  close_to_tray: event.target.checked,
+                })
+              }
+              type="checkbox"
+            />
+            <span className="grid gap-1">
+              <span>{t("settings.closeToTray.label")}</span>
+              <span className="text-[11px] font-medium text-stone-500">
+                {t("settings.closeToTray.description")}
+              </span>
+            </span>
+          </label>
+        ) : null}
         <label className="flex max-w-xl items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-[12px] font-semibold text-stone-700">
           <input
             aria-label={t("settings.ccswitch.label")}

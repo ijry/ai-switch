@@ -812,6 +812,8 @@ export type AppSettings = {
   secret_storage: string;
   data_dir: string;
   ccswitch_deeplink_compat_enabled: boolean;
+  /** Close-button behavior: hide to the tray (true) or quit the app (false). */
+  close_to_tray: boolean;
   /**
    * Pool-wide Claude Code client behavior switches as a JSON object string.
    * Claude Code reads these from its own settings file, which the whole pool

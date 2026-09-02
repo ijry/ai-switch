@@ -585,6 +585,9 @@ const en = {
   "settings.autostart.description": "Launch in the tray after you sign in.",
   "settings.autostart.readError": "Could not read the startup setting.",
   "settings.autostart.updateError": "Could not update the startup setting.",
+  "settings.closeToTray.label": "Minimize to tray on close",
+  "settings.closeToTray.description":
+    "When enabled, the close button hides AI Switch to the system tray; when disabled, it quits the app.",
   "settings.dataDir": "Data directory: {path}",
   "settings.ccswitch.label": "Enable cc-switch deep-link compatibility",
   "settings.ccswitch.warning": "This changes the default handler for ccswitch:// links.",
@@ -1153,6 +1156,9 @@ const zh = {
   "settings.autostart.description": "登录系统后启动，并隐藏到托盘。",
   "settings.autostart.readError": "无法读取自启动状态。",
   "settings.autostart.updateError": "无法更新自启动设置。",
+  "settings.closeToTray.label": "关闭时最小化到托盘",
+  "settings.closeToTray.description":
+    "勾选后点击关闭按钮会隐藏到系统托盘，取消则直接退出应用。",
   "crypto.kicker": "系统工具",
   "crypto.title": "加解密",
   "crypto.subtitle": "在本地进行可逆文本编码和解码。",
