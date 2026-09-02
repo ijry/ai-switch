@@ -13,7 +13,17 @@
 ## Global Constraints
 
 - 构建目录：AI 调试与验证只能用 `src-tauri/target-codex/`，在 `src-tauri` 下执行时设 `CARGO_TARGET_DIR=target-codex`。禁止新建其他 target 目录。
+- **构建前置**：`cargo test` 会在构建脚本阶段失败，除非以下两个路径存在（均被 gitignore，全新环境必须先造）：
+  ```bash
+  cd sidecar/ai-switch-tsnet && go build -o ../../src-tauri/binaries/ai-switch-tsnet-x86_64-pc-windows-msvc.exe
+  mkdir -p dist
+  ```
+  这两项不进提交，保留在工作区即可。
 - 验证命令：`pnpm typecheck`、`pnpm test:run`、`cd src-tauri && CARGO_TARGET_DIR=target-codex cargo test`、`cd src-tauri && cargo fmt --check`。
+- **`RouteConfigInput` 的构造点有 7 处**：`route_config_service.rs` 四处（约 :85 / :184 / :270 / :302）、`config_write_service.rs` 测试两处、`commands/target_commands.rs` 测试一处，外加各 adapter 测试模块里的 `fn input()` 辅助。给该结构体加字段时用 `grep -rn "RouteConfigInput {" src-tauri/src` 找齐，别照抄计划里的数量。
+- **`ModelMapping` 有四个字段**：`from`、`to`、`label: Option<String>`、`supports_1m: Option<bool>`（`models/route_credential.rs:305`）。构造字面量时 `label` 不能省。
+- **`TargetAdapter` 有三个 impl**：两个真适配器模块外，`config_write_service.rs` 的测试替身 `ConflictOnCommitAdapter` 也 impl 了它。给 trait 加方法时必须同步转发给 `self.inner`，否则编译失败。用 `grep "impl TargetAdapter for"` 找齐。
+- **`route_model_capability.rs` 的 `mod tests` 用显式 `use super::{...}` 列表**（不是 `use super::*`），新引用的符号必须加进该列表。
 - 不新增 `PlatformId` 变体。平台枚举的既有硬编码（`PlatformId::ALL`、能力矩阵、`AgentIcon`、`AppLayout`、`VibeScreen`、`platformLabels`）一处都不改。
 - ZCode 配置路径固定为 `~/.zcode/v2/config.json`，不支持 `ZCODE_DATA_BASE_DIR` / `dataBaseDir` 覆盖。
 - ZCode 条目**不写** `apiFormat`（会被 `kind` 重算覆盖）、**不写** `enabled`、模型项**不写** `name` 与 `zcode` 子对象。
