@@ -18,7 +18,8 @@
   cd sidecar/ai-switch-tsnet && go build -o ../../src-tauri/binaries/ai-switch-tsnet-x86_64-pc-windows-msvc.exe
   mkdir -p dist
   ```
-  这两项不进提交，保留在工作区即可。
+  这两项不进提交，保留在工作区即可。前端命令（`pnpm typecheck` / `pnpm test:run`）还需要 `node_modules`：`pnpm install --frozen-lockfile --ignore-scripts`。
+- **`dyn Trait` 的 `Result` 不能用 `expect_err` / `unwrap_err`**：那要求 `Debug`，而 `dyn TargetAdapter` 没有。改用 `let Err(error) = ... else { panic!(...) };`。
 - 验证命令：`pnpm typecheck`、`pnpm test:run`、`cd src-tauri && CARGO_TARGET_DIR=target-codex cargo test`、`cd src-tauri && cargo fmt --check`。
 - **`RouteConfigInput` 的构造点有 8 处**：`route_config_service.rs` 四处（约 :86 / :186 / :273 / :306）、`config_write_service.rs` 测试两处（:1028 / :1048）、`commands/target_commands.rs` 测试一处（:122）、各 adapter 测试模块的 `fn input()` 辅助。用 `grep -rn "RouteConfigInput {" src-tauri/src` 找齐，别照抄任何数量。用 `..input()` 展开的调用点不需要改。
 - **提交信息不带 `Co-Authored-By` 尾注**：本仓库既有历史没有这个尾注，保持一致。
