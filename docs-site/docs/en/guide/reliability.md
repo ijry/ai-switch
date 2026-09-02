@@ -70,6 +70,8 @@ The following count as transient:
 
 401 and 403 are treated as transient because third-party gateways routinely use them to mean "this key is temporarily throttled or rate-limited", not necessarily "this key is dead". Genuinely void credentials are caught by the permanent rule above.
 
+The status code is only one layer, though: when a 401/403 body is itself a deterministic failure — such as the new-api spent balance described below — the semantic rules catch it first and mark the account abnormal instead of backing it off as transient.
+
 ### Not a failure (None)
 
 There is an HTTP status, but it is neither in the retryable list nor a 5xx — for instance 400 for a bad parameter, or 404 for a nonexistent path. These are problems with **the client request itself**, unrelated to account health, so no failure counter increments and the account status is untouched.
@@ -94,6 +96,25 @@ Semantic failures are marked as failures in the usage event (`metadata_json.succ
 If a semantic failure is further identified as **quota exhaustion**, it is handled differently from an ordinary semantic failure: it records one semantic failure with a threshold of **1** — meaning **a single occurrence flips the status to `error`**, with no streak allowance. The reasoning is direct: quota exhaustion is a deterministic fact, and retrying only wastes time.
 
 This channel also clears `transient_failure_count`, `next_retry_at`, and `cooldown_until`: the account is not "retry later", it is "don't use this one for the rest of the cycle".
+
+Quota exhaustion is recognised two ways:
+
+1. **By error code or error text** — the normalized `error.code` contains `insufficientquota` / `quotaexhausted` / `usageexhausted`, or the message carries a fixed phrase such as `额度已耗尽`, `配额耗尽`, `quota exhausted`, or `insufficient quota`.
+2. **By `error.type` plus the start of the message** — `error.type` is `new_api_error` (case-insensitive) **and** the message begins with `用户额度不足` ("insufficient user balance").
+
+The second rule exists for new-api style gateways. Their spent-balance response looks like this, and commonly arrives with a 401 / 403 status:
+
+```json
+{
+  "error": {
+    "type": "new_api_error",
+    "message": "用户额度不足, 剩余额度: ＄-0.398052 (request id: 20260902...)"
+  },
+  "type": "error"
+}
+```
+
+The envelope has no `error.code` anywhere, so the first rule cannot see it — and the message text alone is not safe to match, because the same gateway also relays an upstream's own `用户额度不足` verbatim. Requiring both conditions narrows the rule to "this gateway account's own balance is gone". Only the `type` inside the `error` object counts; the top-level `type` names the envelope, not the error family. By the time this response arrives the remaining balance is already negative — as deterministic as a quota reset boundary — so the account is marked abnormal instead of being backed off and retried.
 
 ### The fingerprint streak mechanism
 

@@ -1025,6 +1025,7 @@ async fn send_model_test_request(
             stream_disconnected_before_completion(&body, content_type.as_deref(), streaming_request)
                 .then(|| SemanticResponseFailure {
                     code: None,
+                    error_type: None,
                     message: STREAM_DISCONNECTED_FAILURE_MESSAGE.to_string(),
                 })
         });
@@ -3052,6 +3053,42 @@ mod tests {
             stored.last_failure_kind.as_deref(),
             Some("semantic_response_transient")
         );
+    }
+
+    #[tokio::test]
+    async fn test_model_new_api_insufficient_balance_marks_account_error() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let base_url = start_json_test_server(
+            axum::http::StatusCode::FORBIDDEN,
+            json!({
+                "error": {
+                    "type": "new_api_error",
+                    "message": "用户额度不足, 剩余额度: ＄-0.398052 (request id: 202609020218166141364498268d9d6A3V7Qkt0)"
+                },
+                "type": "error"
+            }),
+        )
+        .await;
+        let credential_id = create_api_credential(&pool, &base_url).await;
+
+        let outcome = RouteModelTestService::test_model(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "codex".to_string(),
+                account_id: Some(credential_id.clone()),
+                model: None,
+                interface_format: None,
+            },
+        )
+        .await
+        .expect("outcome");
+
+        assert!(!outcome.success);
+        let stored = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("stored credential");
+        assert_eq!(stored.status, "error");
     }
 
     #[tokio::test]

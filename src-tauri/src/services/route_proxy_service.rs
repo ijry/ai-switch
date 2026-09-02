@@ -1273,6 +1273,7 @@ async fn forward_request(
             stream_disconnected.then(|| {
                 crate::services::response_failure_service::SemanticResponseFailure {
                     code: None,
+                    error_type: None,
                     message: STREAM_DISCONNECTED_FAILURE_MESSAGE.to_string(),
                 }
             })
@@ -6968,6 +6969,55 @@ mod tests {
             .expect("credential");
         assert_eq!(credential.status, "ok");
         assert_eq!(credential.transient_failure_count, 1);
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn new_api_insufficient_balance_response_marks_account_error() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        // new-api gateways answer an exhausted balance with 403 and their own
+        // error envelope, which carries no `code` — only `type`.
+        let insufficient_balance_body = r#"{"error":{"type":"new_api_error","message":"用户额度不足, 剩余额度: ＄-0.398052 (request id: 202609020218166141364498268d9d6A3V7Qkt0)"},"type":"error"}"#;
+        let upstream = start_fixed_upstream(StatusCode::FORBIDDEN, insufficient_balance_body).await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id =
+            create_proxy_api_credential(&pool, "insufficient balance", &upstream).await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5.5","messages":[]}))
+            .send()
+            .await
+            .expect("proxy response");
+        let _ = response.bytes().await.expect("proxy body");
+
+        let credential = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("credential");
+        assert_eq!(credential.status, "error");
+        assert_eq!(
+            credential.last_failure_kind.as_deref(),
+            Some("semantic_response_failed")
+        );
 
         RouteProxyService::stop(&runtime).await.expect("stop proxy");
     }
