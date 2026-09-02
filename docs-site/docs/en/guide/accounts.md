@@ -44,6 +44,8 @@ Secrets and non-secrets are stored separately: the API key lands in `secret_payl
 | Reminder text | `config_json.turn_reminder_text` | Optional; falls back to the built-in default when blank |
 | Failure policy | `config_json.failure_policy` | Per-account retry and semantic-failure overrides, see [Reliability and Auto Recovery](/en/guide/reliability) |
 | Recovery rule | `config_json.recovery` | Scheduled or probe-based recovery, see [Reliability and Auto Recovery](/en/guide/reliability) |
+| Relay balance query | `config_json.relay_balance` | Which panel dialect to read the balance with, plus custom value paths; see below. The key is omitted when off |
+| Last balance reading | `config_json.relay_balance_snapshot` | Snapshot written by the balance query |
 
 **The Anthropic dialect has an auth-field choice.** `api_key_field` accepts exactly two values: `ANTHROPIC_API_KEY` (the default, sends an `x-api-key` header) or `ANTHROPIC_AUTH_TOKEN` (sends `Authorization: Bearer`). Anything else is rejected. This exists because plenty of third-party Claude-compatible gateways accept only one of the two.
 
@@ -56,11 +58,48 @@ The field count outgrew a single scroll, so both the add dialog and the edit dra
 | Tab | Edit drawer | Add dialog (API account mode) |
 | --- | --- | --- |
 | 基础 ("basics") | Name, email (official accounts), status, API Key, Base URL, interface format, Claude auth field, model mappings | Account preset, name, API Key, Base URL, interface format, Claude auth field, model mappings |
-| 高级 ("advanced") | Route priority, max concurrency, User-Agent, custom-tool compat, inline remote images, per-turn reminder | User-Agent, custom-tool compat, preview JSON |
+| 高级 ("advanced") | Route priority, max concurrency, User-Agent, custom-tool compat, inline remote images, per-turn reminder, relay balance query | User-Agent, custom-tool compat, relay balance query, preview JSON |
 | 故障处理 ("failure handling") | Failure policy, model status, auto recovery | None — those fields only exist after creation |
 | 其他 ("other") | Secret JSON, Config JSON (official accounts), Preview JSON | None |
 
 Only the add dialog's "API account" mode is tabbed; the batch-import and external-client-import modes have few enough fields to stay as they were. When save validation fails, the panel jumps to the tab that owns the offending field instead of leaving a bottom-of-panel error with no hint where to look.
+
+## Relay station balance
+
+A relay account (`kind = "api"`) runs out of money. Without a balance query you only find out when a real request comes back with "insufficient quota" and the account is flipped to error. Querying up front shows you which key is nearly empty while it still has some left.
+
+The segmented control in the 高级 ("advanced") tab picks how the balance is read:
+
+| Option | Request | Extra input |
+| --- | --- | --- |
+| 关闭 (off) | none | — |
+| new-api | `GET <panel root>/api/usage/token/` | nothing |
+| sub2api | `GET <panel root>/v1/usage` | nothing |
+| 自定义 (custom) | the URL you name | request URL and the path to the remaining balance; the rest optional |
+
+Both built-ins reuse the Base URL and API key the account already has — no separate panel access token or user id to go and fetch.
+
+**The panel root is derived for you.** An account's Base URL is usually `https://panel.example.com/v1`, while the panel's own API sits at the root. The query strips a trailing `/v1`, `/v1beta` or `/openai/v1`, then tries panel root first and the raw Base URL second, stopping at the first hit. There is no second address field to fill in.
+
+**new-api's conversion factor comes from the panel.** The panel reports an integer quota that has to be divided by `QuotaPerUnit` to become dollars, and admins can change that number. Each query first reads `quota_per_unit` from the unauthenticated `GET <panel root>/api/status`, falling back to the shipped 500000 only when that fails. The badge tooltip records which divisor was used.
+
+**The custom option walks dotted paths; it does not execute anything.**
+
+| Field | Notes |
+| --- | --- |
+| Request URL | Required, `http://` or `https://`; authenticated with the account's own API key |
+| Remaining path | Required, e.g. `data.total_available`; numeric segments index arrays, e.g. `data.plans.0.remaining` |
+| Used / total / plan-name paths | Optional |
+| Unit | Optional, defaults to USD |
+| Divisor | Optional, defaults to 1 |
+
+### Running it and reading it
+
+- The account row's balance button queries one account; "查中转站余额" in the refresh menu queries every relay account on the platform that has querying enabled.
+- The reading shows up as a badge on the account row (`余额 $37.70`). Hovering it reveals plan, used, total, expiry, subscription and rate-limit windows, and when it was last read. The badge turns red at zero or below, and reads "余额 不限" when the panel marks the key uncapped.
+- The edit drawer repeats the badge under the segmented control with a "立即查询" button, so a changed setting can be verified on the spot.
+
+**Nothing is polled in the background, and a low balance does not change the account's status.** new-api rate-limits that endpoint to 20 requests per 20 minutes per key, and this feature aims at a whole pool of accounts rather than one active provider, so polling would walk every key into that limit. A failed query or a renamed panel field should not eject an account from scheduling either. Genuine exhaustion is still caught where it matters — on the forwarding path, see [Reliability and Auto Recovery](/en/guide/reliability).
 
 ## The status machine
 

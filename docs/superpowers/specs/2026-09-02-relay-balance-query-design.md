@@ -75,6 +75,7 @@ API key 鉴权，返回的就是美元浮点，不用换算。三种形态都要
     "used_path": "",              // custom 可选
     "limit_path": "",             // custom 可选
     "plan_path": "",              // custom 可选
+    "unit": "",                   // custom 可选，留空按 USD
     "divisor": 1.0                // custom 可选，默认 1
   }
 }
@@ -119,6 +120,8 @@ API key 鉴权，返回的就是美元浮点，不用换算。三种形态都要
 - 分段器：`fieldset` + 药丸轨道，照 `AccountsScreen.tsx:6244` 的测试接口分段器；四档横排，选中态 `bg-white text-stone-950 shadow-sm`。选「自定义」时下方展开三个输入框，其余档不展开任何字段。
 - 位置：编辑抽屉与新增弹窗的「高级」分区（User-Agent 那一组旁边）。新增弹窗要走 Rust 的结构化 input，因此 `CreateApiRouteCredentialInput` 加一个 `relay_balance_provider`；自定义档的三个字段只在编辑抽屉里配，新增时先选内置档或事后再补。
 - 行内动作：`kind === "api"` 且配置非关闭时出现「查余额」，图标沿用 `RefreshCw` + 旋转态，与官方账号「刷新额度」（`AccountsScreen.tsx:5585`）对称。
+- 批量动作：刷新菜单里加一条「查中转站余额」，对应 `refresh_route_credentials_relay_balance`，与已有的「刷新账号额度」并列。
+- 关掉查询时连快照一起删，徽标跟着设置一起消失，而不是冻在最后一次读数上。
 - 徽标：额度徽标之后（`AccountsScreen.tsx:5850` 之后）加一枚，`余额 $37.70`，`title` 里写清口径与更新时间。余额 ≤ 0 用红色，> 0 用青色，`unlimited` 显示「不限额度」。
 - 该屏不走 i18n（全屏零 `useI18n`），新文案沿用硬编码中文。
 
