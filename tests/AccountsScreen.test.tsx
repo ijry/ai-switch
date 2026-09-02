@@ -43,6 +43,7 @@ import {
   previewExternalClientImport,
 } from "../src/lib/api/client";
 import { recognizeApiKeysFromImageBlob } from "../src/lib/ocr/apiKeyOcr";
+import { ACCOUNT_LIST_LAYOUT_STORAGE_KEY } from "../src/lib/accountListLayout";
 import { CODEX_MODEL_TEST_ENDPOINT_STORAGE_KEY } from "../src/lib/codexModelTestEndpoint";
 import { MODEL_TEST_MODELS_STORAGE_KEY } from "../src/lib/modelTestModels";
 import { openExternal } from "../src/lib/openExternal";
@@ -350,16 +351,22 @@ async function openFormTab(name: "基础" | "高级" | "故障处理" | "其他"
 
 // jsdom has no layout, and the pointer drag reads row geometry to decide where the
 // placeholder goes, so the rows under test get their rects handed to them.
-function stubRect(element: HTMLElement, top: number, height: number) {
+function stubRect(
+  element: HTMLElement,
+  top: number,
+  height: number,
+  left = 0,
+  width = 320,
+) {
   element.getBoundingClientRect = () =>
     ({
       top,
       bottom: top + height,
       height,
-      left: 0,
-      right: 320,
-      width: 320,
-      x: 0,
+      left,
+      right: left + width,
+      width,
+      x: left,
       y: top,
       toJSON: () => ({}),
     }) as DOMRect;
@@ -367,10 +374,28 @@ function stubRect(element: HTMLElement, top: number, height: number) {
 
 const ROW_HEIGHT = 40;
 const ROW_PITCH = 42;
+const CARD_HEIGHT = 90;
+const CARD_PITCH = 98;
+const CARD_WIDTH = 150;
+const CARD_COLUMN_PITCH = 158;
 
 function stubAccountRowGeometry(rows: HTMLElement[]) {
   stubRect(screen.getByTestId("account-workspace-scroll-region"), 0, 600);
   rows.forEach((row, index) => stubRect(row, index * ROW_PITCH, ROW_HEIGHT));
+}
+
+// Two cards per grid row, which is what a 320px list area fits.
+function stubAccountCardGeometry(cards: HTMLElement[]) {
+  stubRect(screen.getByTestId("account-workspace-scroll-region"), 0, 600);
+  cards.forEach((card, index) =>
+    stubRect(
+      card,
+      Math.floor(index / 2) * CARD_PITCH,
+      CARD_HEIGHT,
+      (index % 2) * CARD_COLUMN_PITCH,
+      CARD_WIDTH,
+    ),
+  );
 }
 
 function dispatchPointerEvent(
@@ -1137,6 +1162,124 @@ describe("AccountsScreen", () => {
     dispatchPointerEvent(document, "pointerup", { clientY: 52 });
 
     expect(reorderRouteCredentials).not.toHaveBeenCalled();
+  });
+
+  it("switches the account list to cards and remembers the choice", async () => {
+    const { unmount } = renderScreen();
+
+    await screen.findByText("Team Account");
+    expect(screen.getByTestId("account-list")).toHaveAttribute("data-account-layout", "list");
+    expect(screen.getByRole("button", { name: "列表模式" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "卡片模式" }));
+
+    const list = screen.getByTestId("account-list");
+    expect(list).toHaveAttribute("data-account-layout", "card");
+    expect(list).toHaveClass(
+      "grid",
+      "grid-cols-[repeat(auto-fill,minmax(min(272px,100%),1fr))]",
+    );
+    expect(screen.getByTestId("account-card-cred-official-1")).toBeInTheDocument();
+    expect(window.localStorage.getItem(ACCOUNT_LIST_LAYOUT_STORAGE_KEY)).toBe("card");
+
+    unmount();
+    renderScreen();
+
+    expect(await screen.findByTestId("account-card-cred-api-1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "卡片模式" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("keeps every account detail on a card and folds the row actions into its menu", async () => {
+    renderScreen();
+
+    await screen.findByText("Team Account");
+    await userEvent.click(screen.getByRole("button", { name: "卡片模式" }));
+
+    const card = screen.getByTestId("account-card-cred-official-1");
+    expect(card).toHaveTextContent("P3-");
+    expect(card).toHaveTextContent("Team Account");
+    expect(within(card).getByText("官方")).toBeInTheDocument();
+    expect(within(card).getByText("正常")).toBeInTheDocument();
+    expect(card).toHaveTextContent("请求 3");
+    expect(card).toHaveTextContent("成功率 66.7%");
+    // The card is too narrow for the success/failure breakdown the row spells out.
+    expect(within(card).getByText("· 成功 2 · 失败 1")).toHaveClass("hidden");
+    expect(within(card).getByLabelText("选择 Team Account")).toBeInTheDocument();
+    expect(within(card).getByLabelText("拖动 Team Account")).toBeInTheDocument();
+
+    expect(screen.queryByRole("button", { name: "编辑 Team Account" })).not.toBeInTheDocument();
+    await userEvent.click(within(card).getByLabelText("更多操作 Team Account"));
+    expect(
+      within(card).getByRole("menuitem", { name: "编辑 Team Account" }),
+    ).toBeInTheDocument();
+  });
+
+  it("reorders accounts when a card is dropped on the right half of its neighbour", async () => {
+    renderScreen();
+
+    await screen.findByText("Team Account");
+    await userEvent.click(screen.getByRole("button", { name: "卡片模式" }));
+
+    const dragHandle = screen.getByLabelText("拖动 Team Account");
+    const firstCard = screen.getByTestId("account-card-cred-official-1");
+    const secondCard = screen.getByTestId("account-card-cred-api-1");
+    stubAccountCardGeometry([firstCard, secondCard]);
+
+    dispatchPointerEvent(dragHandle, "pointerdown", { clientX: 10, clientY: 60 });
+    dispatchPointerEvent(document, "pointermove", { clientX: 240, clientY: 60 });
+
+    expect(dragHandle).toHaveAttribute("aria-grabbed", "true");
+    // A lifted card follows the pointer on both axes, unlike a lifted row.
+    expect(firstCard.style.transform).toBe("translate3d(230px, 0px, 0)");
+    const placeholder = screen.getByTestId("account-drop-placeholder");
+    expect(placeholder).toHaveClass("rounded-xl");
+    expect(placeholder).not.toHaveClass("mx-1");
+    expect(placeholder.previousElementSibling).toBe(secondCard);
+
+    dispatchPointerEvent(document, "pointerup", { clientX: 240, clientY: 60 });
+
+    await waitFor(() =>
+      expect(reorderRouteCredentials).toHaveBeenCalledWith({
+        platform: "codex",
+        moved_account_id: "cred-official-1",
+        previous_account_id: "cred-api-1",
+        next_account_id: null,
+        filters: [],
+        pool_scope: "out_of_pool",
+        page_size: 20,
+      }),
+    );
+  });
+
+  it("reorders a picked-up card with the horizontal arrow keys", async () => {
+    renderScreen();
+
+    await screen.findByText("Team Account");
+    await userEvent.click(screen.getByRole("button", { name: "卡片模式" }));
+
+    const dragHandle = screen.getByLabelText("拖动 Team Account");
+    dragHandle.focus();
+    await userEvent.keyboard(" ");
+    expect(dragHandle).toHaveAttribute("aria-grabbed", "true");
+    await userEvent.keyboard("{ArrowRight}");
+
+    await waitFor(() =>
+      expect(reorderRouteCredentials).toHaveBeenCalledWith({
+        platform: "codex",
+        moved_account_id: "cred-official-1",
+        previous_account_id: "cred-api-1",
+        next_account_id: null,
+        filters: [],
+        pool_scope: "out_of_pool",
+        page_size: 20,
+      }),
+    );
   });
 
   it("keeps side toolbar content visible when the window is not pinned to the top", () => {

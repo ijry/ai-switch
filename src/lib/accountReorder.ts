@@ -7,6 +7,9 @@ export type DragSortRow = {
   id: string;
   top: number;
   height: number;
+  // Only the grid reading is horizontal, so a plain vertical list leaves these out.
+  left?: number;
+  width?: number;
 };
 
 // Outer height of one row (its own height plus the gap to the next one), which is
@@ -47,6 +50,47 @@ export function insertionIndexFromPointer(rows: DragSortRow[], pointerY: number)
     if (pointerY > row.top + row.height / 2) index += 1;
   }
   return Math.max(0, Math.min(index, rows.length));
+}
+
+// Slots the remaining cards fall into once the dragged one is out of flow. A grid
+// reflows in reading order, so the card that was k+1 slides into slot k: slot k is
+// simply the k-th box as measured while every card was still in place. `rows` has
+// to be that pre-lift measurement, in visual order, including the dragged card.
+export function gridDragSlots(rows: DragSortRow[], movedId: string): DragSortRow[] {
+  const remaining = rows.filter((row) => row.id !== movedId);
+  return remaining.map((row, index) => {
+    const slot = rows[index] ?? row;
+    return {
+      id: row.id,
+      top: slot.top,
+      height: slot.height,
+      left: slot.left,
+      width: slot.width,
+    };
+  });
+}
+
+// Insertion index for a pointer over a wrapping grid, counted in reading order: a
+// slot is behind the pointer once the pointer has cleared its whole row band, or
+// sits inside that band past the slot's horizontal midpoint. Pointing at the gap
+// between two bands therefore lands at the end of the upper one.
+export function gridInsertionIndexFromPointer(
+  slots: DragSortRow[],
+  pointerX: number,
+  pointerY: number,
+): number {
+  let index = 0;
+  for (const slot of slots) {
+    const bottom = slot.top + slot.height;
+    if (pointerY > bottom) {
+      index += 1;
+      continue;
+    }
+    if (pointerY >= slot.top && pointerX > (slot.left ?? 0) + (slot.width ?? 0) / 2) {
+      index += 1;
+    }
+  }
+  return Math.max(0, Math.min(index, slots.length));
 }
 
 export function neighborsForDrop<T extends { id: string }>(input: {

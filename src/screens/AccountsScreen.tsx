@@ -16,6 +16,7 @@ import {
   FileCode2,
   GripVertical,
   KeyRound,
+  LayoutGrid,
   List,
   MessageSquareText,
   MoreVertical,
@@ -57,6 +58,11 @@ import { RouteCredentialExportDialog } from "../components/accounts/RouteCredent
 import { CopyRouteCredentialDialog } from "../components/accounts/CopyRouteCredentialDialog";
 import { UsageOverviewPanel } from "../components/accounts/UsageOverviewPanel";
 import { neighborsForDrop } from "../lib/accountReorder";
+import {
+  loadAccountListLayout,
+  saveAccountListLayout,
+  type AccountListLayout,
+} from "../lib/accountListLayout";
 import { useDragSort } from "../lib/useDragSort";
 import {
   claudeAliasSupportsOneM,
@@ -328,6 +334,26 @@ function accountStatusClass(status: string): string {
   }
 }
 
+// Card tone by account status. A grid is read at a glance, so a card that needs
+// attention has to say so before its status badge is even looked at; the list rows
+// stay plain white because their badges all line up in one scannable column.
+function accountCardToneClass(credential: RouteCredential): string {
+  if (credential.archived_at) {
+    return "border-stone-200 bg-stone-50";
+  }
+  switch (credential.status) {
+    case "warning":
+      return "border-amber-200 bg-amber-50/50";
+    case "error":
+    case "paused":
+      return "border-red-200 bg-red-50/50";
+    case "revoked":
+      return "border-rose-200 bg-rose-50/60";
+    default:
+      return "border-stone-200 bg-white";
+  }
+}
+
 // Terminal statuses describe a durable account state, so they keep their own
 // label even while transient retry failures are being counted.
 const terminalAccountStatuses = new Set(["error", "revoked", "paused"]);
@@ -411,6 +437,11 @@ const accountViewOptions: Array<{ key: AccountView; label: string }> = [
   { key: "out_of_pool", label: "未入池" },
   { key: "archived", label: "已归档" },
   { key: "stats", label: "统计" },
+];
+
+const accountLayoutOptions: Array<{ key: AccountListLayout; label: string }> = [
+  { key: "list", label: "列表模式" },
+  { key: "card", label: "卡片模式" },
 ];
 
 function formatUsageTime(value: string) {
@@ -2247,6 +2278,13 @@ export function AccountsScreen({
   const [copyingCredential, setCopyingCredential] = useState<RouteCredential | null>(null);
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   const [compactRowActions, setCompactRowActions] = useState(false);
+  const [accountLayout, setAccountLayout] = useState<AccountListLayout>(() =>
+    loadAccountListLayout(),
+  );
+  const cardLayout = accountLayout === "card";
+  // A card is far narrower than a full row, so its actions always live behind the
+  // overflow menu instead of waiting for the list to be squeezed.
+  const rowActionsInMenu = compactRowActions || cardLayout;
   const accountListResizeRef = useRef<ResizeObserver | null>(null);
   const attachAccountList = useCallback((node: HTMLDivElement | null) => {
     accountListResizeRef.current?.disconnect();
@@ -2600,10 +2638,10 @@ export function AccountsScreen({
   }, [openActionMenuId]);
 
   useEffect(() => {
-    if (!compactRowActions) {
+    if (!rowActionsInMenu) {
       setOpenActionMenuId(null);
     }
-  }, [compactRowActions]);
+  }, [rowActionsInMenu]);
 
   useEffect(() => {
     setAccountPage(1);
@@ -4220,6 +4258,7 @@ export function AccountsScreen({
     onEdgeHold: scheduleAccountEdgePage,
     onEdgeLeave: cancelAccountEdgePage,
     disabled: reorderMutation.isPending,
+    layout: cardLayout ? "grid" : "vertical",
   });
   const dragMovedIndex = accountDragSort.activeId
     ? accountIds.indexOf(accountDragSort.activeId)
@@ -4230,7 +4269,9 @@ export function AccountsScreen({
   const dropPlaceholder = accountDragSort.insertIndex == null ? null : (
     <div
       aria-hidden="true"
-      className="mx-1 mb-0.5 rounded-md border-2 border-dashed border-blue-400 bg-blue-50/70"
+      className={`border-2 border-dashed border-blue-400 bg-blue-50/70 ${
+        cardLayout ? "rounded-xl" : "mx-1 mb-0.5 rounded-md"
+      }`}
       data-testid="account-drop-placeholder"
       style={{ height: accountDragSort.placeholderHeight }}
     />
@@ -4447,6 +4488,18 @@ export function AccountsScreen({
       return;
     }
     setAccountView(view);
+  };
+
+  const selectAccountLayout = (layout: AccountListLayout) => {
+    if (layout === accountLayout) {
+      return;
+    }
+    accountDragSort.cancel();
+    // The menu is anchored to a row that is about to be laid out somewhere else.
+    setOpenActionMenuId(null);
+    setKeyboardDragId(null);
+    setAccountLayout(layout);
+    saveAccountListLayout(layout);
   };
 
   const decodeApiKey = () => {
@@ -5242,6 +5295,36 @@ export function AccountsScreen({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <div
+              aria-label="账号展示模式"
+              className="flex h-7 shrink-0 items-center gap-0.5 rounded-lg border border-stone-300 bg-white p-0.5 shadow-sm"
+              role="group"
+            >
+              {accountLayoutOptions.map((option) => {
+                const active = accountLayout === option.key;
+                return (
+                  <button
+                    aria-label={option.label}
+                    aria-pressed={active}
+                    className={`grid h-6 w-6 place-items-center rounded-md transition-colors ${
+                      active
+                        ? "bg-stone-900 text-white shadow-sm"
+                        : "text-stone-600 hover:bg-stone-100"
+                    }`}
+                    key={option.key}
+                    onClick={() => selectAccountLayout(option.key)}
+                    title={option.label}
+                    type="button"
+                  >
+                    {option.key === "card" ? (
+                      <LayoutGrid aria-hidden="true" className="h-3.5 w-3.5" />
+                    ) : (
+                      <List aria-hidden="true" className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
             {selectedAccountIds.size > 0 && (
               <button
                 aria-label="导出选中账号"
@@ -5498,7 +5581,18 @@ export function AccountsScreen({
               {formatApiError(batchStatusMutation.error, "批量设置状态失败。")}
             </p>
           )}
-          <div ref={attachAccountList}>
+          <div
+            className={
+              cardLayout
+                ? // min(...) rather than a bare 272px: below one card's width the
+                  // track has to shrink with the container instead of overflowing it.
+                  "grid grid-cols-[repeat(auto-fill,minmax(min(272px,100%),1fr))] gap-2 px-1"
+                : undefined
+            }
+            data-account-layout={accountLayout}
+            data-testid="account-list"
+            ref={attachAccountList}
+          >
           {credentials.map((credential, credentialIndex) => {
                   const subscriptionType = officialSubscriptionType(credential);
                   const primaryRemain = officialPrimaryRemain(credential);
@@ -5614,41 +5708,36 @@ export function AccountsScreen({
                   });
                   const actionMenuOpen = openActionMenuId === credential.id;
                   const isDragged = accountDragSort.activeId === credential.id;
+                  const isKeyboardDragged = keyboardDragId === credential.id;
                   // Slot this row falls into once the dragged row is out of the list,
                   // which is where the placeholder has to show up for "lands here".
                   const dropSlot =
                     dragMovedIndex >= 0 && credentialIndex > dragMovedIndex
                       ? credentialIndex - 1
                       : credentialIndex;
-                  return (
-                  <Fragment key={credential.id}>
-                  {!isDragged && accountDragSort.insertIndex === dropSlot ? dropPlaceholder : null}
-                  <div
-                    aria-label={`放置在 ${credential.display_name} 前`}
-                    className={`mx-1 mb-0.5 grid grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-3 py-2.5 transition-colors last:mb-0 ${
-                      isDragged
-                        ? "border-blue-400 bg-white shadow-lg"
-                        : keyboardDragId === credential.id
-                          ? "border-blue-400 bg-blue-50/70"
-                          : "border-stone-200 bg-white"
-                    }`}
-                    ref={accountDragSort.registerItem(credential.id)}
-                  >
+                  const placeholderSlot =
+                    !isDragged && accountDragSort.insertIndex === dropSlot
+                      ? dropPlaceholder
+                      : null;
+                  const dragHandle = (
                     <button
-                      aria-grabbed={isDragged || keyboardDragId === credential.id}
+                      aria-grabbed={isDragged || isKeyboardDragged}
                       aria-label={`拖动 ${credential.display_name}`}
-                      className={`grid h-7 w-7 shrink-0 touch-none place-items-center rounded border border-stone-200 px-0 text-stone-400 hover:bg-stone-50 ${
-                        isDragged ? "cursor-grabbing bg-stone-100" : "cursor-grab"
-                      }`}
+                      className={`grid shrink-0 touch-none place-items-center rounded border border-stone-200 px-0 text-stone-400 hover:bg-stone-50 ${
+                        cardLayout ? "h-6 w-5" : "h-7 w-7"
+                      } ${isDragged ? "cursor-grabbing bg-stone-100" : "cursor-grab"}`}
                       onPointerDown={(event) => accountDragSort.startDrag(credential.id, event)}
                       onKeyDown={(event) => {
+                        const back = event.key === "ArrowUp" || (cardLayout && event.key === "ArrowLeft");
+                        const forward =
+                          event.key === "ArrowDown" || (cardLayout && event.key === "ArrowRight");
                         if (event.key === " " || event.key === "Enter") {
                           event.preventDefault();
                           setKeyboardDragId((current) => current === credential.id ? null : credential.id);
-                        } else if (keyboardDragId === credential.id && event.key === "ArrowUp") {
+                        } else if (isKeyboardDragged && back) {
                           event.preventDefault();
                           commitAccountReorder(credential.id, Math.max(0, credentialIndex - 1));
-                        } else if (keyboardDragId === credential.id && event.key === "ArrowDown") {
+                        } else if (isKeyboardDragged && forward) {
                           event.preventDefault();
                           commitAccountReorder(credential.id, Math.min(credentials.length - 1, credentialIndex + 1));
                         } else if (event.key === "Escape") {
@@ -5657,8 +5746,10 @@ export function AccountsScreen({
                       }}
                       type="button"
                     >
-                      <GripVertical className="h-4 w-4" />
+                      <GripVertical className={cardLayout ? "h-3.5 w-3.5" : "h-4 w-4"} />
                     </button>
+                  );
+                  const selectionCheckbox = (
                     <input
                       aria-label={`选择 ${credential.display_name}`}
                       checked={selectedAccountIds.has(credential.id)}
@@ -5666,10 +5757,15 @@ export function AccountsScreen({
                       onChange={() => toggleAccountSelection(credential.id)}
                       type="checkbox"
                     />
-                    <div className="min-w-0">
-                      <div className="group/name flex flex-wrap items-center gap-2">
+                  );
+                  const nameBlock = (
+                    <>
                         <p
-                          className="max-w-full truncate text-[13px] font-semibold text-stone-950"
+                          className={`truncate text-[13px] font-semibold text-stone-950 ${
+                            // A card lays the name out in a nowrap row, so it has to be
+                            // allowed to shrink; the list wraps its badges instead.
+                            cardLayout ? "min-w-0 flex-1" : "max-w-full"
+                          }`}
                           title={`P${credential.route_priority}-${credential.display_name}`}
                         >
                           <span className="text-stone-500">{`P${credential.route_priority}-`}</span>
@@ -5691,6 +5787,10 @@ export function AccountsScreen({
                             <ExternalLink aria-hidden="true" className="h-3.5 w-3.5" />
                           </button>
                         )}
+                    </>
+                  );
+                  const badges = (
+                    <>
                         <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
                           {kindLabel(credential.kind)}
                         </span>
@@ -5817,9 +5917,9 @@ export function AccountsScreen({
                             {relayBalanceTag.label}
                           </span>
                         )}
-                      </div>
-                      <p className="mt-0.5 truncate text-[12px] text-stone-500">
-                        {(() => {
+                    </>
+                  );
+                  const statsLine = (() => {
                           const requestStats = credentialRequestStats(credential);
                           return (
                             <>
@@ -5828,7 +5928,13 @@ export function AccountsScreen({
                               ) : (
                                 <>
                                   <span>请求 {requestStats.requestCount}</span>
-                                  <span className={sidebarCollapsed ? "hidden" : "max-[599px]:hidden"}>
+                                  {/* A card is too narrow for the breakdown, same as a
+                                      list squeezed against the sidebar. */}
+                                  <span
+                                    className={
+                                      cardLayout || sidebarCollapsed ? "hidden" : "max-[599px]:hidden"
+                                    }
+                                  >
                                     {` · 成功 ${requestStats.successCount} · 失败 ${requestStats.failureCount}`}
                                   </span>
                                   <span>{` · 成功率 ${requestStats.rateLabel}`}</span>
@@ -5841,11 +5947,10 @@ export function AccountsScreen({
                               )}
                             </>
                           );
-                        })()}
-                      </p>
-                    </div>
+                  })();
+                  const actionsBlock = (
                     <div className="flex shrink-0 flex-nowrap items-center justify-end gap-1">
-                      {compactRowActions ? (
+                      {rowActionsInMenu ? (
                         <div className="relative flex" data-account-action-menu>
                           <button
                             aria-expanded={actionMenuOpen}
@@ -5907,6 +6012,67 @@ export function AccountsScreen({
                         ))
                       )}
                     </div>
+                  );
+                  if (cardLayout) {
+                    return (
+                      <Fragment key={credential.id}>
+                        {placeholderSlot}
+                        <article
+                          aria-label={`放置在 ${credential.display_name} 前`}
+                          className={`group/name flex h-full min-w-0 flex-col gap-1.5 rounded-xl border p-2.5 transition-shadow ${
+                            isDragged
+                              ? "border-blue-400 bg-white shadow-lg"
+                              : isKeyboardDragged
+                                ? "border-blue-400 bg-blue-50/70"
+                                : `${accountCardToneClass(credential)} hover:shadow-md`
+                          } ${
+                            selectedAccountIds.has(credential.id)
+                              ? "ring-2 ring-amber-300"
+                              : ""
+                          }`}
+                          data-testid={`account-card-${credential.id}`}
+                          ref={accountDragSort.registerItem(credential.id)}
+                        >
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            {dragHandle}
+                            {selectionCheckbox}
+                            <div className="flex min-w-0 flex-1 items-center gap-1">{nameBlock}</div>
+                            {actionsBlock}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1.5">{badges}</div>
+                          {/* mt-auto keeps the stats line pinned to the bottom so the
+                              footers of a grid row stay on one baseline. */}
+                          <p className="mt-auto truncate border-t border-stone-200/70 pt-1.5 text-[11px] text-stone-500">
+                            {statsLine}
+                          </p>
+                        </article>
+                      </Fragment>
+                    );
+                  }
+                  return (
+                  <Fragment key={credential.id}>
+                  {placeholderSlot}
+                  <div
+                    aria-label={`放置在 ${credential.display_name} 前`}
+                    className={`mx-1 mb-0.5 grid grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-3 py-2.5 transition-colors last:mb-0 ${
+                      isDragged
+                        ? "border-blue-400 bg-white shadow-lg"
+                        : isKeyboardDragged
+                          ? "border-blue-400 bg-blue-50/70"
+                          : "border-stone-200 bg-white"
+                    }`}
+                    ref={accountDragSort.registerItem(credential.id)}
+                  >
+                    {dragHandle}
+                    {selectionCheckbox}
+                    <div className="min-w-0">
+                      <div className="group/name flex flex-wrap items-center gap-2">
+                        {nameBlock}
+                        {badges}
+                      </div>
+                      <p className="mt-0.5 truncate text-[12px] text-stone-500">{statsLine}</p>
+                    </div>
+                    {actionsBlock}
                   </div>
                   </Fragment>
                   );

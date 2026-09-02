@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   closeDragGap,
   dragRowPitch,
+  gridDragSlots,
+  gridInsertionIndexFromPointer,
   insertionIndexFromPointer,
   neighborsForDrop,
   type DragSortRow,
@@ -15,6 +17,15 @@ const rows: DragSortRow[] = [
   { id: "a", top: 0, height: 40 },
   { id: "b", top: 42, height: 40 },
   { id: "c", top: 84, height: 40 },
+];
+
+// Two columns of 100px cards with an 8px gap, filled in reading order: a b / c d / e.
+const cards: DragSortRow[] = [
+  { id: "a", top: 0, height: 90, left: 0, width: 100 },
+  { id: "b", top: 0, height: 90, left: 108, width: 100 },
+  { id: "c", top: 98, height: 90, left: 0, width: 100 },
+  { id: "d", top: 98, height: 90, left: 108, width: 100 },
+  { id: "e", top: 196, height: 90, left: 0, width: 100 },
 ];
 
 describe("neighborsForDrop", () => {
@@ -134,5 +145,60 @@ describe("insertionIndexFromPointer", () => {
       previousAccountId: null,
       nextAccountId: "a",
     });
+  });
+});
+
+describe("gridDragSlots", () => {
+  it("slides every later card back one slot in reading order", () => {
+    expect(gridDragSlots(cards, "b")).toEqual([
+      { id: "a", top: 0, height: 90, left: 0, width: 100 },
+      // c wraps up into the slot b left behind on the first grid row.
+      { id: "c", top: 0, height: 90, left: 108, width: 100 },
+      { id: "d", top: 98, height: 90, left: 0, width: 100 },
+      { id: "e", top: 98, height: 90, left: 108, width: 100 },
+    ]);
+  });
+
+  it("leaves the layout alone when the dragged card is the last one", () => {
+    expect(gridDragSlots(cards, "e")).toEqual(cards.slice(0, 4));
+  });
+
+  it("keeps every slot when the dragged card is no longer on the page", () => {
+    expect(gridDragSlots(cards, "gone")).toEqual(cards);
+  });
+});
+
+describe("gridInsertionIndexFromPointer", () => {
+  const slots = gridDragSlots(cards, "e");
+
+  it("targets the first slot above and left of everything", () => {
+    expect(gridInsertionIndexFromPointer(slots, 10, -20)).toBe(0);
+    expect(gridInsertionIndexFromPointer(slots, 10, 40)).toBe(0);
+  });
+
+  it("advances past a card once the pointer clears its horizontal midpoint", () => {
+    expect(gridInsertionIndexFromPointer(slots, 60, 40)).toBe(1);
+    expect(gridInsertionIndexFromPointer(slots, 170, 40)).toBe(2);
+  });
+
+  it("counts whole rows the pointer has left behind", () => {
+    expect(gridInsertionIndexFromPointer(slots, 10, 140)).toBe(2);
+    expect(gridInsertionIndexFromPointer(slots, 60, 140)).toBe(3);
+  });
+
+  it("lands at the end of the upper row when the pointer sits in the gap", () => {
+    expect(gridInsertionIndexFromPointer(slots, 10, 94)).toBe(2);
+  });
+
+  it("clamps to the end of the grid below the last card", () => {
+    expect(gridInsertionIndexFromPointer(slots, 10, 4000)).toBe(4);
+  });
+
+  it("moves the last card to the front when dropped on the first card's left half", () => {
+    const targetIndex = gridInsertionIndexFromPointer(slots, 10, 40);
+    expect(targetIndex).toBe(0);
+    expect(
+      neighborsForDrop({ items: cards, movedId: "e", targetIndex }),
+    ).toEqual({ previousAccountId: null, nextAccountId: "a" });
   });
 });

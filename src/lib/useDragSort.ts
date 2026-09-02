@@ -9,6 +9,8 @@ import {
 import {
   closeDragGap,
   dragRowPitch,
+  gridDragSlots,
+  gridInsertionIndexFromPointer,
   insertionIndexFromPointer,
   type DragSortRow,
 } from "./accountReorder";
@@ -41,6 +43,9 @@ export type DragSortOptions = {
   onEdgeHold?: (direction: -1 | 1) => void;
   onEdgeLeave?: () => void;
   disabled?: boolean;
+  // "grid" reads the drop slot in reading order across a wrapping grid; the default
+  // "vertical" only compares row midpoints, which is all a one-per-line list needs.
+  layout?: "vertical" | "grid";
 };
 
 export type DragSortHandle = {
@@ -56,7 +61,9 @@ export type DragSortHandle = {
 type ActiveDrag = {
   id: string;
   pointerId: number;
+  startClientX: number;
   startClientY: number;
+  pointerClientX: number;
   pointerClientY: number;
   // Gap-closed layout of the other rows, in viewport coordinates as measured.
   rows: DragSortRow[];
@@ -130,11 +137,13 @@ export function useDragSort(options: DragSortOptions): DragSortHandle {
 
   const scrollTopOf = () => optionsRef.current.getScrollContainer?.()?.scrollTop ?? 0;
 
+  const isGrid = () => optionsRef.current.layout === "grid";
+
   const measure = (id: string): DragSortRow | null => {
     const node = nodesRef.current.get(id);
     if (!node) return null;
     const rect = node.getBoundingClientRect();
-    return { id, top: rect.top, height: rect.height };
+    return { id, top: rect.top, height: rect.height, left: rect.left, width: rect.width };
   };
 
   // Rows other than the dragged one, pulled back into the layout they would have
@@ -147,6 +156,11 @@ export function useDragSort(options: DragSortOptions): DragSortHandle {
       const row = measure(id);
       if (row) rows.push(row);
     }
+    // A grid reflows in two axes, so there is no single pitch to subtract. Re-measuring
+    // only happens once the page contents changed under the pointer, and the common
+    // case there — the dragged card moved to another page — leaves the boxes already
+    // sitting in the slots they keep.
+    if (isGrid()) return rows;
     return closeDragGap(rows, boundaryIndex, pitch);
   };
 
@@ -154,14 +168,20 @@ export function useDragSort(options: DragSortOptions): DragSortHandle {
     // Rows were measured in viewport coordinates, so anything the container has
     // scrolled since then has to be added back onto the pointer.
     const pointerY = drag.pointerClientY + (scrollTopOf() - drag.scrollTop);
-    const next = insertionIndexFromPointer(drag.rows, pointerY);
+    const grid = isGrid();
+    const next = grid
+      ? gridInsertionIndexFromPointer(drag.rows, drag.pointerClientX, pointerY)
+      : insertionIndexFromPointer(drag.rows, pointerY);
     if (next !== drag.insertIndex) {
       drag.insertIndex = next;
       setInsertIndex(next);
     }
     if (drag.node) {
-      const offset = Math.round(drag.pointerClientY - drag.startClientY);
-      drag.node.style.transform = `translate3d(0, ${offset}px, 0)`;
+      const offsetY = Math.round(drag.pointerClientY - drag.startClientY);
+      // A one-per-line list has nowhere to go sideways, so the lifted row stays in
+      // its column; a card in a grid has to follow the pointer on both axes.
+      const offsetX = grid ? `${Math.round(drag.pointerClientX - drag.startClientX)}px` : "0";
+      drag.node.style.transform = `translate3d(${offsetX}, ${offsetY}px, 0)`;
     }
   };
 
@@ -251,14 +271,19 @@ export function useDragSort(options: DragSortOptions): DragSortHandle {
       }
       const originIndex = rows.findIndex((row) => row.id === id);
       if (originIndex < 0) return false;
-      const pitch = dragRowPitch(rows, originIndex);
+      const grid = isGrid();
+      const pitch = grid ? 0 : dragRowPitch(rows, originIndex);
       const rect = node.getBoundingClientRect();
       dragRef.current = {
         id,
         pointerId,
+        startClientX: pressX,
         startClientY: pressY,
+        pointerClientX: pressX,
         pointerClientY: pressY,
-        rows: closeDragGap(rows.filter((row) => row.id !== id), originIndex, pitch),
+        rows: grid
+          ? gridDragSlots(rows, id)
+          : closeDragGap(rows.filter((row) => row.id !== id), originIndex, pitch),
         pitch,
         scrollTop: scrollTopOf(),
         insertIndex: originIndex,
@@ -328,6 +353,7 @@ export function useDragSort(options: DragSortOptions): DragSortHandle {
       }
       const drag = dragRef.current;
       if (!drag) return;
+      drag.pointerClientX = moveEvent.clientX;
       drag.pointerClientY = moveEvent.clientY;
       syncDrag(drag);
       // Also react to the edges on the move itself, so entering the edge zone acts
