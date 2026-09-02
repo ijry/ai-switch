@@ -20,7 +20,9 @@
   ```
   这两项不进提交，保留在工作区即可。
 - 验证命令：`pnpm typecheck`、`pnpm test:run`、`cd src-tauri && CARGO_TARGET_DIR=target-codex cargo test`、`cd src-tauri && cargo fmt --check`。
-- **`RouteConfigInput` 的构造点有 7 处**：`route_config_service.rs` 四处（约 :85 / :184 / :270 / :302）、`config_write_service.rs` 测试两处、`commands/target_commands.rs` 测试一处，外加各 adapter 测试模块里的 `fn input()` 辅助。给该结构体加字段时用 `grep -rn "RouteConfigInput {" src-tauri/src` 找齐，别照抄计划里的数量。
+- **`RouteConfigInput` 的构造点有 8 处**：`route_config_service.rs` 四处（约 :86 / :186 / :273 / :306）、`config_write_service.rs` 测试两处（:1028 / :1048）、`commands/target_commands.rs` 测试一处（:122）、各 adapter 测试模块的 `fn input()` 辅助。用 `grep -rn "RouteConfigInput {" src-tauri/src` 找齐，别照抄任何数量。用 `..input()` 展开的调用点不需要改。
+- **提交信息不带 `Co-Authored-By` 尾注**：本仓库既有历史没有这个尾注，保持一致。
+- **每个 task 的 `git add` 清单可能不全**：给共享结构体加字段会波及多个文件，提交前用 `git status` 确认工作区干净，别只 add 计划里列的路径——否则会提交一个编译不过的树。
 - **`ModelMapping` 有四个字段**：`from`、`to`、`label: Option<String>`、`supports_1m: Option<bool>`（`models/route_credential.rs:305`）。构造字面量时 `label` 不能省。
 - **`TargetAdapter` 有三个 impl**：两个真适配器模块外，`config_write_service.rs` 的测试替身 `ConflictOnCommitAdapter` 也 impl 了它。给 trait 加方法时必须同步转发给 `self.inner`，否则编译失败。用 `grep "impl TargetAdapter for"` 找齐。
 - **`route_model_capability.rs` 的 `mod tests` 用显式 `use super::{...}` 列表**（不是 `use super::*`），新引用的符号必须加进该列表。
