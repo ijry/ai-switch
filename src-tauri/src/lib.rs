@@ -68,7 +68,9 @@ use commands::terminal_commands::{
     create_terminal_session, kill_terminal_session, list_agent_launch_options,
     list_terminal_sessions, resize_terminal, write_terminal_input,
 };
-use commands::usage_stats_commands::{get_session_usage_stats, reload_model_price_overrides};
+use commands::usage_stats_commands::{
+    get_session_usage_stats, get_usage_overview, reload_model_price_overrides,
+};
 use commands::web_service_commands::{
     create_mobile_pairing, disconnect_tailscale, get_tailscale_status, get_web_server_status,
     get_web_service_config, save_web_service_config, start_tailscale_login,
@@ -487,6 +489,7 @@ pub fn run() {
             get_session_messages,
             open_session_terminal,
             get_session_usage_stats,
+            get_usage_overview,
             reload_model_price_overrides,
             list_target_apps,
             list_target_config_statuses,
