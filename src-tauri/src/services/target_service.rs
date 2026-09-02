@@ -5,7 +5,7 @@ use crate::database::repositories::target_repository::TargetRepository;
 use crate::database::repositories::target_state_repository::TargetStateRepository;
 use crate::error::AppError;
 use crate::models::platform::{PlatformId, SupportLevel};
-use crate::models::target_app::{TargetApp, TargetConfigStatus};
+use crate::models::target_app::{ConfigWriteClientStatus, TargetApp, TargetConfigStatus};
 use crate::services::config_write_service::{ConfigWriteCoordinator, ConfigWriteRuntimeState};
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use directories::BaseDirs;
@@ -119,6 +119,63 @@ impl TargetService {
 
         Ok(statuses)
     }
+
+    pub async fn list_config_write_clients(
+        pool: &SqlitePool,
+        platform: PlatformId,
+    ) -> Result<Vec<ConfigWriteClientStatus>, AppError> {
+        let home = BaseDirs::new()
+            .map(|dirs| dirs.home_dir().to_path_buf())
+            .ok_or_else(|| AppError::Filesystem {
+                code: "filesystem.home_not_found",
+                message: "Could not resolve the current user home directory".to_string(),
+                details: None,
+                recoverable: false,
+            })?;
+        Self::list_config_write_clients_for_home(pool, platform, &home).await
+    }
+
+    /// Clients this platform can write config for, with each one's current file
+    /// state. Deliberately narrower than `list_config_statuses`: no reconcile, no
+    /// snapshot counts, and it carries the client identity the dialog needs.
+    pub(crate) async fn list_config_write_clients_for_home(
+        pool: &SqlitePool,
+        platform: PlatformId,
+        home: &Path,
+    ) -> Result<Vec<ConfigWriteClientStatus>, AppError> {
+        TargetRepository::ensure_defaults(pool).await?;
+        let registry = TargetAdapterRegistry::new();
+        let mut statuses = Vec::new();
+
+        for client in registry.clients_for_platform(platform) {
+            let Some(adapter) = registry.by_client_and_platform(&client.client_key, platform)
+            else {
+                continue;
+            };
+            let path = adapter.resolve_path(home);
+            let inspection = match ConfigWriter::inspect(&path).await {
+                Ok(file) => adapter.inspect(&path, file.bytes.as_deref()),
+                Err(_) => crate::adapters::route_config::TargetInspection {
+                    file_status: "error".to_string(),
+                    managed: false,
+                    error_code: None,
+                },
+            };
+            statuses.push(ConfigWriteClientStatus {
+                client_key: client.client_key,
+                display_name: client.display_name,
+                native: client.native,
+                restart_required: client.restart_required,
+                target_key: client.target_key,
+                platform: platform.as_str().to_string(),
+                config_path: Some(path.display().to_string()),
+                file_status: inspection.file_status,
+                error_code: inspection.error_code,
+            });
+        }
+
+        Ok(statuses)
+    }
 }
 
 #[cfg(test)]
@@ -126,6 +183,7 @@ mod tests {
     use super::*;
     use crate::database::{create_memory_pool, run_migrations};
     use crate::services::config_write_service::ConfigWriteRuntimeState;
+    use std::path::PathBuf;
 
     #[tokio::test]
     async fn list_config_statuses_reports_managed_invalid_missing_and_adapter_unavailable() {
@@ -219,5 +277,109 @@ experimental_bearer_token = "sentinel"
         assert!(!legacy.adapter_available);
         assert_eq!(legacy.config_path, None);
         assert_eq!(legacy.file_status, "unrecognized");
+    }
+
+    struct TargetFixture {
+        _temp: tempfile::TempDir,
+        pool: SqlitePool,
+        home: PathBuf,
+    }
+
+    impl TargetFixture {
+        async fn new() -> Self {
+            let temp = tempfile::tempdir().expect("temp dir");
+            let pool = create_memory_pool().await.expect("pool");
+            run_migrations(&pool).await.expect("migrations");
+            TargetRepository::ensure_defaults(&pool)
+                .await
+                .expect("targets");
+            let home = temp.path().join("home");
+            tokio::fs::create_dir_all(&home).await.expect("home");
+
+            Self {
+                _temp: temp,
+                pool,
+                home,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn config_write_clients_report_per_client_file_status() {
+        let fixture = TargetFixture::new().await;
+        let zcode_path = fixture.home.join(".zcode/v2/config.json");
+        tokio::fs::create_dir_all(zcode_path.parent().unwrap())
+            .await
+            .expect("dir");
+        tokio::fs::write(
+            &zcode_path,
+            br#"{"provider":{"builtin:bigmodel":{"kind":"anthropic"}}}"#,
+        )
+        .await
+        .expect("write");
+
+        let clients = TargetService::list_config_write_clients_for_home(
+            &fixture.pool,
+            PlatformId::Codex,
+            &fixture.home,
+        )
+        .await
+        .expect("clients");
+
+        assert_eq!(
+            clients
+                .iter()
+                .map(|client| client.client_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["codex", "zcode"]
+        );
+
+        let codex = &clients[0];
+        assert!(codex.native);
+        assert!(!codex.restart_required);
+        assert_eq!(codex.file_status, "missing");
+        assert!(codex
+            .config_path
+            .as_deref()
+            .expect("path")
+            .ends_with("config.toml"));
+
+        let zcode = &clients[1];
+        assert!(!zcode.native);
+        // ZCode has no file watcher, so the UI has to tell the user to restart.
+        assert!(zcode.restart_required);
+        // The file exists but carries no ai-switch entry for this platform.
+        assert_eq!(zcode.file_status, "unmanaged");
+        assert_eq!(zcode.target_key, "zcode_codex");
+    }
+
+    #[tokio::test]
+    async fn config_write_clients_surface_a_corrupt_file_without_erroring() {
+        let fixture = TargetFixture::new().await;
+        let zcode_path = fixture.home.join(".zcode/v2/config.json");
+        tokio::fs::create_dir_all(zcode_path.parent().unwrap())
+            .await
+            .expect("dir");
+        tokio::fs::write(&zcode_path, b"{not json")
+            .await
+            .expect("write");
+
+        let clients = TargetService::list_config_write_clients_for_home(
+            &fixture.pool,
+            PlatformId::Codex,
+            &fixture.home,
+        )
+        .await
+        .expect("listing must not fail on a bad file");
+
+        let zcode = clients
+            .iter()
+            .find(|client| client.client_key == "zcode")
+            .expect("zcode");
+        assert_eq!(zcode.file_status, "invalid");
+        assert_eq!(
+            zcode.error_code.as_deref(),
+            Some("validation.route_config_existing_invalid")
+        );
     }
 }

@@ -2,7 +2,8 @@ use crate::app_state::AppState;
 use crate::database::repositories::config_snapshot_repository::ConfigSnapshotRepository;
 use crate::error::ApiError;
 use crate::models::config_snapshot::{ConfigSnapshotSummary, ConfigWriteOutcome};
-use crate::models::target_app::{TargetApp, TargetConfigStatus};
+use crate::models::platform::PlatformId;
+use crate::models::target_app::{ConfigWriteClientStatus, TargetApp, TargetConfigStatus};
 use crate::paths::AppPaths;
 use crate::services::config_write_service::{ConfigWriteCoordinator, ConfigWriteRuntimeState};
 use crate::services::target_service::TargetService;
@@ -23,6 +24,17 @@ pub async fn list_target_config_statuses(
     state: State<'_, AppState>,
 ) -> Result<Vec<TargetConfigStatus>, ApiError> {
     TargetService::list_config_statuses(&state.pool, &state.config_writes)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn list_config_write_clients(
+    state: State<'_, AppState>,
+    platform: String,
+) -> Result<Vec<ConfigWriteClientStatus>, ApiError> {
+    let platform = PlatformId::parse(&platform).map_err(ApiError::from)?;
+    TargetService::list_config_write_clients(&state.pool, platform)
         .await
         .map_err(ApiError::from)
 }
@@ -88,7 +100,6 @@ mod tests {
     use super::*;
     use crate::adapters::route_config::{ClaudeEnvPlan, RouteConfigInput, TargetAdapterRegistry};
     use crate::database::{create_memory_pool, run_migrations};
-    use crate::models::platform::PlatformId;
     use crate::paths::AppPaths;
     use crate::services::config_write_service::{
         ConfigWriteCoordinator, ConfigWriteRequest, ConfigWriteRuntimeState,
