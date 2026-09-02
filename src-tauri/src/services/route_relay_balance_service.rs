@@ -5,7 +5,9 @@ use crate::models::route_relay_balance::{
     RelayBalanceConfig, RelayBalanceProvider, RelayBalanceSnapshot, DEFAULT_NEW_API_QUOTA_PER_UNIT,
     RELAY_BALANCE_SNAPSHOT_KEY,
 };
+use crate::services::deeplink_service::mask_api_key;
 use crate::services::http_client::build_outbound_http_client;
+use crate::services::route_proxy_service::credential_user_agent;
 use chrono::{TimeZone, Utc};
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 use reqwest::{Client, StatusCode};
@@ -172,6 +174,10 @@ struct BalanceRequest {
     base_url: String,
     api_key: String,
     interface_format: String,
+    /// The account's own `User-Agent`, when it configures one. Relays that gate
+    /// a group on the client fingerprint reject anything else, so a balance
+    /// query has to introduce itself the same way the proxy does.
+    user_agent: Option<String>,
 }
 
 impl BalanceRequest {
@@ -217,6 +223,7 @@ impl BalanceRequest {
             base_url,
             api_key,
             interface_format,
+            user_agent: credential_user_agent(config).map(str::to_string),
         })
     }
 }
@@ -281,22 +288,26 @@ async fn fetch_snapshot(
             details: Some(err),
             recoverable: true,
         })?;
-    let headers =
-        balance_request_headers(&request.api_key, &request.interface_format).map_err(|err| {
-            AppError::Validation {
-                code: "validation.route_relay_balance_headers",
-                message: "无法构造余额查询请求头".to_string(),
-                details: Some(err),
-                recoverable: true,
-            }
-        })?;
+    let headers = balance_request_headers(
+        &request.api_key,
+        &request.interface_format,
+        request.user_agent.as_deref(),
+    )
+    .map_err(|err| AppError::Validation {
+        code: "validation.route_relay_balance_headers",
+        message: "无法构造余额查询请求头".to_string(),
+        details: Some(err),
+        recoverable: true,
+    })?;
 
     match config.provider {
         RelayBalanceProvider::NewApi => {
             fetch_new_api_balance(&client, headers, config, request).await
         }
         RelayBalanceProvider::Sub2Api => fetch_sub2api_balance(&client, headers, request).await,
-        RelayBalanceProvider::Custom => fetch_custom_balance(&client, headers, config).await,
+        RelayBalanceProvider::Custom => {
+            fetch_custom_balance(&client, headers, config, &request.api_key).await
+        }
     }
 }
 
@@ -304,12 +315,27 @@ async fn fetch_snapshot(
 /// the relay itself speaks, so that header is unconditional. `x-api-key` rides
 /// along for Anthropic-dialect accounts because some gateways only read that
 /// one; panels that don't know it ignore it.
-fn balance_request_headers(api_key: &str, interface_format: &str) -> Result<HeaderMap, String> {
+///
+/// `user_agent` carries the account's own override when it has one: a relay that
+/// gates a group on the client fingerprint answers 403 to anything else, and a
+/// healthy account reading as "query failed" is worse than no badge at all.
+fn balance_request_headers(
+    api_key: &str,
+    interface_format: &str,
+    user_agent: Option<&str>,
+) -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     // The outbound client has no decompression support; ask for plain bytes.
     headers.insert("accept-encoding", HeaderValue::from_static("identity"));
-    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_VALUE));
+    headers.insert(
+        USER_AGENT,
+        match user_agent {
+            Some(value) => HeaderValue::from_str(value)
+                .map_err(|err| format!("Invalid user-agent header: {err}"))?,
+            None => HeaderValue::from_static(USER_AGENT_VALUE),
+        },
+    );
     headers.insert(
         AUTHORIZATION,
         HeaderValue::from_str(&format!("Bearer {api_key}"))
@@ -332,6 +358,7 @@ async fn get_json_from_candidates(
     client: &Client,
     headers: &HeaderMap,
     candidates: &[String],
+    secret: &str,
 ) -> Result<(String, Value), AppError> {
     if candidates.is_empty() {
         return Err(validation_error(
@@ -345,7 +372,7 @@ async fn get_json_from_candidates(
         let response = match client.get(url).headers(headers.clone()).send().await {
             Ok(response) => response,
             Err(err) => {
-                last_err = Some(format!("{url}: {err}"));
+                last_err = Some(redact_secret(format!("{url}: {err}"), secret));
                 continue;
             }
         };
@@ -356,12 +383,18 @@ async fn get_json_from_candidates(
                 validation_error(
                     "validation.route_relay_balance_parse",
                     "余额接口没有返回 JSON",
-                    Some(format!("{url}: {err}; response: {}", truncate_body(&body))),
+                    Some(redact_secret(
+                        format!("{url}: {err}; response: {}", truncate_body(&body)),
+                        secret,
+                    )),
                 )
             })?;
             return Ok((url.clone(), parsed));
         }
-        let message = format!("{url}: HTTP {status}: {}", truncate_body(&body));
+        let message = redact_secret(
+            format!("{url}: HTTP {status}: {}", truncate_body(&body)),
+            secret,
+        );
         if status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED {
             last_err = Some(message);
             continue;
@@ -395,12 +428,16 @@ async fn fetch_new_api_balance(
         .into_iter()
         .map(|root| format!("{root}{NEW_API_USAGE_PATH}"))
         .collect();
-    let (url, body) = get_json_from_candidates(client, &headers, &candidates).await?;
+    let (url, body) =
+        get_json_from_candidates(client, &headers, &candidates, &request.api_key).await?;
     let usage = parse_new_api_token_usage(&body).map_err(|message| {
         validation_error(
             "validation.route_relay_balance_parse",
             message,
-            Some(format!("{url}: {}", truncate_body(&body.to_string()))),
+            Some(redact_secret(
+                format!("{url}: {}", truncate_body(&body.to_string())),
+                &request.api_key,
+            )),
         )
     })?;
 
@@ -423,12 +460,13 @@ async fn fetch_new_api_balance(
     if usage.unlimited {
         notes.push("面板标记为不限额度".to_string());
     }
-    if divisor_source != DivisorSource::Default || divisor != DEFAULT_NEW_API_QUOTA_PER_UNIT {
-        notes.push(format!(
-            "额度换算 {}",
-            format_divisor(divisor, divisor_source)
-        ));
-    }
+    // Always stated, including for the shipped default: the divisor scales the
+    // whole figure, so "the panel could not be read, this is a guess" is exactly
+    // what the user needs when the amount looks wrong by a factor of a hundred.
+    notes.push(format!(
+        "额度换算 {}",
+        format_divisor(divisor, divisor_source)
+    ));
 
     Ok(RelayBalanceSnapshot {
         provider: RelayBalanceProvider::NewApi,
@@ -466,7 +504,7 @@ fn format_divisor(divisor: f64, source: DivisorSource) -> String {
     let label = match source {
         DivisorSource::UserPinned => "手填",
         DivisorSource::Panel => "面板 quota_per_unit",
-        DivisorSource::Default => "默认",
+        DivisorSource::Default => "默认（未能读取面板 quota_per_unit）",
     };
     format!("{label} {divisor:.0}")
 }
@@ -531,6 +569,10 @@ async fn fetch_new_api_quota_per_unit(client: &Client, panel_root: &str) -> Opti
         .get(format!("{panel_root}/api/status"))
         .timeout(Duration::from_secs(PANEL_STATUS_TIMEOUT_SECS))
         .header(ACCEPT, "application/json")
+        // Same reason as the balance request: nothing here can decompress, and a
+        // gzipped body would fall through as "panel unreadable" and quietly cost
+        // the reading its real divisor.
+        .header("accept-encoding", "identity")
         .send()
         .await
         .ok()?;
@@ -561,12 +603,16 @@ async fn fetch_sub2api_balance(
     candidates.push(format!("{trimmed}/usage"));
     let candidates = deduplicate(candidates);
 
-    let (url, body) = get_json_from_candidates(client, &headers, &candidates).await?;
+    let (url, body) =
+        get_json_from_candidates(client, &headers, &candidates, &request.api_key).await?;
     let usage = parse_sub2api_usage(&body).map_err(|message| {
         validation_error(
             "validation.route_relay_balance_parse",
             message,
-            Some(format!("{url}: {}", truncate_body(&body.to_string()))),
+            Some(redact_secret(
+                format!("{url}: {}", truncate_body(&body.to_string())),
+                &request.api_key,
+            )),
         )
     })?;
 
@@ -678,9 +724,10 @@ async fn fetch_custom_balance(
     client: &Client,
     headers: HeaderMap,
     config: &RelayBalanceConfig,
+    secret: &str,
 ) -> Result<RelayBalanceSnapshot, AppError> {
     let candidates = vec![config.endpoint.trim().to_string()];
-    let (url, body) = get_json_from_candidates(client, &headers, &candidates).await?;
+    let (url, body) = get_json_from_candidates(client, &headers, &candidates, secret).await?;
 
     let divisor = config.divisor.unwrap_or(1.0);
     let remaining_path = config.remaining_path.trim();
@@ -688,7 +735,10 @@ async fn fetch_custom_balance(
         return Err(validation_error(
             "validation.route_relay_balance_parse",
             format!("响应里 {remaining_path} 取不到数值"),
-            Some(format!("{url}: {}", truncate_body(&body.to_string()))),
+            Some(redact_secret(
+                format!("{url}: {}", truncate_body(&body.to_string())),
+                secret,
+            )),
         ));
     };
 
@@ -775,6 +825,22 @@ fn truncate_body(body: &str) -> String {
     format!("{truncated}…")
 }
 
+/// Mask the account's own key wherever it appears in an error detail.
+///
+/// Details keep the URL and a slice of the response body on purpose: they are the
+/// only useful signal when a relay misbehaves, and they are shown verbatim in the
+/// UI. The key must not ride along — a panel that echoes the token back in its
+/// error, or a custom endpoint that carries it in the query string, would put it
+/// on screen. Short values are left alone: they are not keys, and replacing a
+/// common substring would only garble the text.
+fn redact_secret(detail: String, secret: &str) -> String {
+    let secret = secret.trim();
+    if secret.chars().count() < 8 {
+        return detail;
+    }
+    detail.replace(secret, &mask_api_key(secret))
+}
+
 fn validation_error(
     code: &'static str,
     message: impl Into<String>,
@@ -822,6 +888,51 @@ mod tests {
             panel_root_candidates("https://panel.example.com/v1beta")[0],
             "https://panel.example.com"
         );
+    }
+
+    #[test]
+    fn error_details_mask_the_accounts_own_key() {
+        // Details are shown verbatim in the UI. A panel that echoes the token in
+        // its error, or a custom endpoint carrying it in the query string, must
+        // not put it on screen — but everything else stays, because that is what
+        // makes a relay failure diagnosable.
+        let key = "sk-relay-abcdef123456";
+        let detail = redact_secret(
+            format!(
+                "https://panel.example.com/api/usage?token={key}: HTTP 401: {{\"key\":\"{key}\"}}"
+            ),
+            key,
+        );
+        assert!(!detail.contains(key), "{detail}");
+        assert!(detail.contains(&mask_api_key(key)), "{detail}");
+        assert!(detail.contains("HTTP 401"), "{detail}");
+        assert!(detail.contains("panel.example.com"), "{detail}");
+
+        // Too short to be a key: replacing a common substring would only garble
+        // the message.
+        assert_eq!(
+            redact_secret("abc: HTTP 500".to_string(), "abc"),
+            "abc: HTTP 500"
+        );
+        assert_eq!(redact_secret("nothing".to_string(), ""), "nothing");
+    }
+
+    #[test]
+    fn balance_headers_prefer_the_accounts_own_user_agent() {
+        // A relay that gates a group on the client fingerprint answers 403 to any
+        // other agent, so a healthy account would report "query failed" forever.
+        let spoofed = balance_request_headers("sk-test", "anthropic", Some("claude-cli/2.0.1"))
+            .expect("headers");
+        assert_eq!(spoofed[USER_AGENT], "claude-cli/2.0.1");
+        // Nothing configured falls back to this app's own agent.
+        let default = balance_request_headers("sk-test", "openai", None).expect("headers");
+        assert_eq!(default[USER_AGENT], USER_AGENT_VALUE);
+        // Unchanged by the override: the panels document Bearer, and the outbound
+        // client cannot decompress.
+        assert_eq!(spoofed[AUTHORIZATION], "Bearer sk-test");
+        assert_eq!(spoofed["accept-encoding"], "identity");
+        assert_eq!(spoofed["x-api-key"], "sk-test");
+        assert!(!default.contains_key("x-api-key"));
     }
 
     #[test]

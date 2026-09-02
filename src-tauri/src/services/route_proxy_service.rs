@@ -3531,7 +3531,7 @@ fn apply_config_headers(headers: &mut HeaderMap, config: &Value) -> Result<(), S
     Ok(())
 }
 
-fn credential_user_agent(config: &Value) -> Option<&str> {
+pub(crate) fn credential_user_agent(config: &Value) -> Option<&str> {
     let Some(Value::Object(extra)) = config.get("headers") else {
         return None;
     };
