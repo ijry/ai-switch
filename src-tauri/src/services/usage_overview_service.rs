@@ -14,7 +14,7 @@ use crate::services::session_usage_service::{self, SessionUsageEntry, TimeWindow
 use crate::services::upstream_response_id::extract_upstream_response_id;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// Where a merged row's data came from. Doubles as the "source" grouping key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,14 +126,15 @@ pub fn merge_entries(
     proxy_rows: Vec<ProxyRequestRow>,
 ) -> Vec<UsageOverviewRow> {
     // Index the proxy side by response id, falling back to parsing the stored
-    // body preview for rows written before the column existed.
-    let mut proxy_by_id: HashMap<String, ProxyRequestRow> = HashMap::new();
+    // body preview for rows written before the column existed. Ids are not
+    // unique: a bridge that has to synthesize one uses a constant, so each id
+    // holds a queue and a session entry consumes one row rather than the last
+    // writer silently winning and the rest vanishing from every total.
+    let mut proxy_by_id: HashMap<String, VecDeque<ProxyRequestRow>> = HashMap::new();
     let mut unkeyed_proxy_rows = Vec::new();
     for row in proxy_rows {
         match resolve_proxy_response_id(&row) {
-            Some(id) => {
-                proxy_by_id.insert(id, row);
-            }
+            Some(id) => proxy_by_id.entry(id).or_default().push_back(row),
             None => unkeyed_proxy_rows.push(row),
         }
     }
@@ -148,7 +149,7 @@ pub fn merge_entries(
             .as_deref()
             .map(str::trim)
             .filter(|id| !id.is_empty())
-            .and_then(|id| proxy_by_id.remove(id));
+            .and_then(|id| take_proxy_row(&mut proxy_by_id, id));
         rows.push(match paired {
             Some(proxy) => merged_row(entry, proxy),
             None => session_only_row(entry, index),
@@ -157,12 +158,38 @@ pub fn merge_entries(
 
     // Whatever the transcripts never claimed is proxy-only: a model test, or a
     // tool other than the two scanned CLIs pointed at this proxy.
-    for row in proxy_by_id.into_values().chain(unkeyed_proxy_rows) {
+    for row in proxy_by_id
+        .into_values()
+        .flatten()
+        .chain(unkeyed_proxy_rows)
+    {
         rows.push(proxy_only_row(row));
     }
 
-    rows.sort_by(|left, right| right.occurred_at.cmp(&left.occurred_at));
+    // `id` breaks ties: the leftovers above come out of a HashMap in arbitrary
+    // order, and pagination re-runs this merge per page, so without a total
+    // order a row could show up on two pages or on none.
+    rows.sort_by(|left, right| {
+        right
+            .occurred_at
+            .cmp(&left.occurred_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
     rows
+}
+
+/// Take one proxy row recorded under `id`, dropping the id from the index once
+/// its last row has been claimed.
+fn take_proxy_row(
+    index: &mut HashMap<String, VecDeque<ProxyRequestRow>>,
+    id: &str,
+) -> Option<ProxyRequestRow> {
+    let queue = index.get_mut(id)?;
+    let row = queue.pop_front();
+    if queue.is_empty() {
+        index.remove(id);
+    }
+    row
 }
 
 fn resolve_proxy_response_id(row: &ProxyRequestRow) -> Option<String> {
@@ -1006,6 +1033,38 @@ mod tests {
 
         assert_eq!(rows.len(), 3);
         assert!(rows.iter().all(|row| row.source != UsageRowSource::Matched));
+    }
+
+    #[test]
+    fn two_proxy_rows_sharing_one_response_id_both_survive() {
+        // Bridges that have to synthesize a response id use a constant, so the
+        // same id legitimately appears on unrelated rows. Keying the index by id
+        // alone let the last writer win and dropped the rest out of every total.
+        let mut first = proxy_row(Some("resp_ai_switch"));
+        first.id = "proxy-a".to_string();
+        let mut second = proxy_row(Some("resp_ai_switch"));
+        second.id = "proxy-b".to_string();
+
+        let rows = merge_entries(
+            vec![session_entry(Some("resp_ai_switch"), "claude-opus-5", 10)],
+            vec![first, second],
+        );
+
+        assert_eq!(rows.len(), 2);
+        // One row paired with the transcript entry; the other stands on its own
+        // rather than disappearing.
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.source == UsageRowSource::Matched)
+                .count(),
+            1
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.source == UsageRowSource::ProxyOnly)
+                .count(),
+            1
+        );
     }
 
     #[test]
