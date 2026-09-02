@@ -63,7 +63,8 @@ impl RouteConfigService {
         let base_url = normalize_base_url(base_url)?;
         let platform = PlatformId::parse(platform)?;
         PlatformCapabilityService::require(platform, PlatformOperation::ConfigWrite)?;
-        let adapter = route_config_adapter(platform)?;
+        let client_key = native_client_key(platform)?;
+        let adapter = route_config_adapter(&client_key, platform)?;
         let platform_key = platform.as_str();
 
         let existing_route_proxy_key =
@@ -148,7 +149,12 @@ impl RouteConfigService {
                 ));
                 continue;
             }
-            let Some(adapter) = registry.for_platform(parsed) else {
+            let Some(adapter) = registry
+                .clients_for_platform(parsed)
+                .into_iter()
+                .find(|client| client.native)
+                .and_then(|client| registry.by_client_and_platform(&client.client_key, parsed))
+            else {
                 skipped.push(skipped_outcome(
                     &platform,
                     parsed.as_str(),
@@ -248,7 +254,8 @@ impl RouteConfigService {
             return Ok(false);
         };
 
-        let adapter = route_config_adapter(platform)?;
+        let client_key = native_client_key(platform)?;
+        let adapter = route_config_adapter(&client_key, platform)?;
         let path = adapter.resolve_path(home);
         let existing = tokio::fs::read(&path).await.ok();
         if existing.is_none() {
@@ -290,7 +297,7 @@ impl RouteConfigService {
         PlatformCapabilityService::require(platform, PlatformOperation::ConfigWrite)?;
         let claude_env = Self::resolve_claude_env_plan(paths, pool, platform).await?;
         let request = ConfigWriteRequest {
-            adapter: route_config_adapter(platform)?,
+            adapter: route_config_adapter(&native_client_key(platform)?, platform)?,
             home: home.to_path_buf(),
             input: RouteConfigInput {
                 base_url: base_url.to_string(),
@@ -500,9 +507,28 @@ fn skipped_outcome(target_key: &str, platform: &str, error_code: &str) -> Config
     }
 }
 
-fn route_config_adapter(platform: PlatformId) -> Result<Arc<dyn TargetAdapter>, AppError> {
+fn route_config_adapter(
+    client_key: &str,
+    platform: PlatformId,
+) -> Result<Arc<dyn TargetAdapter>, AppError> {
     TargetAdapterRegistry::new()
-        .for_platform(platform)
+        .by_client_and_platform(client_key, platform)
+        .ok_or_else(|| AppError::Validation {
+            code: "config.client_unavailable",
+            message: "No verified configuration adapter is available for this client".to_string(),
+            details: Some(format!("{client_key}:{}", platform.as_str())),
+            recoverable: true,
+        })
+}
+
+/// The platform's first-party CLI client key. Used by call sites that predate
+/// explicit client selection so their behavior is unchanged.
+fn native_client_key(platform: PlatformId) -> Result<String, AppError> {
+    TargetAdapterRegistry::new()
+        .clients_for_platform(platform)
+        .into_iter()
+        .find(|client| client.native)
+        .map(|client| client.client_key)
         .ok_or_else(|| AppError::Validation {
             code: "config.adapter_unavailable",
             message: "No verified native configuration adapter is available".to_string(),

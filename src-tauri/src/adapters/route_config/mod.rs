@@ -29,6 +29,23 @@ pub struct RouteConfigInput {
     pub claude_env: ClaudeEnvPlan,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClientTargetDescriptor {
+    pub client_key: String,
+    pub display_name: String,
+    /// This client is the platform's first-party CLI. Drives the dialog's
+    /// default selection when the user has never chosen.
+    pub native: bool,
+    /// Long-running app that reads config at startup, so a write does not take
+    /// effect until it restarts.
+    pub restart_required: bool,
+    /// Client cannot discover models on its own; the write must carry the pool's
+    /// advertised model list.
+    pub requires_client_models: bool,
+    pub target_key: String,
+    pub platform: PlatformId,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClaudeEnvPlan {
     pub subagent_model: Option<String>,
@@ -79,6 +96,17 @@ impl TargetInspection {
 
 pub trait TargetAdapter: Send + Sync {
     fn target_key(&self) -> &'static str;
+    /// Client this adapter writes for. Distinct from `target_key`: one client
+    /// can serve several platforms and then owns one target row per platform.
+    fn client_key(&self) -> &'static str;
+    fn client_display_name(&self) -> &'static str;
+    /// Whether this client is the platform's first-party CLI.
+    fn native(&self) -> bool;
+    /// Whether the client must restart before a write takes effect.
+    fn restart_required(&self) -> bool;
+    /// Whether the client needs the pool's advertised model list written into
+    /// its config because it cannot discover models itself.
+    fn requires_client_models(&self) -> bool;
     fn platform(&self) -> PlatformId;
     fn resolve_path(&self, home: &Path) -> PathBuf;
     fn render(
@@ -107,11 +135,31 @@ impl TargetAdapterRegistry {
         }
     }
 
-    pub fn for_platform(&self, platform: PlatformId) -> Option<Arc<dyn TargetAdapter>> {
+    pub fn by_client_and_platform(
+        &self,
+        client_key: &str,
+        platform: PlatformId,
+    ) -> Option<Arc<dyn TargetAdapter>> {
         self.adapters
             .iter()
-            .find(|adapter| adapter.platform() == platform)
+            .find(|adapter| adapter.client_key() == client_key && adapter.platform() == platform)
             .cloned()
+    }
+
+    pub fn clients_for_platform(&self, platform: PlatformId) -> Vec<ClientTargetDescriptor> {
+        self.adapters
+            .iter()
+            .filter(|adapter| adapter.platform() == platform)
+            .map(|adapter| ClientTargetDescriptor {
+                client_key: adapter.client_key().to_string(),
+                display_name: adapter.client_display_name().to_string(),
+                native: adapter.native(),
+                restart_required: adapter.restart_required(),
+                requires_client_models: adapter.requires_client_models(),
+                target_key: adapter.target_key().to_string(),
+                platform: adapter.platform(),
+            })
+            .collect()
     }
 
     pub fn by_target_key(&self, target_key: &str) -> Option<Arc<dyn TargetAdapter>> {
@@ -178,42 +226,48 @@ mod tests {
 
         assert_eq!(
             registry
-                .for_platform(PlatformId::Codex)
+                .by_client_and_platform("codex", PlatformId::Codex)
                 .unwrap()
                 .target_key(),
             "codex"
         );
         assert_eq!(
             registry
-                .for_platform(PlatformId::Claude)
+                .by_client_and_platform("claude_code", PlatformId::Claude)
                 .unwrap()
                 .target_key(),
             "claude_code"
         );
         assert_eq!(
             registry
-                .for_platform(PlatformId::Gemini)
+                .by_client_and_platform("gemini_cli", PlatformId::Gemini)
                 .unwrap()
                 .target_key(),
             "gemini_cli"
         );
         assert_eq!(
             registry
-                .for_platform(PlatformId::Grok)
+                .by_client_and_platform("grok", PlatformId::Grok)
                 .unwrap()
                 .target_key(),
             "grok"
         );
-        assert!(registry.for_platform(PlatformId::OpenCode).is_none());
-        assert!(registry.for_platform(PlatformId::OpenClaw).is_none());
-        assert!(registry.for_platform(PlatformId::Hermes).is_none());
+        assert!(registry
+            .clients_for_platform(PlatformId::OpenCode)
+            .is_empty());
+        assert!(registry
+            .clients_for_platform(PlatformId::OpenClaw)
+            .is_empty());
+        assert!(registry.clients_for_platform(PlatformId::Hermes).is_empty());
         assert!(registry.by_target_key("claude_desktop").is_none());
     }
 
     #[test]
     fn codex_render_preserves_unmanaged_toml() {
         let registry = TargetAdapterRegistry::new();
-        let adapter = registry.for_platform(PlatformId::Codex).unwrap();
+        let adapter = registry
+            .by_client_and_platform("codex", PlatformId::Codex)
+            .unwrap();
         let existing = br#"approval_policy = "never"
 
 [model_providers.keep]
@@ -246,7 +300,9 @@ command = "npx"
     #[test]
     fn codex_render_replaces_legacy_api_key() {
         let registry = TargetAdapterRegistry::new();
-        let adapter = registry.for_platform(PlatformId::Codex).unwrap();
+        let adapter = registry
+            .by_client_and_platform("codex", PlatformId::Codex)
+            .unwrap();
         let existing = br#"model_provider = "ai-switch"
 
 [model_providers.ai-switch]
@@ -269,7 +325,9 @@ api_key = "legacy-key"
     #[test]
     fn json_render_preserves_unmanaged_settings_and_env() {
         let registry = TargetAdapterRegistry::new();
-        let adapter = registry.for_platform(PlatformId::Claude).unwrap();
+        let adapter = registry
+            .by_client_and_platform("claude_code", PlatformId::Claude)
+            .unwrap();
         // Carries both legacy keys so the render is also the migration path off
         // them.
         let existing = br#"{
@@ -309,7 +367,9 @@ api_key = "legacy-key"
     #[test]
     fn claude_render_writes_and_clears_the_subagent_env_key() {
         let registry = TargetAdapterRegistry::new();
-        let adapter = registry.for_platform(PlatformId::Claude).unwrap();
+        let adapter = registry
+            .by_client_and_platform("claude_code", PlatformId::Claude)
+            .unwrap();
         let existing = br#"{
   "includeCoAuthoredBy": false,
   "env": {
@@ -353,7 +413,9 @@ api_key = "legacy-key"
     #[test]
     fn claude_render_merges_and_removes_pool_wide_client_config() {
         let registry = TargetAdapterRegistry::new();
-        let adapter = registry.for_platform(PlatformId::Claude).unwrap();
+        let adapter = registry
+            .by_client_and_platform("claude_code", PlatformId::Claude)
+            .unwrap();
         // The user hand-set includeCoAuthoredBy and owns hooks.
         let existing = br#"{
   "includeCoAuthoredBy": true,
@@ -431,7 +493,9 @@ api_key = "legacy-key"
     #[test]
     fn client_config_never_removes_a_key_it_did_not_write() {
         let registry = TargetAdapterRegistry::new();
-        let adapter = registry.for_platform(PlatformId::Claude).unwrap();
+        let adapter = registry
+            .by_client_and_platform("claude_code", PlatformId::Claude)
+            .unwrap();
         // The user set includeCoAuthoredBy by hand; we have never managed it, so
         // there is no managedClientKeys record for it.
         let existing = br#"{"includeCoAuthoredBy": true}"#;
@@ -457,8 +521,13 @@ api_key = "legacy-key"
             ..input()
         };
 
-        for platform in [PlatformId::Grok, PlatformId::Gemini] {
-            let adapter = registry.for_platform(platform).unwrap();
+        for (client_key, platform) in [
+            ("grok", PlatformId::Grok),
+            ("gemini_cli", PlatformId::Gemini),
+        ] {
+            let adapter = registry
+                .by_client_and_platform(client_key, platform)
+                .unwrap();
             let rendered = adapter
                 .render(Path::new("settings.json"), None, &with_alias)
                 .unwrap();
@@ -474,7 +543,9 @@ api_key = "legacy-key"
     #[test]
     fn codex_inspection_reports_missing_unmanaged_managed_and_invalid() {
         let registry = TargetAdapterRegistry::new();
-        let adapter = registry.for_platform(PlatformId::Codex).unwrap();
+        let adapter = registry
+            .by_client_and_platform("codex", PlatformId::Codex)
+            .unwrap();
         let path = Path::new("config.toml");
 
         assert_eq!(adapter.inspect(path, None).file_status, "missing");
@@ -500,9 +571,86 @@ api_key = "legacy-key"
     }
 
     #[test]
+    fn registry_keys_are_unique_across_target_and_client_platform_pairs() {
+        let registry = TargetAdapterRegistry::new();
+
+        let mut target_keys = std::collections::HashSet::new();
+        let mut client_platform_pairs = std::collections::HashSet::new();
+        for adapter in &registry.adapters {
+            assert!(
+                target_keys.insert(adapter.target_key()),
+                "duplicate target_key: {}",
+                adapter.target_key()
+            );
+            assert!(
+                client_platform_pairs.insert((adapter.client_key(), adapter.platform())),
+                "duplicate (client_key, platform): {} {:?}",
+                adapter.client_key(),
+                adapter.platform()
+            );
+            assert!(
+                !adapter.client_display_name().is_empty(),
+                "empty display name: {}",
+                adapter.target_key()
+            );
+        }
+    }
+
+    #[test]
+    fn native_cli_adapters_resolve_by_client_and_platform() {
+        let registry = TargetAdapterRegistry::new();
+
+        for (client_key, platform, target_key) in [
+            ("codex", PlatformId::Codex, "codex"),
+            ("claude_code", PlatformId::Claude, "claude_code"),
+            ("gemini_cli", PlatformId::Gemini, "gemini_cli"),
+            ("grok", PlatformId::Grok, "grok"),
+        ] {
+            let adapter = registry
+                .by_client_and_platform(client_key, platform)
+                .unwrap_or_else(|| panic!("adapter for {client_key}"));
+            assert_eq!(adapter.target_key(), target_key);
+            assert!(adapter.native(), "{client_key} is a first-party CLI");
+            // CLIs read config on next invocation, so nothing needs restarting.
+            assert!(!adapter.restart_required(), "{client_key}");
+        }
+
+        // Wrong platform for a real client key resolves to nothing rather than
+        // silently writing the wrong file.
+        assert!(registry
+            .by_client_and_platform("codex", PlatformId::Claude)
+            .is_none());
+        assert!(registry
+            .by_client_and_platform("unknown", PlatformId::Codex)
+            .is_none());
+    }
+
+    #[test]
+    fn clients_for_platform_lists_native_cli_only_before_zcode_exists() {
+        let registry = TargetAdapterRegistry::new();
+
+        let codex = registry.clients_for_platform(PlatformId::Codex);
+        assert_eq!(
+            codex
+                .iter()
+                .map(|client| client.client_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["codex"]
+        );
+        assert_eq!(codex[0].display_name, "Codex CLI");
+        assert_eq!(codex[0].target_key, "codex");
+        assert_eq!(codex[0].platform, PlatformId::Codex);
+
+        // Platforms with no adapter list nothing rather than erroring.
+        assert!(registry.clients_for_platform(PlatformId::Hermes).is_empty());
+    }
+
+    #[test]
     fn json_inspection_reports_missing_unmanaged_managed_and_invalid() {
         let registry = TargetAdapterRegistry::new();
-        let adapter = registry.for_platform(PlatformId::Grok).unwrap();
+        let adapter = registry
+            .by_client_and_platform("grok", PlatformId::Grok)
+            .unwrap();
         let path = Path::new("settings.json");
 
         assert_eq!(adapter.inspect(path, None).file_status, "missing");

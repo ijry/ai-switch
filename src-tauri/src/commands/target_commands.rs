@@ -116,7 +116,7 @@ mod tests {
             &runtime,
             ConfigWriteRequest {
                 adapter: TargetAdapterRegistry::new()
-                    .for_platform(PlatformId::Codex)
+                    .by_client_and_platform("codex", PlatformId::Codex)
                     .unwrap(),
                 home: home.clone(),
                 input: RouteConfigInput {

@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 pub(super) struct JsonAgentAdapter {
     target_key: &'static str,
+    client_key: &'static str,
+    client_display_name: &'static str,
     platform: PlatformId,
     config_dir: &'static str,
     platform_base_url_keys: &'static [&'static str],
@@ -31,6 +33,8 @@ impl JsonAgentAdapter {
     pub(super) const fn claude() -> Self {
         Self {
             target_key: "claude_code",
+            client_key: "claude_code",
+            client_display_name: "Claude Code",
             platform: PlatformId::Claude,
             config_dir: ".claude",
             platform_base_url_keys: &["ANTHROPIC_BASE_URL"],
@@ -42,6 +46,8 @@ impl JsonAgentAdapter {
     pub(super) const fn gemini() -> Self {
         Self {
             target_key: "gemini_cli",
+            client_key: "gemini_cli",
+            client_display_name: "Gemini CLI",
             platform: PlatformId::Gemini,
             config_dir: ".gemini",
             platform_base_url_keys: &["GEMINI_API_BASE_URL", "GOOGLE_GEMINI_BASE_URL"],
@@ -53,6 +59,8 @@ impl JsonAgentAdapter {
     pub(super) const fn grok() -> Self {
         Self {
             target_key: "grok",
+            client_key: "grok",
+            client_display_name: "Grok",
             platform: PlatformId::Grok,
             config_dir: ".grok",
             platform_base_url_keys: &["XAI_API_BASE_URL", "GROK_API_BASE_URL"],
@@ -92,6 +100,26 @@ fn set_or_remove(env: &mut Map<String, Value>, key: &str, value: Option<&str>) {
 impl TargetAdapter for JsonAgentAdapter {
     fn target_key(&self) -> &'static str {
         self.target_key
+    }
+
+    fn client_key(&self) -> &'static str {
+        self.client_key
+    }
+
+    fn client_display_name(&self) -> &'static str {
+        self.client_display_name
+    }
+
+    fn native(&self) -> bool {
+        true
+    }
+
+    fn restart_required(&self) -> bool {
+        false
+    }
+
+    fn requires_client_models(&self) -> bool {
+        false
     }
 
     fn platform(&self) -> PlatformId {
