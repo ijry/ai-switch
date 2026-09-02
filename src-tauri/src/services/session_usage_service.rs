@@ -713,16 +713,31 @@ fn codex_assistant_response_id(payload: &Value) -> Option<String> {
     let id = payload.get("id").and_then(Value::as_str)?;
     let uuid = match item_type {
         "reasoning" => id.strip_prefix("rs_"),
-        "function_call" => id.strip_prefix("fc_").map(|rest| {
-            // Function-call ids carry a trailing index: fc_<uuid>_0.
-            rest.rsplit_once('_').map_or(rest, |(head, _)| head)
-        }),
+        "function_call" => id.strip_prefix("fc_").map(strip_trailing_index),
         "message" if payload.get("role").and_then(Value::as_str) == Some("assistant") => {
             id.strip_prefix("msg_")
         }
         _ => None,
     }?;
     (!uuid.trim().is_empty()).then(|| uuid.to_string())
+}
+
+/// Drop the trailing `_<n>` a function-call id carries (`fc_<uuid>_0`) — but
+/// only when that segment really is an index.
+///
+/// Upstream ids embed underscores of their own (`fc_toolu_bdrk_01MY…`,
+/// `fc_call_9wU3…`), so cutting at the last underscore unconditionally collapses
+/// every id from such a provider onto one key. That key then matches the wrong
+/// proxy row, or none, and the request gets counted on both sides.
+fn strip_trailing_index(id: &str) -> &str {
+    match id.rsplit_once('_') {
+        Some((head, tail))
+            if !head.is_empty() && !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            head
+        }
+        _ => id,
+    }
 }
 
 fn json_i64(value: Option<&Value>) -> i64 {
@@ -944,6 +959,45 @@ mod tests {
         assert_eq!(
             parsed.entries[0].response_id.as_deref(),
             Some("5d76e101-2615-4e87-8455-72061b36392c")
+        );
+    }
+
+    #[test]
+    fn function_call_ids_only_lose_a_numeric_tail() {
+        // The trailing `_0` on `fc_<uuid>_0` is an index and has to go. The
+        // underscores inside a provider's own id must not: cutting at the last
+        // one turned every `fc_toolu_bdrk_*` id into the key `toolu_bdrk`, so
+        // unrelated turns matched each other's proxy rows.
+        assert_eq!(strip_trailing_index("9wU3abc_0"), "9wU3abc");
+        assert_eq!(
+            strip_trailing_index("toolu_bdrk_01MYabc"),
+            "toolu_bdrk_01MYabc"
+        );
+        assert_eq!(strip_trailing_index("call_9wU3abc"), "call_9wU3abc");
+        // Nothing sensible is left if the whole id is an index.
+        assert_eq!(strip_trailing_index("_0"), "_0");
+        assert_eq!(strip_trailing_index("plain"), "plain");
+    }
+
+    #[test]
+    fn codex_turn_response_id_keeps_a_function_call_uuid_intact() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_jsonl(
+            dir.path(),
+            "rollout.jsonl",
+            &[
+                r#"{"timestamp":"2026-08-19T03:41:50.476Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+                r#"{"timestamp":"2026-08-19T03:41:52.000Z","type":"response_item","payload":{"type":"function_call","id":"fc_toolu_bdrk_01MYabcdef_0"}}"#,
+                &codex_token_count("2026-08-19T03:42:00.000Z", 100, 0, 10),
+            ],
+        );
+
+        let parsed = parse_codex_file(&path);
+
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(
+            parsed.entries[0].response_id.as_deref(),
+            Some("toolu_bdrk_01MYabcdef")
         );
     }
 
