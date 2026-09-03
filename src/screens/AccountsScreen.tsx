@@ -5875,7 +5875,7 @@ export function AccountsScreen({
                           className={`truncate text-[13px] font-semibold text-stone-950 ${
                             // A card lays the name out in a nowrap row, so it has to be
                             // allowed to shrink; the list wraps its badges instead.
-                            cardLayout ? "min-w-0 flex-1" : "max-w-full"
+                            cardLayout ? "min-w-0 flex-1" : "shrink-0 basis-48"
                           }`}
                           title={`P${credential.route_priority}-${credential.display_name}`}
                         >
