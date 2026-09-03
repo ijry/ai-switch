@@ -1195,6 +1195,22 @@ describe("AccountsScreen", () => {
     );
   });
 
+  it("keeps card backgrounds neutral regardless of account status", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      { ...credentialsFixture[0], status: "warning" },
+      { ...credentialsFixture[1], status: "error" },
+    ]);
+    renderScreen();
+
+    await screen.findByText("Team Account");
+    await userEvent.click(screen.getByRole("button", { name: "卡片模式" }));
+
+    expect(screen.getByTestId("account-card-cred-official-1")).toHaveClass("bg-white");
+    expect(screen.getByTestId("account-card-cred-official-1")).not.toHaveClass("bg-amber-50/50");
+    expect(screen.getByTestId("account-card-cred-api-1")).toHaveClass("bg-white");
+    expect(screen.getByTestId("account-card-cred-api-1")).not.toHaveClass("bg-red-50/50");
+  });
+
   it("keeps every account detail on a card and folds the row actions into its menu", async () => {
     renderScreen();
 
@@ -1797,6 +1813,9 @@ describe("AccountsScreen", () => {
     expect(tooltip.className).not.toContain("pointer-events-none");
     expect(panel.className).not.toContain("pointer-events-none");
     expect(panel.className).toContain("select-text");
+    // Hover details must not turn the vertically scrollable account list into a
+    // horizontally scrollable region when the panel is wider than its anchor.
+    expect(screen.getByTestId("account-workspace-scroll-region")).toHaveClass("overflow-x-hidden");
     // Padding, not margin: a margin gap drops :hover before the pointer arrives.
     expect(tooltip.className).toContain("pt-1");
     expect(tooltip.className).not.toContain("mt-1");
@@ -3268,6 +3287,72 @@ describe("AccountsScreen", () => {
     await waitFor(() =>
       expect(refreshRouteCredentialRelayBalance).toHaveBeenCalledWith(relayAccount.id),
     );
+  });
+
+  it("shows the balance beside a green wallet after a successful query", async () => {
+    const relayAccount = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://panel.example.com/v1",
+        interface_format: "openai",
+        relay_balance: { provider: "new_api" },
+      }),
+    };
+    const updatedRelayAccount = {
+      ...relayAccount,
+      config_json: JSON.stringify({
+        base_url: "https://panel.example.com/v1",
+        interface_format: "openai",
+        relay_balance: { provider: "new_api" },
+        relay_balance_snapshot: {
+          provider: "new_api",
+          remaining: 90,
+          unit: "CNY",
+          source_url: "https://panel.example.com/api/usage/token/",
+          checked_at: "2026-09-02T12:00:00Z",
+        },
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([credentialsFixture[0], relayAccount]);
+    vi.mocked(refreshRouteCredentialRelayBalance).mockResolvedValue({
+      credential: updatedRelayAccount,
+      updated: true,
+      source: "new_api",
+      message: null,
+    });
+    renderScreen();
+
+    const queryButton = await screen.findByRole("button", { name: "查询 API Account 余额" });
+    await userEvent.click(queryButton);
+
+    await waitFor(() => {
+      expect(queryButton).toHaveTextContent("￥90");
+      expect(queryButton).toHaveClass("text-emerald-600");
+    });
+  });
+
+  it("shows a red wallet and the balance query error in its tooltip", async () => {
+    const relayAccount = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://panel.example.com/v1",
+        interface_format: "openai",
+        relay_balance: { provider: "new_api" },
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([credentialsFixture[0], relayAccount]);
+    vi.mocked(refreshRouteCredentialRelayBalance).mockRejectedValue(
+      new Error("余额接口没有返回 JSON"),
+    );
+    renderScreen();
+
+    const queryButton = await screen.findByRole("button", { name: "查询 API Account 余额" });
+    await userEvent.click(queryButton);
+
+    await waitFor(() => {
+      expect(queryButton).toHaveClass("text-rose-600");
+      expect(queryButton).toHaveAttribute("title", "余额接口没有返回 JSON");
+    });
   });
 
   it("leaves the balance action off accounts that have not enabled querying", async () => {

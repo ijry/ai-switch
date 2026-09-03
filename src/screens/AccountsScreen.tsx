@@ -205,6 +205,7 @@ type RowAction = {
   disabled?: boolean;
   onClick: () => void;
   icon: ReactNode;
+  inlineLabel?: string;
   inlineToneClass: string;
 };
 type RoutePoolAction = "add" | "remove" | "sync";
@@ -331,26 +332,6 @@ function accountStatusClass(status: string): string {
       return "bg-red-50 text-red-800 ring-1 ring-red-200";
     default:
       return "bg-stone-100 text-stone-600";
-  }
-}
-
-// Card tone by account status. A grid is read at a glance, so a card that needs
-// attention has to say so before its status badge is even looked at; the list rows
-// stay plain white because their badges all line up in one scannable column.
-function accountCardToneClass(credential: RouteCredential): string {
-  if (credential.archived_at) {
-    return "border-stone-200 bg-stone-50";
-  }
-  switch (credential.status) {
-    case "warning":
-      return "border-amber-200 bg-amber-50/50";
-    case "error":
-    case "paused":
-      return "border-red-200 bg-red-50/50";
-    case "revoked":
-      return "border-rose-200 bg-rose-50/60";
-    default:
-      return "border-stone-200 bg-white";
   }
 }
 
@@ -1211,6 +1192,16 @@ function relayBalanceSnapshotFromConfig(
 function formatRelayBalanceAmount(value: number, unit: string): string {
   const amount = Math.abs(value) >= 1000 ? value.toFixed(0) : value.toFixed(2);
   return unit === "USD" ? `$${amount}` : `${amount} ${unit}`.trim();
+}
+
+function formatRelayBalanceButtonAmount(snapshot: RelayBalanceSnapshot): string {
+  if (snapshot.unlimited) return "不限";
+  if (typeof snapshot.remaining !== "number") return "余额未知";
+  const amount = Number.isInteger(snapshot.remaining)
+    ? snapshot.remaining.toString()
+    : snapshot.remaining.toFixed(2);
+  if (["CNY", "RMB", "人民币"].includes(snapshot.unit)) return `￥${amount}`;
+  return formatRelayBalanceAmount(snapshot.remaining, snapshot.unit || "USD");
 }
 
 function formatRelayBalanceCheckedAt(checkedAt: string): string {
@@ -2412,6 +2403,9 @@ export function AccountsScreen({
   const [quotaRefreshMessage, setQuotaRefreshMessage] = useState<string | null>(null);
   const [refreshingRelayBalanceId, setRefreshingRelayBalanceId] = useState<string | null>(null);
   const [relayBalanceMessage, setRelayBalanceMessage] = useState<string | null>(null);
+  const [relayBalanceStatusById, setRelayBalanceStatusById] = useState<
+    Record<string, { snapshot: RelayBalanceSnapshot | null; error: string | null }>
+  >({});
   const autoQuotaRefreshedPlatform = useRef<string | null>(null);
   const [modelTestOutcome, setModelTestOutcome] = useState<RoutePoolModelTestOutcome | null>(null);
   const [configWriteOutcomes, setConfigWriteOutcomes] = useState<ConfigWriteOutcome[]>([]);
@@ -3585,6 +3579,10 @@ export function AccountsScreen({
     onMutate: (id) => {
       setRefreshingRelayBalanceId(id);
       setRelayBalanceMessage(null);
+      setRelayBalanceStatusById((current) => ({
+        ...current,
+        [id]: { snapshot: current[id]?.snapshot ?? null, error: null },
+      }));
     },
     onSuccess: async (outcome) => {
       mergeCredentialsIntoCache([outcome.credential]);
@@ -3592,20 +3590,20 @@ export function AccountsScreen({
       const snapshot = relayBalanceSnapshotFromConfig(
         parseJsonObject(outcome.credential.config_json),
       );
+      setRelayBalanceStatusById((current) => ({
+        ...current,
+        [outcome.credential.id]: { snapshot, error: outcome.message ?? null },
+      }));
       setEditRelayBalanceSnapshot((current) =>
         editingCredential?.id === outcome.credential.id ? snapshot : current,
       );
-      if (outcome.message) {
-        setRelayBalanceMessage(outcome.message);
-        return;
-      }
-      const amount = snapshot ? relayBalanceBadge(snapshot).label : "余额";
-      setRelayBalanceMessage(
-        outcome.updated ? `已更新${amount}（${outcome.source}）` : `${amount}，未变化`,
-      );
     },
-    onError: (error) => {
-      setRelayBalanceMessage(formatApiError(error, "查询余额失败"));
+    onError: (error, id) => {
+      const message = formatApiError(error, "查询余额失败");
+      setRelayBalanceStatusById((current) => ({
+        ...current,
+        [id]: { snapshot: current[id]?.snapshot ?? null, error: message },
+      }));
     },
     onSettled: () => {
       setRefreshingRelayBalanceId(null);
@@ -5011,7 +5009,7 @@ export function AccountsScreen({
         </div>
 
         <div
-          className="min-h-0 overflow-y-auto overscroll-contain bg-transparent"
+          className="min-h-0 overflow-x-hidden overflow-y-auto overscroll-contain bg-transparent"
           data-testid="account-workspace-scroll-region"
           ref={accountScrollRef}
         >
@@ -5612,8 +5610,12 @@ export function AccountsScreen({
                     credential.kind === "api" &&
                     relayBalanceFormFromConfig(credentialConfig).provider !== "none";
                   const relayBalanceSnapshot = relayBalanceSnapshotFromConfig(credentialConfig);
-                  const relayBalanceTag = relayBalanceSnapshot
-                    ? relayBalanceBadge(relayBalanceSnapshot)
+                  const relayBalanceStatus = relayBalanceStatusById[credential.id];
+                  const effectiveRelayBalanceSnapshot = relayBalanceStatus?.error
+                    ? null
+                    : relayBalanceStatus?.snapshot ?? relayBalanceSnapshot;
+                  const relayBalanceTag = effectiveRelayBalanceSnapshot
+                    ? relayBalanceBadge(effectiveRelayBalanceSnapshot)
                     : null;
                   const isCopyingCredential =
                     copyCredentialMutation.isPending &&
@@ -5644,17 +5646,34 @@ export function AccountsScreen({
                     rowActions.push({
                       key: "relay-balance",
                       ariaLabel: `查询 ${credential.display_name} 余额`,
-                      menuLabel: "查余额",
-                      title: `查询 ${credential.display_name} 的中转站余额`,
+                      menuLabel: effectiveRelayBalanceSnapshot
+                        ? `查余额 ${formatRelayBalanceButtonAmount(effectiveRelayBalanceSnapshot)}`
+                        : "查余额",
+                      title:
+                        relayBalanceStatus?.error ??
+                        `查询 ${credential.display_name} 的中转站余额`,
                       disabled:
                         relayBalanceMutation.isPending || relayBalancePlatformMutation.isPending,
                       onClick: () => relayBalanceMutation.mutate(credential.id),
-                      inlineToneClass: "border-teal-200 text-teal-700 hover:bg-teal-50",
+                      inlineLabel: effectiveRelayBalanceSnapshot
+                        ? formatRelayBalanceButtonAmount(effectiveRelayBalanceSnapshot)
+                        : undefined,
+                      inlineToneClass: relayBalanceStatus?.error
+                        ? "border-rose-200 text-rose-600 hover:bg-rose-50"
+                        : effectiveRelayBalanceSnapshot
+                          ? "border-emerald-200 text-emerald-600 hover:bg-emerald-50"
+                          : "border-teal-200 text-teal-700 hover:bg-teal-50",
                       icon: (
                         <Wallet
                           aria-hidden="true"
                           className={`h-3.5 w-3.5 ${
                             refreshingRelayBalanceId === credential.id ? "animate-pulse" : ""
+                          } ${
+                            relayBalanceStatus?.error
+                              ? "text-rose-600"
+                              : effectiveRelayBalanceSnapshot
+                                ? "text-emerald-600"
+                                : ""
                           }`}
                         />
                       ),
@@ -5999,7 +6018,11 @@ export function AccountsScreen({
                         rowActions.map((action) => (
                           <button
                             aria-label={action.ariaLabel}
-                            className={`grid h-7 w-7 place-items-center border transition-colors disabled:opacity-50 ${action.inlineToneClass}`}
+                            className={`${
+                              action.inlineLabel
+                                ? "flex h-7 items-center gap-1 px-2"
+                                : "grid h-7 w-7 place-items-center"
+                            } border transition-colors disabled:opacity-50 ${action.inlineToneClass}`}
                             disabled={action.disabled}
                             key={action.key}
                             onClick={action.onClick}
@@ -6007,6 +6030,9 @@ export function AccountsScreen({
                             type="button"
                           >
                             {action.icon}
+                            {action.inlineLabel ? (
+                              <span className="text-[11px] font-semibold">{action.inlineLabel}</span>
+                            ) : null}
                             <span className="sr-only">{action.menuLabel}</span>
                           </button>
                         ))
@@ -6024,7 +6050,7 @@ export function AccountsScreen({
                               ? "border-blue-400 bg-white shadow-lg"
                               : isKeyboardDragged
                                 ? "border-blue-400 bg-blue-50/70"
-                                : `${accountCardToneClass(credential)} hover:shadow-md`
+                                : "border-stone-200 bg-white hover:shadow-md"
                           } ${
                             selectedAccountIds.has(credential.id)
                               ? "ring-2 ring-amber-300"
