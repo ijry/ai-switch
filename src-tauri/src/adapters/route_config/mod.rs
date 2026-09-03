@@ -1,6 +1,8 @@
 mod codex;
 mod deepseek_harness;
 mod json_agent;
+mod qoder_cli;
+mod workbuddy;
 mod zcode;
 
 pub(crate) use codex::codex_model_catalog_path;
@@ -12,12 +14,14 @@ use crate::{
 use codex::CodexAdapter;
 use deepseek_harness::DeepSeekHarnessAdapter;
 use json_agent::JsonAgentAdapter;
+use qoder_cli::QoderCliAdapter;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+use workbuddy::WorkBuddyAdapter;
 use zcode::ZCodeAdapter;
 
 pub(super) const INVALID_EXISTING_CONFIG_CODE: &str = "validation.route_config_existing_invalid";
@@ -154,6 +158,12 @@ impl TargetAdapterRegistry {
                 Arc::new(ZCodeAdapter::claude()),
                 Arc::new(DeepSeekHarnessAdapter::codex()),
                 Arc::new(DeepSeekHarnessAdapter::claude()),
+                Arc::new(WorkBuddyAdapter::codex()),
+                Arc::new(WorkBuddyAdapter::claude()),
+                Arc::new(WorkBuddyAdapter::codebuddy_codex()),
+                Arc::new(WorkBuddyAdapter::codebuddy_claude()),
+                Arc::new(QoderCliAdapter::codex()),
+                Arc::new(QoderCliAdapter::claude()),
             ],
         }
     }
@@ -190,6 +200,12 @@ impl TargetAdapterRegistry {
             .iter()
             .find(|adapter| adapter.target_key() == target_key)
             .cloned()
+    }
+
+    /// Every registered adapter. Exists so tests outside this module can hold the
+    /// registry and the `target_apps` seed table to each other.
+    pub fn adapters(&self) -> &[Arc<dyn TargetAdapter>] {
+        &self.adapters
     }
 }
 
@@ -652,7 +668,7 @@ api_key = "legacy-key"
     }
 
     #[test]
-    fn clients_for_platform_lists_the_native_cli_first_then_zcode() {
+    fn clients_for_platform_lists_the_native_cli_first_then_third_party_clients() {
         let registry = TargetAdapterRegistry::new();
 
         let codex = registry.clients_for_platform(PlatformId::Codex);
@@ -661,15 +677,26 @@ api_key = "legacy-key"
                 .iter()
                 .map(|client| client.client_key.as_str())
                 .collect::<Vec<_>>(),
-            vec!["codex", "zcode", "deepseek_harness"]
+            vec![
+                "codex",
+                "zcode",
+                "deepseek_harness",
+                "workbuddy",
+                "codebuddy_cli",
+                "qoder_cli"
+            ]
         );
         assert_eq!(codex[0].display_name, "Codex CLI");
         assert_eq!(codex[0].target_key, "codex");
         assert_eq!(codex[0].platform, PlatformId::Codex);
-        // ZCode reads its config at startup, so the dialog has to say "restart".
-        assert!(codex[1].restart_required);
-        // DeepSeek Harness also requires restart
-        assert!(codex[2].restart_required);
+        // Every third-party client here reads its config at startup, so the
+        // dialog has to say "restart" for all of them.
+        for client in &codex[1..] {
+            assert!(client.restart_required, "{}", client.client_key);
+            assert!(!client.native, "{}", client.client_key);
+            // None of them probe /v1/models, so the write must carry the list.
+            assert!(client.requires_client_models, "{}", client.client_key);
+        }
 
         // Claude platform should list both CLI and Desktop
         let claude = registry.clients_for_platform(PlatformId::Claude);
@@ -678,7 +705,15 @@ api_key = "legacy-key"
                 .iter()
                 .map(|client| client.client_key.as_str())
                 .collect::<Vec<_>>(),
-            vec!["claude_code", "claude_desktop", "zcode", "deepseek_harness"]
+            vec![
+                "claude_code",
+                "claude_desktop",
+                "zcode",
+                "deepseek_harness",
+                "workbuddy",
+                "codebuddy_cli",
+                "qoder_cli"
+            ]
         );
         assert_eq!(claude[0].display_name, "Claude Code");
         assert_eq!(claude[1].display_name, "Claude Desktop");

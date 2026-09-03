@@ -16,6 +16,22 @@ impl TargetRepository {
             ("grok", "grok", "Grok"),
             ("zcode_codex", "codex", "ZCode (Codex)"),
             ("zcode_claude", "claude", "ZCode (Claude)"),
+            (
+                "deepseek_harness_codex",
+                "codex",
+                "DeepSeek Harness (Codex)",
+            ),
+            (
+                "deepseek_harness_claude",
+                "claude",
+                "DeepSeek Harness (Claude)",
+            ),
+            ("workbuddy_codex", "codex", "WorkBuddy (Codex)"),
+            ("workbuddy_claude", "claude", "WorkBuddy (Claude)"),
+            ("codebuddy_cli_codex", "codex", "CodeBuddy CLI (Codex)"),
+            ("codebuddy_cli_claude", "claude", "CodeBuddy CLI (Claude)"),
+            ("qoder_cli_codex", "codex", "Qoder CLI (Codex)"),
+            ("qoder_cli_claude", "claude", "Qoder CLI (Claude)"),
             ("opencode", "opencode", "OpenCode"),
             ("openclaw", "openclaw", "OpenClaw"),
             ("hermes", "hermes", "Hermes"),
@@ -147,5 +163,36 @@ mod tests {
                 .as_deref(),
             Some("grok")
         );
+    }
+
+    /// `ConfigWriteService::prepare` resolves `adapter.target_key()` through
+    /// `get_by_key`, which fails with `validation.target_not_found` when the seed
+    /// row is missing. A registered adapter without a row is therefore an
+    /// adapter whose every write fails at runtime, so the registry and this seed
+    /// table have to stay in lockstep.
+    #[tokio::test]
+    async fn ensure_defaults_seeds_a_row_for_every_registered_adapter() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        TargetRepository::ensure_defaults(&pool)
+            .await
+            .expect("target defaults");
+
+        for adapter in crate::adapters::route_config::TargetAdapterRegistry::new().adapters() {
+            let target = TargetRepository::get_by_key(&pool, adapter.target_key())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "no target_apps seed row for adapter target_key {}",
+                        adapter.target_key()
+                    )
+                });
+            assert_eq!(
+                target.platform.as_deref(),
+                Some(adapter.platform().as_str()),
+                "seed row platform disagrees with the adapter: {}",
+                adapter.target_key()
+            );
+        }
     }
 }

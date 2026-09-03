@@ -45,11 +45,7 @@ impl DeepSeekHarnessAdapter {
 
     /// Determine which provider entry to write into, checking for managed marker
     /// or matching base URL and API key
-    fn adoption_target(
-        &self,
-        providers: &Mapping,
-        input: &RouteConfigInput,
-    ) -> Option<String> {
+    fn adoption_target(&self, providers: &Mapping, input: &RouteConfigInput) -> Option<String> {
         // First check for our managed marker
         if let Some(key) = providers.iter().find_map(|(key, entry)| {
             let managed = entry
@@ -75,12 +71,10 @@ impl DeepSeekHarnessAdapter {
                 .and_then(Value::as_str)
                 .map(|value| value.trim().trim_end_matches('/'))
                 .is_some_and(|value| value == expected_base);
-            let api_key_env = entry
-                .get("apiKeyEnv")
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            let api_key_env = entry.get("apiKeyEnv").and_then(Value::as_str).unwrap_or("");
             // Check if this looks like our entry (base URL matches)
-            (base_matches && !api_key_env.is_empty()).then(|| key.as_str().unwrap_or("").to_string())
+            (base_matches && !api_key_env.is_empty())
+                .then(|| key.as_str().unwrap_or("").to_string())
         })
     }
 
@@ -89,7 +83,10 @@ impl DeepSeekHarnessAdapter {
             .iter()
             .map(|model| {
                 let mut entry = Mapping::new();
-                entry.insert(Value::String("id".to_string()), Value::String(model.id.clone()));
+                entry.insert(
+                    Value::String("id".to_string()),
+                    Value::String(model.id.clone()),
+                );
                 Value::Mapping(entry)
             })
             .collect()
@@ -187,9 +184,7 @@ impl TargetAdapter for DeepSeekHarnessAdapter {
             .unwrap_or_else(|| self.provider_id.to_string());
 
         // Keep existing entry if present to preserve custom fields
-        let existing_entry = providers
-            .get(&Value::String(provider_id.clone()))
-            .cloned();
+        let existing_entry = providers.get(&Value::String(provider_id.clone())).cloned();
 
         // Create or update the provider entry
         let mut provider_entry = existing_entry
@@ -232,15 +227,15 @@ impl TargetAdapter for DeepSeekHarnessAdapter {
             Value::String("platform".to_string()),
             Value::String(self.platform.as_str().to_string()),
         );
-        provider_entry.insert(Value::String("aiSwitch".to_string()), Value::Mapping(ai_switch));
-
-        providers.insert(
-            Value::String(provider_id),
-            Value::Mapping(provider_entry),
+        provider_entry.insert(
+            Value::String("aiSwitch".to_string()),
+            Value::Mapping(ai_switch),
         );
 
-        let rendered = serde_yaml::to_string(&config)
-            .map_err(|_| generated_invalid(path, "YAML"))?;
+        providers.insert(Value::String(provider_id), Value::Mapping(provider_entry));
+
+        let rendered =
+            serde_yaml::to_string(&config).map_err(|_| generated_invalid(path, "YAML"))?;
         let _validated: Value =
             serde_yaml::from_str(&rendered).map_err(|_| generated_invalid(path, "YAML"))?;
         Ok(rendered.into_bytes())
@@ -380,8 +375,14 @@ llm-pi-ai:
         let yaml = render(codex_adapter().as_ref(), Some(existing), &["gpt-5.6-sol"]);
 
         assert_eq!(yaml["dsh-desktop"]["mode"], "compatibility");
-        assert_eq!(yaml["llm-pi-ai"]["providers"]["other-provider"]["displayName"], "Other");
-        assert_eq!(yaml["llm-pi-ai"]["providers"]["ai-switch-codex"]["apiKeyEnv"], "AI_SWITCH_API_KEY");
+        assert_eq!(
+            yaml["llm-pi-ai"]["providers"]["other-provider"]["displayName"],
+            "Other"
+        );
+        assert_eq!(
+            yaml["llm-pi-ai"]["providers"]["ai-switch-codex"]["apiKeyEnv"],
+            "AI_SWITCH_API_KEY"
+        );
     }
 
     #[test]
@@ -402,7 +403,9 @@ llm-pi-ai:
         let yaml = render(codex_adapter().as_ref(), Some(existing), &["gpt-5.6-sol"]);
         let provider = &yaml["llm-pi-ai"]["providers"]["renamed-entry"];
 
-        assert!(yaml["llm-pi-ai"]["providers"].get("ai-switch-codex").is_none());
+        assert!(yaml["llm-pi-ai"]["providers"]
+            .get("ai-switch-codex")
+            .is_none());
         assert_eq!(provider["displayName"], "My Custom Name");
         assert_eq!(provider["baseURL"], "http://127.0.0.1:19527/v1");
     }
@@ -428,7 +431,9 @@ llm-pi-ai:
             "unmanaged"
         );
         assert_eq!(
-            claude_adapter().inspect(path, Some(claude_only)).file_status,
+            claude_adapter()
+                .inspect(path, Some(claude_only))
+                .file_status,
             "managed"
         );
     }

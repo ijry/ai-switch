@@ -326,15 +326,17 @@ experimental_bearer_token = "sentinel"
         .await
         .expect("clients");
 
-        assert_eq!(
+        // Ordering is asserted in the adapter registry's own tests; this one is
+        // about per-client file status, so look clients up by key and let new
+        // adapters land without touching it.
+        let client = |key: &str| {
             clients
                 .iter()
-                .map(|client| client.client_key.as_str())
-                .collect::<Vec<_>>(),
-            vec!["codex", "zcode"]
-        );
+                .find(|client| client.client_key == key)
+                .unwrap_or_else(|| panic!("no {key} client"))
+        };
 
-        let codex = &clients[0];
+        let codex = client("codex");
         assert!(codex.native);
         assert!(!codex.restart_required);
         assert_eq!(codex.file_status, "missing");
@@ -344,13 +346,20 @@ experimental_bearer_token = "sentinel"
             .expect("path")
             .ends_with("config.toml"));
 
-        let zcode = &clients[1];
+        let zcode = client("zcode");
         assert!(!zcode.native);
         // ZCode has no file watcher, so the UI has to tell the user to restart.
         assert!(zcode.restart_required);
         // The file exists but carries no ai-switch entry for this platform.
         assert_eq!(zcode.file_status, "unmanaged");
         assert_eq!(zcode.target_key, "zcode_codex");
+
+        // Third-party clients whose file was never created report `missing`
+        // rather than erroring the whole listing.
+        for key in ["deepseek_harness", "workbuddy", "qoder_cli"] {
+            assert_eq!(client(key).file_status, "missing", "{key}");
+            assert!(client(key).config_path.is_some(), "{key}");
+        }
     }
 
     #[tokio::test]
