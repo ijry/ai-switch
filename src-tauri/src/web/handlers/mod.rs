@@ -26,7 +26,7 @@ use crate::models::platform::PlatformId;
 use crate::models::route_credential::{
     CopyRouteCredentialInput, CreateApiRouteCredentialInput, ImportOfficialFilesInput,
     ImportOfficialTextInput, ReorderRouteCredentialInput, RouteCredentialPageRequest,
-    UpdateRouteCredentialInput,
+    UpdateRouteCredentialInput, MASKED_SECRET_PAYLOAD,
 };
 use crate::models::route_credential_transfer::{
     ExportRouteCredentialsInput, ImportRouteCredentialsInput, PreviewRouteCredentialImportInput,
@@ -88,6 +88,29 @@ pub fn is_sensitive_command(command: &str) -> bool {
             | "start_tailscale_with_auth_key"
             | "disconnect_tailscale"
     )
+}
+
+/// Projects stored secrets out of the two credential-listing responses.
+///
+/// Neither command is sensitive, and they should not become sensitive — the
+/// paired phone needs the account list. But both serialize `secret_payload_json`
+/// verbatim, so without this a 30-day pairing token reads every account's
+/// plaintext api_key through an ordinary command, while `export_route_credentials`
+/// returns 401 to that same token for that same data.
+pub fn mask_listed_secret_payloads(command: &str, value: &mut Value) {
+    let rows = match command {
+        "list_route_credentials" => value.as_array_mut(),
+        "list_route_credentials_page" => value.get_mut("items").and_then(Value::as_array_mut),
+        _ => return,
+    };
+    let Some(rows) = rows else {
+        return;
+    };
+    for row in rows {
+        if let Some(payload) = row.get_mut("secret_payload_json") {
+            *payload = Value::String(MASKED_SECRET_PAYLOAD.to_string());
+        }
+    }
 }
 
 pub async fn dispatch_command(
@@ -1302,6 +1325,128 @@ mod tests {
         assert_eq!(error.code, "web.command_unknown");
         assert_eq!(error.details.as_deref(), Some("not_a_command"));
         assert!(!error.recoverable);
+    }
+
+    #[tokio::test]
+    async fn saving_a_masked_secret_payload_keeps_the_stored_key() {
+        // The paired phone is shown MASKED_SECRET_PAYLOAD instead of the real
+        // secret. It loads the same edit drawer, so saving from there must not
+        // write the mask over the key — masking a read has to be safe on its own.
+        let fixture = test_state().await;
+        let credential = dispatch_command(
+            Arc::clone(&fixture.state),
+            "create_api_route_credential",
+            json!({
+                "input": {
+                    "platform": "codex",
+                    "display_name": "Phone edited",
+                    "api_key": "sk-real-key",
+                    "base_url": "https://api.example.com/v1",
+                    "interface_format": "openai",
+                    "model_mappings_json": "[]"
+                }
+            }),
+        )
+        .await
+        .expect("create credential");
+        let id = credential["id"]
+            .as_str()
+            .expect("credential id")
+            .to_string();
+        let config_json = credential["config_json"]
+            .as_str()
+            .expect("config json")
+            .to_string();
+
+        let updated = dispatch_command(
+            fixture.state,
+            "update_route_credential",
+            json!({
+                "id": id,
+                "input": {
+                    "display_name": "Renamed from the phone",
+                    "email": null,
+                    "status": "ok",
+                    "route_priority": 1,
+                    "max_concurrency": 1,
+                    "secret_payload_json": MASKED_SECRET_PAYLOAD,
+                    "config_json": config_json,
+                    "preview_json": "{}"
+                }
+            }),
+        )
+        .await
+        .expect("update credential");
+
+        assert_eq!(updated["display_name"], "Renamed from the phone");
+        let secret = updated["secret_payload_json"]
+            .as_str()
+            .expect("secret payload");
+        assert!(
+            secret.contains("sk-real-key"),
+            "the mask must not overwrite the stored key, got {secret}"
+        );
+    }
+
+    #[tokio::test]
+    async fn saving_a_masked_payload_merged_with_an_empty_key_keeps_the_stored_key() {
+        // What the edit drawer actually sends back: it re-serializes the payload it
+        // loaded and merges its (empty) api_key field in, so the mask arrives as
+        // `{"__masked":true,"api_key":""}`. A whole-string comparison would miss
+        // this and blank out the key.
+        let fixture = test_state().await;
+        let credential = dispatch_command(
+            Arc::clone(&fixture.state),
+            "create_api_route_credential",
+            json!({
+                "input": {
+                    "platform": "codex",
+                    "display_name": "Phone edited",
+                    "api_key": "sk-real-key",
+                    "base_url": "https://api.example.com/v1",
+                    "interface_format": "openai",
+                    "model_mappings_json": "[]"
+                }
+            }),
+        )
+        .await
+        .expect("create credential");
+        let id = credential["id"]
+            .as_str()
+            .expect("credential id")
+            .to_string();
+        let config_json = credential["config_json"]
+            .as_str()
+            .expect("config json")
+            .to_string();
+
+        let updated = dispatch_command(
+            fixture.state,
+            "update_route_credential",
+            json!({
+                "id": id,
+                "input": {
+                    "display_name": "Phone edited",
+                    "email": null,
+                    "status": "ok",
+                    "route_priority": 1,
+                    "max_concurrency": 1,
+                    "secret_payload_json": r#"{"__masked": true, "api_key": ""}"#,
+                    "config_json": config_json,
+                    "preview_json": "{}"
+                }
+            }),
+        )
+        .await
+        .expect("update credential");
+
+        let secret = updated["secret_payload_json"]
+            .as_str()
+            .expect("secret payload");
+        assert!(
+            secret.contains("sk-real-key"),
+            "the drawer's re-serialized mask must not overwrite the stored key, got {secret}"
+        );
     }
 
     #[tokio::test]

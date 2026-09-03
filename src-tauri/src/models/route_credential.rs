@@ -209,6 +209,35 @@ pub struct CopyRouteCredentialInput {
     pub api_key: Option<String>,
 }
 
+/// Placeholder that replaces `secret_payload_json` in responses to anything short
+/// of the primary web token (see `web::auth::WebAuthLevel`).
+///
+/// `RouteCredentialService::update` treats an incoming payload still carrying the
+/// marker as "keep what is stored", so a client that was shown the mask cannot
+/// write it back over the real key.
+pub const MASKED_SECRET_PAYLOAD: &str = r#"{"__masked":true}"#;
+
+/// Marker key inside [`MASKED_SECRET_PAYLOAD`].
+const MASKED_SECRET_MARKER: &str = "__masked";
+
+/// Whether a payload is a masked placeholder rather than a real secret.
+///
+/// This deliberately matches on the marker key instead of comparing the whole
+/// string: the edit drawer re-serializes what it loaded and merges the (empty)
+/// api_key field back in, so the payload that comes back from a masked client is
+/// `{"__masked":true,"api_key":""}` rather than the constant. Comparing strings
+/// would let that shape through and blank out the stored key.
+pub fn is_masked_secret_payload(raw: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| {
+            value
+                .get(MASKED_SECRET_MARKER)
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(false)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpdateRouteCredentialInput {
     pub display_name: String,

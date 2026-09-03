@@ -8,7 +8,7 @@ use axum::http::{header, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tower_http::cors::{Any, CorsLayer};
@@ -17,8 +17,8 @@ use crate::app_state::AppState;
 use crate::error::ApiError;
 use crate::services::mobile_pairing::MobileTokenRegistry;
 use crate::services::web_service::WebService;
-use crate::web::auth::{authorize_api_request, ApiAuthState};
-use crate::web::handlers::{dispatch_command, is_sensitive_command};
+use crate::web::auth::{authorize_api_request, ApiAuthState, WebAuthLevel};
+use crate::web::handlers::{dispatch_command, is_sensitive_command, mask_listed_secret_payloads};
 use crate::web::static_assets::{resolve_static_file, static_bundle_present};
 use crate::web::terminal_ws::terminal_socket;
 use crate::web::ws::events_socket;
@@ -125,10 +125,19 @@ async fn redeem_mobile_pairing(
 async fn api_command(
     State(context): State<WebServerContext>,
     Path(command): Path<String>,
+    auth_level: Option<Extension<WebAuthLevel>>,
     Json(args): Json<Value>,
 ) -> Response {
+    // Absent means the auth middleware did not run, which should be impossible on
+    // this route; treat it as the lower privilege rather than the higher one.
+    let primary = matches!(auth_level, Some(Extension(WebAuthLevel::Primary)));
     match dispatch_command(context.state, &command, args).await {
-        Ok(value) => Json(value).into_response(),
+        Ok(mut value) => {
+            if !primary {
+                mask_listed_secret_payloads(&command, &mut value);
+            }
+            Json(value).into_response()
+        }
         Err(error) => api_error_response(StatusCode::BAD_REQUEST, error),
     }
 }
@@ -267,8 +276,10 @@ fn api_error_response(status: StatusCode, error: ApiError) -> Response {
 mod tests {
     use super::*;
     use crate::database::{create_memory_pool, run_migrations};
+    use crate::models::route_credential::{CreateApiRouteCredentialInput, MASKED_SECRET_PAYLOAD};
     use crate::services::config_write_service::ConfigWriteRuntimeState;
     use crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime;
+    use crate::services::route_credential_service::RouteCredentialService;
     use crate::services::route_proxy_service::RouteProxyRuntimeState;
     use crate::services::tailscale_service::TailscaleRuntimeState;
     use crate::services::web_service::{WebService, WebServiceConfig, WebServiceRuntimeState};
@@ -533,30 +544,101 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn export_requires_a_configured_bearer_token() {
-        let (address, server) = spawn_test_router_with_token(true, "").await;
-        let response = reqwest::Client::new()
+    async fn export_requires_the_primary_token_not_merely_some_token() {
+        // Deliberately a *configured* token: with an empty one every request is
+        // 401 now, so an empty-token version of this test passed no matter what
+        // the sensitive gate did. The mobile token is the interesting caller —
+        // it is authorized for ordinary commands and must still be refused here.
+        let gate = Arc::new(AtomicBool::new(true));
+        let (address, server, state, _temp) =
+            spawn_test_router_with_state(gate, "primary-secret").await;
+        let pairing_store = WebService::mobile_pairing_store_for_test(&state.web_service);
+        let payload = pairing_store
+            .create(
+                Some("https://public.example".to_string()),
+                None,
+                SystemTime::now(),
+                Duration::from_secs(300),
+            )
+            .await
+            .unwrap();
+        let redeemed = pairing_store
+            .redeem(&payload.pairing_code, SystemTime::now())
+            .await
+            .unwrap();
+        let body = json!({
+            "input": {
+                "selection_context": {"platform": "claude", "pool_scope": "in_pool"},
+                "credential_ids": []
+            }
+        });
+        let client = reqwest::Client::new();
+
+        for (label, request) in [
+            (
+                "no token",
+                client
+                    .post(format!("http://{address}/api/export_route_credentials"))
+                    .json(&body),
+            ),
+            (
+                "wrong token",
+                client
+                    .post(format!("http://{address}/api/export_route_credentials"))
+                    .bearer_auth("not-the-token")
+                    .json(&body),
+            ),
+            (
+                "mobile pairing token",
+                client
+                    .post(format!("http://{address}/api/export_route_credentials"))
+                    .bearer_auth(&redeemed.token)
+                    .json(&body),
+            ),
+        ] {
+            let response = request.send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{label}");
+            assert_sensitive_cache_headers(&response);
+        }
+
+        // And the primary token does get through, so the 401s above are the gate
+        // rather than a route that answers 401 unconditionally.
+        let response = client
             .post(format!("http://{address}/api/export_route_credentials"))
-            .json(&json!({
-                "input": {
-                    "selection_context": {"platform": "claude", "pool_scope": "in_pool"},
-                    "credential_ids": []
-                }
-            }))
+            .bearer_auth("primary-secret")
+            .json(&body)
             .send()
             .await
             .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        assert_sensitive_cache_headers(&response);
+        assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
         server.abort();
     }
 
     #[tokio::test]
     async fn percent_encoded_export_command_cannot_bypass_sensitive_auth() {
-        let (address, server) = spawn_test_router_with_token(true, "").await;
+        // `%65xport_route_credentials` decodes to `export_route_credentials`. If the
+        // sensitive check ever ran against the raw path, this spelling would look
+        // like an unknown ordinary command and the mobile token would be let in.
+        let gate = Arc::new(AtomicBool::new(true));
+        let (address, server, state, _temp) =
+            spawn_test_router_with_state(gate, "primary-secret").await;
+        let pairing_store = WebService::mobile_pairing_store_for_test(&state.web_service);
+        let payload = pairing_store
+            .create(
+                Some("https://public.example".to_string()),
+                None,
+                SystemTime::now(),
+                Duration::from_secs(300),
+            )
+            .await
+            .unwrap();
+        let redeemed = pairing_store
+            .redeem(&payload.pairing_code, SystemTime::now())
+            .await
+            .unwrap();
         let response = reqwest::Client::new()
             .post(format!("http://{address}/api/%65xport_route_credentials"))
+            .bearer_auth(&redeemed.token)
             .json(&json!({
                 "input": {
                     "selection_context": {"platform": "claude", "pool_scope": "in_pool"},
@@ -902,6 +984,109 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn mobile_pairing_token_can_list_but_not_read_secret_payloads() {
+        // list_route_credentials is deliberately not sensitive (the paired phone
+        // needs the account list), but it must not return plaintext api_keys to
+        // the 30-day mobile token while export_route_credentials returns 401 to
+        // that same token for that same data.
+        let gate = Arc::new(AtomicBool::new(true));
+        let (address, server, state, _temp) =
+            spawn_test_router_with_state(gate, "primary-secret").await;
+        let pool = &state.pool;
+        RouteCredentialService::create_api(
+            pool,
+            CreateApiRouteCredentialInput {
+                platform: "codex".into(),
+                display_name: "Phone visible".into(),
+                api_key: "sk-test-key".into(),
+                base_url: "https://api.example.com/v1".into(),
+                interface_format: "openai".into(),
+                model_mappings_json: "[]".into(),
+                fetched_models_json: None,
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: None,
+                user_agent: None,
+                relay_balance_provider: None,
+            },
+        )
+        .await
+        .unwrap();
+        let pairing_store = WebService::mobile_pairing_store_for_test(&state.web_service);
+        let payload = pairing_store
+            .create(
+                Some("https://public.example".to_string()),
+                None,
+                SystemTime::now(),
+                Duration::from_secs(300),
+            )
+            .await
+            .unwrap();
+        let redeemed = pairing_store
+            .redeem(&payload.pairing_code, SystemTime::now())
+            .await
+            .unwrap();
+        let client = reqwest::Client::new();
+        // list works
+        let response = client
+            .post(format!("http://{address}/api/list_route_credentials"))
+            .bearer_auth(&redeemed.token)
+            .json(&json!({ "platform": "codex" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let items: Vec<Value> = response.json().await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0]["secret_payload_json"], MASKED_SECRET_PAYLOAD,
+            "mobile token must see masked payload"
+        );
+        // list_page works
+        let response = client
+            .post(format!("http://{address}/api/list_route_credentials_page"))
+            .bearer_auth(&redeemed.token)
+            .json(&json!({ "input": { "platform": "codex", "page": 1, "page_size": 50 } }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let page: Value = response.json().await.unwrap();
+        assert_eq!(
+            page["items"][0]["secret_payload_json"],
+            MASKED_SECRET_PAYLOAD
+        );
+        // export is still blocked
+        let response = client
+            .post(format!("http://{address}/api/export_route_credentials"))
+            .bearer_auth(&redeemed.token)
+            .json(&json!({ "platform": "codex", "format": "json" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        // but the primary token sees the real payload
+        let response = client
+            .post(format!("http://{address}/api/list_route_credentials"))
+            .bearer_auth("primary-secret")
+            .json(&json!({ "platform": "codex" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let items: Vec<Value> = response.json().await.unwrap();
+        assert!(
+            items[0]["secret_payload_json"]
+                .as_str()
+                .unwrap()
+                .contains("sk-test-key"),
+            "primary token must see real payload"
+        );
         server.abort();
     }
 

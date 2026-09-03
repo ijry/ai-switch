@@ -26,6 +26,20 @@ pub struct ApiAuthState {
     pub mobile_tokens: MobileTokenRegistry,
 }
 
+/// Which credential let a request through.
+///
+/// The mobile pairing token is deliberately the lower-privilege one: it is valid
+/// for 30 days, handed to a phone browser, and reachable over a Tailscale Funnel
+/// URL when `tailscale_exposure_mode` is `public`. Sensitive commands already
+/// reject it, but ordinary ones include `list_route_credentials`, which returns
+/// `secret_payload_json` verbatim — so the dispatcher needs to know which token
+/// asked in order to keep plaintext api_keys out of that response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WebAuthLevel {
+    Primary,
+    Mobile,
+}
+
 pub fn is_authorized(headers: &HeaderMap, token: &str) -> bool {
     // No configured token means no access control, not permission to enter.
     // Ordinary commands include ones that return stored credentials verbatim
@@ -104,7 +118,7 @@ fn mobile_token_digest(token: &str) -> String {
 pub async fn authorize_api_request(
     State(auth): State<Arc<ApiAuthState>>,
     path_params: RawPathParams,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let sensitive = path_params
@@ -115,6 +129,13 @@ pub async fn authorize_api_request(
     let mobile_authorized =
         is_mobile_token_authorized(request.headers(), &auth.mobile_tokens).await;
     if primary_authorized || (!sensitive && mobile_authorized) {
+        // The handler projects secrets out of ordinary responses for anything
+        // short of the primary token, so it has to be told which one this was.
+        request.extensions_mut().insert(if primary_authorized {
+            WebAuthLevel::Primary
+        } else {
+            WebAuthLevel::Mobile
+        });
         return next.run(request).await;
     }
 

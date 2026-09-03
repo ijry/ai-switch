@@ -7,11 +7,11 @@ use crate::error::AppError;
 use crate::models::batch::NewBatch;
 use crate::models::platform::{ApiDialect, PlatformId, PlatformOperation};
 use crate::models::route_credential::{
-    normalize_anthropic_api_key_field, CopyRouteCredentialInput, CreateApiRouteCredentialInput,
-    ImportOfficialFilesInput, ImportOfficialTextInput, ModelMapping, ReorderRouteCredentialInput,
-    RouteCredential, RouteCredentialFailurePolicy, RouteCredentialImportFailure,
-    RouteCredentialImportResult, RouteCredentialPage, RouteCredentialPageRequest,
-    UpdateRouteCredentialInput,
+    is_masked_secret_payload, normalize_anthropic_api_key_field, CopyRouteCredentialInput,
+    CreateApiRouteCredentialInput, ImportOfficialFilesInput, ImportOfficialTextInput, ModelMapping,
+    ReorderRouteCredentialInput, RouteCredential, RouteCredentialFailurePolicy,
+    RouteCredentialImportFailure, RouteCredentialImportResult, RouteCredentialPage,
+    RouteCredentialPageRequest, UpdateRouteCredentialInput,
 };
 use crate::models::route_credential_model::{
     RouteCredentialModelState, MODEL_STATUS_OK, MODEL_STATUS_PAUSED,
@@ -263,6 +263,16 @@ impl RouteCredentialService {
         validate_route_priority(input.route_priority)?;
         validate_max_concurrency(input.max_concurrency)?;
         validate_failure_policy_config(&input.config_json)?;
+        let mut input = input;
+        // A client that was handed a masked payload instead of the real secret
+        // must not be able to write the mask back: the paired phone loads the same
+        // edit drawer, and saving it would otherwise destroy the stored api_key.
+        // Masking a read has to be safe on its own.
+        if is_masked_secret_payload(&input.secret_payload_json) {
+            input.secret_payload_json = RouteCredentialRepository::get(pool, &id)
+                .await?
+                .secret_payload_json;
+        }
         RouteCredentialRepository::update(pool, &id, &input).await
     }
 
