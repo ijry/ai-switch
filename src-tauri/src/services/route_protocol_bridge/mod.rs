@@ -17,6 +17,20 @@ pub(crate) mod turn_reminder;
 use crate::models::platform::{ApiDialect, PlatformId};
 use std::collections::BTreeMap;
 
+/// Every reasoning effort the bridges can act on, weakest first.
+///
+/// This is the authoritative list because it is the one the wire conversions
+/// understand: `common::chat_reasoning_effort`,
+/// `common::anthropic_thinking_budget` and `common::gemini_thinking_config` all
+/// match an effort by name and answer `None` for anything else, which strips
+/// reasoning from the request instead of failing it. So a tier that is not here
+/// cannot be honoured, and anything that advertises efforts to a client — the
+/// Codex model catalog, in particular — has to filter against this rather than
+/// invent its own set. `common`'s tests assert every entry here is recognised by
+/// all three, so adding one without teaching the bridges fails there.
+pub(crate) const RECOGNISED_REASONING_EFFORTS: &[&str] =
+    &["low", "medium", "high", "xhigh", "max", "ultra"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolBridgeKind {
     ResponsesToChat,

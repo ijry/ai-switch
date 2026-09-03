@@ -433,8 +433,40 @@ fn is_version_segment(segment: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_create_path, is_create_subpath, stringify_tool_result_content};
+    use super::{
+        anthropic_thinking_budget, chat_reasoning_effort, gemini_thinking_config, is_create_path,
+        is_create_subpath, stringify_tool_result_content,
+    };
     use serde_json::json;
+
+    /// Binds the advertised effort list to the conversions that have to honour it.
+    ///
+    /// The Codex model catalog filters what it advertises against
+    /// `RECOGNISED_REASONING_EFFORTS`. If a tier were added there without being
+    /// taught to these three, a client could select an effort that then silently
+    /// vanished from the upstream request — reasoning off, no error, nothing to
+    /// look at. Failing here instead makes that ordering impossible to get wrong.
+    #[test]
+    fn every_advertised_reasoning_effort_is_understood_by_all_three_bridges() {
+        for effort in super::super::RECOGNISED_REASONING_EFFORTS {
+            assert!(
+                chat_reasoning_effort(effort).is_some(),
+                "chat cannot express {effort}"
+            );
+            assert!(
+                anthropic_thinking_budget(effort, None).is_some(),
+                "anthropic cannot express {effort}"
+            );
+            assert!(
+                gemini_thinking_config(effort, "gemini-2.5-pro").is_some(),
+                "gemini cannot express {effort}"
+            );
+        }
+        // And something outside the list really is refused, so the assertions
+        // above are not vacuous.
+        assert!(chat_reasoning_effort("insane").is_none());
+        assert!(anthropic_thinking_budget("insane", None).is_none());
+    }
 
     /// An MCP screenshot tool returns an image. Dropping it silently made the
     /// model answer as though the tool had returned nothing at all.

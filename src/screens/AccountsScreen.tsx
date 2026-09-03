@@ -1538,13 +1538,9 @@ function CodexMappingCapabilityFields({
   const declaredLevels = normalizeCodexReasoningLevels(mapping.reasoning_levels);
   const effectiveLevels = codexEffectiveReasoningLevels(mapping.from, declaredLevels);
   const followsBaseline = usesCodexBaselineReasoning(declaredLevels);
-  // An import (or a hand-edited config) can name an effort this build does not
-  // offer. Showing it keeps the row honest about what it will advertise, and
-  // keeps a save from silently dropping it.
-  const extraLevels = effectiveLevels.filter(
-    (level) => !CODEX_REASONING_LEVEL_OPTIONS.some((option) => option === level),
-  );
-  const levelChoices = [...CODEX_REASONING_LEVEL_OPTIONS, ...extraLevels];
+  // Efforts the bridges cannot express are dropped during normalization, so the
+  // choice list is exactly what this build can advertise.
+  const levelChoices = CODEX_REASONING_LEVEL_OPTIONS;
   // Same story for the window: an imported size gets its own option so the
   // select can show what the row really declares instead of reading "default".
   const unlistedContextWindow =

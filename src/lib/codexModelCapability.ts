@@ -54,8 +54,16 @@ export function codexEffectiveReasoningLevels(
   return normalized.length > 0 ? normalized : codexBaselineReasoningLevels(model);
 }
 
-/** Trim, lowercase and dedupe — the same normalization the backend applies, so a
- * round trip through the editor cannot change what gets advertised. */
+/** Trim, lowercase, dedupe and drop anything the bridges cannot express — the
+ * same normalization the backend applies, so a round trip through the editor
+ * cannot change what gets advertised.
+ *
+ * An unrecognised effort is discarded rather than displayed. It used to be kept
+ * so a save would not silently drop it, but the catalog now filters it out on the
+ * way to the client, and the protocol bridges answer `None` for a name they do
+ * not know — which strips reasoning from the request instead of failing it. So
+ * showing `insane` as an available tier would offer a checkbox that quietly does
+ * nothing. */
 export function normalizeCodexReasoningLevels(
   declared: string[] | null | undefined,
 ): string[] {
@@ -70,6 +78,9 @@ export function normalizeCodexReasoningLevels(
     }
     const value = level.trim().toLowerCase();
     if (!value || seen.has(value)) {
+      continue;
+    }
+    if (!CODEX_REASONING_LEVEL_OPTIONS.some((option) => option === value)) {
       continue;
     }
     seen.add(value);

@@ -2839,7 +2839,11 @@ describe("AccountsScreen", () => {
     // The stored size gets its own option rather than falling back to "default",
     // which would misreport what the account advertises.
     expect(await screen.findByLabelText("上下文长度 1")).toHaveValue("272000");
-    expect(screen.getByLabelText("推理程度 insane 1")).toBeChecked();
+    // An effort the protocol bridges cannot express is dropped instead of being
+    // offered: they answer `None` for a name they do not know, which strips
+    // reasoning from the request rather than failing it, so a checked `insane`
+    // box would quietly do nothing.
+    expect(screen.queryByLabelText("推理程度 insane 1")).not.toBeInTheDocument();
     expect(screen.getByLabelText("推理程度 medium 1")).toBeChecked();
     expect(screen.getByLabelText("推理程度 low 1")).not.toBeChecked();
     expect(screen.getByText("自定义")).toBeInTheDocument();

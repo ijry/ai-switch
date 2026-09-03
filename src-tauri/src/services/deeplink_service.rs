@@ -69,6 +69,18 @@ pub fn build_aiswitch_import_url(input: &DeepLinkBuildInput<'_>) -> Result<Strin
     {
         return Err("deeplink_export.supports_1m_unsupported".into());
     }
+    // Same reason as `supports_1m`: the deeplink query carries only `from`/`to`
+    // (and a label), so a per-alias context window or effort list cannot travel.
+    // Exporting anyway succeeds and hands the recipient a link whose rows quietly
+    // fall back to the defaults — the one failure the guard above exists to
+    // prevent, so these two fields need it too.
+    if input
+        .model_mappings
+        .iter()
+        .any(|mapping| mapping.context_window.is_some() || mapping.reasoning_levels.is_some())
+    {
+        return Err("deeplink_export.model_capability_unsupported".into());
+    }
 
     let platform = PlatformId::parse(input.platform)
         .map_err(|_| "deeplink_export.platform_unsupported".to_string())?;
@@ -604,6 +616,28 @@ mod tests {
         }];
         let input = build_input("claude", "anthropic", &supports_1m, &empty_headers);
         assert_safe_build_error(&input, "deeplink_export.supports_1m_unsupported");
+
+        // A per-alias window or effort list cannot ride in the query either, so
+        // exporting must refuse rather than hand over a link whose rows silently
+        // fall back to the defaults.
+        for capability in [
+            ModelMapping {
+                from: "gpt-5.5".into(),
+                to: "provider-gpt".into(),
+                context_window: Some(400_000),
+                ..Default::default()
+            },
+            ModelMapping {
+                from: "gpt-5.5".into(),
+                to: "provider-gpt".into(),
+                reasoning_levels: Some(vec!["medium".into(), "xhigh".into()]),
+                ..Default::default()
+            },
+        ] {
+            let mappings = vec![capability];
+            let input = build_input("codex", "openai-responses", &mappings, &empty_headers);
+            assert_safe_build_error(&input, "deeplink_export.model_capability_unsupported");
+        }
 
         let input = build_input("opencode", "openai", &empty_mappings, &empty_headers);
         assert_safe_build_error(&input, "deeplink_export.platform_unsupported");

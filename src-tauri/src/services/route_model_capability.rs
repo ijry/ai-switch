@@ -111,9 +111,16 @@ pub(crate) fn codex_reasoning_profile(model: &str) -> CodexReasoningProfile {
 /// The efforts advertised for one alias: the mapping's own list when it declares
 /// one, else the baseline profile for that model id. Entries are trimmed,
 /// lowercased and deduped so a hand-edited config cannot put `["High","high"]`
-/// in front of the Codex CLI; an unrecognised effort is kept and simply gets the
-/// generic description, which is what lets a new upstream tier work before this
-/// table learns about it.
+/// in front of the Codex CLI.
+///
+/// Unrecognised efforts are dropped rather than passed through. Keeping them
+/// looked like forward compatibility, but nothing downstream can act on one: the
+/// protocol bridges map an effort to a chat `reasoning_effort`, an Anthropic
+/// thinking budget or a Gemini thinking config by exact match and answer `None`
+/// otherwise, which silently strips reasoning from the request. So advertising
+/// `insane` to the Codex CLI let the user select a tier that then quietly did
+/// nothing — or 400ed on the direct Responses path. A genuinely new tier has to
+/// be taught to the bridges first, and then it belongs in this list.
 pub(crate) fn codex_reasoning_levels(model: &str, overrides: Option<&[String]>) -> Vec<String> {
     let declared = overrides
         .map(|levels| {
@@ -121,7 +128,12 @@ pub(crate) fn codex_reasoning_levels(model: &str, overrides: Option<&[String]>) 
             levels
                 .iter()
                 .map(|level| level.trim().to_ascii_lowercase())
-                .filter(|level| !level.is_empty() && seen.insert(level.clone()))
+                .filter(|level| {
+                    !level.is_empty()
+                        && crate::services::route_protocol_bridge::RECOGNISED_REASONING_EFFORTS
+                            .contains(&level.as_str())
+                        && seen.insert(level.clone())
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -241,10 +253,22 @@ pub(crate) fn parse_model_capability(config_json: &str) -> ModelCapability {
 }
 
 pub(crate) fn parse_model_capability_value(config: &Value) -> ModelCapability {
+    // Deserialized one entry at a time on purpose. `from_value::<Vec<ModelMapping>>`
+    // fails the whole array on a single bad field, and `.ok().unwrap_or_default()`
+    // then turns that into "this account has no mappings" — which is not a
+    // degraded state but a different one: an account with no mappings accepts
+    // every model and rewrites nothing. A hand-edited `context_window` of `-1`,
+    // `4e5`, or `"400000"` used to silently reroute every request for that
+    // account. A bad entry now drops alone and its siblings still apply.
     let mappings = config
         .get("model_mappings")
-        .cloned()
-        .and_then(|value| serde_json::from_value::<Vec<ModelMapping>>(value).ok())
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| serde_json::from_value::<ModelMapping>(entry.clone()).ok())
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default()
         .into_iter()
         .filter(|mapping| {
@@ -503,20 +527,48 @@ fn push_unique_model(
         if existing.description == existing.id && contribution.description != trimmed {
             existing.description = contribution.description.to_string();
         }
+        // A baseline contribution names itself as its own upstream, because a
+        // baseline model is forwarded unrewritten. That placeholder must give way
+        // to a real mapping: the default context window is derived from the
+        // *upstream* name, so leaving the self-reference in place made one
+        // wildcard account in the pool enough to have every alias sized off its
+        // own id instead of the model that actually serves it.
+        if existing.upstream_model.eq_ignore_ascii_case(&existing.id)
+            && !contribution.upstream_model.eq_ignore_ascii_case(trimmed)
+        {
+            existing.upstream_model = contribution.upstream_model.trim().to_string();
+        }
         // Two accounts can advertise one alias; the baseline contributes it with
-        // no overrides at all. Let the first account that actually declares a
-        // value fill the gap rather than leaving the catalog on the default.
-        //
-        // `upstream_model` is deliberately not merged: accounts that disagree
-        // about where one alias points cannot be described by a single catalog
-        // entry anyway, and the first claim is the one the description already
-        // names.
-        if existing.context_window.is_none() {
-            existing.context_window = contribution.context_window;
-        }
-        if existing.reasoning_levels.is_none() {
-            existing.reasoning_levels = contribution.reasoning_levels.map(<[String]>::to_vec);
-        }
+        // no overrides at all. An undeclared field takes the first declared value,
+        // but two accounts that disagree are reconciled toward the *smaller*
+        // claim rather than first-wins: routing alternates between them, so the
+        // catalog has to describe what every account can serve. Over-claiming
+        // sends a turn to the account that cannot honour it and dies on a 400.
+        existing.context_window = match (existing.context_window, contribution.context_window) {
+            (Some(current), Some(incoming)) => Some(current.min(incoming)),
+            (current, incoming) => current.or(incoming),
+        };
+        existing.reasoning_levels = match (
+            existing.reasoning_levels.take(),
+            contribution.reasoning_levels,
+        ) {
+            // Both declared: only the efforts every account offers survive. An
+            // empty intersection falls back to the profile rather than
+            // advertising a model with no reasoning tier at all.
+            (Some(current), Some(incoming)) => {
+                let intersection = current
+                    .iter()
+                    .filter(|level| incoming.iter().any(|other| other == *level))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if intersection.is_empty() {
+                    None
+                } else {
+                    Some(intersection)
+                }
+            }
+            (current, incoming) => current.or_else(|| incoming.map(<[String]>::to_vec)),
+        };
     }
 }
 
@@ -576,6 +628,7 @@ mod tests {
         codex_reasoning_levels, codex_reasoning_metadata, codex_reasoning_profile,
         known_upstream_models, model_state_key, parse_model_capability, requested_model_from_body,
         resolve_mapping_target, supports_requested_model, ModelCapability,
+        CODEX_ONE_M_CONTEXT_WINDOW,
     };
     use crate::models::route_credential::{ModelMapping, FALLBACK_MODEL_ALIAS};
 
@@ -794,6 +847,68 @@ mod tests {
             sol.reasoning_levels.as_deref(),
             Some(&["high".to_string()][..])
         );
+        // And the baseline's self-referential upstream gives way to the real one,
+        // so the default window is derived from what actually serves the request.
+        assert_eq!(sol.upstream_model, "upstream-sol");
+    }
+
+    /// A wildcard account contributes every baseline model naming *itself* as its
+    /// own upstream, because a baseline model is forwarded unrewritten. If that
+    /// placeholder survived the merge, one such account anywhere in the pool was
+    /// enough to size every alias off its own id — undoing the whole point of
+    /// reading the default window off the upstream.
+    #[test]
+    fn a_wildcard_account_does_not_pin_the_upstream_to_the_alias() {
+        let wildcard = parse_model_capability(r#"{"model_mappings":[]}"#);
+        let declaring =
+            parse_model_capability(r#"{"model_mappings":[{"from":"gpt-5.5","to":"glm-5.3"}]}"#);
+        let entries = advertised_model_catalog_entries("codex", &[wildcard, declaring]);
+        let entry = entries
+            .iter()
+            .find(|entry| entry.id == "gpt-5.5")
+            .expect("gpt-5.5 entry");
+
+        assert_eq!(entry.upstream_model, "glm-5.3");
+        // glm-5.3 is a known 1M family, so the advertised window follows it rather
+        // than the generic default the alias name would have produced.
+        assert_eq!(
+            codex_effective_context_window(entry.context_window, &entry.upstream_model),
+            CODEX_ONE_M_CONTEXT_WINDOW
+        );
+    }
+
+    /// Routing alternates between accounts that advertise the same alias, so the
+    /// catalog has to describe what *every* one of them can serve. Taking the
+    /// first claim let a 1M declaration hide a 128K sibling, and the turns that
+    /// landed on the smaller account died on a 400.
+    #[test]
+    fn accounts_disagreeing_about_one_alias_are_reconciled_downward() {
+        let generous = parse_model_capability(
+            r#"{"model_mappings":[{"from":"gpt-5.5","to":"up-a","context_window":1000000,"reasoning_levels":["low","medium","high","xhigh"]}]}"#,
+        );
+        let modest = parse_model_capability(
+            r#"{"model_mappings":[{"from":"gpt-5.5","to":"up-b","context_window":128000,"reasoning_levels":["medium","high"]}]}"#,
+        );
+
+        for order in [
+            vec![generous.clone(), modest.clone()],
+            vec![modest, generous],
+        ] {
+            let entries = advertised_model_catalog_entries("codex", &order);
+            let entry = entries
+                .iter()
+                .find(|entry| entry.id == "gpt-5.5")
+                .expect("gpt-5.5 entry");
+
+            // The smaller window regardless of which account came first.
+            assert_eq!(entry.context_window, Some(128_000));
+            // And only the efforts both accounts offer.
+            let levels = entry.reasoning_levels.clone().expect("levels");
+            assert!(levels.contains(&"medium".to_string()));
+            assert!(levels.contains(&"high".to_string()));
+            assert!(!levels.contains(&"low".to_string()));
+            assert!(!levels.contains(&"xhigh".to_string()));
+        }
     }
 
     #[test]
