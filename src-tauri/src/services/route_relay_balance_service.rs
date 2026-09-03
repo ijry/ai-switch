@@ -9,6 +9,7 @@ use crate::services::deeplink_service::mask_api_key;
 use crate::services::http_client::build_outbound_http_client;
 use crate::services::route_proxy_service::credential_user_agent;
 use chrono::{TimeZone, Utc};
+use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -56,33 +57,47 @@ impl RouteRelayBalanceService {
     /// Refreshes every relay account on a platform that has querying turned on.
     /// Per-account failures become `source: "error"` entries instead of failing
     /// the whole batch, mirroring `RouteQuotaService::refresh_platform`.
+    ///
+    /// Accounts are swept a few at a time rather than strictly one after another.
+    /// A slow relay costs a full per-request timeout per candidate, and both the
+    /// single-account and the batch button stay disabled for the whole run with no
+    /// way to cancel, so a serial sweep over a handful of accounts left the UI
+    /// frozen for minutes on one unresponsive panel. The cap stays small because
+    /// several accounts often share one panel host.
     pub async fn refresh_platform(
         pool: &SqlitePool,
         platform: String,
     ) -> Result<Vec<RelayBalanceRefreshOutcome>, AppError> {
         let credentials =
             RouteCredentialRepository::list_by_platform(pool, platform.trim()).await?;
-        let mut outcomes = Vec::new();
-        for credential in credentials {
-            if credential.kind != "api" || credential.archived_at.is_some() {
-                continue;
-            }
-            if RelayBalanceConfig::from_config_json(&credential.config_json).is_none() {
-                continue;
-            }
+        let queued = credentials.into_iter().filter(|credential| {
+            credential.kind == "api"
+                && credential.archived_at.is_none()
+                && RelayBalanceConfig::from_config_json(&credential.config_json).is_some()
+        });
+        let outcomes = futures_util::stream::iter(queued.map(|credential| async move {
             match refresh_credential(pool, credential.clone()).await {
-                Ok(outcome) => outcomes.push(outcome),
-                Err(err) => outcomes.push(RelayBalanceRefreshOutcome {
+                Ok(outcome) => outcome,
+                Err(err) => RelayBalanceRefreshOutcome {
                     credential,
                     updated: false,
                     source: "error".to_string(),
                     message: Some(describe_failure(&err)),
-                }),
+                },
             }
-        }
+        }))
+        // Ordered, so a future consumer that assumes list order is not surprised;
+        // today both (the batch summary's counts and the per-row status writeback,
+        // which keys by credential id) are order-independent anyway.
+        .buffered(RELAY_BALANCE_BATCH_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
         Ok(outcomes)
     }
 }
+
+/// How many accounts a batch balance refresh sweeps at once.
+const RELAY_BALANCE_BATCH_CONCURRENCY: usize = 4;
 
 /// Renders a failure for the batch path, which has no error channel of its own
 /// and folds each one into a per-account string. `Display` is only the message,
@@ -341,15 +356,19 @@ async fn fetch_with_dialect_fallback(
     let Some(other) = chosen.other_built_in() else {
         return Err(err);
     };
+    // Only when the panel answered every candidate and none of them served the
+    // endpoint. `..._unreachable` — anything that never answered at all — must not
+    // reach here: the timeout below is reqwest's *per-request* limit, not a budget
+    // shared with the first round, so a wall-blocked or dead host would spend a
+    // fresh 15s per candidate proving the same thing a second time.
     if err.code() != "validation.route_relay_balance_all_failed" {
         return Err(err);
     }
-    // Deliberately the same client, and so the same 15s budget, as the selected
-    // dialect. A shorter leash for the retry was tried and rejected: at 8s the
-    // real kktoken.cc and worldclawpro.ai panels — both of which do answer
-    // `/api/usage/token/` — timed out and reported a balance of "查询失败", which
-    // is the exact failure this fallback exists to remove. A slow relay is normal.
-
+    // The retry deliberately reuses the same client and the same per-request 15s
+    // limit. A shorter leash was tried and rejected: at 8s the real kktoken.cc and
+    // worldclawpro.ai panels — both of which do answer `/api/usage/token/` —
+    // timed out and reported a balance of "查询失败", which is the exact failure
+    // this fallback exists to remove. A slow relay is normal.
     match fetch_with_dialect(client, headers, config, request, other).await {
         Ok(mut snapshot) => {
             // Say so rather than silently answering a different question: the
@@ -362,10 +381,45 @@ async fn fetch_with_dialect_fallback(
             ));
             Ok(snapshot)
         }
-        // The selected dialect's failure is the one the user asked about; the
-        // fallback's is noise. Keep the former, and record that the latter was
-        // tried so nobody goes and tries it by hand.
-        Err(_) => Err(with_fallback_note(err, other)),
+        Err(fallback_err) => {
+            // A fallback failure that is not "no such endpoint here" means the
+            // other dialect *found* the endpoint and something else went wrong —
+            // most often a 401/403, i.e. the key is the problem. That is the real
+            // diagnosis, so surfacing the selected dialect's "no address worked"
+            // instead (and asserting the other dialect had nothing either) both
+            // discards the answer and contradicts it.
+            if !matches!(
+                fallback_err.code(),
+                "validation.route_relay_balance_all_failed"
+                    | "validation.route_relay_balance_unreachable"
+            ) {
+                return Err(with_dialect_note(fallback_err, other));
+            }
+            Err(with_fallback_note(err, other))
+        }
+    }
+}
+
+/// Marks an error as coming from the dialect the user did not select.
+fn with_dialect_note(err: AppError, other: RelayBalanceProvider) -> AppError {
+    let AppError::Validation {
+        code,
+        message,
+        details,
+        recoverable,
+    } = err
+    else {
+        return err;
+    };
+    let note = format!("（按 {} 的地址查到了接口）", other.label());
+    AppError::Validation {
+        code,
+        message,
+        details: Some(match details {
+            Some(details) => format!("{details}{note}"),
+            None => note,
+        }),
+        recoverable,
     }
 }
 
@@ -449,10 +503,31 @@ fn balance_request_headers(
     Ok(headers)
 }
 
+/// Why one candidate URL did not produce a balance.
+///
+/// The distinction drives the dialect fallback: "this panel answered and does not
+/// serve that endpoint" is a reason to try the other dialect, while "the panel
+/// never answered" is not — retrying a dead or wall-blocked host under a second
+/// dialect only spends another full timeout per candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidateFailure {
+    /// Never got a response: DNS, TLS, connect, or the request timeout.
+    Transport,
+    /// The panel answered that this path is not there (404/405, or a non-JSON 200
+    /// from its single-page-app catch-all route).
+    Absent,
+}
+
 /// Tries each candidate URL in order. Transport errors, 404, 405 and a 200 whose
 /// body is not JSON move on to the next one; any other non-success status is
 /// reported as-is, because a 401 or 403 means the endpoint exists and the key is
 /// the problem.
+///
+/// On total failure every candidate's own reason is reported, not just the last
+/// one: for a Base URL that already ends in `/v1` the last candidate is the
+/// double-prefix `…/v1/v1/…` address this module derives itself, so keeping only
+/// that one pointed the user at a URL that was never meant to exist while hiding
+/// the answer the real endpoint gave.
 async fn get_json_from_candidates(
     client: &Client,
     headers: &HeaderMap,
@@ -466,12 +541,15 @@ async fn get_json_from_candidates(
             None,
         ));
     }
-    let mut last_err: Option<String> = None;
+    let mut failures: Vec<(CandidateFailure, String)> = Vec::new();
     for url in candidates {
         let response = match client.get(url).headers(headers.clone()).send().await {
             Ok(response) => response,
             Err(err) => {
-                last_err = Some(redact_secret(format!("{url}: {err}"), secret));
+                failures.push((
+                    CandidateFailure::Transport,
+                    redact_secret(format!("{url}: {err}"), secret),
+                ));
                 continue;
             }
         };
@@ -486,12 +564,15 @@ async fn get_json_from_candidates(
                 // is broken": treat it like the 404 it morally is and keep going,
                 // or a real endpoint sitting behind an SPA route never gets asked.
                 Err(err) => {
-                    last_err = Some(redact_secret(
-                        format!(
-                            "{url}: HTTP {status}，但响应不是 JSON（{err}）: {}",
-                            truncate_body(&body)
+                    failures.push((
+                        CandidateFailure::Absent,
+                        redact_secret(
+                            format!(
+                                "{url}: HTTP {status}，但响应不是 JSON（{err}）: {}",
+                                truncate_body(&body)
+                            ),
+                            secret,
                         ),
-                        secret,
                     ));
                     continue;
                 }
@@ -502,7 +583,7 @@ async fn get_json_from_candidates(
             secret,
         );
         if status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED {
-            last_err = Some(message);
+            failures.push((CandidateFailure::Absent, message));
             continue;
         }
         return Err(validation_error(
@@ -511,10 +592,29 @@ async fn get_json_from_candidates(
             Some(message),
         ));
     }
+    // Every candidate answered, and none of them served the endpoint: the caller
+    // may usefully try the other dialect. A transport failure anywhere makes this
+    // inconclusive instead, so the caller must not spend a second round.
+    let all_absent = failures
+        .iter()
+        .all(|(kind, _)| *kind == CandidateFailure::Absent);
+    let details = failures
+        .into_iter()
+        .map(|(_, message)| message)
+        .collect::<Vec<_>>()
+        .join("；");
     Err(validation_error(
-        "validation.route_relay_balance_all_failed",
-        "所有余额查询地址都失败了",
-        last_err,
+        if all_absent {
+            "validation.route_relay_balance_all_failed"
+        } else {
+            "validation.route_relay_balance_unreachable"
+        },
+        if all_absent {
+            "所有余额查询地址都失败了"
+        } else {
+            "余额查询地址都没有应答"
+        },
+        (!details.is_empty()).then_some(details),
     ))
 }
 
@@ -1687,6 +1787,113 @@ mod tests {
                 .any(|note| note.contains("new-api") && note.contains("sub2api")),
             "the mismatch is stated, not silently corrected: {:?}",
             snapshot.notes
+        );
+    }
+
+    /// A host that never answers is not evidence that the endpoint is elsewhere.
+    /// The dialect fallback reuses the same per-request 15s reqwest limit — it is
+    /// not a budget shared with the first round — so switching dialects on a dead
+    /// host spends a fresh timeout per candidate to learn the same thing twice.
+    #[tokio::test]
+    async fn an_unreachable_panel_is_not_retried_under_the_other_dialect() {
+        let pool = memory_pool().await;
+        // Bind and drop, so the port is closed and connections are refused fast.
+        let closed = {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+            listener.local_addr().expect("addr").to_string()
+        };
+        let credential = seed_relay_credential(
+            &pool,
+            &format!("http://{closed}/v1"),
+            Some(json!({"provider": "sub2api"})),
+        )
+        .await;
+
+        let error = RouteRelayBalanceService::refresh_one(&pool, credential.id)
+            .await
+            .expect_err("nothing answered");
+        let AppError::Validation { code, details, .. } = &error else {
+            panic!("expected a validation error, got {error:?}");
+        };
+        assert_eq!(
+            *code, "validation.route_relay_balance_unreachable",
+            "a transport failure is its own class, not \"no address worked\""
+        );
+        let details = details.clone().unwrap_or_default();
+        assert!(
+            !details.contains("也试过"),
+            "the other dialect must not have been swept: {details}"
+        );
+    }
+
+    /// Keeping only the last candidate's reason pointed the user at a URL this
+    /// module derives rather than one the panel ever advertised: for a Base URL
+    /// that already ends in `/v1`, the last candidate is the double-prefix
+    /// `…/v1/v1/…` address, and the answer the real path gave was discarded.
+    #[tokio::test]
+    async fn every_candidate_reports_its_own_reason() {
+        let host = start_spa_panel(None).await;
+        let first = format!("http://{host}/v1/usage");
+        let second = format!("http://{host}/v1/v1/usage");
+
+        let error = sweep(&[first.clone(), second.clone()])
+            .await
+            .expect_err("the SPA answers both");
+        let AppError::Validation { details, .. } = &error else {
+            panic!("expected a validation error, got {error:?}");
+        };
+        let details = details.clone().unwrap_or_default();
+        assert!(
+            details.contains(&first),
+            "the meaningful candidate is missing: {details}"
+        );
+        assert!(
+            details.contains(&second),
+            "the derived candidate is missing: {details}"
+        );
+    }
+
+    /// When the other dialect finds the endpoint and it answers 401, that is the
+    /// real diagnosis. Reporting the selected dialect's "no address worked" and
+    /// appending "the other one had nothing either" discards the answer and then
+    /// contradicts it.
+    #[tokio::test]
+    async fn a_fallback_that_finds_a_rejected_key_reports_the_rejection() {
+        let pool = memory_pool().await;
+        let host = serve(Router::new().route(
+            NEW_API_USAGE_PATH,
+            get(|| async {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"message": "invalid token"})),
+                )
+            }),
+        ))
+        .await;
+        // sub2api is selected but serves nothing here, so its sweep ends in
+        // `all_failed` and the new-api address is tried next.
+        let credential = seed_relay_credential(
+            &pool,
+            &format!("http://{host}/v1"),
+            Some(json!({"provider": "sub2api"})),
+        )
+        .await;
+
+        let error = RouteRelayBalanceService::refresh_one(&pool, credential.id)
+            .await
+            .expect_err("the key is rejected");
+        let AppError::Validation { code, details, .. } = &error else {
+            panic!("expected a validation error, got {error:?}");
+        };
+        assert_eq!(*code, "validation.route_relay_balance_http");
+        let details = details.clone().unwrap_or_default();
+        assert!(
+            details.contains("401"),
+            "the upstream status is the diagnosis: {details}"
+        );
+        assert!(
+            !details.contains("同样没有"),
+            "the rejection must not be reported as an absent endpoint: {details}"
         );
     }
 
