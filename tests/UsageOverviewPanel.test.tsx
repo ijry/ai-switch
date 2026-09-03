@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getModelPriceConfigs, getRouteProxyKey, getRouteProxyStatus, getUsageOverview, saveModelPriceConfigs } from "../src/lib/api/client";
 import { createQueryClient } from "../src/lib/query/queryClient";
 import { UsageOverviewPanel } from "../src/components/accounts/UsageOverviewPanel";
-import type { UsageOverview, UsageOverviewRow } from "../src/lib/api/types";
+import type { UsageOverview, UsageOverviewRow, UsageTrendSeries } from "../src/lib/api/types";
 
 vi.mock("../src/lib/api/client", () => ({
   getModelPriceConfigs: vi.fn(),
@@ -52,6 +52,32 @@ function groupRow(key: string, cost: number) {
   };
 }
 
+function trendBucket(label: string, tokens: number, requests: number) {
+  return {
+    start: `2026-08-${label.slice(3)}T00:00:00+08:00`,
+    label,
+    title: `2026-${label}`,
+    request_count: requests,
+    input_tokens: tokens,
+    output_tokens: 0,
+    cache_write_tokens: 0,
+    cache_read_tokens: 0,
+    cost_micros: tokens * 10,
+  };
+}
+
+function seriesFixture(): UsageTrendSeries {
+  return {
+    unit: "day",
+    buckets: [trendBucket("08-18", 500, 2), trendBucket("08-19", 1_000, 1)],
+    by_model: [{ key: "claude-haiku-4-5", tokens: [500, 1_000] }],
+    by_platform: [{ key: "claude", tokens: [500, 1_000] }],
+    by_account: [{ key: "未经代理", tokens: [500, 1_000] }],
+    by_source: [{ key: "匹配", tokens: [500, 1_000] }],
+    undated_request_count: 0,
+  };
+}
+
 function overviewFixture(overrides: Partial<UsageOverview> = {}): UsageOverview {
   return {
     totals: {
@@ -72,6 +98,7 @@ function overviewFixture(overrides: Partial<UsageOverview> = {}): UsageOverview 
       by_account: [groupRow("未经代理", 1_000_000)],
       by_source: [groupRow("匹配", 3_357_030_000)],
     },
+    series: seriesFixture(),
     row_count: 1,
     page: 1,
     page_size: 20,
@@ -164,6 +191,82 @@ describe("UsageOverviewPanel", () => {
     // All four dimensions arrive in one response, so flipping the control is
     // free — a refetch here would make the segmented control feel laggy.
     expect(vi.mocked(getUsageOverview).mock.calls.length).toBe(callsBefore);
+  });
+
+  it("offers the list/chart switch only once a dimension is open", async () => {
+    renderPanel();
+    await screen.findByText("1.1万");
+
+    // With nothing grouped there is nothing to draw, so the switch would toggle
+    // between two empty frames.
+    expect(screen.queryByRole("button", { name: "图表" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "模型" }));
+
+    expect(screen.getByRole("button", { name: "图表" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "列表" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("draws the grouped numbers as a stacked trend chart and switches back", async () => {
+    renderPanel();
+    await screen.findByText("1.1万");
+    await userEvent.click(screen.getByRole("button", { name: "模型" }));
+
+    await userEvent.click(screen.getByRole("button", { name: "图表" }));
+
+    // The unit is the backend's call, so the heading has to follow it rather
+    // than hardcode "按天".
+    expect(await screen.findByText("按天 Token 趋势")).toBeInTheDocument();
+    expect(screen.getByText("输入+输出 Token，按模型堆叠")).toBeInTheDocument();
+    // One hit target per bucket, carrying the value without a hover.
+    expect(screen.getByLabelText("2026-08-19，1,000 Token")).toBeInTheDocument();
+    expect(screen.getByLabelText("2026-08-18，500 Token")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "列表" }));
+
+    expect(screen.queryByText("按天 Token 趋势")).not.toBeInTheDocument();
+  });
+
+  it("keeps the chart on the same window as the summary cards", async () => {
+    vi.mocked(getUsageOverview).mockResolvedValue(
+      overviewFixture({
+        series: {
+          ...seriesFixture(),
+          unit: "hour",
+          undated_request_count: 4,
+        },
+      }),
+    );
+
+    renderPanel();
+    await screen.findByText("1.1万");
+    await userEvent.click(screen.getByRole("button", { name: "账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "图表" }));
+
+    expect(await screen.findByText("按小时 Token 趋势")).toBeInTheDocument();
+    expect(screen.getByText("输入+输出 Token，按账号堆叠")).toBeInTheDocument();
+    // Undated rows count in the cards but sit in no bucket, so the chart says so
+    // rather than letting its bars read as the whole story.
+    expect(screen.getByText(/4 个请求没有时间戳/)).toBeInTheDocument();
+  });
+
+  it("requests a rolling window for the 7d preset", async () => {
+    renderPanel();
+    await screen.findByText("1.1万");
+
+    await userEvent.click(screen.getByRole("button", { name: "7d" }));
+
+    await waitFor(() => {
+      const call = vi.mocked(getUsageOverview).mock.calls.at(-1);
+      const since = call?.[0];
+      expect(typeof since).toBe("string");
+      const days = (Date.now() - new Date(since as string).getTime()) / 86_400_000;
+      expect(days).toBeGreaterThan(6.9);
+      expect(days).toBeLessThan(7.1);
+    });
   });
 
   it("labels each row with its source", async () => {

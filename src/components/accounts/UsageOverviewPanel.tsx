@@ -1,9 +1,10 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Settings2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { BarChart3, ChevronLeft, ChevronRight, List, Settings2 } from "lucide-react";
+import { useState } from "react";
 import { ModelPricingDialog } from "./ModelPricingDialog";
+import { UsageTrendChart } from "./UsageTrendChart";
 import { getUsageOverview } from "../../lib/api/client";
-import { formatCompactCount, formatExactCount } from "../../lib/usageFormat";
+import { formatCompactCount, formatCostMicros, formatExactCount } from "../../lib/usageFormat";
 import { parseUsageMetadata, prettyJsonOrText } from "../../lib/usageMetadata";
 import type {
   UsageOverviewGroupRow,
@@ -13,21 +14,32 @@ import type {
 
 const periods = [
   { key: "today", label: "当日" },
+  { key: "24h", label: "24h" },
   { key: "week", label: "本周" },
+  { key: "7d", label: "7d" },
   { key: "month", label: "本月" },
+  { key: "30d", label: "30d" },
   { key: "all", label: "累计" },
 ] as const;
 
 type Period = (typeof periods)[number]["key"];
 
 const groupDimensions = [
-  { key: "model", label: "模型", header: "模型" },
-  { key: "platform", label: "平台", header: "平台" },
-  { key: "account", label: "账号", header: "账号" },
-  { key: "source", label: "来源", header: "来源" },
+  { key: "model", label: "模型", header: "模型", field: "by_model" },
+  { key: "platform", label: "平台", header: "平台", field: "by_platform" },
+  { key: "account", label: "账号", header: "账号", field: "by_account" },
+  { key: "source", label: "来源", header: "来源", field: "by_source" },
 ] as const;
 
 type GroupDimension = (typeof groupDimensions)[number]["key"];
+
+/** The grouped numbers as a table, or the same numbers over time as bars. */
+const groupViews = [
+  { key: "list", label: "列表", Icon: List },
+  { key: "chart", label: "图表", Icon: BarChart3 },
+] as const;
+
+type GroupView = (typeof groupViews)[number]["key"];
 
 const pageSize = 20;
 
@@ -43,48 +55,38 @@ const refreshMs = 30_000;
 const groupRowLimit = 12;
 
 function periodSince(period: Period, now = new Date()) {
-  if (period === "all") {
-    return null;
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  switch (period) {
+    case "today": {
+      return today.toISOString();
+    }
+    case "24h": {
+      const ms = now.getTime() - 24 * 60 * 60 * 1000;
+      return new Date(ms).toISOString();
+    }
+    case "week": {
+      const day = now.getDay();
+      const daysFromMonday = day === 0 ? 6 : day - 1;
+      const monday = new Date(today);
+      monday.setDate(today.getDate() - daysFromMonday);
+      return monday.toISOString();
+    }
+    case "7d": {
+      const ms = now.getTime() - 7 * 24 * 60 * 60 * 1000;
+      return new Date(ms).toISOString();
+    }
+    case "month": {
+      const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      return firstOfMonth.toISOString();
+    }
+    case "30d": {
+      const ms = now.getTime() - 30 * 24 * 60 * 60 * 1000;
+      return new Date(ms).toISOString();
+    }
+    case "all": {
+      return null;
+    }
   }
-
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-
-  if (period === "week") {
-    const day = start.getDay();
-    const daysSinceMonday = day === 0 ? 6 : day - 1;
-    start.setDate(start.getDate() - daysSinceMonday);
-  }
-
-  if (period === "month") {
-    start.setDate(1);
-  }
-
-  return start.toISOString();
-}
-
-/**
- * Format a USD-micros total for a summary card.
- *
- * Fixed two-decimal formatting rendered any real amount under half a cent as
- * "$0.00", which is indistinguishable from having no cost data at all. Small
- * totals therefore get more decimals rather than being rounded away.
- */
-function formatCostMicros(micros: number) {
-  const dollars = micros / 1_000_000;
-  if (dollars === 0) {
-    return "$0.00";
-  }
-  if (Math.abs(dollars) < 0.01) {
-    return `$${dollars.toFixed(6)}`;
-  }
-  if (Math.abs(dollars) < 1) {
-    return `$${dollars.toFixed(4)}`;
-  }
-  return `$${dollars.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
 }
 
 function formatTime(value: string | null | undefined) {
@@ -391,10 +393,11 @@ export function UsageOverviewPanel() {
   const [period, setPeriod] = useState<Period>("today");
   const [page, setPage] = useState(1);
   const [dimension, setDimension] = useState<GroupDimension | null>(null);
+  const [groupView, setGroupView] = useState<GroupView>("list");
   const [pricingOpen, setPricingOpen] = useState(false);
   const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
 
-  const since = useMemo(() => periodSince(period), [period]);
+  const since = periodSince(period);
 
   const query = useQuery({
     queryKey: ["usage-overview", since, page, pageSize],
@@ -415,21 +418,8 @@ export function UsageOverviewPanel() {
   };
 
   const activeGroup = groupDimensions.find((item) => item.key === dimension);
-  const groupRows = (() => {
-    if (!overview || !activeGroup) {
-      return [];
-    }
-    switch (activeGroup.key) {
-      case "model":
-        return overview.groups.by_model;
-      case "platform":
-        return overview.groups.by_platform;
-      case "account":
-        return overview.groups.by_account;
-      case "source":
-        return overview.groups.by_source;
-    }
-  })();
+  const groupRows = !overview || !activeGroup ? [] : overview.groups[activeGroup.field];
+  const activeSeries = !overview || !activeGroup ? [] : overview.series[activeGroup.field];
 
   const integrityNotes = (() => {
     if (!overview) {
@@ -477,10 +467,10 @@ export function UsageOverviewPanel() {
           >
             <Settings2 aria-hidden="true" className="h-4 w-4" />
           </button>
-          <div className="grid grid-cols-4 gap-1 rounded-xl bg-stone-100 p-1">
+          <div className="grid grid-cols-7 gap-1 rounded-xl bg-stone-100 p-1">
           {periods.map((item) => (
             <button
-              className={`rounded-lg px-2.5 py-1.5 text-[12px] font-semibold transition-colors ${
+              className={`rounded-lg px-2 py-1 text-[11px] font-semibold transition-colors ${
                 period === item.key
                   ? "bg-white text-stone-950 shadow-sm"
                   : "text-stone-500 hover:text-stone-900"
@@ -558,8 +548,41 @@ export function UsageOverviewPanel() {
                   </button>
                 ))}
               </div>
+              {activeGroup ? (
+                <div className="ml-auto flex gap-1 rounded-lg bg-stone-100 p-0.5">
+                  {groupViews.map(({ key, label, Icon }) => (
+                    <button
+                      aria-label={label}
+                      aria-pressed={groupView === key}
+                      className={`grid h-7 w-7 place-items-center rounded-md transition-colors ${
+                        groupView === key
+                          ? "bg-white text-stone-950 shadow-sm"
+                          : "text-stone-500 hover:text-stone-900"
+                      }`}
+                      key={key}
+                      onClick={() => setGroupView(key)}
+                      title={label}
+                      type="button"
+                    >
+                      <Icon aria-hidden="true" className="h-3.5 w-3.5" />
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
-            {activeGroup ? <GroupTable header={activeGroup.header} rows={groupRows} /> : null}
+            {activeGroup && groupView === "list" ? (
+              <GroupTable header={activeGroup.header} rows={groupRows} />
+            ) : null}
+            {activeGroup && groupView === "chart" && overview ? (
+              <UsageTrendChart
+                buckets={overview.series.buckets}
+                dimensionLabel={activeGroup.label}
+                rows={activeSeries}
+                stale={query.isFetching}
+                undatedRequestCount={overview.series.undated_request_count}
+                unit={overview.series.unit}
+              />
+            ) : null}
           </div>
 
           <div className="overflow-hidden rounded-xl border border-stone-200 bg-white">

@@ -27,3 +27,27 @@ export function formatCompactCount(value: number): string {
 export function formatExactCount(value: number): string {
   return sanitize(value).toLocaleString("en-US");
 }
+
+/**
+ * Format a USD-micros total.
+ *
+ * Fixed two-decimal formatting rendered any real amount under half a cent as
+ * "$0.00", which is indistinguishable from having no cost data at all. Small
+ * totals therefore get more decimals rather than being rounded away.
+ */
+export function formatCostMicros(micros: number): string {
+  const dollars = micros / 1_000_000;
+  if (dollars === 0) {
+    return "$0.00";
+  }
+  if (Math.abs(dollars) < 0.01) {
+    return `$${dollars.toFixed(6)}`;
+  }
+  if (Math.abs(dollars) < 1) {
+    return `$${dollars.toFixed(4)}`;
+  }
+  return `$${dollars.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}

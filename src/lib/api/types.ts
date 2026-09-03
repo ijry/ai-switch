@@ -659,6 +659,42 @@ export type UsageOverviewGroups = {
   by_source: UsageOverviewGroupRow[];
 };
 
+/** How wide one trend bucket is; picked by the Rust side from the window span. */
+export type UsageBucketUnit = "hour" | "day" | "week" | "month";
+
+/** One column of the trend chart: a time slice plus its own totals. */
+export type UsageTrendBucket = UsageOverviewTotals & {
+  /** Bucket start, RFC 3339 in the offset the bucketing used. */
+  start: string;
+  /** Short axis label — `14:00`, `09-03`, `2026-09`. */
+  label: string;
+  /** The full slice in words, for a tooltip heading. */
+  title: string;
+};
+
+/** One stacked series of the trend chart. */
+export type UsageTrendRow = {
+  /** A group key, or `其他` on the folded tail row. */
+  key: string;
+  /**
+   * Input + output tokens per bucket, positionally aligned to `buckets`. Cache
+   * tokens are excluded on purpose — see the Rust doc comment.
+   */
+  tokens: number[];
+};
+
+/** The same four dimensions as {@link UsageOverviewGroups}, sliced over time. */
+export type UsageTrendSeries = {
+  unit: UsageBucketUnit;
+  buckets: UsageTrendBucket[];
+  by_model: UsageTrendRow[];
+  by_platform: UsageTrendRow[];
+  by_account: UsageTrendRow[];
+  by_source: UsageTrendRow[];
+  /** Rows counted in `totals` that carried no timestamp, so sit in no bucket. */
+  undated_request_count: number;
+};
+
 /** Facts for the data-completeness note beneath the summary cards. */
 export type UsageOverviewIntegrity = {
   scanned_file_count: number;
@@ -675,13 +711,14 @@ export type UsageOverviewIntegrity = {
 
 /**
  * Local CLI transcript usage merged with proxied requests, deduplicated on the
- * upstream response id. `totals` and `groups` cover the whole window; `rows` is
- * one page.
+ * upstream response id. `totals`, `groups` and `series` cover the whole window;
+ * `rows` is one page.
  */
 export type UsageOverview = {
   totals: UsageOverviewTotals;
   rows: UsageOverviewRow[];
   groups: UsageOverviewGroups;
+  series: UsageTrendSeries;
   row_count: number;
   page: number;
   page_size: number;
