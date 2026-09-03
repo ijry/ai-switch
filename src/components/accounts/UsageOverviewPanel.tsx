@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { ModelPricingDialog } from "./ModelPricingDialog";
 import { getUsageOverview } from "../../lib/api/client";
 import { formatCompactCount, formatExactCount } from "../../lib/usageFormat";
+import { parseUsageMetadata, prettyJsonOrText } from "../../lib/usageMetadata";
 import type {
   UsageOverviewGroupRow,
   UsageOverviewRow,
@@ -193,44 +194,195 @@ function GroupTable({
   );
 }
 
-function RequestRow({ row }: { row: UsageOverviewRow }) {
+function detailId(rowId: string) {
+  return `usage-request-detail-${rowId}`;
+}
+
+/** A transcript row has no HTTP status, so it reports the outcome in words. */
+function statusText(row: UsageOverviewRow) {
+  const outcome = row.success ? "成功" : "失败";
+  return row.status ? `${row.status} · ${outcome}` : outcome;
+}
+
+function costText(row: UsageOverviewRow) {
+  if (!row.price_source) {
+    return "无价格";
+  }
+  const origin = row.price_source === "upstream" ? "上游价格" : "本地价格表估算";
+  return `${formatCostMicros(row.cost_micros)}（${origin}）`;
+}
+
+function DetailField({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div>
+      <p className="text-[11px] font-medium text-stone-500">{label}</p>
+      <p
+        className={
+          mono
+            ? "mt-0.5 break-all font-mono text-[11px] text-stone-700"
+            : "mt-0.5 break-all text-stone-800"
+        }
+      >
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function DetailBlock({ label, body }: { label: string; body: string }) {
+  return (
+    <div className="mt-3">
+      <p className="text-[11px] font-medium text-stone-500">{label}</p>
+      <pre className="mt-1 max-h-56 overflow-auto rounded-lg border border-stone-200 bg-white p-2 font-mono text-[11px] leading-relaxed text-stone-700">
+        {body}
+      </pre>
+    </div>
+  );
+}
+
+/**
+ * Everything known about one request, including the raw proxy metadata.
+ *
+ * Session-only rows come from a CLI transcript that never touched this proxy, so
+ * they have no metadata to show; saying that outright beats an empty panel that
+ * reads like a loading failure.
+ */
+function RequestDetail({ row }: { row: UsageOverviewRow }) {
+  const metadata = row.metadata_json ? parseUsageMetadata(row.metadata_json) : null;
+  const mapping =
+    metadata?.requestedModel &&
+    metadata.upstreamModel &&
+    metadata.requestedModel !== metadata.upstreamModel
+      ? `${metadata.requestedModel} → ${metadata.upstreamModel}`
+      : null;
+  return (
+    <div
+      aria-label={`请求 ${row.id} 详情`}
+      className="border-t border-stone-100 bg-stone-50 px-3 py-3"
+      id={detailId(row.id)}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[12px] font-semibold text-stone-800">请求详情</p>
+        <p className="break-all font-mono text-[11px] text-stone-500">{row.id}</p>
+      </div>
+      <div className="mt-3 grid gap-2 text-[12px] sm:grid-cols-2 lg:grid-cols-3">
+        <DetailField label="时间" value={formatTime(row.occurred_at)} />
+        <DetailField
+          label="来源"
+          value={
+            row.source_label
+              ? `${sourceLabels[row.source]} · ${row.source_label}`
+              : sourceLabels[row.source]
+          }
+        />
+        <DetailField label="平台" value={row.provider} />
+        <DetailField label="模型" value={row.model} />
+        {mapping ? <DetailField label="模型映射" value={mapping} /> : null}
+        <DetailField label="账号" value={row.account_name ?? "未经代理"} />
+        <DetailField label="账号 ID" mono value={row.account_id ?? "-"} />
+        <DetailField label="请求路径" mono value={row.path ?? "-"} />
+        <DetailField label="状态" value={statusText(row)} />
+        <DetailField label="输入 Token" value={formatExactCount(row.input_tokens)} />
+        <DetailField label="输出 Token" value={formatExactCount(row.output_tokens)} />
+        <DetailField label="缓存写入 Token" value={formatExactCount(row.cache_write_tokens)} />
+        <DetailField label="缓存读取 Token" value={formatExactCount(row.cache_read_tokens)} />
+        <DetailField label="费用" value={costText(row)} />
+        <DetailField label="上游响应 ID" mono value={row.upstream_response_id ?? "-"} />
+        {metadata?.durationMs ? (
+          <DetailField label="耗时" value={`${metadata.durationMs} ms`} />
+        ) : null}
+        {metadata?.targetUrl ? (
+          <DetailField label="上游地址" mono value={metadata.targetUrl} />
+        ) : null}
+        {metadata?.traceId ? <DetailField label="追踪 ID" mono value={metadata.traceId} /> : null}
+      </div>
+      {metadata?.errorMessage ? (
+        <DetailBlock body={metadata.errorMessage} label="错误信息" />
+      ) : null}
+      {metadata?.responseBody ? (
+        <DetailBlock body={prettyJsonOrText(metadata.responseBody)} label="上游原始响应" />
+      ) : null}
+      {metadata ? (
+        <DetailBlock
+          body={metadata.formatted}
+          label={metadata.valid ? "metadata_json" : "metadata_json 无法解析，显示原始内容。"}
+        />
+      ) : (
+        <p className="mt-3 text-[11px] text-stone-500">
+          这条记录只来自本机 CLI 会话文件，没有经过本代理，因此没有代理元数据可展示。
+        </p>
+      )}
+    </div>
+  );
+}
+
+function RequestRow({
+  row,
+  expanded,
+  onToggle,
+}: {
+  row: UsageOverviewRow;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
   const tokens = row.input_tokens + row.output_tokens;
   const cache = row.cache_write_tokens + row.cache_read_tokens;
   return (
-    <div className="grid grid-cols-2 gap-2 px-3 py-2.5 text-[12px] text-stone-600 sm:grid-cols-3 lg:grid-cols-[1.3fr_1.5fr_0.8fr_0.8fr_1.1fr_0.8fr] lg:items-center">
-      <span className="font-medium text-stone-800">{formatTime(row.occurred_at)}</span>
-      <span className="truncate" title={row.model}>
-        <span className="mr-1 text-[10px] text-stone-400 lg:hidden">模型</span>
-        {row.model}
-      </span>
-      <span
-        title={`输入 ${formatExactCount(row.input_tokens)}；输出 ${formatExactCount(row.output_tokens)}；缓存写入 ${formatExactCount(row.cache_write_tokens)}；缓存读取 ${formatExactCount(row.cache_read_tokens)}`}
-      >
-        <span className="mr-1 text-[10px] text-stone-400 lg:hidden">Token</span>
-        {formatCompactCount(tokens)}
-        {cache > 0 ? <span className="ml-1 text-stone-400">+{formatCompactCount(cache)}</span> : null}
-      </span>
-      <span title={row.price_source === "estimated" ? "按本地价格表估算" : undefined}>
-        <span className="mr-1 text-[10px] text-stone-400 lg:hidden">费用</span>
-        {row.price_source ? formatCostMicros(row.cost_micros) : "无价格"}
-        {row.price_source === "estimated" ? <span className="text-stone-400">(估)</span> : null}
-      </span>
-      <span className="truncate" title={row.account_name ?? row.account_id ?? undefined}>
-        <span className="mr-1 text-[10px] text-stone-400 lg:hidden">账号</span>
-        {row.account_name ?? row.account_id ?? "未经代理"}
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span
-          className={`rounded-md px-1.5 py-0.5 text-[11px] font-semibold ${sourceStyles[row.source]}`}
-        >
-          {sourceLabels[row.source]}
+    <div className="bg-white" data-usage-request-row>
+      <div className="grid grid-cols-2 gap-2 px-3 py-2.5 text-[12px] text-stone-600 sm:grid-cols-3 lg:grid-cols-[1.3fr_1.5fr_0.8fr_0.8fr_1.1fr_0.8fr_auto] lg:items-center">
+        <span className="font-medium text-stone-800">{formatTime(row.occurred_at)}</span>
+        <span className="truncate" title={row.model}>
+          <span className="mr-1 text-[10px] text-stone-400 lg:hidden">模型</span>
+          {row.model}
         </span>
-        {!row.success && row.status ? (
-          <span className="rounded-md bg-red-50 px-1.5 py-0.5 text-[11px] font-semibold text-red-700 ring-1 ring-red-200">
-            {row.status}
+        <span
+          title={`输入 ${formatExactCount(row.input_tokens)}；输出 ${formatExactCount(row.output_tokens)}；缓存写入 ${formatExactCount(row.cache_write_tokens)}；缓存读取 ${formatExactCount(row.cache_read_tokens)}`}
+        >
+          <span className="mr-1 text-[10px] text-stone-400 lg:hidden">Token</span>
+          {formatCompactCount(tokens)}
+          {cache > 0 ? <span className="ml-1 text-stone-400">+{formatCompactCount(cache)}</span> : null}
+        </span>
+        <span title={row.price_source === "estimated" ? "按本地价格表估算" : undefined}>
+          <span className="mr-1 text-[10px] text-stone-400 lg:hidden">费用</span>
+          {row.price_source ? formatCostMicros(row.cost_micros) : "无价格"}
+          {row.price_source === "estimated" ? <span className="text-stone-400">(估)</span> : null}
+        </span>
+        <span className="truncate" title={row.account_name ?? row.account_id ?? undefined}>
+          <span className="mr-1 text-[10px] text-stone-400 lg:hidden">账号</span>
+          {row.account_name ?? row.account_id ?? "未经代理"}
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span
+            className={`rounded-md px-1.5 py-0.5 text-[11px] font-semibold ${sourceStyles[row.source]}`}
+          >
+            {sourceLabels[row.source]}
           </span>
-        ) : null}
-      </span>
+          {!row.success && row.status ? (
+            <span className="rounded-md bg-red-50 px-1.5 py-0.5 text-[11px] font-semibold text-red-700 ring-1 ring-red-200">
+              {row.status}
+            </span>
+          ) : null}
+        </span>
+        <button
+          aria-controls={detailId(row.id)}
+          aria-expanded={expanded}
+          aria-label={`${expanded ? "隐藏" : "查看"}请求 ${row.id} 详情`}
+          className="justify-self-end rounded-lg border border-stone-200 bg-white px-2.5 py-1 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50"
+          onClick={onToggle}
+          type="button"
+        >
+          详情
+        </button>
+      </div>
+      {expanded ? <RequestDetail row={row} /> : null}
     </div>
   );
 }
@@ -240,6 +392,7 @@ export function UsageOverviewPanel() {
   const [page, setPage] = useState(1);
   const [dimension, setDimension] = useState<GroupDimension | null>(null);
   const [pricingOpen, setPricingOpen] = useState(false);
+  const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
 
   const since = useMemo(() => periodSince(period), [period]);
 
@@ -444,7 +597,14 @@ export function UsageOverviewPanel() {
             ) : (
               <div className="divide-y divide-stone-100">
                 {overview.rows.map((row) => (
-                  <RequestRow key={row.id} row={row} />
+                  <RequestRow
+                    expanded={expandedRowId === row.id}
+                    key={row.id}
+                    onToggle={() =>
+                      setExpandedRowId((current) => (current === row.id ? null : row.id))
+                    }
+                    row={row}
+                  />
                 ))}
               </div>
             )}

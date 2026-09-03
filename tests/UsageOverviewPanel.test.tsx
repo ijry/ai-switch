@@ -1,5 +1,5 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getModelPriceConfigs, getRouteProxyKey, getRouteProxyStatus, getUsageOverview, saveModelPriceConfigs } from "../src/lib/api/client";
@@ -250,6 +250,108 @@ describe("UsageOverviewPanel", () => {
     await waitFor(() =>
       expect(getUsageOverview).toHaveBeenLastCalledWith(expect.any(String), 2, 20),
     );
+  });
+
+  it("expands one request into a detail panel and collapses it again", async () => {
+    vi.mocked(getUsageOverview).mockResolvedValue(
+      overviewFixture({
+        rows: [
+          rowFixture({
+            metadata_json: JSON.stringify({
+              path: "/v1/messages",
+              target_url: "https://api.anthropic.com/v1/messages",
+              status: 200,
+              success: true,
+              duration_ms: 1842,
+              trace_id: "trace-1",
+              requested_model: "claude-opus-5",
+              upstream_model: "opus-upstream",
+              response_body: '{"id":"msg_a"}',
+            }),
+          }),
+        ],
+      }),
+    );
+
+    renderPanel();
+    const toggle = await screen.findByRole("button", { name: "查看请求 row-1 详情" });
+    expect(screen.queryByLabelText("请求 row-1 详情")).not.toBeInTheDocument();
+
+    await userEvent.click(toggle);
+
+    const detail = await screen.findByLabelText("请求 row-1 详情");
+    expect(within(detail).getByText("请求详情")).toBeInTheDocument();
+    expect(within(detail).getByText("Team Account")).toBeInTheDocument();
+    expect(within(detail).getByText("cred-1")).toBeInTheDocument();
+    // Exact token counts: the row itself only shows a compacted total.
+    expect(within(detail).getByText("120")).toBeInTheDocument();
+    expect(within(detail).getByText("30")).toBeInTheDocument();
+    expect(within(detail).getByText("$0.004200（上游价格）")).toBeInTheDocument();
+    expect(within(detail).getByText("1842 ms")).toBeInTheDocument();
+    expect(within(detail).getByText("claude-opus-5 → opus-upstream")).toBeInTheDocument();
+    expect(within(detail).getByText(/"trace_id": "trace-1"/)).toBeInTheDocument();
+    expect(within(detail).getByText(/"id": "msg_a"/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "隐藏请求 row-1 详情" }));
+
+    expect(screen.queryByLabelText("请求 row-1 详情")).not.toBeInTheDocument();
+  });
+
+  it("shows the raw metadata when it cannot be parsed", async () => {
+    vi.mocked(getUsageOverview).mockResolvedValue(
+      overviewFixture({ rows: [rowFixture({ metadata_json: "{bad json" })] }),
+    );
+
+    renderPanel();
+    await userEvent.click(await screen.findByRole("button", { name: "查看请求 row-1 详情" }));
+
+    const detail = await screen.findByLabelText("请求 row-1 详情");
+    expect(
+      within(detail).getByText("metadata_json 无法解析，显示原始内容。"),
+    ).toBeInTheDocument();
+    expect(within(detail).getByText("{bad json")).toBeInTheDocument();
+  });
+
+  it("says why a transcript-only request has no proxy metadata", async () => {
+    vi.mocked(getUsageOverview).mockResolvedValue(
+      overviewFixture({
+        rows: [
+          rowFixture({
+            source: "session_only",
+            account_id: null,
+            account_name: null,
+            source_label: null,
+            path: null,
+            status: null,
+            metadata_json: null,
+          }),
+        ],
+      }),
+    );
+
+    renderPanel();
+    await userEvent.click(await screen.findByRole("button", { name: "查看请求 row-1 详情" }));
+
+    const detail = await screen.findByLabelText("请求 row-1 详情");
+    // An empty panel would read as a load failure rather than as an absence.
+    expect(within(detail).getByText(/没有经过本代理/)).toBeInTheDocument();
+    expect(within(detail).getByText("成功")).toBeInTheDocument();
+  });
+
+  it("keeps only one detail panel open at a time", async () => {
+    vi.mocked(getUsageOverview).mockResolvedValue(
+      overviewFixture({
+        rows: [rowFixture({ id: "a" }), rowFixture({ id: "b" })],
+        row_count: 2,
+      }),
+    );
+
+    renderPanel();
+    await userEvent.click(await screen.findByRole("button", { name: "查看请求 a 详情" }));
+    await userEvent.click(screen.getByRole("button", { name: "查看请求 b 详情" }));
+
+    expect(await screen.findByLabelText("请求 b 详情")).toBeInTheDocument();
+    expect(screen.queryByLabelText("请求 a 详情")).not.toBeInTheDocument();
   });
 
   it("reports a failure instead of rendering zeros", async () => {
