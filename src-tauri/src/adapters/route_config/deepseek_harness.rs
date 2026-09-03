@@ -43,8 +43,16 @@ impl DeepSeekHarnessAdapter {
         format!("{trimmed}/v1")
     }
 
-    /// Determine which provider entry to write into, checking for managed marker
-    /// or matching base URL and API key
+    /// Which platform, if any, has claimed this provider entry.
+    fn claimed_platform(entry: &Value) -> Option<&str> {
+        entry
+            .get("aiSwitch")
+            .and_then(|marker| marker.get("platform"))
+            .and_then(Value::as_str)
+    }
+
+    /// Which provider entry to write into: ours by marker, else an entry that
+    /// already points at this proxy and no sibling platform has claimed.
     fn adoption_target(&self, providers: &Mapping, input: &RouteConfigInput) -> Option<String> {
         // First check for our managed marker
         if let Some(key) = providers.iter().find_map(|(key, entry)| {
@@ -53,17 +61,21 @@ impl DeepSeekHarnessAdapter {
                 .and_then(|v| v.get("managed"))
                 .and_then(Value::as_bool)
                 == Some(true);
-            let platform = entry
-                .get("aiSwitch")
-                .and_then(|v| v.get("platform"))
-                .and_then(Value::as_str)
-                .is_some_and(|value| value == self.platform.as_str());
-            (managed && platform).then(|| key.as_str().unwrap_or("").to_string())
+            let platform =
+                Self::claimed_platform(entry).is_some_and(|value| value == self.platform.as_str());
+            (managed && platform).then(|| key.as_str().map(str::to_string))?
         }) {
             return Some(key);
         }
 
-        // Fall back to matching base URL and API key
+        // Fall back to an entry already aimed at this proxy. Both platforms render
+        // the same `/v1` base URL — unlike zcode, an OpenAI-compatible client has
+        // no per-platform suffix to tell them apart — and `apiKeyEnv` is a constant
+        // this adapter writes itself, so neither can disambiguate. Without the
+        // platform check below, writing claude after codex adopted the codex entry
+        // and rewrote it, `ai-switch-claude` never appeared, and the next codex
+        // write flipped it back: the two platforms could not coexist and every
+        // write silently destroyed the other one's provider.
         let expected_base = self.base_url(&input.base_url);
         providers.iter().find_map(|(key, entry)| {
             let base_matches = entry
@@ -71,10 +83,11 @@ impl DeepSeekHarnessAdapter {
                 .and_then(Value::as_str)
                 .map(|value| value.trim().trim_end_matches('/'))
                 .is_some_and(|value| value == expected_base);
-            let api_key_env = entry.get("apiKeyEnv").and_then(Value::as_str).unwrap_or("");
-            // Check if this looks like our entry (base URL matches)
-            (base_matches && !api_key_env.is_empty())
-                .then(|| key.as_str().unwrap_or("").to_string())
+            // An unmarked entry is fair game — the user aimed it here, and the
+            // write stamps it, so the sibling platform skips it from then on.
+            let claimed_by_sibling =
+                Self::claimed_platform(entry).is_some_and(|value| value != self.platform.as_str());
+            (base_matches && !claimed_by_sibling).then(|| key.as_str().map(str::to_string))?
         })
     }
 
@@ -203,9 +216,37 @@ impl TargetAdapter for DeepSeekHarnessAdapter {
             Value::String("displayName".to_string()),
             Value::String(display_name),
         );
+        // The route authenticates with an `Authorization` header rather than
+        // `apiKeyEnv`.
+        //
+        // `apiKeyEnv` is not a literal key: it is a *credential reference*, an
+        // env-var-shaped name the harness resolves per request across its `env`,
+        // `file` (`~/.dsh/.credentials.yaml` `refs:`), `project-env` and
+        // `user-env` layers. Writing `apiKeyEnv: AI_SWITCH_API_KEY` while nothing
+        // supplies that name leaves a dangling reference, and a named-but-
+        // unresolvable reference fails the request with `MISSING_CREDENTIAL`
+        // before any header is tried — so the old entry could never authenticate.
+        //
+        // A route naming no credential is deliberately unauthenticated and hands
+        // the requirement to the protocol, and pi-ai's OpenAI-compatible
+        // implementation accepts an `Authorization` header of its own. Profile
+        // headers reach the request with only `user-agent` reserved for the
+        // harness's own attribution, so this is the one mechanism that needs
+        // neither an exported variable nor a write into the harness credential
+        // store.
+        provider_entry.remove(&Value::String("apiKeyEnv".to_string()));
+        let mut headers = provider_entry
+            .get(&Value::String("headers".to_string()))
+            .and_then(Value::as_mapping)
+            .cloned()
+            .unwrap_or_else(Mapping::new);
+        headers.insert(
+            Value::String("Authorization".to_string()),
+            Value::String(format!("Bearer {}", input.route_proxy_key)),
+        );
         provider_entry.insert(
-            Value::String("apiKeyEnv".to_string()),
-            Value::String("AI_SWITCH_API_KEY".to_string()),
+            Value::String("headers".to_string()),
+            Value::Mapping(headers),
         );
         provider_entry.insert(
             Value::String("api".to_string()),
@@ -325,6 +366,62 @@ mod tests {
     }
 
     #[test]
+    fn both_platforms_coexist_instead_of_overwriting_each_other() {
+        // Both platforms render the same `/v1` base URL, so before the adoption
+        // fallback checked the platform marker, writing claude adopted the codex
+        // entry and rewrote it in place: `ai-switch-claude` never appeared, and the
+        // next codex write flipped it back. Every write destroyed the other
+        // platform's provider.
+        let codex = render(codex_adapter().as_ref(), None, &["gpt-5.5"]);
+        let codex_bytes = serde_yaml::to_string(&codex).expect("codex yaml");
+        let both = render(
+            claude_adapter().as_ref(),
+            Some(codex_bytes.as_bytes()),
+            &["claude-opus-5"],
+        );
+
+        let providers = both["llm-pi-ai"]["providers"]
+            .as_mapping()
+            .expect("providers");
+        assert!(
+            providers.contains_key(Value::String("ai-switch-codex".into())),
+            "codex provider must survive a claude write: {both:?}"
+        );
+        assert!(
+            providers.contains_key(Value::String("ai-switch-claude".into())),
+            "claude must get its own provider: {both:?}"
+        );
+        assert_eq!(
+            both["llm-pi-ai"]["providers"]["ai-switch-codex"]["aiSwitch"]["platform"],
+            "codex"
+        );
+        assert_eq!(
+            both["llm-pi-ai"]["providers"]["ai-switch-codex"]["models"][0]["id"],
+            "gpt-5.5"
+        );
+        assert_eq!(
+            both["llm-pi-ai"]["providers"]["ai-switch-claude"]["models"][0]["id"],
+            "claude-opus-5"
+        );
+
+        // And writing codex again must not disturb claude.
+        let both_bytes = serde_yaml::to_string(&both).expect("both yaml");
+        let again = render(
+            codex_adapter().as_ref(),
+            Some(both_bytes.as_bytes()),
+            &["gpt-5.5"],
+        );
+        assert_eq!(
+            again["llm-pi-ai"]["providers"]["ai-switch-claude"]["models"][0]["id"],
+            "claude-opus-5"
+        );
+        assert_eq!(
+            again["llm-pi-ai"]["providers"]["ai-switch-codex"]["models"][0]["id"],
+            "gpt-5.5"
+        );
+    }
+
+    #[test]
     fn adapter_identity_declares_deepseek_harness_as_restart_required_non_native() {
         for adapter in [codex_adapter(), claude_adapter()] {
             assert_eq!(adapter.client_key(), "deepseek_harness");
@@ -351,7 +448,14 @@ mod tests {
         let provider = &yaml["llm-pi-ai"]["providers"]["ai-switch-codex"];
 
         assert_eq!(provider["displayName"], "AI Switch (Codex)");
-        assert_eq!(provider["apiKeyEnv"], "AI_SWITCH_API_KEY");
+        // The route authenticates with a header, not a credential reference: a
+        // dangling `apiKeyEnv` fails with MISSING_CREDENTIAL before any header is
+        // tried, and nothing in this app supplies that reference.
+        assert_eq!(
+            provider["headers"]["Authorization"],
+            "Bearer sk-ai-switch-test"
+        );
+        assert!(provider.get("apiKeyEnv").is_none());
         assert_eq!(provider["api"], "openai-completions");
         assert_eq!(provider["baseURL"], "http://127.0.0.1:19527/v1");
         assert_eq!(provider["aiSwitch"]["managed"], true);
@@ -380,9 +484,43 @@ llm-pi-ai:
             "Other"
         );
         assert_eq!(
-            yaml["llm-pi-ai"]["providers"]["ai-switch-codex"]["apiKeyEnv"],
-            "AI_SWITCH_API_KEY"
+            yaml["llm-pi-ai"]["providers"]["ai-switch-codex"]["headers"]["Authorization"],
+            "Bearer sk-ai-switch-test"
         );
+    }
+
+    #[test]
+    fn a_legacy_dangling_credential_reference_is_replaced_by_the_header() {
+        // Entries written before the header fix carry `apiKeyEnv:
+        // AI_SWITCH_API_KEY`, a reference nothing in this app ever supplied. It
+        // has to be removed, not merely joined by the header: a named-but-
+        // unresolvable reference fails the request with MISSING_CREDENTIAL before
+        // the header is consulted, so leaving it keeps the route broken.
+        let existing = br#"
+llm-pi-ai:
+  providers:
+    ai-switch-codex:
+      displayName: AI Switch (Codex)
+      apiKeyEnv: AI_SWITCH_API_KEY
+      api: openai-completions
+      baseURL: http://127.0.0.1:19527/v1
+      headers:
+        X-User-Added: keep-me
+      aiSwitch:
+        managed: true
+        platform: codex
+"#;
+
+        let yaml = render(codex_adapter().as_ref(), Some(existing), &["gpt-5.6-sol"]);
+        let provider = &yaml["llm-pi-ai"]["providers"]["ai-switch-codex"];
+
+        assert!(provider.get("apiKeyEnv").is_none());
+        assert_eq!(
+            provider["headers"]["Authorization"],
+            "Bearer sk-ai-switch-test"
+        );
+        // A header the user added themselves is not collateral damage.
+        assert_eq!(provider["headers"]["X-User-Added"], "keep-me");
     }
 
     #[test]
