@@ -27,8 +27,11 @@ pub struct ApiAuthState {
 }
 
 pub fn is_authorized(headers: &HeaderMap, token: &str) -> bool {
+    // No configured token means no access control, not permission to enter.
+    // Ordinary commands include ones that return stored credentials verbatim
+    // (list_route_credentials), so this has to fail closed.
     if token.is_empty() {
-        return true;
+        return false;
     }
 
     headers
@@ -40,7 +43,7 @@ pub fn is_authorized(headers: &HeaderMap, token: &str) -> bool {
 
 pub fn is_query_token_authorized(query: Option<&str>, token: &str) -> bool {
     if token.is_empty() {
-        return true;
+        return false;
     }
 
     query
@@ -108,11 +111,10 @@ pub async fn authorize_api_request(
         .iter()
         .find_map(|(key, value)| (key == "command").then_some(value))
         .is_some_and(is_sensitive_command);
-    let primary_authorized =
-        !auth.primary_token.is_empty() && is_authorized(request.headers(), &auth.primary_token);
+    let primary_authorized = is_authorized(request.headers(), &auth.primary_token);
     let mobile_authorized =
         is_mobile_token_authorized(request.headers(), &auth.mobile_tokens).await;
-    if primary_authorized || (!sensitive && (auth.primary_token.is_empty() || mobile_authorized)) {
+    if primary_authorized || (!sensitive && mobile_authorized) {
         return next.run(request).await;
     }
 
@@ -150,6 +152,23 @@ mod tests {
     fn authorizes_matching_query_token() {
         assert!(is_query_token_authorized(Some("token=secret"), "secret"));
         assert!(!is_query_token_authorized(Some("token=other"), "secret"));
+    }
+
+    #[test]
+    fn an_empty_token_authorizes_nobody() {
+        // An empty token used to mean "let everyone through", so an
+        // unauthenticated list_route_credentials handed out plaintext api_keys.
+        // Missing configuration has to fail closed.
+        assert!(!is_authorized(&HeaderMap::new(), ""));
+        assert!(!is_query_token_authorized(Some("token=anything"), ""));
+        assert!(!is_query_token_authorized(None, ""));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer anything"),
+        );
+        assert!(!is_authorized(&headers, ""));
     }
 
     #[test]

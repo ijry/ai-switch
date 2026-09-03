@@ -85,6 +85,8 @@ export function isImportableExternalItem(item: ExternalClientAccountPreviewItem)
 
 export type ExternalClientImportPanelProps = {
   client: ExternalImportClient;
+  /** False in a browser: the native file picker only exists on the desktop. */
+  desktop: boolean;
   error: string | null;
   labelClass: string;
   loading: boolean;
@@ -100,6 +102,7 @@ export type ExternalClientImportPanelProps = {
 
 export function ExternalClientImportPanel({
   client,
+  desktop,
   error,
   labelClass,
   loading,
@@ -129,8 +132,10 @@ export function ExternalClientImportPanel({
           <div className="flex items-center gap-1.5">
             <button
               aria-label="选择客户端配置文件"
-              className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-[12px] font-semibold text-blue-900 transition-colors hover:bg-blue-100"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-[12px] font-semibold text-blue-900 transition-colors hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!desktop}
               onClick={onChooseSourcePath}
+              title={desktop ? undefined : "此功能仅桌面端可用。"}
               type="button"
             >
               <FileSearch className="h-3.5 w-3.5" />

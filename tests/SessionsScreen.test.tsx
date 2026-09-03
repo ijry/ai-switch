@@ -166,4 +166,21 @@ describe("SessionsScreen", () => {
     expect(screen.getByRole("button", { name: "在系统终端中恢复" })).toBeDisabled();
     expect(openSessionTerminal).not.toHaveBeenCalled();
   });
+
+  it("reports an unavailable clipboard instead of throwing", async () => {
+    // Served over plain HTTP to a non-loopback host the origin is not a secure
+    // context, so navigator.clipboard is undefined and the fire-and-forget
+    // caller turned that into a silent unhandled rejection.
+    const original = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: /D:\/repo\/ai-switch/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /布局修复会话/ }));
+    await userEvent.click(screen.getByRole("button", { name: "会话操作" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "复制目录" }));
+
+    expect(await screen.findByText("当前环境无法访问剪切板。")).toBeInTheDocument();
+    Object.defineProperty(navigator, "clipboard", { value: original, configurable: true });
+  });
 });

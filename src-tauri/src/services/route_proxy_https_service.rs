@@ -1328,6 +1328,21 @@ fn hex_sha1(bytes: &[u8]) -> String {
     format!("{:x}", Sha1Digest::finalize(hasher))
 }
 
+/// Bring the route proxy back according to the persisted `auto_start` flag.
+/// The desktop `setup()` hook and the standalone server share this so a startup
+/// path cannot quietly end up missing a background task again.
+pub async fn restore_auto_started_proxy(state: &AppState) {
+    let Ok(config) = RouteProxyHttpsService::load_config(&state.paths).await else {
+        return;
+    };
+    if !config.auto_start {
+        return;
+    }
+    if let Err(error) = RouteProxyHttpsService::start_proxy(state).await {
+        eprintln!("failed to restore route proxy: {error}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1415,6 +1430,41 @@ mod tests {
             },
             _temp: temp,
         }
+    }
+
+    #[tokio::test]
+    async fn auto_start_flag_decides_whether_the_proxy_comes_back() {
+        // Nobody clicks a start button on an unattended server; a proxy that
+        // does not come back after a restart means every CLI pointed at it fails.
+        let fixture = test_state().await;
+        let state = &fixture.state;
+        state.paths.ensure().await.expect("paths");
+
+        RouteProxyHttpsService::save_config(
+            &state.paths,
+            &RouteProxyHttpsConfig {
+                enabled: false,
+                auto_start: false,
+            },
+        )
+        .await
+        .expect("save stopped config");
+        restore_auto_started_proxy(state).await;
+        assert!(!RouteProxyService::status(&state.route_proxy).await.running);
+
+        RouteProxyHttpsService::save_config(
+            &state.paths,
+            &RouteProxyHttpsConfig {
+                enabled: false,
+                auto_start: true,
+            },
+        )
+        .await
+        .expect("save auto-start config");
+        restore_auto_started_proxy(state).await;
+        assert!(RouteProxyService::status(&state.route_proxy).await.running);
+
+        RouteProxyService::stop(&state.route_proxy).await.ok();
     }
 
     #[tokio::test]

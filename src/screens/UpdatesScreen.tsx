@@ -3,6 +3,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { CheckCircle2, Download, RefreshCw, RotateCcw, ShieldAlert } from "lucide-react";
 import { useState } from "react";
 import { useI18n, type Language } from "../lib/i18n";
+import { isDesktop } from "../lib/transport";
 import { ReleaseNotes } from "../components/updates/ReleaseNotes";
 
 type DownloadState = {
@@ -39,6 +40,10 @@ function releaseDate(update: Update, language: Language, unknownDate: string) {
 
 export function UpdatesScreen() {
   const { language, t } = useI18n();
+  // The updater plugin only exists inside the desktop shell; in a browser its
+  // calls throw a bare "Cannot read properties of undefined", which is worse
+  // than useless in an error banner.
+  const desktop = isDesktop();
   const [update, setUpdate] = useState<Update | null>(null);
   const [checking, setChecking] = useState(false);
   const [installing, setInstalling] = useState(false);
@@ -53,6 +58,10 @@ export function UpdatesScreen() {
     : t(status);
 
   const handleCheck = async () => {
+    if (!desktop) {
+      return;
+    }
+
     setChecking(true);
     setError(null);
     setInstalled(false);
@@ -111,6 +120,10 @@ export function UpdatesScreen() {
   };
 
   const handleRelaunch = async () => {
+    if (!desktop) {
+      return;
+    }
+
     setError(null);
     try {
       await relaunch();
@@ -139,14 +152,17 @@ export function UpdatesScreen() {
               </div>
               <button
                 className="inline-flex items-center gap-2 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-stone-800 disabled:cursor-not-allowed disabled:bg-stone-400"
-                disabled={checking || installing}
+                disabled={!desktop || checking || installing}
                 onClick={handleCheck}
+                title={desktop ? undefined : t("common.desktopOnly")}
                 type="button"
               >
                 <RefreshCw className={`h-4 w-4 ${checking ? "animate-spin" : ""}`} />
                 {checking ? t("updates.checking") : t("updates.check")}
               </button>
             </div>
+
+            {!desktop && <p className="text-[12px] text-stone-500">{t("common.desktopOnly")}</p>}
 
             {error && (
               <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-700">

@@ -49,7 +49,8 @@ import { MODEL_TEST_MODELS_STORAGE_KEY } from "../src/lib/modelTestModels";
 import { openExternal } from "../src/lib/openExternal";
 import { createQueryClient } from "../src/lib/query/queryClient";
 import { settingsFixture } from "../src/test/fixtures";
-import { AccountsScreen } from "../src/screens/AccountsScreen";
+import { AccountsScreen, routeProxyPollInterval } from "../src/screens/AccountsScreen";
+import { isDesktop } from "../src/lib/transport";
 import { fetchRouteProxyModels } from "../src/lib/routeProxyModels";
 import type {
   CapabilityAvailability,
@@ -121,6 +122,7 @@ const transportTestState = vi.hoisted(() => ({
 
 vi.mock("../src/lib/transport", () => ({
   getTransport: () => transportTestState,
+  isDesktop: vi.fn(() => true),
   isTauriRuntime: () => false,
 }));
 
@@ -422,6 +424,7 @@ describe("AccountsScreen", () => {
 
   beforeEach(() => {
     window.localStorage.clear();
+    vi.mocked(isDesktop).mockReturnValue(true);
     vi.mocked(open).mockReset();
     vi.mocked(openExternal).mockReset();
     vi.mocked(openExternal).mockResolvedValue(undefined);
@@ -1889,6 +1892,22 @@ describe("AccountsScreen", () => {
         batch_name: "File Batch",
       }),
     );
+  });
+
+  it("disables the JSON file picker in a browser instead of failing silently", async () => {
+    // open() comes from the Tauri dialog plugin; unguarded in a browser it
+    // rejected into an unhandled promise and the button looked like a no-op.
+    vi.mocked(isDesktop).mockReturnValue(false);
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "批量导入" }));
+
+    const picker = screen.getByRole("button", { name: "导入 JSON 文件" });
+    expect(picker).toBeDisabled();
+    await userEvent.click(picker);
+    expect(open).not.toHaveBeenCalled();
+    expect(screen.getByText("此功能仅桌面端可用。")).toBeInTheDocument();
   });
 
   it("imports selected cc-switch accounts and joins only the new ones to the pool", async () => {
@@ -4438,5 +4457,19 @@ describe("AccountsScreen", () => {
     // The account itself is dead; per-model detail would only add noise.
     expect(await screen.findByText("API Account")).toBeInTheDocument();
     expect(screen.queryByTestId("credential-model-issues-cred-api-1")).toBeNull();
+  });
+});
+
+describe("route proxy status polling", () => {
+  it("stops once the proxy is running", () => {
+    expect(routeProxyPollInterval({ running: true }, 0)).toBe(false);
+  });
+
+  it("backs off instead of hammering a stopped proxy forever", () => {
+    // One request per second per open tab, indefinitely, is a standing load on a
+    // shared server — and the standalone server used to leave the proxy stopped.
+    expect(routeProxyPollInterval(undefined, 0)).toBe(1000);
+    expect(routeProxyPollInterval({ running: false }, 3)).toBe(8000);
+    expect(routeProxyPollInterval({ running: false }, 50)).toBe(15000);
   });
 });

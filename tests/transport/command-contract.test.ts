@@ -122,6 +122,33 @@ describe("command contract", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("reads every argument the client sends under the same name in the web dispatcher", () => {
+    // The dispatcher reads arguments by literal key, so renaming one on the
+    // client fails neither compilation nor the request — the command just
+    // silently receives None. Same shape as the bug e8a5c7b fixed, other half.
+    const dispatcher = readSource("src-tauri/src/web/handlers/mod.rs");
+    const arms = dispatcher.split(/^\s*"([a-z0-9_]+)"\s*=>/m);
+    const bodyByCommand = new Map<string, string>();
+    for (let index = 1; index < arms.length; index += 2) {
+      bodyByCommand.set(arms[index], arms[index + 1] ?? "");
+    }
+
+    const offenders: string[] = [];
+    for (const call of invokeCalls(readSource("src/lib/api/client.ts"))) {
+      const body = bodyByCommand.get(call.command);
+      if (body === undefined) {
+        continue; // Desktop-only; covered by the registration test above.
+      }
+      for (const key of topLevelKeys(call.body)) {
+        if (!new RegExp(`"${key}"`).test(body)) {
+          offenders.push(`${call.command}: web dispatcher never reads "${key}"`);
+        }
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
   it("exposes export in both transports and save only on desktop", () => {
     const clientSource = readSource("src/lib/api/client.ts");
     const tauriSource = readSource("src-tauri/src/lib.rs");

@@ -136,6 +136,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [terminalOpening, setTerminalOpening] = useState(false);
   const [terminalError, setTerminalError] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
   const copyMenuRef = useRef<HTMLDivElement | null>(null);
   const navigationRef = useRef<HTMLDivElement | null>(null);
   const deferredSearch = useDeferredValue(search);
@@ -308,9 +309,22 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
     if (!value) {
       return;
     }
-    await navigator.clipboard.writeText(value);
-    setCopiedValue(marker);
-    setCopyMenuOpen(false);
+    // Served over plain HTTP to a non-loopback host the origin is not a secure
+    // context, so navigator.clipboard is undefined. Callers are fire-and-forget,
+    // so an unguarded call becomes a silent unhandled rejection.
+    if (!navigator.clipboard?.writeText) {
+      setCopyError(t("vibe.errorClipboardUnavailable"));
+      return;
+    }
+
+    setCopyError(null);
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedValue(marker);
+      setCopyMenuOpen(false);
+    } catch (error) {
+      setCopyError(error instanceof Error ? error.message : t("errors.operationFailed"));
+    }
   };
 
   const desktopRuntime = isDesktop();
@@ -612,6 +626,11 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                   </div>
                 </div>
               </div>
+              {copyError && (
+                <p aria-live="polite" className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-medium text-red-700">
+                  {copyError}
+                </p>
+              )}
               {terminalError && (
                 <p aria-live="polite" className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-medium text-red-700">
                   {terminalError}

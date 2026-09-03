@@ -248,9 +248,22 @@ jobs:
             Copy-Item $file.FullName (Join-Path $dest $safeName)
           }
 
+          # The standalone server has no Tauri resource map, so the frontend has
+          # to travel with it: resolve_static_dir() looks for a sibling web/ and
+          # a bare binary leaves the browser on a JSON 404 instead of the UI.
+          $serverStage = "server-bundle"
+          if (Test-Path $serverStage) { Remove-Item -Recurse -Force $serverStage }
+          New-Item -ItemType Directory -Force $serverStage | Out-Null
+          Copy-Item $env:SERVER_BIN (Join-Path $serverStage (Split-Path $env:SERVER_BIN -Leaf))
+          Copy-Item $env:SIDECAR_BIN (Join-Path $serverStage "ai-switch-tsnet$env:EXE_SUFFIX")
+          Copy-Item dist (Join-Path $serverStage "web") -Recurse
+          if (-not (Test-Path (Join-Path $serverStage "web/index.html"))) {
+            throw "Server bundle is missing web/index.html"
+          }
+
           $serverArchive = Join-Path $dest "ai-switch-server_${tag}_$env:UPDATER_PLATFORM.zip"
           $sidecarArchive = Join-Path $dest "ai-switch-tsnet_${tag}_$env:UPDATER_PLATFORM.zip"
-          Compress-Archive -Path $env:SERVER_BIN -DestinationPath $serverArchive -Force
+          Compress-Archive -Path "$serverStage/*" -DestinationPath $serverArchive -Force
           Compress-Archive -Path $env:SIDECAR_BIN -DestinationPath $sidecarArchive -Force
 
           $signatureCount = (Get-ChildItem $dest -Filter *.sig -File).Count

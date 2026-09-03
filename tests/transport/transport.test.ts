@@ -22,6 +22,35 @@ type TauriWindow = Window & {
 
 type TestTauriEvent = { event: string; id: number; payload: string };
 
+class FakeWebSocket {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
+
+  static instances: FakeWebSocket[] = [];
+
+  readyState = FakeWebSocket.OPEN;
+  onopen: (() => void) | null = null;
+  onmessage: ((message: { data: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  onclose: (() => void) | null = null;
+
+  constructor(readonly url: string) {
+    FakeWebSocket.instances.push(this);
+  }
+
+  close() {
+    this.readyState = FakeWebSocket.CLOSED;
+  }
+}
+
+function stubWebSocket() {
+  FakeWebSocket.instances = [];
+  vi.stubGlobal("WebSocket", FakeWebSocket);
+  return FakeWebSocket.instances;
+}
+
 describe("transport", () => {
   beforeEach(() => {
     __resetTransportForTests();
@@ -226,5 +255,41 @@ describe("transport", () => {
         body: JSON.stringify({ authKey: "tskey-auth-test" }),
       },
     );
+  });
+
+  it("reconnects the event socket after an unexpected close", async () => {
+    vi.useFakeTimers();
+    const sockets = stubWebSocket();
+    const transport = new WebTransport("http://127.0.0.1:3090");
+
+    await transport.subscribe("route-credential-status", () => {});
+    expect(sockets).toHaveLength(1);
+
+    // One dropped connection used to end live updates for good; the UI just
+    // looked like the data had stopped moving.
+    sockets[0].onclose?.();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sockets).toHaveLength(2);
+
+    transport.destroy();
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(sockets).toHaveLength(2);
+    vi.useRealTimers();
+  });
+
+  it("ignores a frame that is not JSON instead of throwing", async () => {
+    const sockets = stubWebSocket();
+    const transport = new WebTransport("http://127.0.0.1:3090");
+    const handler = vi.fn();
+    await transport.subscribe("route-credential-status", handler);
+
+    expect(() => sockets[0].onmessage?.({ data: "not json" })).not.toThrow();
+    expect(handler).not.toHaveBeenCalled();
+
+    sockets[0].onmessage?.({
+      data: JSON.stringify({ channel: "route-credential-status", payload: { id: "a" } }),
+    });
+    expect(handler).toHaveBeenCalledWith({ id: "a" });
+    transport.destroy();
   });
 });

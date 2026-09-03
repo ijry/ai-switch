@@ -59,6 +59,9 @@ export class WebTransport implements Transport {
   private readonly baseUrl: string;
   private readonly handlers = new Map<string, Set<(payload: unknown) => void>>();
   private socket: WebSocket | null = null;
+  private reconnectAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private destroyed = false;
 
   constructor(baseUrl = typeof window === "undefined" ? "" : window.location.origin) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
@@ -121,6 +124,11 @@ export class WebTransport implements Transport {
   }
 
   destroy() {
+    this.destroyed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.socket?.close();
     this.socket = null;
     this.handlers.clear();
@@ -138,8 +146,18 @@ export class WebTransport implements Transport {
     }
 
     this.socket = new WebSocket(url.toString());
+    this.socket.onopen = () => {
+      this.reconnectAttempts = 0;
+    };
     this.socket.onmessage = (message) => {
-      const event = JSON.parse(message.data) as WebEvent;
+      // One malformed frame must not take down the whole subscription chain.
+      let event: WebEvent;
+      try {
+        event = JSON.parse(message.data as string) as WebEvent;
+      } catch {
+        return;
+      }
+
       const handlers = this.handlers.get(event.channel);
       if (!handlers) {
         return;
@@ -149,8 +167,29 @@ export class WebTransport implements Transport {
         handler(event.payload);
       }
     };
+    this.socket.onerror = () => {
+      this.socket?.close();
+    };
     this.socket.onclose = () => {
       this.socket = null;
+      this.scheduleReconnect();
     };
+  }
+
+  /**
+   * Without this, a single network blip ends live activity and status updates for
+   * good — and the UI shows no error, it just stops moving.
+   */
+  private scheduleReconnect() {
+    if (this.destroyed || this.handlers.size === 0 || this.reconnectTimer) {
+      return;
+    }
+
+    const delay = Math.min(1000 * 2 ** Math.min(this.reconnectAttempts, 4), 15000);
+    this.reconnectAttempts += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.ensureSocket();
+    }, delay);
   }
 }

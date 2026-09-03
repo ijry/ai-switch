@@ -32,6 +32,7 @@ import {
   listSessions,
 } from "../lib/api/client";
 import { useI18n } from "../lib/i18n";
+import { isDesktop } from "../lib/transport";
 import { useDragResize } from "../lib/useDragResize";
 import {
   BUILT_IN_VIBE_SKINS,
@@ -1089,6 +1090,10 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
     () => initialAppearance.skinId ?? readStoredVibeSkin()?.id ?? BUILT_IN_VIBE_SKINS[0].id,
   );
   const [error, setError] = useState<string | null>(null);
+  // The native directory picker comes from the Tauri dialog plugin, so in a
+  // browser the entry points that use it have to be disabled rather than
+  // rejecting into nothing.
+  const desktop = isDesktop();
   const [sessionListScrolling, setSessionListScrolling] = useState(false);
   const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(() => new Set());
   const [sessionListCollapsed, setSessionListCollapsed] = useState(
@@ -1358,13 +1363,21 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
   };
 
   const chooseFolder = async () => {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: t("vibe.chooseFolder"),
-    });
-    if (typeof selected === "string") {
-      setCreateProjectDir(selected);
+    if (!desktop) {
+      return;
+    }
+
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: t("vibe.chooseFolder"),
+      });
+      if (typeof selected === "string") {
+        setCreateProjectDir(selected);
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("errors.operationFailed"));
     }
   };
 
@@ -2789,7 +2802,9 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                               {compactDirectoryLabel(customProjectDirectory)}
                             </option>
                           )}
-                          <option value={chooseFolderOptionValue}>{t("vibe.launchNewFolder")}</option>
+                          {desktop && (
+                            <option value={chooseFolderOptionValue}>{t("vibe.launchNewFolder")}</option>
+                          )}
                         </select>
                       </label>
                       <label className={`${composerLabelClass} ${isSkin ? "sm:max-w-[8.25rem]" : "sm:max-w-[11rem]"}`}>
@@ -3496,12 +3511,14 @@ export function VibeScreen({ onExitVibe }: VibeScreenProps) {
                   <button
                     className={
                       isSkin
-                        ? "vibe-skin-ghost shrink-0 rounded-xl border px-3 py-2 text-[13px] font-semibold transition"
+                        ? "vibe-skin-ghost shrink-0 rounded-xl border px-3 py-2 text-[13px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
                         : isDark
-                        ? "shrink-0 rounded-xl border border-[#586e75] bg-[#073642] px-3 py-2 text-[13px] font-semibold text-[#fdf6e3] transition hover:border-[#839496]"
-                        : "shrink-0 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 transition hover:border-stone-300"
+                        ? "shrink-0 rounded-xl border border-[#586e75] bg-[#073642] px-3 py-2 text-[13px] font-semibold text-[#fdf6e3] transition hover:border-[#839496] disabled:cursor-not-allowed disabled:opacity-50"
+                        : "shrink-0 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 transition hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-50"
                     }
+                    disabled={!desktop}
                     onClick={() => void chooseFolder()}
+                    title={desktop ? undefined : t("common.desktopOnly")}
                     type="button"
                   >
                     {t("vibe.chooseFolder")}

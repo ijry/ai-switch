@@ -689,6 +689,10 @@ fn validate_start_config(
 ) -> Result<Option<(PathBuf, PathBuf)>, AppError> {
     let tls_paths = validate_enabled_tls_paths(config)?;
     validate_sensitive_web_transport(&config.host, config.tls_enabled)?;
+    // The default config generates a UUID token, so this only bites a
+    // hand-blanked web-service.json — where the alternative is a server that
+    // answers 401 to everything without saying why.
+    crate::server::resolve_server_token(config.token.clone())?;
     Ok(tls_paths)
 }
 

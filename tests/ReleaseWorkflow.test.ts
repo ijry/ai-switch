@@ -34,3 +34,27 @@ describe("release workflow release notes", () => {
     expect(workflow).toContain("RELEASE_NOTES: ${{ needs.prepare.outputs.release_notes }}");
   });
 });
+
+describe("standalone server release archive", () => {
+  const workflow = readWorkflow();
+
+  it("stages the frontend bundle next to the server binary", () => {
+    // resolve_static_dir() only accepts a directory that holds index.html, and
+    // the desktop bundle gets one from tauri.conf.json's "../dist": "web/" map.
+    // The server archive has no such layer: ship it bare and the browser lands
+    // on a JSON 404 instead of the UI.
+    expect(workflow).toContain('Copy-Item dist (Join-Path $serverStage "web") -Recurse');
+    expect(workflow).toContain('Compress-Archive -Path "$serverStage/*"');
+  });
+
+  it("fails the build instead of shipping a server archive without the UI", () => {
+    expect(workflow).toContain('Join-Path $serverStage "web/index.html"');
+    expect(workflow).toContain('throw "Server bundle is missing web/index.html"');
+  });
+
+  it("ships the tailscale sidecar under the name the server looks for", () => {
+    // tailscale_sidecar.rs falls back to a sibling `ai-switch-tsnet[.exe]`, not
+    // the target-triple name the build produces.
+    expect(workflow).toContain('"ai-switch-tsnet$env:EXE_SUFFIX"');
+  });
+});

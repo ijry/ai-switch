@@ -169,7 +169,7 @@ import {
   USER_AGENT_PRESETS,
   writeUserAgentToConfig,
 } from "../lib/accountUserAgent";
-import { getTransport, isTauriRuntime } from "../lib/transport";
+import { getTransport, isDesktop, isTauriRuntime } from "../lib/transport";
 import { fetchRouteProxyModels } from "../lib/routeProxyModels";
 import { openExternal } from "../lib/openExternal";
 import { copySensitiveText } from "../lib/routeCredentialTransfer";
@@ -2224,6 +2224,21 @@ function RelayBalanceFields({
   );
 }
 
+/**
+ * Poll interval for the route proxy status query. While the proxy is stopped the
+ * interval backs off to 15s: a fixed 1s meant every open tab kept one request
+ * per second going indefinitely.
+ */
+export function routeProxyPollInterval(
+  data: { running?: boolean } | undefined,
+  pollCount: number,
+) {
+  if (data?.running) {
+    return false as const;
+  }
+  return Math.min(1000 * 2 ** Math.min(pollCount, 4), 15000);
+}
+
 export function AccountsScreen({
   onOpenSessions,
   platform = "codex",
@@ -2233,6 +2248,10 @@ export function AccountsScreen({
 }: AccountsScreenProps) {
   const queryClient = useQueryClient();
   const activePlatform = platform;
+  // Native file pickers come from the Tauri dialog plugin; in a browser they
+  // reject, so the entry points that use them have to be disabled rather than
+  // failing silently.
+  const desktop = isDesktop();
   const capabilitiesQuery = usePlatformCapabilities();
   const activeCapability = findPlatformCapability(capabilitiesQuery.data, activePlatform);
   const capabilityReady = capabilitiesQuery.isSuccess && Boolean(activeCapability);
@@ -2306,6 +2325,7 @@ export function AccountsScreen({
   const [officialText, setOfficialText] = useState(() => defaultOfficialJson(activePlatform));
   const [officialBatchName, setOfficialBatchName] = useState("");
   const [officialFilePaths, setOfficialFilePaths] = useState<string[]>([]);
+  const [filePickerError, setFilePickerError] = useState<string | null>(null);
   const [externalClient, setExternalClient] = useState<ExternalImportClient>("cc-switch");
   const [externalSourcePath, setExternalSourcePath] = useState<string | null>(null);
   const [externalSelectedIds, setExternalSelectedIds] = useState<Set<string>>(() => new Set());
@@ -2747,7 +2767,8 @@ export function AccountsScreen({
   const routeProxyQuery = useQuery({
     queryKey: ["route-proxy-status"],
     queryFn: getRouteProxyStatus,
-    refetchInterval: (query) => (query.state.data?.running ? false : 1000),
+    refetchInterval: (query) =>
+      routeProxyPollInterval(query.state.data, query.state.dataUpdateCount),
   });
 
   useEffect(() => {
@@ -4641,33 +4662,51 @@ export function AccountsScreen({
   };
 
   const chooseOfficialFiles = async () => {
-    const selected = await open({
-      multiple: true,
-      title: "选择账号 JSON 文件",
-      filters: [{ name: "JSON", extensions: ["json"] }],
-    });
-
-    if (Array.isArray(selected)) {
-      setOfficialFilePaths(selected);
+    if (!desktop) {
       return;
     }
-    if (typeof selected === "string") {
-      setOfficialFilePaths([selected]);
+
+    setFilePickerError(null);
+    try {
+      const selected = await open({
+        multiple: true,
+        title: "选择账号 JSON 文件",
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+
+      if (Array.isArray(selected)) {
+        setOfficialFilePaths(selected);
+        return;
+      }
+      if (typeof selected === "string") {
+        setOfficialFilePaths([selected]);
+      }
+    } catch (error) {
+      setFilePickerError(error instanceof Error ? error.message : "打开文件选择器失败。");
     }
   };
 
   const chooseExternalClientSource = async () => {
-    const selected = await open({
-      multiple: false,
-      title: `选择 ${EXTERNAL_IMPORT_CLIENT_LABELS[externalClient]} 配置文件`,
-      filters: [{ name: "配置文件", extensions: ["db", "json"] }],
-    });
-    const path = Array.isArray(selected) ? selected[0] : selected;
-    if (typeof path === "string" && path.trim()) {
-      // A new file means a new provider list, so drop the old selection rather
-      // than carrying ids that may not exist there.
-      setExternalSelectedIds(new Set());
-      setExternalSourcePath(path);
+    if (!desktop) {
+      return;
+    }
+
+    setFilePickerError(null);
+    try {
+      const selected = await open({
+        multiple: false,
+        title: `选择 ${EXTERNAL_IMPORT_CLIENT_LABELS[externalClient]} 配置文件`,
+        filters: [{ name: "配置文件", extensions: ["db", "json"] }],
+      });
+      const path = Array.isArray(selected) ? selected[0] : selected;
+      if (typeof path === "string" && path.trim()) {
+        // A new file means a new provider list, so drop the old selection rather
+        // than carrying ids that may not exist there.
+        setExternalSelectedIds(new Set());
+        setExternalSourcePath(path);
+      }
+    } catch (error) {
+      setFilePickerError(error instanceof Error ? error.message : "打开文件选择器失败。");
     }
   };
 
@@ -6787,6 +6826,7 @@ export function AccountsScreen({
             {createMode === "external" && (
               <ExternalClientImportPanel
                 client={externalClient}
+                desktop={desktop}
                 error={
                   externalImportPreviewQuery.isError
                     ? formatApiError(externalImportPreviewQuery.error, "读取客户端账号失败。")
@@ -7106,13 +7146,21 @@ export function AccountsScreen({
                 <div className="grid gap-2">
                   <button
                     aria-label="导入 JSON 文件"
-                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] font-semibold text-blue-900 transition-colors hover:bg-blue-100"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] font-semibold text-blue-900 transition-colors hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={!desktop}
                     onClick={() => void chooseOfficialFiles()}
+                    title={desktop ? undefined : "此功能仅桌面端可用。"}
                     type="button"
                   >
                     <FileCode2 className="h-3.5 w-3.5" />
                     导入 JSON 文件
                   </button>
+                  {!desktop && (
+                    <p className="text-[12px] text-stone-500">此功能仅桌面端可用。</p>
+                  )}
+                  {filePickerError && (
+                    <p className="text-[12px] font-medium text-red-700">{filePickerError}</p>
+                  )}
                   {officialFilePaths.length > 0 && (
                     <div className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] text-stone-600">
                       已选择 {officialFilePaths.length} 个文件

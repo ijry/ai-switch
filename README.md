@@ -154,11 +154,10 @@ Optional environment variables:
 
 - `AI_SWITCH_HOST` default `127.0.0.1`
 - `AI_SWITCH_PORT` default `3090`
-- `AI_SWITCH_TOKEN` required for API and WebSocket access
-- `AI_SWITCH_DATA_DIR` optional data directory override
-- `AI_SWITCH_STATIC_DIR` frontend `dist` directory for browser UI
+- `AI_SWITCH_TOKEN` required for API and WebSocket access; the server refuses to start without it
+- `AI_SWITCH_STATIC_DIR` frontend `dist` directory for browser UI (only needed if you moved it)
 
-Installed desktop builds ship web assets next to the executable under web/. Standalone server mode can also use AI_SWITCH_STATIC_DIR or a sibling web/ / dist/ folder.
+The release archive `ai-switch-server_<tag>_<platform>.zip` already contains the binary, the Tailscale sidecar and a sibling `web/` directory, so unzip-and-run serves the browser UI with no extra configuration. Installed desktop builds ship the same assets under `web/` next to the executable.
 
 ### Security notes
 

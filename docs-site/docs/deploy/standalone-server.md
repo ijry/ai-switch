@@ -41,6 +41,17 @@ pnpm server:build:release
 
 如果不想自己编译，每次正式发布都会在 GitHub Release 里附带按平台打包好的 `ai-switch-server` 压缩包，见 [发布流程](/dev/release)。
 
+发布包解压后的结构就是下面「前端资源怎么找」推荐的布局，`ai-switch-server`、`ai-switch-tsnet` 与 `web/` 已经放在一起，不需要再设 `AI_SWITCH_STATIC_DIR`：
+
+```text
+ai-switch-server_v0.7.3_windows-x86_64/
+├── ai-switch-server.exe
+├── ai-switch-tsnet.exe
+└── web/
+    ├── index.html
+    └── assets/...
+```
+
 ## 环境变量
 
 服务器的全部运行参数都来自环境变量，没有命令行参数也没有配置文件：
@@ -49,7 +60,7 @@ pnpm server:build:release
 | --- | --- | --- | --- |
 | `AI_SWITCH_HOST` | `127.0.0.1` | 否 | 监听地址。设为非环回地址时**必须**同时配置 TLS，否则启动失败 |
 | `AI_SWITCH_PORT` | `3090` | 否 | 监听端口。值无法解析为端口号时静默回退到 `3090` |
-| `AI_SWITCH_TOKEN` | 空字符串 | 实际必填 | 访问令牌。为空时敏感命令全部 401，普通命令完全不鉴权 |
+| `AI_SWITCH_TOKEN` | 无 | **是** | 访问令牌，至少 16 个字符。未设置或过短时服务拒绝启动 |
 | `AI_SWITCH_STATIC_DIR` | 无 | 否 | 前端 `dist` 目录。仅当该目录下存在 `index.html` 时生效，否则回退到内置候选路径 |
 | `AI_SWITCH_TLS_CERT_PATH` | 无 | 与下一项成对 | 证书链 PEM 路径 |
 | `AI_SWITCH_TLS_KEY_PATH` | 无 | 与上一项成对 | 私钥 PEM 路径 |
@@ -57,7 +68,7 @@ pnpm server:build:release
 
 关于这张表的几点必要说明：
 
-- **`AI_SWITCH_TOKEN` 名义上可选、实际上必填。** 类型上它有默认值（空字符串），但空令牌意味着敏感命令一律被拒、普通命令毫无保护。任何真实部署都应该设置一个足够随机的值。
+- **`AI_SWITCH_TOKEN` 是必填项。** 未设置、只有空白字符、或短于 16 个字符时服务直接拒绝启动并打印原因。这是有意的：普通命令里就有能读出账号明文 API Key 的（如 `list_route_credentials`），没有令牌等于把凭据库对所有能访问该端口的人开放。
 - **TLS 两个路径必须同时给。** 只提供其中一个会以 `web.tls_paths_incomplete` 报错，服务不会启动。
 - **数据目录不可通过环境变量指定。** 服务器始终把数据写在当前用户主目录下的 `~/.ai-switch`。README 里出现过的 `AI_SWITCH_DATA_DIR` 在当前代码中**没有实现**，设置它不会有任何效果。需要换位置的话，请用运行账号的主目录或容器卷挂载来控制。
 
@@ -145,7 +156,7 @@ C:\ai-switch\ai-switch-server.exe
 ## 安全注意事项
 
 ::: warning 部署前请确认
-- **一定要设置 `AI_SWITCH_TOKEN`。** 独立服务器不做敏感命令降级，令牌是唯一的访问控制手段。
+- **必须设置 `AI_SWITCH_TOKEN`（缺失时服务不会启动）。** 独立服务器不做敏感命令降级，令牌是唯一的访问控制手段。
 - **令牌等价于 shell 权限。** Web API 包含终端会话命令，拿到令牌的人可以在这台服务器上执行命令。
 - **非环回监听必须带 TLS**，否则服务直接拒绝启动。这是有意设计，不要试图绕过。
 - **数据目录跟着运行账号走。** 服务始终使用运行账号主目录下的 `~/.ai-switch`，其中的 SQLite 库保存着 API Key 与账号凭据，请按凭据目录对待。

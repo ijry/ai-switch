@@ -19,7 +19,7 @@ use crate::services::mobile_pairing::MobileTokenRegistry;
 use crate::services::web_service::WebService;
 use crate::web::auth::{authorize_api_request, ApiAuthState};
 use crate::web::handlers::{dispatch_command, is_sensitive_command};
-use crate::web::static_assets::resolve_static_file;
+use crate::web::static_assets::{resolve_static_file, static_bundle_present};
 use crate::web::terminal_ws::terminal_socket;
 use crate::web::ws::events_socket;
 
@@ -164,7 +164,10 @@ async fn disable_api_caching(request: Request, next: Next) -> Response {
 
 async fn static_fallback(State(context): State<WebServerContext>, uri: Uri) -> Response {
     let Some(file_path) = resolve_static_file(&context.static_dir, uri.path()) else {
-        return error_response(StatusCode::NOT_FOUND, "AI Switch web assets not found");
+        if static_bundle_present(&context.static_dir) {
+            return error_response(StatusCode::NOT_FOUND, "AI Switch web asset not found");
+        }
+        return missing_assets_page();
     };
 
     match tokio::fs::read(&file_path).await {
@@ -185,6 +188,30 @@ async fn static_fallback(State(context): State<WebServerContext>, uri: Uri) -> R
     }
 }
 
+/// No frontend bundle at all. A person will see this in a browser, so it is a
+/// readable page rather than a JSON envelope. It deliberately carries no
+/// server-side paths: the startup log has those, and this response is reachable
+/// without a token.
+fn missing_assets_page() -> Response {
+    let body = concat!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">",
+        "<title>AI Switch — web assets missing</title></head><body>",
+        "<h1>AI Switch web assets are not installed</h1>",
+        "<p>The API is running, but the browser UI was not found next to this server.</p>",
+        "<p>Put the frontend build in a <code>web/</code> directory beside the ",
+        "executable, or point <code>AI_SWITCH_STATIC_DIR</code> at a directory that ",
+        "contains <code>index.html</code>. The release archive ships that directory ",
+        "already; see the standalone-server deployment guide.</p>",
+        "<p>The server log printed every path it tried at startup.</p>",
+        "</body></html>"
+    );
+    Response::builder()
+        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| error_response(StatusCode::SERVICE_UNAVAILABLE, "web assets missing"))
+}
+
 fn content_type_for(path: &std::path::Path) -> &'static str {
     match path
         .extension()
@@ -203,6 +230,9 @@ fn content_type_for(path: &std::path::Path) -> &'static str {
         "webp" => "image/webp",
         "ico" => "image/x-icon",
         "map" => "application/json; charset=utf-8",
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        "ogg" => "audio/ogg",
         "woff" => "font/woff",
         "woff2" => "font/woff2",
         "ttf" => "font/ttf",
@@ -973,6 +1003,62 @@ mod tests {
             assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
         }
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn credential_listing_is_never_readable_without_a_token() {
+        // list_route_credentials returns secret_payload_json verbatim, so an
+        // unauthenticated 200 here is a plaintext api_key dump — while the
+        // deliberately gated export of the same data answers 401.
+        let (address, server) = spawn_test_router_with_token(true, "").await;
+        for command in [
+            "list_route_credentials",
+            "list_route_credentials_page",
+            "get_settings",
+        ] {
+            let response = reqwest::Client::new()
+                .post(format!("http://{address}/api/{command}"))
+                .json(&json!({ "platform": "codex" }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{command}");
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn missing_web_assets_answer_with_a_readable_page() {
+        let (address, server) = spawn_test_router(true).await;
+        let response = reqwest::get(format!("http://{address}/")).await.unwrap();
+
+        // A JSON body explains nothing to someone looking at a browser window;
+        // this has to be a page a person can read.
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/html; charset=utf-8")
+        );
+        let body = response.text().await.unwrap();
+        assert!(body.contains("AI_SWITCH_STATIC_DIR"));
+        // An unauthenticated caller must not learn server-side paths.
+        assert!(!body.contains(&address.to_string()));
+        server.abort();
+    }
+
+    #[test]
+    fn audio_assets_get_a_playable_content_type() {
+        assert_eq!(
+            content_type_for(std::path::Path::new("beep.wav")),
+            "audio/wav"
+        );
+        assert_eq!(
+            content_type_for(std::path::Path::new("beep.mp3")),
+            "audio/mpeg"
+        );
     }
 
     #[tokio::test]

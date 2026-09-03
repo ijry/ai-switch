@@ -41,6 +41,17 @@ Output paths:
 
 If you would rather not compile it yourself, every release attaches per-platform `ai-switch-server` archives to the GitHub Release. See [Release Process](/en/dev/release).
 
+The archive unzips into exactly the layout recommended under "How the frontend is located" below — `ai-switch-server`, `ai-switch-tsnet` and `web/` already sit together, so you do not need `AI_SWITCH_STATIC_DIR` at all:
+
+```text
+ai-switch-server_v0.7.3_windows-x86_64/
+├── ai-switch-server.exe
+├── ai-switch-tsnet.exe
+└── web/
+    ├── index.html
+    └── assets/...
+```
+
 ## Environment variables
 
 Every runtime parameter comes from an environment variable. There are no command-line flags and no config file:
@@ -49,7 +60,7 @@ Every runtime parameter comes from an environment variable. There are no command
 | --- | --- | --- | --- |
 | `AI_SWITCH_HOST` | `127.0.0.1` | No | Bind address. A non-loopback address **requires** TLS or startup fails |
 | `AI_SWITCH_PORT` | `3090` | No | Listening port. A value that does not parse as a port silently falls back to `3090` |
-| `AI_SWITCH_TOKEN` | empty string | In practice yes | Access token. Empty means sensitive commands always 401 and ordinary commands are unauthenticated |
+| `AI_SWITCH_TOKEN` | none | **Yes** | Access token, at least 16 characters. The server refuses to start if it is missing or too short |
 | `AI_SWITCH_STATIC_DIR` | none | No | Frontend `dist` directory. Only honoured if it contains `index.html`; otherwise the built-in candidates apply |
 | `AI_SWITCH_TLS_CERT_PATH` | none | Paired with the next | Path to the certificate chain PEM |
 | `AI_SWITCH_TLS_KEY_PATH` | none | Paired with the previous | Path to the private key PEM |
@@ -57,7 +68,7 @@ Every runtime parameter comes from an environment variable. There are no command
 
 A few things this table needs spelled out:
 
-- **`AI_SWITCH_TOKEN` is nominally optional but effectively mandatory.** It has a default (the empty string), but an empty token means every sensitive command is rejected and every ordinary command is wide open. Any real deployment should set something random.
+- **`AI_SWITCH_TOKEN` is mandatory.** If it is unset, whitespace-only, or shorter than 16 characters, the server refuses to start and prints why. That is deliberate: ordinary commands include ones that return an account's plaintext API key (`list_route_credentials`), so running without a token exposes the credential store to anyone who can reach the port.
 - **The two TLS paths must be provided together.** Supplying only one fails with `web.tls_paths_incomplete` and the server does not start.
 - **The data directory cannot be set by environment variable.** The server always writes to `~/.ai-switch` under the running user's home directory. `AI_SWITCH_DATA_DIR`, which appears in the README, is **not implemented** in the current code — setting it has no effect. To relocate the data, control the service account's home directory or mount a container volume there.
 
@@ -145,7 +156,7 @@ Because the standalone server does not gate sensitive commands dynamically, cred
 ## Security notes
 
 ::: warning Before you deploy
-- **Always set `AI_SWITCH_TOKEN`.** The standalone server does not downgrade sensitive commands, so the token is the only access control there is.
+- **`AI_SWITCH_TOKEN` must be set (the server will not start without it).** The standalone server does not downgrade sensitive commands, so the token is the only access control there is.
 - **The token is equivalent to shell access.** The web API includes terminal session commands, so whoever holds the token can run commands on that server.
 - **Non-loopback binds require TLS** or the server refuses to start. That is deliberate — do not try to work around it.
 - **The data directory follows the service account.** The server always uses `~/.ai-switch` under the running user's home. Its SQLite database holds API keys and account credentials, so treat it as a credential directory.

@@ -416,17 +416,8 @@ pub fn run() {
 
             let route_proxy_state = app.state::<AppState>().inner().clone();
             tauri::async_runtime::spawn(async move {
-                let Ok(config) =
-                    RouteProxyHttpsService::load_config(&route_proxy_state.paths).await
-                else {
-                    return;
-                };
-                if !config.auto_start {
-                    return;
-                }
-                if let Err(error) = RouteProxyHttpsService::start_proxy(&route_proxy_state).await {
-                    eprintln!("failed to restore route proxy: {error}");
-                }
+                services::route_proxy_https_service::restore_auto_started_proxy(&route_proxy_state)
+                    .await;
             });
 
             // Auto-recovery scheduler: periodically re-enable accounts per their
