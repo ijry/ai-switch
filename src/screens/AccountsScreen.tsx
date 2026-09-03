@@ -65,6 +65,11 @@ import {
 } from "../lib/accountListLayout";
 import { useDragSort } from "../lib/useDragSort";
 import {
+  loadAccountDisplayPreferences,
+  saveAccountDisplayPreferences,
+  type AccountDisplayPreferences,
+} from "../lib/accountDisplayPreferences";
+import {
   claudeAliasSupportsOneM,
   CLAUDE_FALLBACK_ALIAS,
   CLAUDE_MENU_ROLES,
@@ -2281,7 +2286,19 @@ export function AccountsScreen({
   const [accountLayout, setAccountLayout] = useState<AccountListLayout>(() =>
     loadAccountListLayout(),
   );
+  const [accountDisplayPreferences, setAccountDisplayPreferences] =
+    useState<AccountDisplayPreferences>(() => loadAccountDisplayPreferences());
   const cardLayout = accountLayout === "card";
+  const updateAccountDisplayPreference = (
+    key: keyof AccountDisplayPreferences,
+    value: boolean,
+  ) => {
+    setAccountDisplayPreferences((current) => {
+      const next = { ...current, [key]: value };
+      saveAccountDisplayPreferences(next);
+      return next;
+    });
+  };
   // A card is far narrower than a full row, so its actions always live behind the
   // overflow menu instead of waiting for the list to be squeezed.
   const rowActionsInMenu = compactRowActions || cardLayout;
@@ -5404,6 +5421,38 @@ export function AccountsScreen({
                     <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />
                     刷新账号列表
                   </button>
+                  <div
+                    aria-label="显示内容自定义"
+                    className="my-1 border-t border-stone-100 pt-1"
+                    role="group"
+                  >
+                    <p className="px-2.5 py-1 text-[11px] font-semibold text-stone-400">
+                      显示内容自定义
+                    </p>
+                    {(
+                      [
+                        ["showAccountType", "账号类型（API/Token）"],
+                        ["showModelList", "模型列表"],
+                        ["showRequestStats", "请求统计"],
+                      ] as const
+                    ).map(([key, label]) => (
+                      <label
+                        className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50"
+                        key={key}
+                      >
+                        <input
+                          aria-label={`显示${label}`}
+                          checked={accountDisplayPreferences[key]}
+                          className="h-3.5 w-3.5 accent-blue-600"
+                          onChange={(event) =>
+                            updateAccountDisplayPreference(key, event.target.checked)
+                          }
+                          type="checkbox"
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
                   <button
                     aria-label="刷新官方账号额度"
                     className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] font-semibold text-violet-700 transition-colors hover:bg-violet-50 disabled:opacity-50"
@@ -5791,9 +5840,11 @@ export function AccountsScreen({
                   );
                   const badges = (
                     <>
-                        <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
-                          {kindLabel(credential.kind)}
-                        </span>
+                        {accountDisplayPreferences.showAccountType ? (
+                          <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+                            {credential.kind === "api" ? "API" : "Token"}
+                          </span>
+                        ) : null}
                         {credential.archived_at && (
                           <span className="rounded-full bg-stone-200 px-2 py-0.5 text-[11px] font-semibold text-stone-700">
                             已归档
@@ -5817,7 +5868,9 @@ export function AccountsScreen({
                             {credential.active_request_count}/{credential.max_concurrency}
                           </span>
                         )}
-                        <ModelMappingSummary platform={activePlatform} mappings={modelMappings} />
+                        {accountDisplayPreferences.showModelList ? (
+                          <ModelMappingSummary platform={activePlatform} mappings={modelMappings} />
+                        ) : null}
                         {cooldownState?.active && retryLabel && (
                           <CredentialFailureTooltip credential={credential}>
                             <span
@@ -6042,9 +6095,11 @@ export function AccountsScreen({
                           <div className="flex flex-wrap items-center gap-1.5">{badges}</div>
                           {/* mt-auto keeps the stats line pinned to the bottom so the
                               footers of a grid row stay on one baseline. */}
-                          <p className="mt-auto truncate border-t border-stone-200/70 pt-1.5 text-[11px] text-stone-500">
-                            {statsLine}
-                          </p>
+                          {accountDisplayPreferences.showRequestStats ? (
+                            <p className="mt-auto truncate border-t border-stone-200/70 pt-1.5 text-[11px] text-stone-500">
+                              {statsLine}
+                            </p>
+                          ) : null}
                         </article>
                       </Fragment>
                     );
@@ -6070,7 +6125,9 @@ export function AccountsScreen({
                         {nameBlock}
                         {badges}
                       </div>
-                      <p className="mt-0.5 truncate text-[12px] text-stone-500">{statsLine}</p>
+                      {accountDisplayPreferences.showRequestStats ? (
+                        <p className="mt-0.5 truncate text-[12px] text-stone-500">{statsLine}</p>
+                      ) : null}
                     </div>
                     {actionsBlock}
                   </div>
