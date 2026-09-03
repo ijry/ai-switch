@@ -642,6 +642,7 @@ fn extract_claude_model_mappings(env: &Map<String, Value>) -> Vec<ModelMapping> 
             // Only roles with a 1M tier may declare it, matching the editor's
             // own rule — Haiku has no 1M variant to declare.
             supports_1m: (one_m && alias_supports_one_m(alias)).then_some(true),
+            ..Default::default()
         });
     }
 
@@ -663,6 +664,7 @@ fn extract_claude_model_mappings(env: &Map<String, Value>) -> Vec<ModelMapping> 
             to: upstream,
             label: None,
             supports_1m: one_m.then_some(true),
+            ..Default::default()
         });
     }
     mappings
@@ -686,6 +688,7 @@ fn extract_codex_model_mappings(
             to: model.to_string(),
             label: label.filter(|label| label != model),
             supports_1m: None,
+            ..Default::default()
         });
     };
 
@@ -868,6 +871,7 @@ mod tests {
                 to: "claude-opus-5".to_string(),
                 label: Some("Opus 5".to_string()),
                 supports_1m: None,
+                ..Default::default()
             }]
         );
     }

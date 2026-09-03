@@ -317,7 +317,7 @@ pub struct ReorderRouteCredentialInput {
     pub page_size: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelMapping {
     pub from: String,
     pub to: String,
@@ -325,6 +325,16 @@ pub struct ModelMapping {
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_1m: Option<bool>,
+    /// Codex-only: the context window (in tokens) advertised for this alias.
+    /// `None` means "use the platform default" — Claude declares its 1M tier
+    /// through `supports_1m` instead, so the two never apply to one platform.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    /// Codex-only: the reasoning efforts advertised for this alias. `None` means
+    /// "use the baseline profile for this model id", which is what every mapping
+    /// written before this field existed relies on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_levels: Option<Vec<String>>,
 }
 
 /// Catch-all `from` alias: the account accepts any requested model and rewrites

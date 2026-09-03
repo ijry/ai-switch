@@ -2714,6 +2714,127 @@ describe("AccountsScreen", () => {
     expect(await screen.findByText(/共 1 条/)).toBeInTheDocument();
   });
 
+  it("saves a Codex mapping's context window and custom reasoning levels", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Codex Catalog API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-codex");
+    await userEvent.clear(screen.getByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://api.upstream.test/v1");
+    await userEvent.click(screen.getByRole("button", { name: "新增映射" }));
+    await userEvent.type(screen.getByLabelText("请求模型 1"), "gpt-5.5");
+    await userEvent.type(screen.getByLabelText("上游模型 1"), "provider-gpt");
+
+    // gpt-5.5's baseline is low/medium/high/xhigh, all preselected. Dropping two
+    // of them turns the row into an explicit list.
+    expect(screen.getByLabelText("推理程度 low 1")).toBeChecked();
+    expect(screen.getByLabelText("推理程度 xhigh 1")).toBeChecked();
+    expect(screen.getByLabelText("推理程度 ultra 1")).not.toBeChecked();
+    await userEvent.click(screen.getByLabelText("推理程度 low 1"));
+    await userEvent.click(screen.getByLabelText("推理程度 high 1"));
+    await userEvent.selectOptions(screen.getByLabelText("上下文长度 1"), "400000");
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() =>
+      expect(createApiRouteCredential).toHaveBeenCalledWith(
+        expect.objectContaining({
+          display_name: "Codex Catalog API",
+          model_mappings_json:
+            "[{\"from\":\"gpt-5.5\",\"to\":\"provider-gpt\",\"context_window\":400000,\"reasoning_levels\":[\"medium\",\"xhigh\"]}]",
+        }),
+      ),
+    );
+  });
+
+  it("omits Codex catalog fields while a mapping still follows its baseline", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Codex Baseline API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-codex");
+    await userEvent.clear(screen.getByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://api.upstream.test/v1");
+    await userEvent.click(screen.getByRole("button", { name: "新增映射" }));
+    await userEvent.type(screen.getByLabelText("请求模型 1"), "gpt-5.6-sol");
+    await userEvent.type(screen.getByLabelText("上游模型 1"), "provider-sol");
+
+    expect(screen.getByText("跟随基准模型")).toBeInTheDocument();
+    // Ticking an already-checked baseline effort back on is a no-op, so the row
+    // must not freeze today's ladder into the config.
+    await userEvent.click(screen.getByLabelText("推理程度 ultra 1"));
+    await userEvent.click(screen.getByLabelText("推理程度 ultra 1"));
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() =>
+      expect(createApiRouteCredential).toHaveBeenCalledWith(
+        expect.objectContaining({
+          display_name: "Codex Baseline API",
+          model_mappings_json: "[{\"from\":\"gpt-5.6-sol\",\"to\":\"provider-sol\"}]",
+        }),
+      ),
+    );
+  });
+
+  it("follows the upstream model when naming the default context window", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "新增映射" }));
+    await userEvent.type(screen.getByLabelText("请求模型 1"), "gpt-5.6-sol");
+
+    // Nothing typed yet: the generic default.
+    expect(screen.getByRole("option", { name: "默认 256K" })).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText("上游模型 1"), "glm-5.3");
+    // A 1M family upstream moves the default without the user picking anything,
+    // so the label has to track the field rather than being fixed at render.
+    expect(screen.getByRole("option", { name: "默认 1M" })).toBeInTheDocument();
+    expect(screen.getByLabelText("上下文长度 1")).toHaveValue("");
+  });
+
+  it("keeps the Claude editor free of the Codex catalog controls", async () => {
+    renderScreen("claude");
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+
+    expect(screen.getByLabelText("声明支持 1M 1")).toBeInTheDocument();
+    expect(screen.queryByLabelText("上下文长度 1")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("推理程度 high 1")).not.toBeInTheDocument();
+  });
+
+  it("shows an imported Codex row's own context window and efforts", async () => {
+    const api = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://api.example.com/v1",
+        interface_format: "openai",
+        model_mappings: [
+          {
+            from: "gpt-5.5",
+            to: "provider-gpt",
+            // Neither value is on the option list this build offers.
+            context_window: 272000,
+            reasoning_levels: ["medium", "insane"],
+          },
+        ],
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([api]);
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+
+    // The stored size gets its own option rather than falling back to "default",
+    // which would misreport what the account advertises.
+    expect(await screen.findByLabelText("上下文长度 1")).toHaveValue("272000");
+    expect(screen.getByLabelText("推理程度 insane 1")).toBeChecked();
+    expect(screen.getByLabelText("推理程度 medium 1")).toBeChecked();
+    expect(screen.getByLabelText("推理程度 low 1")).not.toBeChecked();
+    expect(screen.getByText("自定义")).toBeInTheDocument();
+  });
+
   it("saves the selected Claude API key field and uses it when fetching models", async () => {
     renderScreen("claude");
 

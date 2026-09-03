@@ -33,9 +33,9 @@ use crate::services::route_credential_activity::{
 };
 use crate::services::route_failure_scope::is_account_scoped_failure;
 use crate::services::route_model_capability::{
-    advertised_model_ids, codex_reasoning_metadata, known_upstream_models, model_state_key,
-    parse_model_capability, parse_model_capability_value, requested_model_from_body,
-    resolve_mapping_target, supports_requested_model,
+    advertised_model_catalog_entries, codex_effective_context_window, codex_reasoning_metadata,
+    known_upstream_models, model_state_key, parse_model_capability, parse_model_capability_value,
+    requested_model_from_body, resolve_mapping_target, supports_requested_model,
 };
 use crate::services::route_protocol_bridge::{
     is_anthropic_count_tokens_path, prepare_request as prepare_protocol_bridge_request,
@@ -4576,18 +4576,18 @@ fn build_models_list_payload(platform: &str, credentials: &[SelectedCredential])
         .iter()
         .map(|credential| parse_model_capability(&credential.config_json))
         .collect::<Vec<_>>();
-    let data: Vec<Value> = advertised_model_ids(platform, &capabilities)
+    let data: Vec<Value> = advertised_model_catalog_entries(platform, &capabilities)
         .into_iter()
-        .map(|id| {
+        .map(|entry| {
             let mut model = json!({
-                "id": id,
+                "id": entry.id,
                 "object": "model",
                 "created": created,
                 "owned_by": "ai-switch",
             });
             if platform.eq_ignore_ascii_case("codex") {
                 let (supported_reasoning_levels, default_reasoning_level) =
-                    codex_reasoning_metadata(&id);
+                    codex_reasoning_metadata(&entry.id, entry.reasoning_levels.as_deref());
                 if let Some(object) = model.as_object_mut() {
                     object.insert(
                         "supported_reasoning_levels".to_string(),
@@ -4595,7 +4595,17 @@ fn build_models_list_payload(platform: &str, credentials: &[SelectedCredential])
                     );
                     object.insert(
                         "default_reasoning_level".to_string(),
-                        Value::String(default_reasoning_level.to_string()),
+                        Value::String(default_reasoning_level),
+                    );
+                    // Always stated, declared or not: the default depends on the
+                    // upstream model this alias points at, which the client has
+                    // no way to work out on its own.
+                    object.insert(
+                        "context_window".to_string(),
+                        json!(codex_effective_context_window(
+                            entry.context_window,
+                            &entry.upstream_model
+                        )),
                     );
                 }
             }
@@ -8200,6 +8210,7 @@ mod tests {
                 to: "up-gpt".to_string(),
                 label: None,
                 supports_1m: None,
+                ..Default::default()
             }],
         );
         let value: Value = serde_json::from_slice(&mapped).expect("json");
@@ -8224,12 +8235,14 @@ mod tests {
                     to: "provider-sonnet".to_string(),
                     label: Some("Sonnet".to_string()),
                     supports_1m: Some(true),
+                    ..Default::default()
                 },
                 ModelMapping {
                     from: "claude-opus-alias".to_string(),
                     to: "provider-opus".to_string(),
                     label: Some("Opus".to_string()),
                     supports_1m: Some(true),
+                    ..Default::default()
                 },
             ],
         );
@@ -8254,6 +8267,7 @@ mod tests {
                 to: "up-gpt".to_string(),
                 label: None,
                 supports_1m: None,
+                ..Default::default()
             }],
         );
         let value: Value = serde_json::from_slice(&mapped).expect("json");
@@ -8276,12 +8290,14 @@ mod tests {
                     to: "fallback-upstream".to_string(),
                     label: None,
                     supports_1m: None,
+                    ..Default::default()
                 },
                 ModelMapping {
                     from: "claude-sonnet-alias".to_string(),
                     to: "sonnet-upstream".to_string(),
                     label: None,
                     supports_1m: None,
+                    ..Default::default()
                 },
             ],
         );
@@ -8306,6 +8322,7 @@ mod tests {
                 to: "provider-haiku".to_string(),
                 label: None,
                 supports_1m: None,
+                ..Default::default()
             }],
         );
         let value: Value = serde_json::from_slice(&mapped).expect("json");
@@ -10788,10 +10805,85 @@ data: [DONE]\n\n";
         );
         assert_eq!(data[0]["default_reasoning_level"].as_str(), Some("medium"));
         assert_eq!(data[1].get("id").and_then(Value::as_str), Some("gpt-5"));
+        // Nothing was declared, so the upstream's own default is stated. The
+        // client cannot derive it — it never sees the mapped-to name.
+        assert_eq!(data[0]["context_window"].as_u64(), Some(256_000));
         assert!(payload.get("models").is_none());
 
         let response = json_models_list_response("codex", &[], None);
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn codex_models_endpoint_states_the_one_m_default_for_a_one_m_upstream() {
+        let mut credential = api_credential("first", "openai");
+        credential.config_json = serde_json::json!({
+            "model_mappings": [
+                {"from": "gpt-5.6-sol", "to": "deepseek-v4-flash-0731"},
+                {"from": "gpt-5.5", "to": "gpt-5.5"}
+            ]
+        })
+        .to_string();
+
+        let payload = build_route_models_list_payload("codex", &[credential]);
+        let data = payload.get("data").and_then(Value::as_array).expect("data");
+
+        assert_eq!(data[0]["context_window"].as_u64(), Some(1_000_000));
+        assert_eq!(data[1]["context_window"].as_u64(), Some(256_000));
+    }
+
+    #[test]
+    fn codex_models_endpoint_advertises_per_mapping_catalog_overrides() {
+        let mut credential = api_credential("first", "openai");
+        credential.config_json = serde_json::json!({
+            "base_url": "https://api.example.com/v1",
+            "interface_format": "openai",
+            "model_mappings": [{
+                "from": "gpt-5.5",
+                "to": "up-a",
+                "context_window": 400000,
+                "reasoning_levels": ["xhigh", "max"]
+            }]
+        })
+        .to_string();
+
+        let payload = build_route_models_list_payload("codex", &[credential]);
+        let data = payload.get("data").and_then(Value::as_array).expect("data");
+
+        assert_eq!(data[0]["context_window"].as_u64(), Some(400_000));
+        assert_eq!(
+            data[0]["supported_reasoning_levels"]
+                .as_array()
+                .expect("reasoning levels")
+                .iter()
+                .filter_map(|level| level.get("effort").and_then(Value::as_str))
+                .collect::<Vec<_>>(),
+            vec!["xhigh", "max"]
+        );
+        // gpt-5.5 defaults to medium, which the custom list drops.
+        assert_eq!(data[0]["default_reasoning_level"].as_str(), Some("xhigh"));
+    }
+
+    #[test]
+    fn non_codex_models_endpoint_carries_no_catalog_fields() {
+        let mut credential = api_credential("first", "anthropic");
+        credential.config_json = serde_json::json!({
+            "model_mappings": [{
+                "from": "claude-sonnet-alias",
+                "to": "up-sonnet",
+                "context_window": 400000,
+                "reasoning_levels": ["max"]
+            }]
+        })
+        .to_string();
+
+        let payload = build_route_models_list_payload("claude", &[credential]);
+        let data = payload.get("data").and_then(Value::as_array).expect("data");
+
+        // Claude clients do not read these keys, and a stray value here would be
+        // a config the user cannot see or clear from the Claude editor.
+        assert!(data[0].get("context_window").is_none());
+        assert!(data[0].get("supported_reasoning_levels").is_none());
     }
 
     #[test]

@@ -1,12 +1,22 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ModelMapping } from "../../lib/api/types";
 import { CLAUDE_MENU_ROLES, claudeRoleLabel } from "../../lib/claude-roles";
+import {
+  codexContextWindowLabel,
+  codexEffectiveReasoningLevels,
+  normalizeCodexContextWindow,
+  usesCodexBaselineReasoning,
+} from "../../lib/codexModelCapability";
 
 export type DisplayModelMapping = {
   alias: string;
   target: string;
   label?: string | null;
   oneM: boolean;
+  /** Codex-only catalog extras, kept for the tooltip so a config can be checked
+   * without opening the editor. */
+  contextWindow?: number | null;
+  reasoningLevels?: readonly string[] | null;
 };
 
 const baselineModelsByPlatform: Record<string, readonly string[]> = {
@@ -48,7 +58,9 @@ export function expandDisplayModelMappings(
   mappings: ModelMapping[],
 ): DisplayModelMapping[] {
   const expanded: DisplayModelMapping[] = [];
-  const isClaude = platform.trim().toLowerCase() === "claude";
+  const normalizedPlatform = platform.trim().toLowerCase();
+  const isClaude = normalizedPlatform === "claude";
+  const isCodex = normalizedPlatform === "codex";
 
   for (const mapping of mappings) {
     const alias = mapping.from.trim();
@@ -57,7 +69,15 @@ export function expandDisplayModelMappings(
       continue;
     }
     const label = mapping.label?.trim() || null;
-    const normalized = { alias, target, label, oneM: false };
+    const normalized: DisplayModelMapping = { alias, target, label, oneM: false };
+    if (isCodex) {
+      normalized.contextWindow = normalizeCodexContextWindow(mapping.context_window);
+      // Only a hand-picked list is worth showing: "the baseline" adds no
+      // information the model id does not already carry.
+      normalized.reasoningLevels = usesCodexBaselineReasoning(mapping.reasoning_levels)
+        ? null
+        : codexEffectiveReasoningLevels(alias, mapping.reasoning_levels);
+    }
     expanded.push(normalized);
 
     if (isClaude && mapping.supports_1m === true && !hasOneMSuffix(alias)) {
@@ -77,7 +97,13 @@ export function expandDisplayModelMappings(
 function mappingDetail(mapping: DisplayModelMapping) {
   const label = mapping.label?.trim();
   const oneM = mapping.oneM && !hasOneMSuffix(mapping.alias) ? "[1m]" : "";
-  return `${mapping.alias}${oneM} → ${mapping.target}${label ? ` · ${label}` : ""}`;
+  const extras = [
+    mapping.contextWindow ? codexContextWindowLabel(mapping.contextWindow) : null,
+    mapping.reasoningLevels?.length ? mapping.reasoningLevels.join("/") : null,
+  ].filter(Boolean);
+  return `${mapping.alias}${oneM} → ${mapping.target}${label ? ` · ${label}` : ""}${
+    extras.length ? ` · ${extras.join(" · ")}` : ""
+  }`;
 }
 
 export function ModelMappingSummary({

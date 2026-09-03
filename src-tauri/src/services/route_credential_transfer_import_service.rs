@@ -583,6 +583,59 @@ mod tests {
     }
 
     #[test]
+    fn codex_catalog_fields_survive_a_transfer_round_trip() {
+        // These two are carried only by the x-ai-switch metadata — the CPA
+        // `models` shape has no room for them — so a stricter passthrough list
+        // would report them as ignored and silently reset the row to defaults.
+        let item = object(json!({
+            "api-key": "fixture-key-material",
+            "base-url": endpoint(),
+            "models": [{"name": "provider-sol", "alias": "gpt-5.6-sol"}],
+            "x-ai-switch": {
+                "format": TRANSFER_FORMAT,
+                "schema_version": 1,
+                "platform": "codex",
+                "kind": "api",
+                "cpa_section": "codex-api-key",
+                "interface_format": "openai-responses",
+                "model_mappings": [{
+                    "from": "gpt-5.6-sol",
+                    "to": "provider-sol",
+                    "context_window": 400000,
+                    "reasoning_levels": ["Medium", "max"]
+                }]
+            }
+        }));
+
+        let normalized = classify_ok(0, &item, &[]);
+        let config: Value = serde_json::from_str(&normalized.config_json).expect("config");
+        let mappings = config
+            .get("model_mappings")
+            .and_then(Value::as_array)
+            .expect("model mappings");
+
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(
+            mappings[0].get("context_window").and_then(Value::as_u64),
+            Some(400_000)
+        );
+        assert_eq!(
+            mappings[0]
+                .get("reasoning_levels")
+                .and_then(Value::as_array)
+                .expect("levels")
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>(),
+            vec!["medium", "max"]
+        );
+        assert!(!normalized
+            .issue_codes
+            .iter()
+            .any(|code| code == "transfer.metadata_field_ignored"));
+    }
+
+    #[test]
     fn model_metadata_must_match_the_projected_cpa_models() {
         let mut item = api_item("codex-api-key", "codex", "openai-responses");
         item.insert(
@@ -2616,7 +2669,15 @@ fn validate_metadata_model_mappings(
             )
         })?;
         for (field, field_value) in object {
-            if ["from", "to", "label", "supports_1m"].contains(&field.as_str())
+            if [
+                "from",
+                "to",
+                "label",
+                "supports_1m",
+                "context_window",
+                "reasoning_levels",
+            ]
+            .contains(&field.as_str())
                 || !is_nonempty(field_value)
             {
                 continue;
@@ -2663,6 +2724,22 @@ fn validate_metadata_model_mappings(
         }
         if let Some(supports_1m) = typed.supports_1m {
             normalized_entry.insert("supports_1m".to_string(), json!(supports_1m));
+        }
+        // Codex's per-alias catalog fields. They are not part of the CPA `models`
+        // shape, so `model_mapping_signature` deliberately ignores them — the
+        // reversed side can never carry them and comparing would always conflict.
+        if let Some(context_window) = typed.context_window.filter(|window| *window > 0) {
+            normalized_entry.insert("context_window".to_string(), json!(context_window));
+        }
+        let reasoning_levels = typed
+            .reasoning_levels
+            .unwrap_or_default()
+            .into_iter()
+            .map(|level| level.trim().to_ascii_lowercase())
+            .filter(|level| !level.is_empty())
+            .collect::<Vec<_>>();
+        if !reasoning_levels.is_empty() {
+            normalized_entry.insert("reasoning_levels".to_string(), json!(reasoning_levels));
         }
         normalized.push(Value::Object(normalized_entry));
     }

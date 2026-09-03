@@ -3404,6 +3404,7 @@ mod tests {
             to: to.to_string(),
             label: None,
             supports_1m: None,
+            ..Default::default()
         }
     }
 

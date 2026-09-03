@@ -81,6 +81,16 @@ import {
   writeFetchedModelsToConfig,
 } from "../lib/accountFetchedModels";
 import {
+  codexContextWindowLabel,
+  codexDefaultContextWindow,
+  codexEffectiveReasoningLevels,
+  normalizeCodexContextWindow,
+  normalizeCodexReasoningLevels,
+  usesCodexBaselineReasoning,
+  CODEX_CONTEXT_WINDOW_OPTIONS,
+  CODEX_REASONING_LEVEL_OPTIONS,
+} from "../lib/codexModelCapability";
+import {
   createBatch,
   copyRouteCredential,
   clearRouteCredentialModelState,
@@ -798,15 +808,22 @@ function parseModelMappingsFromConfig(configJson: string): ModelMapping[] {
         const candidate = item as Partial<ModelMapping>;
         return typeof candidate.from === "string" && typeof candidate.to === "string";
       })
-      .map((item) => ({
-        from: item.from,
-        to: item.to,
-        label: item.label ?? null,
-        supports_1m:
-          item.supports_1m === true || (item as { supports1m?: unknown }).supports1m === true
-            ? true
-            : null,
-      }));
+      .map((item) => {
+        const reasoningLevels = normalizeCodexReasoningLevels(
+          Array.isArray(item.reasoning_levels) ? item.reasoning_levels : null,
+        );
+        return {
+          from: item.from,
+          to: item.to,
+          label: item.label ?? null,
+          supports_1m:
+            item.supports_1m === true || (item as { supports1m?: unknown }).supports1m === true
+              ? true
+              : null,
+          context_window: normalizeCodexContextWindow(item.context_window),
+          reasoning_levels: reasoningLevels.length > 0 ? reasoningLevels : null,
+        };
+      });
   } catch {
     return [];
   }
@@ -842,6 +859,21 @@ function normalizeModelMappings(mappings: ModelMapping[], platform: PlatformKey)
     // every save, since a hidden checkbox can never clear it.
     if (platform === "claude" && mapping.supports_1m === true && claudeAliasSupportsOneM(from)) {
       normalizedMapping.supports_1m = true;
+    }
+    // Codex advertises these two per alias; Claude states its context tier
+    // through `supports_1m` instead, so carrying them for other platforms would
+    // only leave dead keys in the config.
+    if (platform === "codex") {
+      const contextWindow = normalizeCodexContextWindow(mapping.context_window);
+      if (contextWindow !== null) {
+        normalizedMapping.context_window = contextWindow;
+      }
+      const reasoningLevels = normalizeCodexReasoningLevels(mapping.reasoning_levels);
+      // An empty list is stored as "absent" so the row keeps following the
+      // baseline profile rather than advertising no effort at all.
+      if (reasoningLevels.length > 0) {
+        normalizedMapping.reasoning_levels = reasoningLevels;
+      }
     }
     normalized.push(normalizedMapping);
   }
@@ -1484,6 +1516,118 @@ type ModelMappingsEditorProps = {
   value: ModelMapping[];
 };
 
+/**
+ * Codex-only extras for one mapping row: the context window the catalog will
+ * advertise, and which reasoning efforts the client may pick.
+ *
+ * Both are stored as "absent means baseline" so an untouched row keeps behaving
+ * exactly as it did before these fields existed — and so a row whose selection
+ * happens to match its model's baseline keeps tracking that baseline instead of
+ * freezing today's list into the config.
+ */
+function CodexMappingCapabilityFields({
+  index,
+  mapping,
+  onPatch,
+}: {
+  index: number;
+  mapping: ModelMapping;
+  onPatch: (patch: Partial<ModelMapping>) => void;
+}) {
+  const contextWindow = normalizeCodexContextWindow(mapping.context_window);
+  const declaredLevels = normalizeCodexReasoningLevels(mapping.reasoning_levels);
+  const effectiveLevels = codexEffectiveReasoningLevels(mapping.from, declaredLevels);
+  const followsBaseline = usesCodexBaselineReasoning(declaredLevels);
+  // An import (or a hand-edited config) can name an effort this build does not
+  // offer. Showing it keeps the row honest about what it will advertise, and
+  // keeps a save from silently dropping it.
+  const extraLevels = effectiveLevels.filter(
+    (level) => !CODEX_REASONING_LEVEL_OPTIONS.some((option) => option === level),
+  );
+  const levelChoices = [...CODEX_REASONING_LEVEL_OPTIONS, ...extraLevels];
+  // Same story for the window: an imported size gets its own option so the
+  // select can show what the row really declares instead of reading "default".
+  const unlistedContextWindow =
+    contextWindow !== null &&
+    !CODEX_CONTEXT_WINDOW_OPTIONS.some((option) => option.value === contextWindow)
+      ? contextWindow
+      : null;
+
+  const toggleLevel = (level: string, checked: boolean) => {
+    const next = levelChoices.filter((choice) =>
+      choice === level ? checked : effectiveLevels.includes(choice),
+    );
+    // Matching the baseline is stored as "no list" so the row keeps following it.
+    const baseline = codexEffectiveReasoningLevels(mapping.from, null);
+    const matchesBaseline =
+      next.length === baseline.length && next.every((choice, at) => choice === baseline[at]);
+    onPatch({ reasoning_levels: next.length === 0 || matchesBaseline ? null : next });
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-stone-100 pt-2">
+      <label className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-stone-500">
+        上下文
+        <select
+          aria-label={`上下文长度 ${index + 1}`}
+          className="rounded-lg border border-stone-200 bg-white px-2 py-1 text-[12px] font-medium text-stone-800 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+          onChange={(event) =>
+            onPatch({
+              context_window: event.target.value ? Number(event.target.value) : null,
+            })
+          }
+          value={contextWindow === null ? "" : String(contextWindow)}
+        >
+          <option value="">
+            默认 {codexContextWindowLabel(codexDefaultContextWindow(mapping.to))}
+          </option>
+          {CODEX_CONTEXT_WINDOW_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+          {unlistedContextWindow !== null ? (
+            <option value={unlistedContextWindow}>
+              {codexContextWindowLabel(unlistedContextWindow)}
+            </option>
+          ) : null}
+        </select>
+      </label>
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+        <span className="text-[11px] font-semibold text-stone-500">推理程度</span>
+        {levelChoices.map((level) => {
+          const checked = effectiveLevels.includes(level);
+          return (
+            <label
+              className={`inline-flex cursor-pointer items-center rounded-lg border px-2 py-1 text-[11px] font-semibold transition-colors ${
+                checked
+                  ? "border-violet-300 bg-violet-100 text-violet-900"
+                  : "border-stone-200 bg-white text-stone-500 hover:bg-stone-50"
+              } ${checked && effectiveLevels.length === 1 ? "cursor-not-allowed opacity-70" : ""}`}
+              key={level}
+            >
+              <input
+                aria-label={`推理程度 ${level} ${index + 1}`}
+                checked={checked}
+                className="sr-only"
+                // The catalog needs at least one effort, so the last one standing
+                // cannot be cleared — unticking it would advertise an empty menu.
+                disabled={checked && effectiveLevels.length === 1}
+                onChange={(event) => toggleLevel(level, event.target.checked)}
+                type="checkbox"
+              />
+              {level}
+            </label>
+          );
+        })}
+        <span className="text-[11px] font-medium text-stone-400">
+          {followsBaseline ? "跟随基准模型" : "自定义"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function ModelMappingsEditor({
   error,
   fetchError,
@@ -1497,6 +1641,10 @@ function ModelMappingsEditor({
   value,
 }: ModelMappingsEditorProps) {
   const isClaude = platform === "claude";
+  // Codex is the only client that reads a per-model context window and effort
+  // ladder out of the catalog we write, so it is the only editor that offers
+  // them. Claude keeps its single 1M checkbox.
+  const isCodex = platform === "codex";
   const templateValues = new Set<string>(claudeRoleTemplates.map((template) => template.value));
   const rows = isClaude
     ? [
@@ -1596,6 +1744,9 @@ function ModelMappingsEditor({
         {isClaude
           ? " 配置 Subagent 后需要重新写入客户端配置才会生效；默认兜底模型让未匹配的请求也能落到该账号。"
           : ""}
+        {isCodex
+          ? " 上下文与推理程度会写进 Codex 模型清单：不选就跟随基准（上下文按上游模型判断，deepseek-v4 / glm-5.2 / glm-5.3 / qwen-3.8 / kimi-k3 开头的自动 1M，其余 256K；推理程度 GPT 基准模型用各自的档位，其他模型用 low/medium/high）。"
+          : ""}
         {fetchedModels.length > 0 ? ` 已获取 ${fetchedModels.length} 个模型。` : ""}
       </p>
       {configuredCount === 0 ? (
@@ -1633,14 +1784,16 @@ function ModelMappingsEditor({
             // Subagent and fallback rows get neither.
             const editableLabel = !isTemplateRow || roleTemplate?.editableLabel !== false;
             const supportsOneM = !isTemplateRow || roleTemplate?.supportsOneM !== false;
-            return (
+            const rowKey = isTemplateRow
+              ? `claude-template-${mapping.from}`
+              : `model-mapping-${index}`;
+            const rowControls = (
               <div
                 className={`grid gap-2 sm:items-center ${
                   isClaude
                     ? "sm:grid-cols-[0.7fr_minmax(0,1fr)_auto_minmax(0,1fr)_auto_auto]"
                     : "sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto]"
                 }`}
-                key={isTemplateRow ? `claude-template-${mapping.from}` : `model-mapping-${index}`}
               >
                 {isClaude ? (
                   <>
@@ -1714,6 +1867,22 @@ function ModelMappingsEditor({
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
+              </div>
+            );
+            if (!isCodex) {
+              return <Fragment key={rowKey}>{rowControls}</Fragment>;
+            }
+            return (
+              <div
+                className="grid gap-2 rounded-lg border border-stone-200 bg-white p-2"
+                key={rowKey}
+              >
+                {rowControls}
+                <CodexMappingCapabilityFields
+                  index={index}
+                  mapping={mapping}
+                  onPatch={(patch) => updateRow(index, patch)}
+                />
               </div>
             );
           })
@@ -6749,6 +6918,7 @@ export function AccountsScreen({
                     {routePoolModelsMutation.data.map((model) => {
                       const mappingTargets = poolModelMappingTargets.get(model.id.trim().toLowerCase());
                       const reasoningLevels = model.supported_reasoning_levels ?? [];
+                      const contextWindow = normalizeCodexContextWindow(model.context_window);
                       return (
                         <div className="flex gap-3 rounded-lg bg-white px-3 py-2" key={model.id}>
                           <div className="min-w-0 flex-1">
@@ -6774,6 +6944,11 @@ export function AccountsScreen({
                                 {model.default_reasoning_level
                                   ? ` · 默认 ${model.default_reasoning_level}`
                                   : ""}
+                              </p>
+                            ) : null}
+                            {contextWindow ? (
+                              <p className="mt-0.5 text-[11px] leading-4 text-emerald-700">
+                                上下文：{codexContextWindowLabel(contextWindow)}
                               </p>
                             ) : null}
                           </div>

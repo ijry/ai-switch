@@ -378,6 +378,7 @@ fn build_model_mappings_json(
             to: model,
             label: None,
             supports_1m: None,
+            ..Default::default()
         });
     }
 
@@ -397,6 +398,7 @@ fn push_claude_mapping(
             to,
             label: Some(label.into()),
             supports_1m: None,
+            ..Default::default()
         });
     }
 }
@@ -494,6 +496,7 @@ mod tests {
             to: "gpt-5.2-codex".into(),
             label: None,
             supports_1m: None,
+            ..Default::default()
         }];
         assert_round_trip(
             "codex",
@@ -508,18 +511,21 @@ mod tests {
                 to: "claude-haiku-custom".into(),
                 label: Some("Haiku".into()),
                 supports_1m: None,
+                ..Default::default()
             },
             ModelMapping {
                 from: "claude-sonnet-alias".into(),
                 to: "claude-sonnet-custom".into(),
                 label: Some("Sonnet".into()),
                 supports_1m: None,
+                ..Default::default()
             },
             ModelMapping {
                 from: "claude-opus-alias".into(),
                 to: "claude-opus-custom".into(),
                 label: Some("Opus".into()),
                 supports_1m: None,
+                ..Default::default()
             },
         ];
         assert_round_trip("claude", "anthropic", &claude_mappings, &claude_mappings);
@@ -529,6 +535,7 @@ mod tests {
             to: "gemini-3-pro".into(),
             label: None,
             supports_1m: None,
+            ..Default::default()
         }];
         assert_round_trip("gemini", "gemini", &gemini_mappings, &gemini_mappings);
 
@@ -537,6 +544,7 @@ mod tests {
             to: "grok-4.5".into(),
             label: None,
             supports_1m: None,
+            ..Default::default()
         }];
         assert_round_trip("grok", "openai", &grok_mappings, &grok_mappings);
     }
@@ -569,12 +577,14 @@ mod tests {
                 to: "gpt-5.1".into(),
                 label: None,
                 supports_1m: None,
+                ..Default::default()
             },
             ModelMapping {
                 from: "gpt-5".into(),
                 to: "gpt-5.2".into(),
                 label: None,
                 supports_1m: None,
+                ..Default::default()
             },
         ];
         let input = build_input(
@@ -590,6 +600,7 @@ mod tests {
             to: "claude-sonnet-custom".into(),
             label: Some("Sonnet".into()),
             supports_1m: Some(true),
+            ..Default::default()
         }];
         let input = build_input("claude", "anthropic", &supports_1m, &empty_headers);
         assert_safe_build_error(&input, "deeplink_export.supports_1m_unsupported");
@@ -613,6 +624,7 @@ mod tests {
             to: "claude-private-model".into(),
             label: None,
             supports_1m: None,
+            ..Default::default()
         }];
         let input = build_input(
             "claude",
@@ -638,6 +650,7 @@ mod tests {
                 to: "provider-model".into(),
                 label: None,
                 supports_1m: None,
+                ..Default::default()
             }];
             let input = build_input("claude", "anthropic", &mappings, &empty_headers);
             assert_safe_build_error(&input, "deeplink_export.claude_models_unsupported");

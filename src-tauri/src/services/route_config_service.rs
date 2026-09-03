@@ -19,7 +19,8 @@ use crate::services::config_write_service::{
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_model_capability::{
-    advertised_model_catalog_entries, codex_model_catalog_payload, parse_model_capability,
+    advertised_model_catalog_entries, codex_default_context_window, codex_model_catalog_payload,
+    parse_model_capability,
 };
 use crate::services::settings_service::SettingsService;
 use directories::BaseDirs;
@@ -558,7 +559,12 @@ impl RouteConfigService {
             advertised_model_catalog_entries(platform.as_str(), &capabilities)
                 .into_iter()
                 .map(|model| ClientModel {
-                    context_window: client_model_context_window(&model.id),
+                    context_window: client_model_context_window(
+                        platform,
+                        &model.id,
+                        model.context_window,
+                        &model.upstream_model,
+                    ),
                     max_output_tokens: CLIENT_MODEL_MAX_OUTPUT_TOKENS,
                     id: model.id,
                 })
@@ -749,8 +755,26 @@ const CLIENT_MODEL_CONTEXT_WINDOW: u32 = 200_000;
 const CLIENT_MODEL_ONE_M_CONTEXT_WINDOW: u32 = 1_000_000;
 
 /// The `[1m]` suffix is how the pool advertises a 1M-context variant of a
-/// model, so the written limit has to follow it rather than the base id.
-fn client_model_context_window(model_id: &str) -> u32 {
+/// model, so the written limit has to follow it rather than the base id. A
+/// mapping that states its own context window outranks both: the user picked
+/// that number against a specific upstream, and guessing 200K for it would
+/// under-report a 400K relay.
+///
+/// Codex has its own default table keyed by the upstream model, and it has to be
+/// the same one the Codex catalog uses — a pool whose CLI is told 1M while ZCode
+/// is told 200K would truncate on one client and not the other.
+fn client_model_context_window(
+    platform: PlatformId,
+    model_id: &str,
+    declared: Option<u32>,
+    upstream_model: &str,
+) -> u32 {
+    if let Some(declared) = declared.filter(|window| *window > 0) {
+        return declared;
+    }
+    if platform == PlatformId::Codex {
+        return codex_default_context_window(upstream_model);
+    }
     if model_id.trim().to_ascii_lowercase().ends_with("[1m]") {
         CLIENT_MODEL_ONE_M_CONTEXT_WINDOW
     } else {
@@ -1278,6 +1302,7 @@ command = "npx"
             to: to.to_string(),
             label: label.map(str::to_string),
             supports_1m: one_m.then_some(true),
+            ..Default::default()
         }
     }
 
@@ -1704,13 +1729,26 @@ command = "npx"
 
     #[test]
     fn one_m_suffixed_models_get_the_larger_context_window() {
-        assert_eq!(client_model_context_window("gpt-5.6-sol"), 200_000);
         assert_eq!(
-            client_model_context_window("claude-sonnet-alias[1m]"),
+            client_model_context_window(PlatformId::Codex, "gpt-5.6-sol", None, "gpt-5.6-sol"),
+            256_000
+        );
+        assert_eq!(
+            client_model_context_window(
+                PlatformId::Claude,
+                "claude-sonnet-alias[1m]",
+                None,
+                "claude-sonnet-alias"
+            ),
             1_000_000
         );
         assert_eq!(
-            client_model_context_window("Claude-Sonnet-Alias[1M]"),
+            client_model_context_window(
+                PlatformId::Claude,
+                "Claude-Sonnet-Alias[1M]",
+                None,
+                "claude-sonnet-alias"
+            ),
             1_000_000
         );
     }
@@ -1898,18 +1936,22 @@ command = "npx"
     /// An in-pool api credential mapping one model to itself, which is the
     /// minimum for the pool to advertise anything.
     async fn seed_codex_pool_member(pool: &SqlitePool, model: &str) {
-        let credential_id = Uuid::new_v4().to_string();
-        let now = Utc::now().to_rfc3339();
         let config_json = serde_json::json!({
             "model_mappings": [{ "from": model, "to": model }]
         })
         .to_string();
+        seed_codex_pool_member_with_config(pool, &config_json).await;
+    }
+
+    async fn seed_codex_pool_member_with_config(pool: &SqlitePool, config_json: &str) {
+        let credential_id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
         sqlx::query(
             "INSERT INTO route_credentials (id, platform, kind, display_name, secret_payload_json, config_json, preview_json, created_at, updated_at)
              VALUES (?, 'codex', 'api', 'seed', '{}', ?, '{}', ?, ?)",
         )
         .bind(&credential_id)
-        .bind(&config_json)
+        .bind(config_json)
         .bind(&now)
         .bind(&now)
         .execute(pool)
@@ -2113,7 +2155,86 @@ command = "npx"
         let json: Value = serde_json::from_slice(&raw).expect("json");
         let entry = &json["provider"]["ai-switch-codex"];
         assert_eq!(entry["models"]["gpt-5.6-sol"]["limit"]["output"], 128000);
+        // Same Codex default the CLI catalog writes for a passthrough gpt id.
+        assert_eq!(entry["models"]["gpt-5.6-sol"]["limit"]["context"], 256000);
         assert_eq!(entry["aiSwitch"]["platform"], "codex");
+    }
+
+    #[tokio::test]
+    async fn zcode_gets_the_one_m_default_for_a_one_m_upstream() {
+        let fixture = ServiceFixture::new().await;
+        seed_codex_pool_member(&fixture.pool, "glm-5.3").await;
+
+        RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            BASE_URL,
+            "codex",
+            &fixture.home,
+            Some(&["zcode".to_string()]),
+        )
+        .await
+        .expect("write");
+
+        let raw = tokio::fs::read(fixture.home.join(".zcode/v2/config.json"))
+            .await
+            .expect("read");
+        let json: Value = serde_json::from_slice(&raw).expect("json");
+        let entry = &json["provider"]["ai-switch-codex"];
+
+        assert_eq!(entry["models"]["glm-5.3"]["limit"]["context"], 1000000);
+    }
+
+    #[tokio::test]
+    async fn codex_catalog_on_disk_carries_the_declared_context_and_efforts() {
+        let fixture = ServiceFixture::new().await;
+        seed_codex_pool_member_with_config(
+            &fixture.pool,
+            &serde_json::json!({
+                "model_mappings": [{
+                    "from": "gpt-5.6-sol",
+                    "to": "gpt-5.6-sol",
+                    "context_window": 400_000,
+                    "reasoning_levels": ["medium", "max"]
+                }]
+            })
+            .to_string(),
+        )
+        .await;
+
+        RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            BASE_URL,
+            "codex",
+            &fixture.home,
+            Some(&["codex".to_string()]),
+        )
+        .await
+        .expect("write");
+
+        let raw = tokio::fs::read(codex_model_catalog_path(&fixture.home))
+            .await
+            .expect("read catalog");
+        let json: Value = serde_json::from_slice(&raw).expect("json");
+        let model = &json["models"][0];
+
+        assert_eq!(model["slug"], "gpt-5.6-sol");
+        assert_eq!(model["context_window"], 400_000);
+        assert_eq!(model["max_context_window"], 400_000);
+        assert_eq!(
+            model["supported_reasoning_levels"]
+                .as_array()
+                .expect("levels")
+                .iter()
+                .filter_map(|level| level["effort"].as_str())
+                .collect::<Vec<_>>(),
+            vec!["medium", "max"]
+        );
+        // sol's baseline default is low, which this list drops.
+        assert_eq!(model["default_reasoning_level"], "medium");
     }
 
     #[tokio::test]
@@ -2219,6 +2340,56 @@ command = "npx"
                 Some(&clients),
             )
             .await
+        );
+    }
+
+    #[test]
+    fn client_model_context_window_honours_per_mapping_declaration() {
+        // The mapping declares 400K for its upstream; the guess would be wrong.
+        assert_eq!(
+            client_model_context_window(
+                PlatformId::Codex,
+                "gpt-5.6-sol",
+                Some(400_000),
+                "deepseek-v4-flash"
+            ),
+            400_000
+        );
+        // Zero is not a real window; fall back to the upstream's own default.
+        assert_eq!(
+            client_model_context_window(PlatformId::Codex, "gpt-5.6-sol", Some(0), "gpt-5.6-sol"),
+            256_000
+        );
+        // A declaration also outranks the `[1m]` guess, since the user picked it
+        // against a specific upstream.
+        assert_eq!(
+            client_model_context_window(
+                PlatformId::Claude,
+                "claude-opus-alias[1m]",
+                Some(256_000),
+                "claude-opus-5"
+            ),
+            256_000
+        );
+    }
+
+    #[test]
+    fn zcode_style_clients_get_the_same_codex_default_as_the_cli() {
+        // The CLI catalog and ZCode read two different files; disagreeing here
+        // would truncate on one client and not the other.
+        assert_eq!(
+            client_model_context_window(
+                PlatformId::Codex,
+                "gpt-5.6-sol",
+                None,
+                "deepseek-v4-flash-0731"
+            ),
+            1_000_000
+        );
+        // A Claude alias never consults the Codex table, so its own rules stand.
+        assert_eq!(
+            client_model_context_window(PlatformId::Claude, "claude-sonnet-alias", None, "glm-5.3"),
+            200_000
         );
     }
 

@@ -83,4 +83,29 @@ describe("route proxy model list", () => {
       },
     ]);
   });
+
+  it("reads a declared context window and drops an unusable one", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [
+            { id: "declared", context_window: 400000 },
+            // A relay that sends 0 means "unknown", not a zero-token window.
+            { id: "zero", context_window: 0 },
+            { id: "absent" },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchRouteProxyModels("http://127.0.0.1:43111", "sk-route", "codex"),
+    ).resolves.toEqual([
+      { id: "declared", owned_by: null, context_window: 400000 },
+      { id: "zero", owned_by: null },
+      { id: "absent", owned_by: null },
+    ]);
+  });
 });

@@ -138,4 +138,47 @@ describe("ModelMappingSummary", () => {
       },
     ]);
   });
+
+  it("carries the Codex catalog extras only for a hand-picked list", () => {
+    expect(
+      expandDisplayModelMappings("codex", [
+        { from: "gpt-5.5", to: "up-gpt", context_window: 400_000, reasoning_levels: ["max"] },
+        // Following the baseline adds nothing the model id does not already say.
+        { from: "gpt-5.6-sol", to: "up-sol" },
+      ]),
+    ).toEqual([
+      {
+        alias: "gpt-5.5",
+        target: "up-gpt",
+        label: null,
+        oneM: false,
+        contextWindow: 400_000,
+        reasoningLevels: ["max"],
+      },
+      {
+        alias: "gpt-5.6-sol",
+        target: "up-sol",
+        label: null,
+        oneM: false,
+        contextWindow: null,
+        reasoningLevels: null,
+      },
+    ]);
+  });
+
+  it("puts the Codex context window and efforts in the row tooltip", () => {
+    render(
+      <ModelMappingSummary
+        platform="codex"
+        mappings={[
+          { from: "gpt-5.5", to: "up-gpt", context_window: 200_000, reasoning_levels: ["medium", "max"] },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("gpt-5.5")).toHaveAttribute(
+      "title",
+      "gpt-5.5 → up-gpt · 200K · medium/max",
+    );
+  });
 });

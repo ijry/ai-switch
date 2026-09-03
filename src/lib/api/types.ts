@@ -147,6 +147,8 @@ export type ModelMapping = {
   to: string;
   label?: string | null;
   supports_1m?: boolean | null;
+  context_window?: number | null;
+  reasoning_levels?: string[] | null;
 };
 
 export type RouteModelsFetchRequest = {
@@ -167,6 +169,9 @@ export type FetchedRouteModel = {
   supports_1m?: boolean | null;
   supported_reasoning_levels?: FetchedRouteModelReasoningLevel[];
   default_reasoning_level?: string | null;
+  /** Codex advertises a per-model context window; absent means the client's own
+   * default applies. */
+  context_window?: number | null;
 };
 
 export type RouteCredentialModelStatus = "ok" | "error" | "paused";

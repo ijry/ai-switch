@@ -88,6 +88,14 @@ export async function fetchRouteProxyModels(
         typeof record.default_reasoning_level === "string"
           ? record.default_reasoning_level.trim()
           : "";
+      // Codex-only, and only when the account declared one — a missing key means
+      // "the client's own default", not zero.
+      const contextWindow =
+        typeof record.context_window === "number" &&
+        Number.isFinite(record.context_window) &&
+        record.context_window > 0
+          ? Math.trunc(record.context_window)
+          : null;
       return {
         id,
         owned_by: typeof record.owned_by === "string" ? record.owned_by : null,
@@ -95,6 +103,7 @@ export async function fetchRouteProxyModels(
           ? { supported_reasoning_levels: supportedReasoningLevels }
           : {}),
         ...(defaultReasoningLevel ? { default_reasoning_level: defaultReasoningLevel } : {}),
+        ...(contextWindow !== null ? { context_window: contextWindow } : {}),
       };
     })
     .filter((model): model is FetchedRouteModel => model !== null);
