@@ -1072,8 +1072,16 @@ const relayBalanceProviderOptions: Array<{
   hint: string;
 }> = [
   { value: "none", label: "关闭", hint: "不查询余额" },
-  { value: "new_api", label: "new-api", hint: "用账号自己的 API Key 查 /api/usage/token/，无需额外填写" },
-  { value: "sub2api", label: "sub2api", hint: "用账号自己的 API Key 查 /v1/usage，无需额外填写" },
+  {
+    value: "new_api",
+    label: "new-api",
+    hint: "用账号自己的 API Key 查 /api/usage/token/，无需额外填写；选错了会自动改按 sub2api 再试一次",
+  },
+  {
+    value: "sub2api",
+    label: "sub2api",
+    hint: "用账号自己的 API Key 查 /v1/usage，无需额外填写；选错了会自动改按 new-api 再试一次",
+  },
   { value: "custom", label: "自定义", hint: "自己填请求 URL 与取值路径" },
 ];
 
@@ -3661,6 +3669,24 @@ export function AccountsScreen({
         mergeCredentialsIntoCache(credentials);
       }
       await invalidateAccountData();
+      // Per-account failures ride back inside the outcomes, not as a thrown
+      // error, so nothing surfaces them unless the batch writes them into the
+      // row state the single-account action uses. Without this a batch refresh
+      // reports "失败 3" and every failing row looks untouched.
+      setRelayBalanceStatusById((current) => {
+        const next = { ...current };
+        for (const outcome of outcomes) {
+          const id = outcome.credential.id;
+          if (!id) continue;
+          next[id] = {
+            snapshot: relayBalanceSnapshotFromConfig(
+              parseJsonObject(outcome.credential.config_json),
+            ),
+            error: outcome.source === "error" ? outcome.message ?? "查询余额失败" : null,
+          };
+        }
+        return next;
+      });
       if (outcomes.length === 0) {
         setRelayBalanceMessage("没有开启余额查询的中转站账号");
         return;

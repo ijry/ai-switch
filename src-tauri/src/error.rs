@@ -43,6 +43,19 @@ impl AppError {
             | Self::Secret { code, .. } => code,
         }
     }
+
+    /// The diagnostic detail, when the error carries one. `Display` renders only
+    /// the user-facing message, so call sites that fold an error into a per-item
+    /// outcome string need this to keep the part that makes a failure
+    /// actionable — the URL tried and what the upstream actually answered.
+    pub fn details(&self) -> Option<&str> {
+        match self {
+            Self::Validation { details, .. }
+            | Self::Filesystem { details, .. }
+            | Self::Database { details, .. }
+            | Self::Secret { details, .. } => details.as_deref(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

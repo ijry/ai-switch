@@ -76,11 +76,26 @@ impl RouteRelayBalanceService {
                     credential,
                     updated: false,
                     source: "error".to_string(),
-                    message: Some(err.to_string()),
+                    message: Some(describe_failure(&err)),
                 }),
             }
         }
         Ok(outcomes)
+    }
+}
+
+/// Renders a failure for the batch path, which has no error channel of its own
+/// and folds each one into a per-account string. `Display` is only the message,
+/// and for a relay panel that message is deliberately generic ("余额查询请求失败") —
+/// the URL tried and the panel's own answer live in the detail. Dropping it
+/// leaves a batch refresh reporting "失败 3" with nothing to act on, while the
+/// single-account path shows the same failure in full.
+fn describe_failure(err: &AppError) -> String {
+    match err.details() {
+        // Same shape as the front end's `formatApiError`, so one failure reads
+        // identically whether it arrived through the row action or the batch.
+        Some(details) => format!("{err} ({details})"),
+        None => err.to_string(),
     }
 }
 
@@ -164,7 +179,9 @@ async fn refresh_credential(
     Ok(RelayBalanceRefreshOutcome {
         credential: latest,
         updated: changed,
-        source: config.provider.as_str().to_string(),
+        // The dialect that actually answered, which is not always the one the
+        // account selected — see `fetch_with_dialect_fallback`.
+        source: snapshot.provider.as_str().to_string(),
         message: None,
     })
 }
@@ -300,14 +317,95 @@ async fn fetch_snapshot(
         recoverable: true,
     })?;
 
-    match config.provider {
+    fetch_with_dialect_fallback(&client, headers, config, request).await
+}
+
+/// Runs the selected dialect, and on "no such endpoint anywhere" runs the other
+/// built-in one.
+///
+/// Only "every candidate 404'd" earns the retry. A 401, a 403, or a panel that
+/// answered with an error envelope all mean the endpoint is there and the problem
+/// lies elsewhere; retrying the other dialect would bury the real reason under a
+/// second, less relevant failure.
+async fn fetch_with_dialect_fallback(
+    client: &Client,
+    headers: HeaderMap,
+    config: &RelayBalanceConfig,
+    request: &BalanceRequest,
+) -> Result<RelayBalanceSnapshot, AppError> {
+    let chosen = config.provider;
+    let err = match fetch_with_dialect(client, headers.clone(), config, request, chosen).await {
+        Ok(snapshot) => return Ok(snapshot),
+        Err(err) => err,
+    };
+    let Some(other) = chosen.other_built_in() else {
+        return Err(err);
+    };
+    if err.code() != "validation.route_relay_balance_all_failed" {
+        return Err(err);
+    }
+    // Deliberately the same client, and so the same 15s budget, as the selected
+    // dialect. A shorter leash for the retry was tried and rejected: at 8s the
+    // real kktoken.cc and worldclawpro.ai panels — both of which do answer
+    // `/api/usage/token/` — timed out and reported a balance of "查询失败", which
+    // is the exact failure this fallback exists to remove. A slow relay is normal.
+
+    match fetch_with_dialect(client, headers, config, request, other).await {
+        Ok(mut snapshot) => {
+            // Say so rather than silently answering a different question: the
+            // account's setting still reads `sub2api` while the number came from
+            // new-api, and the user is the one who can fix that.
+            snapshot.notes.push(format!(
+                "面板实际按 {} 应答（账号里选的是 {}）",
+                other.label(),
+                chosen.label()
+            ));
+            Ok(snapshot)
+        }
+        // The selected dialect's failure is the one the user asked about; the
+        // fallback's is noise. Keep the former, and record that the latter was
+        // tried so nobody goes and tries it by hand.
+        Err(_) => Err(with_fallback_note(err, other)),
+    }
+}
+
+async fn fetch_with_dialect(
+    client: &Client,
+    headers: HeaderMap,
+    config: &RelayBalanceConfig,
+    request: &BalanceRequest,
+    provider: RelayBalanceProvider,
+) -> Result<RelayBalanceSnapshot, AppError> {
+    match provider {
         RelayBalanceProvider::NewApi => {
-            fetch_new_api_balance(&client, headers, config, request).await
+            fetch_new_api_balance(client, headers, config, request).await
         }
-        RelayBalanceProvider::Sub2Api => fetch_sub2api_balance(&client, headers, request).await,
+        RelayBalanceProvider::Sub2Api => fetch_sub2api_balance(client, headers, request).await,
         RelayBalanceProvider::Custom => {
-            fetch_custom_balance(&client, headers, config, &request.api_key).await
+            fetch_custom_balance(client, headers, config, &request.api_key).await
         }
+    }
+}
+
+fn with_fallback_note(err: AppError, other: RelayBalanceProvider) -> AppError {
+    let AppError::Validation {
+        code,
+        message,
+        details,
+        recoverable,
+    } = err
+    else {
+        return err;
+    };
+    let note = format!("也试过 {} 的地址，同样没有", other.label());
+    AppError::Validation {
+        code,
+        message,
+        details: Some(match details {
+            Some(details) => format!("{details}；{note}"),
+            None => note,
+        }),
+        recoverable,
     }
 }
 
@@ -351,9 +449,10 @@ fn balance_request_headers(
     Ok(headers)
 }
 
-/// Tries each candidate URL in order. Transport errors, 404 and 405 move on to
-/// the next one; any other non-success status is reported as-is, because a 401
-/// or 403 means the endpoint exists and the key is the problem.
+/// Tries each candidate URL in order. Transport errors, 404, 405 and a 200 whose
+/// body is not JSON move on to the next one; any other non-success status is
+/// reported as-is, because a 401 or 403 means the endpoint exists and the key is
+/// the problem.
 async fn get_json_from_candidates(
     client: &Client,
     headers: &HeaderMap,
@@ -379,17 +478,24 @@ async fn get_json_from_candidates(
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         if status.is_success() {
-            let parsed = serde_json::from_str::<Value>(&body).map_err(|err| {
-                validation_error(
-                    "validation.route_relay_balance_parse",
-                    "余额接口没有返回 JSON",
-                    Some(redact_secret(
-                        format!("{url}: {err}; response: {}", truncate_body(&body)),
+            match serde_json::from_str::<Value>(&body) {
+                Ok(parsed) => return Ok((url.clone(), parsed)),
+                // A relay panel is a single-page app, and its catch-all route
+                // answers 200 with `index.html` for every path it does not know.
+                // So a non-JSON 200 means "no such endpoint here", not "the panel
+                // is broken": treat it like the 404 it morally is and keep going,
+                // or a real endpoint sitting behind an SPA route never gets asked.
+                Err(err) => {
+                    last_err = Some(redact_secret(
+                        format!(
+                            "{url}: HTTP {status}，但响应不是 JSON（{err}）: {}",
+                            truncate_body(&body)
+                        ),
                         secret,
-                    )),
-                )
-            })?;
-            return Ok((url.clone(), parsed));
+                    ));
+                    continue;
+                }
+            }
         }
         let message = redact_secret(
             format!("{url}: HTTP {status}: {}", truncate_body(&body)),
@@ -859,6 +965,8 @@ mod tests {
     use super::*;
     use crate::models::route_credential::CreateApiRouteCredentialInput;
     use crate::services::route_credential_service::RouteCredentialService;
+    use axum::http::StatusCode as HttpStatus;
+    use axum::response::Html;
     use axum::routing::get;
     use axum::{Json, Router};
     use tokio::net::TcpListener;
@@ -1171,6 +1279,11 @@ mod tests {
                 }),
             );
         }
+        format!("http://{}/v1", serve(app).await)
+    }
+
+    /// Binds the router on a loopback port and returns its `host:port`.
+    async fn serve(app: Router) -> String {
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("bind panel");
@@ -1178,7 +1291,34 @@ mod tests {
         tokio::spawn(async move {
             axum::serve(listener, app).await.expect("serve panel");
         });
-        format!("http://{address}/v1")
+        address.to_string()
+    }
+
+    /// A panel that serves its SPA shell — 200, but `text/html` — from a
+    /// catch-all, the way every relay console does, and optionally the real JSON
+    /// endpoint on `/v1/usage`. Returns the bare `host:port`, because these tests
+    /// drive the candidate sweep directly rather than through a Base URL.
+    async fn start_spa_panel(json_endpoint: Option<Value>) -> String {
+        let mut app =
+            Router::new().fallback(|| async { Html("<!doctype html><title>New API</title>") });
+        if let Some(body) = json_endpoint {
+            app = app.route(
+                "/v1/usage",
+                get(move || {
+                    let body = body.clone();
+                    async move { Json(body) }
+                }),
+            );
+        }
+        serve(app).await
+    }
+
+    /// Runs the candidate sweep with the headers a real query would carry.
+    async fn sweep(candidates: &[String]) -> Result<(String, Value), AppError> {
+        let client = build_outbound_http_client(Some(Duration::from_secs(BALANCE_TIMEOUT_SECS)))
+            .expect("client");
+        let headers = balance_request_headers("sk-relay-key", "openai", None).expect("headers");
+        get_json_from_candidates(&client, &headers, candidates, "sk-relay-key").await
     }
 
     async fn memory_pool() -> SqlitePool {
@@ -1443,6 +1583,209 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A relay panel is a single-page app: its catch-all route answers 200 with
+    /// `index.html` for every path it does not recognise. Reading that as a hard
+    /// failure both mis-reports the reason ("the endpoint returned no JSON")
+    /// and abandons the candidates behind it, so a panel whose real endpoint
+    /// sits after an SPA route never gets asked at all.
+    #[tokio::test]
+    async fn a_non_json_200_falls_through_to_the_next_candidate() {
+        let address = start_spa_panel(Some(json!({
+            "isValid": true, "remaining": 4.25, "unit": "USD"
+        })))
+        .await;
+        let candidates = vec![
+            format!("http://{address}/usage"),
+            format!("http://{address}/v1/usage"),
+        ];
+
+        let (url, body) = sweep(&candidates).await.expect("the JSON endpoint answers");
+        assert!(url.ends_with("/v1/usage"), "{url}");
+        assert_eq!(body["remaining"].as_f64(), Some(4.25));
+    }
+
+    /// When every candidate is the SPA, the detail has to say the body was not
+    /// JSON — "所有余额查询地址都失败了" alone reads as a network problem, and the
+    /// user's next move (switch provider, or use the custom slot) depends on
+    /// knowing the panel answered with a web page.
+    #[tokio::test]
+    async fn a_sweep_that_only_finds_the_spa_says_the_body_was_not_json() {
+        let address = start_spa_panel(None).await;
+        let candidates = vec![
+            format!("http://{address}/usage"),
+            format!("http://{address}/v1/usage"),
+        ];
+
+        let error = sweep(&candidates).await.expect_err("no JSON anywhere");
+        let AppError::Validation {
+            code,
+            details: Some(details),
+            ..
+        } = error
+        else {
+            panic!("expected a validation error with details");
+        };
+        assert_eq!(code, "validation.route_relay_balance_all_failed");
+        assert!(details.contains("不是 JSON"), "{details}");
+        assert!(details.contains("/v1/usage"), "{details}");
+    }
+
+    /// The batch path has no error channel, so whatever it puts in `message` is
+    /// all the user gets. Keeping only `Display` would report "余额查询请求失败" for
+    /// every kind of panel problem — the URL tried and the panel's own answer are
+    /// the whole diagnosis.
+    #[tokio::test]
+    async fn a_batch_failure_keeps_the_url_and_the_panels_answer() {
+        let address = start_spa_panel(None).await;
+        let pool = memory_pool().await;
+        seed_relay_credential(
+            &pool,
+            &format!("http://{address}"),
+            Some(json!({"provider": "sub2api"})),
+        )
+        .await;
+
+        let outcomes = RouteRelayBalanceService::refresh_platform(&pool, "codex".to_string())
+            .await
+            .expect("a per-account failure must not fail the batch");
+        let [outcome] = outcomes.as_slice() else {
+            panic!("expected exactly one outcome, got {}", outcomes.len());
+        };
+        assert_eq!(outcome.source, "error");
+        let message = outcome.message.as_deref().expect("explains itself");
+        assert!(message.contains("所有余额查询地址都失败了"), "{message}");
+        assert!(message.contains("/usage"), "{message}");
+        assert!(message.contains("不是 JSON"), "{message}");
+    }
+
+    /// The 2026-09-03 reading of the real account pool: three accounts set to
+    /// `sub2api` were pointed at New API panels, so every query failed on a
+    /// healthy key. Nothing in a Base URL says which panel software is behind it,
+    /// so the setting is a guess — and the app can check the other zero-config
+    /// dialect for free instead of reporting a failure.
+    #[tokio::test]
+    async fn a_panel_answering_the_other_dialect_is_read_anyway() {
+        let base_url = start_panel(vec![("/api/usage/token/", new_api_usage_body())]).await;
+        let pool = memory_pool().await;
+        let credential =
+            seed_relay_credential(&pool, &base_url, Some(json!({"provider": "sub2api"}))).await;
+
+        let outcome = RouteRelayBalanceService::refresh_one(&pool, credential.id)
+            .await
+            .expect("the New API endpoint answers even though sub2api was selected");
+        assert_eq!(outcome.source, "new_api", "the dialect that answered");
+
+        let snapshot = snapshot_of(&outcome.credential);
+        assert_eq!(snapshot.provider, RelayBalanceProvider::NewApi);
+        assert_eq!(snapshot.remaining, Some(0.5));
+        assert!(
+            snapshot
+                .notes
+                .iter()
+                .any(|note| note.contains("new-api") && note.contains("sub2api")),
+            "the mismatch is stated, not silently corrected: {:?}",
+            snapshot.notes
+        );
+    }
+
+    #[tokio::test]
+    async fn the_selected_dialect_wins_when_both_answer() {
+        let base_url = start_panel(vec![
+            ("/api/usage/token/", new_api_usage_body()),
+            (
+                "/v1/usage",
+                json!({"isValid": true, "remaining": 37.7, "unit": "USD"}),
+            ),
+        ])
+        .await;
+        let pool = memory_pool().await;
+        let credential =
+            seed_relay_credential(&pool, &base_url, Some(json!({"provider": "sub2api"}))).await;
+
+        let outcome = RouteRelayBalanceService::refresh_one(&pool, credential.id)
+            .await
+            .expect("refresh");
+        assert_eq!(outcome.source, "sub2api");
+        let snapshot = snapshot_of(&outcome.credential);
+        assert_eq!(snapshot.remaining, Some(37.7));
+        assert!(snapshot.notes.is_empty(), "{:?}", snapshot.notes);
+    }
+
+    /// A rejected key means the endpoint is there and the dialect was right, so
+    /// the other one must not be tried: it would answer 404 and replace "面板说这
+    /// 把 key 不能用" with "找不到接口", which sends the user after the wrong thing.
+    #[tokio::test]
+    async fn a_rejected_key_is_not_retried_with_the_other_dialect() {
+        let app = Router::new()
+            .route(
+                "/v1/usage",
+                get(|| async {
+                    (
+                        HttpStatus::UNAUTHORIZED,
+                        Json(json!({"error": "invalid api key"})),
+                    )
+                }),
+            )
+            // Available, and deliberately never reached.
+            .route(
+                "/api/usage/token/",
+                get(|| async { Json(new_api_usage_body()) }),
+            );
+        let base_url = format!("http://{}/v1", serve(app).await);
+        let pool = memory_pool().await;
+        let credential =
+            seed_relay_credential(&pool, &base_url, Some(json!({"provider": "sub2api"}))).await;
+
+        let error = RouteRelayBalanceService::refresh_one(&pool, credential.id)
+            .await
+            .expect_err("a 401 is the answer, not a miss");
+        assert_eq!(error.code(), "validation.route_relay_balance_http");
+        assert!(error
+            .details()
+            .is_some_and(|details| details.contains("401")));
+    }
+
+    #[tokio::test]
+    async fn a_panel_with_neither_dialect_says_both_were_tried() {
+        let pool = memory_pool().await;
+        let base_url = start_panel(vec![("/unrelated", json!({}))]).await;
+        let credential =
+            seed_relay_credential(&pool, &base_url, Some(json!({"provider": "new_api"}))).await;
+
+        let error = RouteRelayBalanceService::refresh_one(&pool, credential.id)
+            .await
+            .expect_err("nothing answered");
+        assert_eq!(error.code(), "validation.route_relay_balance_all_failed");
+        let details = error.details().expect("explains itself");
+        assert!(details.contains("sub2api"), "{details}");
+    }
+
+    /// The custom slot is a URL the user typed. Guessing a built-in endpoint
+    /// after it fails would query an address they never asked for.
+    #[tokio::test]
+    async fn a_custom_endpoint_is_never_second_guessed() {
+        let base_url = start_panel(vec![("/api/usage/token/", new_api_usage_body())]).await;
+        let pool = memory_pool().await;
+        let panel_root = base_url.trim_end_matches("/v1").to_string();
+        let credential = seed_relay_credential(
+            &pool,
+            &base_url,
+            Some(json!({
+                "provider": "custom",
+                "endpoint": format!("{panel_root}/billing/summary"),
+                "remaining_path": "result.left",
+            })),
+        )
+        .await;
+
+        let error = RouteRelayBalanceService::refresh_one(&pool, credential.id)
+            .await
+            .expect_err("the declared endpoint is absent");
+        assert_eq!(error.code(), "validation.route_relay_balance_all_failed");
+        let details = error.details().expect("explains itself");
+        assert!(!details.contains("new-api"), "{details}");
     }
 
     #[tokio::test]

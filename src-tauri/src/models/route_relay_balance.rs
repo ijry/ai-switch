@@ -45,6 +45,23 @@ impl RelayBalanceProvider {
             Self::Custom => "自定义",
         }
     }
+
+    /// The other zero-config dialect, used to cross-check when the selected one
+    /// finds no endpoint at all.
+    ///
+    /// A relay's Base URL does not say which panel software is behind it, so the
+    /// setting is a guess the user makes from the outside — and guessing wrong is
+    /// the most common reason a healthy account reads as "查询失败". Both built-ins
+    /// reuse the same Base URL and the same key, so trying the other one asks
+    /// nothing of the user. `Custom` has no counterpart: the user named that URL,
+    /// and second-guessing it would query somewhere they did not ask for.
+    pub fn other_built_in(self) -> Option<Self> {
+        match self {
+            Self::NewApi => Some(Self::Sub2Api),
+            Self::Sub2Api => Some(Self::NewApi),
+            Self::Custom => None,
+        }
+    }
 }
 
 /// Per-account balance query settings, stored under `config_json.relay_balance`.

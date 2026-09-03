@@ -139,3 +139,34 @@ API key 鉴权，返回的就是美元浮点，不用换算。三种形态都要
 2. **余额 ≤ 0 不改账号状态**，只让徽标变红。要联动就在 `refresh_credential` 落库后按快照调 `update_status`。
 3. **不做自动轮询**，只有手动动作。要加就在前端给 `useQuery` 挂 `refetchInterval`，并把间隔存进 `relay_balance.auto_query_interval_minutes`；注意 20 次 / 20 分钟的限流。
 4. **新增弹窗也放了分段器**，代价是 `CreateApiRouteCredentialInput` 多一个字段。只想放编辑抽屉就把该字段和弹窗里那一组去掉。
+
+## 8. 2026-09-03 实测修正
+
+拿生产库 `~/.ai-switch/ai-switch.db` 里的 8 个中转站账号逐个跑真实请求，结果是一个都没成功。三个原因，两个是代码的：
+
+| 账号 | 面板实际是 | 当时的档 | 当时的结果 |
+| --- | --- | --- | --- |
+| 千刀站 `api.zzzcoding.org` | 真的 Sub2API | 关闭 | 没查；打开就能读到 `planName: 钱包余额` + `remaining` |
+| goRouter `gorouter.app` | New API | 关闭 | 没查 |
+| kktoken `kktoken.cc` | New API | sub2api | 失败 |
+| worldclawpro `worldclawpro.ai/v1` | New API | sub2api | 失败 |
+| justwoker `api.justwoker.icu` | New API | sub2api | 失败 |
+| muyuan `muyuan.do/v1` | 被 Cloudflare 挑战墙挡住，看不到 | sub2api | 403 `Just a moment...` |
+| AR `ps.air-outer.com/v1` | new-api 分支，没有 `/api/usage/token/` | new-api | 全 404 |
+| 肖恩 `free.supxh.xin/v1` | 自研 Next.js 站 | 关闭 | 两个内置档都不适用 |
+
+端点选择本身没问题：`/api/usage/token/` 在四个 New API 面板上都是 200，`/v1/usage` 在唯一的真 sub2api 上也是 200，字段与第 1 节写的形状一致（`isValid` / `planName` / `remaining` / `unit`，钱包组走 `balance`）。改掉的是三件事：
+
+1. **面板 SPA 的 200 不再算命中。** 中转站面板的兜底路由对任何未知路径都回 200 + `index.html`，候选扫描把它当成命中后 JSON 解析失败并**终止整轮扫描**。这让 kktoken 报「余额接口没有返回 JSON」，而真因是这个面板没有这个接口；更糟的是它会掩埋排在后面、本来能答的候选。现在非 JSON 的 200 与 404 同等对待，继续试下一个，全部失败时在详情里说明面板回的是网页。
+
+2. **选错档自动兜住。** Base URL 看不出面板软件是哪套，所以这个设置本质是用户从外部猜的，而猜错是健康账号读成「查询失败」的头号原因。两个内置档都零配置、同一把 key，因此在**选定档的所有候选都没有该接口**时（仅此一种情况，401/403/错误信封都不重试，那些意味着接口在、问题在别处）改按另一个档再试一轮，命中就用它，并在快照的 `notes` 里写明「面板实际按 X 应答（账号里选的是 Y）」——不静默替用户改设置。`RelayBalanceRefreshOutcome.source` 随之改为**实际应答**的档。「自定义」档不参与：那个 URL 是用户自己填的。
+   重试沿用同一个 15 秒预算。曾试过给它 8 秒的短绳，结果 kktoken.cc 与 worldclawpro.ai 这两个确实会答 `/api/usage/token/` 的面板双双超时——正是这条回退要消灭的那种失败。中转站慢是常态。
+
+3. **批量失败不再无迹可寻。** `refresh_platform` 把每个失败折成 `message` 时只取了 `Display`，丢掉带 URL 与面板原文的 `details`（`AppError` 因此补了 `details()`）；前端又只统计「失败 N」而不写回行状态。两处都补上后，批量查一次余额，每个失败的账号行都能看到与单账号动作一样的原因。
+
+改完再跑同一批账号：kktoken / justwoker / worldclawpro 三个不动配置就能读到数（都是 New API 的不限额度令牌，所以徽标是「余额 不限」+ tooltip 里的已用金额），AR 与 muyuan 仍然失败但报错已能指向真因。
+
+**还没做的两件事**，都需要新的用户输入，因此留在这里而不是偷偷实现：
+
+- AR 这类删掉了 `/api/usage/token/` 的 new-api 分支，只剩 `/v1/dashboard/billing/usage`（回 `{"object":"list","total_usage":…}`）。它能填进「自定义」档，但 `total_usage` 的量级要面板主人对一次才知道除数是 100 还是 `QuotaPerUnit`，猜错会把金额报错一百倍。
+- New API 面板发的多是 `unlimited_quota: true` 的令牌，令牌级接口只有「已用」没有「剩余」。要看剩余得走用户 PAT 的 `/api/user/self`，即第 1 节明确排除的那条路。
