@@ -44,6 +44,7 @@ import {
 } from "../src/lib/api/client";
 import { recognizeApiKeysFromImageBlob } from "../src/lib/ocr/apiKeyOcr";
 import { ACCOUNT_LIST_LAYOUT_STORAGE_KEY } from "../src/lib/accountListLayout";
+import { ACCOUNT_DISPLAY_PREFERENCES_STORAGE_KEY } from "../src/lib/accountDisplayPreferences";
 import { CODEX_MODEL_TEST_ENDPOINT_STORAGE_KEY } from "../src/lib/codexModelTestEndpoint";
 import { MODEL_TEST_MODELS_STORAGE_KEY } from "../src/lib/modelTestModels";
 import { openExternal } from "../src/lib/openExternal";
@@ -797,6 +798,40 @@ describe("AccountsScreen", () => {
     expect(screen.queryByLabelText("批量加入算力池")).not.toBeInTheDocument();
   });
 
+  it("customizes account card content from the refresh menu and remembers the choices", async () => {
+    renderScreen();
+
+    await screen.findByText("Team Account");
+    await userEvent.click(screen.getByLabelText("打开刷新菜单"));
+    expect(screen.getByRole("group", { name: "显示内容自定义" })).toBeInTheDocument();
+
+    const accountType = screen.getByLabelText("显示账号类型（API/Token）");
+    const modelList = screen.getByLabelText("显示模型列表");
+    const requestStats = screen.getByLabelText("显示请求统计");
+    expect(accountType).not.toBeChecked();
+    expect(modelList).toBeChecked();
+    expect(requestStats).toBeChecked();
+
+    await userEvent.click(accountType);
+    await userEvent.click(modelList);
+    await userEvent.click(requestStats);
+
+    expect(screen.getByText("Token")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("放置在 API Account 前")).getByText("API")).toBeInTheDocument();
+    expect(screen.queryByText("基线模型")).not.toBeInTheDocument();
+    expect(screen.queryByText("暂无请求")).not.toBeInTheDocument();
+    expect(window.localStorage.getItem(ACCOUNT_DISPLAY_PREFERENCES_STORAGE_KEY)).toBe(
+      JSON.stringify({ showAccountType: true, showModelList: false, showRequestStats: false }),
+    );
+
+    await userEvent.click(screen.getByLabelText("打开刷新菜单"));
+    expect(screen.queryByRole("menu", { name: "刷新操作" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("打开刷新菜单"));
+    expect(screen.getByLabelText("显示账号类型（API/Token）")).toBeChecked();
+    expect(screen.getByLabelText("显示模型列表")).not.toBeChecked();
+    expect(screen.getByLabelText("显示请求统计")).not.toBeChecked();
+  });
+
   it("uses the red status treatment for paused accounts", async () => {
     vi.mocked(listRouteCredentials).mockResolvedValue([
       {
@@ -1223,7 +1258,8 @@ describe("AccountsScreen", () => {
     const card = screen.getByTestId("account-card-cred-official-1");
     expect(card).toHaveTextContent("P3-");
     expect(card).toHaveTextContent("Team Account");
-    expect(within(card).getByText("官方")).toBeInTheDocument();
+    expect(within(card).queryByText("官方")).not.toBeInTheDocument();
+    expect(within(card).queryByText("Token")).not.toBeInTheDocument();
     expect(within(card).getByText("正常")).toBeInTheDocument();
     expect(card).toHaveTextContent("请求 3");
     expect(card).toHaveTextContent("成功率 66.7%");
