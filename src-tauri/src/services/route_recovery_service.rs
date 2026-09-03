@@ -164,6 +164,7 @@ impl RouteRecoveryService {
                                 account_id: Some(candidate.id.clone()),
                                 model,
                                 interface_format: None,
+                                test_tool_call: false,
                             },
                         )
                         .await;

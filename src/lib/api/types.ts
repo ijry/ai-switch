@@ -728,6 +728,7 @@ export type RoutePoolModelTestRequest = {
   account_id?: string | null;
   model?: string | null;
   interface_format?: InterfaceFormat | null;
+  test_tool_call?: boolean;
 };
 
 export type RoutePoolModelTestOutcome = {

@@ -3516,6 +3516,31 @@ describe("AccountsScreen", () => {
     expect(recentRouteStatus.className).not.toContain("bg-white");
   });
 
+  it("optionally includes module tool call testing in the real test request", async () => {
+    vi.mocked(routePoolTestModel).mockResolvedValue(modelTestOutcomeFixture());
+    poolStateByPlatform.set("codex", ["cred-official-1"]);
+    renderScreen("codex", "in_pool");
+
+    await waitFor(() => expect(screen.getByLabelText("真实生成测试算力池路由")).toBeEnabled());
+    await userEvent.click(screen.getByLabelText("真实生成测试算力池路由"));
+
+    const toolCallCheckbox = await screen.findByLabelText("测试模块工具调用能力");
+    expect(toolCallCheckbox).not.toBeChecked();
+    expect(screen.getByText("部分中转站反代的网页接口等模型只能聊天，不具备工具调用能力；启用后会额外验证工具调用。"))
+      .toBeInTheDocument();
+
+    await userEvent.click(toolCallCheckbox);
+    await userEvent.click(screen.getByLabelText("开始真实生成测试"));
+
+    await waitFor(() =>
+      expect(routePoolTestModel).toHaveBeenCalledWith({
+        platform: "codex",
+        model: null,
+        interface_format: "openai-responses",
+        test_tool_call: true,
+      }),
+    );
+  });
   it("keeps pool testing available outside the pool list and copies a curl command", async () => {
     poolStateByPlatform.set("codex", ["cred-official-1"]);
     vi.mocked(getRouteProxyStatus).mockResolvedValue({

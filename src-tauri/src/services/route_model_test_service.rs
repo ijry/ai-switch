@@ -166,11 +166,12 @@ impl RouteModelTestService {
             RouteCredentialFailurePolicy::from_config_json(&credential.config_json);
         let start = Instant::now();
 
-        let parts = match build_model_test_request(
+        let parts = match build_model_test_request_with_tool_call(
             &credential,
             &platform,
             requested_model.as_deref(),
             interface_override.as_deref(),
+            request.test_tool_call,
         ) {
             Ok(parts) => parts,
             Err(error) => {
@@ -307,7 +308,13 @@ impl RouteModelTestService {
                     }
                 }
                 let semantic_failure = detect_response_failed(&body);
-                let success = transport_success && semantic_failure.is_none();
+                let tool_call_missing = request.test_tool_call
+                    && transport_success
+                    && !model_test_response_has_tool_call(
+                        model_test_response_format(&platform, &parts.interface_format),
+                        &body,
+                    );
+                let success = transport_success && semantic_failure.is_none() && !tool_call_missing;
                 let usage = extract_usage_breakdown(&body);
                 let mut usage = usage;
                 // Price from the model the upstream reported, falling back to the
@@ -324,7 +331,13 @@ impl RouteModelTestService {
                 );
                 let error_message = semantic_failure
                     .map(|failure| failure.message)
-                    .filter(|_| !matches!(status, 401 | 403));
+                    .filter(|_| !matches!(status, 401 | 403))
+                    .or_else(|| {
+                        tool_call_missing.then(|| {
+                            "Model returned a normal response but did not call the test tool"
+                                .to_string()
+                        })
+                    });
 
                 let outcome = finish_outcome(
                     pool,
@@ -432,11 +445,12 @@ impl RouteModelTestService {
         let failure_policy =
             RouteCredentialFailurePolicy::from_config_json(&credential.config_json);
         let start = Instant::now();
-        let parts = match build_model_test_request(
+        let parts = match build_model_test_request_with_tool_call(
             &credential,
             &platform,
             requested_model.as_deref(),
             interface_override.as_deref(),
+            request.test_tool_call,
         ) {
             Ok(parts) => parts,
             Err(error) => {
@@ -532,6 +546,16 @@ impl RouteModelTestService {
                     model_test_response_format(&platform, &parts.interface_format),
                     &response_body,
                 );
+                let tool_call_missing = request.test_tool_call
+                    && success
+                    && !model_test_response_has_tool_call(
+                        model_test_response_format(&platform, &parts.interface_format),
+                        &body,
+                    );
+                let success = success && !tool_call_missing;
+                let error_message = tool_call_missing.then(|| {
+                    "Model returned a normal response but did not call the test tool".to_string()
+                });
                 finish_proxy_outcome(
                     pool,
                     &platform,
@@ -544,7 +568,7 @@ impl RouteModelTestService {
                     Some(status),
                     response_body,
                     response_text,
-                    None,
+                    error_message,
                     success,
                     duration_ms,
                 )
@@ -574,11 +598,143 @@ impl RouteModelTestService {
     }
 }
 
+const MODEL_TEST_TOOL_NAME: &str = "ai_switch_test_tool";
+
+fn model_test_tool_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "input": { "type": "string", "description": "Return the provided test input." }
+        },
+        "required": ["input"],
+        "additionalProperties": false
+    })
+}
+
+fn add_model_test_tool(interface_format: &str, mut body: Value) -> Result<Value, String> {
+    let schema = model_test_tool_schema();
+    match interface_format {
+        "openai" => {
+            body["tools"] = json!([{
+                "type": "function",
+                "function": {
+                    "name": MODEL_TEST_TOOL_NAME,
+                    "description": "A connectivity test tool. Call it with the test input.",
+                    "parameters": schema
+                }
+            }]);
+            body["tool_choice"] = json!({
+                "type": "function",
+                "function": { "name": MODEL_TEST_TOOL_NAME }
+            });
+        }
+        "openai-responses" => {
+            body["tools"] = json!([{
+                "type": "function",
+                "name": MODEL_TEST_TOOL_NAME,
+                "description": "A connectivity test tool. Call it with the test input.",
+                "parameters": schema
+            }]);
+            body["tool_choice"] = json!({ "type": "function", "name": MODEL_TEST_TOOL_NAME });
+        }
+        "anthropic" => {
+            body["tools"] = json!([{
+                "name": MODEL_TEST_TOOL_NAME,
+                "description": "A connectivity test tool. Call it with the test input.",
+                "input_schema": schema
+            }]);
+            body["tool_choice"] = json!({ "type": "tool", "name": MODEL_TEST_TOOL_NAME });
+        }
+        "gemini" => {
+            body["tools"] = json!([{
+                "function_declarations": [{
+                    "name": MODEL_TEST_TOOL_NAME,
+                    "description": "A connectivity test tool. Call it with the test input.",
+                    "parameters": schema
+                }]
+            }]);
+            body["toolConfig"] = json!({
+                "functionCallingConfig": {
+                    "mode": "ANY",
+                    "allowedFunctionNames": [MODEL_TEST_TOOL_NAME]
+                }
+            });
+        }
+        other => {
+            return Err(format!(
+                "Unsupported interface format for tool test: {other}"
+            ))
+        }
+    }
+    Ok(body)
+}
+
+fn model_test_response_has_tool_call(interface_format: &str, body: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return false;
+    };
+    match interface_format {
+        "openai" => value
+            .pointer("/choices/0/message/tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|calls| {
+                calls.iter().any(|call| {
+                    call.pointer("/function/name").and_then(Value::as_str)
+                        == Some(MODEL_TEST_TOOL_NAME)
+                })
+            }),
+        "openai-responses" => value
+            .pointer("/output")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.get("type").and_then(Value::as_str) == Some("function_call")
+                        && item.get("name").and_then(Value::as_str) == Some(MODEL_TEST_TOOL_NAME)
+                })
+            }),
+        "anthropic" => value
+            .pointer("/content")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.get("type").and_then(Value::as_str) == Some("tool_use")
+                        && item.get("name").and_then(Value::as_str) == Some(MODEL_TEST_TOOL_NAME)
+                })
+            }),
+        "gemini" => value
+            .pointer("/candidates/0/content/parts")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| {
+                parts.iter().any(|part| {
+                    part.pointer("/functionCall/name").and_then(Value::as_str)
+                        == Some(MODEL_TEST_TOOL_NAME)
+                })
+            }),
+        _ => false,
+    }
+}
+
 pub fn build_model_test_request(
     credential: &SelectedCredential,
     platform: &str,
     requested_model: Option<&str>,
     interface_override: Option<&str>,
+) -> Result<ModelTestRequestParts, String> {
+    build_model_test_request_with_tool_call(
+        credential,
+        platform,
+        requested_model,
+        interface_override,
+        false,
+    )
+}
+
+pub fn build_model_test_request_with_tool_call(
+    credential: &SelectedCredential,
+    platform: &str,
+    requested_model: Option<&str>,
+    interface_override: Option<&str>,
+    test_tool_call: bool,
 ) -> Result<ModelTestRequestParts, String> {
     let platform_id = PlatformId::parse(platform).map_err(format_app_error)?;
     let rule = PlatformCapabilityService::require(platform_id, PlatformOperation::ModelTest)
@@ -674,6 +830,15 @@ pub fn build_model_test_request(
             ),
             other => return Err(format!("Unsupported interface format: {other}")),
         },
+    };
+
+    let request_body = if test_tool_call {
+        // The platform endpoint is always built in its local dialect first. The
+        // proxy bridge converts this body to the configured upstream dialect.
+        let local_interface_format = model_test_response_format(platform, &interface_format);
+        add_model_test_tool(local_interface_format, request_body)?
+    } else {
+        request_body
     };
 
     Ok(ModelTestRequestParts {
@@ -1807,6 +1972,54 @@ mod tests {
     }
 
     #[test]
+    fn tool_call_model_test_builds_a_required_function_tool() {
+        let request = build_model_test_request_with_tool_call(
+            &api_credential("openai"),
+            "opencode",
+            None,
+            None,
+            true,
+        )
+        .expect("request");
+        let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
+
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["function"]["name"], "ai_switch_test_tool");
+        assert_eq!(
+            body["tool_choice"]["function"]["name"],
+            "ai_switch_test_tool"
+        );
+    }
+    #[test]
+    fn tool_call_model_test_uses_local_responses_shape_before_protocol_bridging() {
+        let request = build_model_test_request_with_tool_call(
+            &api_credential("anthropic"),
+            "codex",
+            Some("claude-sonnet-4-20250514"),
+            None,
+            true,
+        )
+        .expect("request");
+        let body: Value = serde_json::from_str(&request.request_body_json).expect("json");
+
+        assert_eq!(request.interface_format, "anthropic");
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["name"], "ai_switch_test_tool");
+        assert_eq!(body["tool_choice"]["type"], "function");
+        assert_eq!(body["tool_choice"]["name"], "ai_switch_test_tool");
+    }
+
+    #[test]
+    fn tool_call_model_test_requires_the_named_tool_in_the_response() {
+        let response =
+            br#"{"choices":[{"message":{"tool_calls":[{"function":{"name":"other_tool"}}]}}]}"#;
+        assert!(!model_test_response_has_tool_call("openai", response));
+
+        let response = br#"{"choices":[{"message":{"tool_calls":[{"function":{"name":"ai_switch_test_tool"}}]}}]}"#;
+        assert!(model_test_response_has_tool_call("openai", response));
+    }
+
+    #[test]
     fn claude_model_test_builds_local_messages_body_for_openai_upstream() {
         let credential = api_credential("openai");
         let request =
@@ -2291,6 +2504,7 @@ mod tests {
                 account_id: None,
                 model: None,
                 interface_format: None,
+                test_tool_call: false,
             },
         )
         .await
@@ -2389,6 +2603,7 @@ mod tests {
                 account_id: None,
                 model: None,
                 interface_format: None,
+                test_tool_call: false,
             },
         )
         .await
@@ -2448,6 +2663,7 @@ mod tests {
                 account_id: None,
                 model: None,
                 interface_format: None,
+                test_tool_call: false,
             },
         )
         .await
@@ -2489,6 +2705,7 @@ mod tests {
                 account_id: None,
                 model: None,
                 interface_format: None,
+                test_tool_call: false,
             },
         )
         .await
@@ -2541,6 +2758,7 @@ mod tests {
                 account_id: None,
                 model: None,
                 interface_format: None,
+                test_tool_call: false,
             },
         )
         .await
@@ -2598,6 +2816,7 @@ mod tests {
                 account_id: None,
                 model: Some("gpt-5".to_string()),
                 interface_format: None,
+                test_tool_call: false,
             },
             &proxy_base_url,
         )
@@ -2689,6 +2908,7 @@ mod tests {
                 account_id: None,
                 model: Some("gpt-5".to_string()),
                 interface_format: None,
+                test_tool_call: false,
             },
             &proxy_base_url,
             Some(&root_certificate_pem),
@@ -2725,6 +2945,7 @@ mod tests {
                 account_id: Some(credential_id.clone()),
                 model: Some("gpt-4o".to_string()),
                 interface_format: None,
+                test_tool_call: false,
             },
         )
         .await
@@ -2759,6 +2980,7 @@ mod tests {
                 account_id: Some(credential_id.clone()),
                 model: None,
                 interface_format: None,
+                test_tool_call: false,
             },
         )
         .await
@@ -2795,6 +3017,7 @@ mod tests {
                 account_id: Some(credential_id.clone()),
                 model: None,
                 interface_format: None,
+                test_tool_call: false,
             },
         )
         .await
@@ -2831,6 +3054,7 @@ mod tests {
                 account_id: Some(credential_id.clone()),
                 model: None,
                 interface_format: None,
+                test_tool_call: false,
             },
         )
         .await
@@ -2914,6 +3138,7 @@ mod tests {
                 account_id: None,
                 model: Some("grok-4.5".to_string()),
                 interface_format: None,
+                test_tool_call: false,
             },
         )
         .await
@@ -2961,6 +3186,7 @@ mod tests {
                 account_id: Some(created.id.clone()),
                 model: Some("grok-4.5".to_string()),
                 interface_format: None,
+                test_tool_call: false,
             },
         )
         .await
@@ -3014,6 +3240,7 @@ mod tests {
                 account_id: None,
                 model: None,
                 interface_format: None,
+                test_tool_call: false,
             },
         )
         .await
@@ -3079,6 +3306,7 @@ mod tests {
                 account_id: Some(credential.id.clone()),
                 model: None,
                 interface_format: Some("openai".to_string()),
+                test_tool_call: false,
             },
         )
         .await
@@ -3121,6 +3349,7 @@ mod tests {
                 account_id: Some(credential_id.clone()),
                 model: None,
                 interface_format: None,
+                test_tool_call: false,
             },
         )
         .await
@@ -3145,6 +3374,7 @@ mod tests {
                 account_id: None,
                 model: None,
                 interface_format: None,
+                test_tool_call: false,
             },
         )
         .await
@@ -3314,6 +3544,7 @@ mod tests {
                 account_id: Some(credential_id.clone()),
                 model: Some("glm-5.3".to_string()),
                 interface_format: None,
+                test_tool_call: false,
             },
         )
         .await
@@ -3361,6 +3592,7 @@ mod tests {
                 account_id: Some(credential_id.clone()),
                 model: Some("gpt-5.6-sol".to_string()),
                 interface_format: None,
+                test_tool_call: false,
             },
         )
         .await;

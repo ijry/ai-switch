@@ -2389,6 +2389,7 @@ export function AccountsScreen({
   const [codexModelTestEndpoint, setCodexModelTestEndpoint] =
     useState<CodexModelTestEndpoint>(() => loadCodexModelTestEndpoint());
   const [modelTestDialogOpen, setModelTestDialogOpen] = useState(false);
+  const [modelTestToolCall, setModelTestToolCall] = useState(false);
   const [routePoolModelsDialogOpen, setRoutePoolModelsDialogOpen] = useState(false);
   const [liveLogOpen, setLiveLogOpen] = useState(false);
   const [liveLogEntries, setLiveLogEntries] = useState<RouteProxyLiveLogEntry[]>([]);
@@ -4328,6 +4329,7 @@ export function AccountsScreen({
     }
     setTestingAccountId(null);
     setModelTestAccount(null);
+    setModelTestToolCall(false);
     setModelTestDialogOpen(true);
   };
 
@@ -4418,6 +4420,7 @@ export function AccountsScreen({
       return;
     }
     setModelTestAccount(credential);
+    setModelTestToolCall(false);
     setModelTestDialogOpen(true);
   };
 
@@ -4456,6 +4459,7 @@ export function AccountsScreen({
       ...(activePlatform === "codex"
         ? { interface_format: codexModelTestInterfaceFormat(codexModelTestEndpoint) }
         : {}),
+      ...(modelTestToolCall ? { test_tool_call: true } : {}),
     });
     setModelTestDialogOpen(false);
   };
@@ -6429,6 +6433,21 @@ export function AccountsScreen({
               </p>
             )}
 
+            <label className="mt-4 flex cursor-pointer items-start gap-2 text-[12px] font-medium text-stone-700">
+              <input
+                aria-label="测试模块工具调用能力"
+                checked={modelTestToolCall}
+                className="mt-0.5 h-4 w-4 accent-stone-900"
+                onChange={(event) => setModelTestToolCall(event.target.checked)}
+                type="checkbox"
+              />
+              <span>
+                <span className="block">测试模块工具调用能力</span>
+                <span className="mt-1 block font-normal text-stone-500">
+                  部分中转站反代的网页接口等模型只能聊天，不具备工具调用能力；启用后会额外验证工具调用。
+                </span>
+              </span>
+            </label>
             <div className="mt-4 flex justify-end gap-2 border-t border-stone-100 pt-3">
               <button
                 className={secondaryButtonClass}

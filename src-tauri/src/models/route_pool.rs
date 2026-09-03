@@ -153,6 +153,9 @@ pub struct RoutePoolModelTestRequest {
     pub model: Option<String>,
     #[serde(default)]
     pub interface_format: Option<String>,
+    /// When enabled, the probe asks the model to call a small function tool.
+    #[serde(default)]
+    pub test_tool_call: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
