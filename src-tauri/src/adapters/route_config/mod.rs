@@ -1,4 +1,5 @@
 mod codex;
+mod deepseek_harness;
 mod json_agent;
 mod zcode;
 
@@ -9,6 +10,7 @@ use crate::{
     models::{platform::PlatformId, route_credential::ClaudeSlotWrite},
 };
 use codex::CodexAdapter;
+use deepseek_harness::DeepSeekHarnessAdapter;
 use json_agent::JsonAgentAdapter;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -149,6 +151,8 @@ impl TargetAdapterRegistry {
                 Arc::new(JsonAgentAdapter::grok()),
                 Arc::new(ZCodeAdapter::codex()),
                 Arc::new(ZCodeAdapter::claude()),
+                Arc::new(DeepSeekHarnessAdapter::codex()),
+                Arc::new(DeepSeekHarnessAdapter::claude()),
             ],
         }
     }
@@ -655,13 +659,15 @@ api_key = "legacy-key"
                 .iter()
                 .map(|client| client.client_key.as_str())
                 .collect::<Vec<_>>(),
-            vec!["codex", "zcode"]
+            vec!["codex", "zcode", "deepseek_harness"]
         );
         assert_eq!(codex[0].display_name, "Codex CLI");
         assert_eq!(codex[0].target_key, "codex");
         assert_eq!(codex[0].platform, PlatformId::Codex);
         // ZCode reads its config at startup, so the dialog has to say "restart".
         assert!(codex[1].restart_required);
+        // DeepSeek Harness also requires restart
+        assert!(codex[2].restart_required);
 
         // Platforms with no adapter list nothing rather than erroring.
         assert!(registry.clients_for_platform(PlatformId::Hermes).is_empty());
