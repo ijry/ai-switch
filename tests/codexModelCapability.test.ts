@@ -123,7 +123,7 @@ describe("codexModelCapability", () => {
     }
   });
 
-  it("defaults every other upstream model to 256K", () => {
+  it("defaults every other upstream model to the conservative 128K", () => {
     for (const upstream of [
       "gpt-5.6-sol",
       // An older generation of the same family is not in the table.
@@ -134,14 +134,14 @@ describe("codexModelCapability", () => {
       "openai/gpt-5.5",
       "",
     ]) {
-      expect(codexDefaultContextWindow(upstream)).toBe(256_000);
+      expect(codexDefaultContextWindow(upstream)).toBe(128_000);
     }
   });
 
   it("keeps the default table in step with the option labels", () => {
     // The editor renders the default through codexContextWindowLabel, so a value
     // the labeller cannot name would show up as raw digits.
-    expect(codexContextWindowLabel(codexDefaultContextWindow("gpt-5.5"))).toBe("256K");
+    expect(codexContextWindowLabel(codexDefaultContextWindow("gpt-5.5"))).toBe("128K");
     expect(codexContextWindowLabel(codexDefaultContextWindow("glm-5.3"))).toBe("1M");
   });
 });

@@ -5898,9 +5898,14 @@ export function AccountsScreen({
                     relayBalanceFormFromConfig(credentialConfig).provider !== "none";
                   const relayBalanceSnapshot = relayBalanceSnapshotFromConfig(credentialConfig);
                   const relayBalanceStatus = relayBalanceStatusById[credential.id];
-                  const effectiveRelayBalanceSnapshot = relayBalanceStatus?.error
-                    ? null
-                    : relayBalanceStatus?.snapshot ?? relayBalanceSnapshot;
+                  // A failed refresh must not hide the reading that is still in
+                  // the config. The batch path writes an `error` for every account
+                  // whose panel did not answer, so nulling the snapshot here turned
+                  // one timed-out panel into "balance gone" on that row while the
+                  // stored value was still perfectly good. The failure is already
+                  // visible in the rose tone, the icon, and the tooltip.
+                  const effectiveRelayBalanceSnapshot =
+                    relayBalanceStatus?.snapshot ?? relayBalanceSnapshot;
                   const relayBalanceTag = effectiveRelayBalanceSnapshot
                     ? relayBalanceBadge(effectiveRelayBalanceSnapshot)
                     : null;
@@ -5932,7 +5937,15 @@ export function AccountsScreen({
                   if (credentialRelayBalanceEnabled && !credential.archived_at) {
                     rowActions.push({
                       key: "relay-balance",
-                      ariaLabel: `查询 ${credential.display_name} 余额`,
+                      // The visible label is an amount, so the accessible name has
+                      // to carry it too — an aria-label of just "查询 X 余额"
+                      // overrides it, leaving a screen reader with no balance and
+                      // no hint that the last refresh failed.
+                      ariaLabel: relayBalanceStatus?.error
+                        ? `查询 ${credential.display_name} 余额（上次查询失败）`
+                        : effectiveRelayBalanceSnapshot
+                          ? `查询 ${credential.display_name} 余额（当前 ${formatRelayBalanceButtonAmount(effectiveRelayBalanceSnapshot)}）`
+                          : `查询 ${credential.display_name} 余额`,
                       menuLabel: effectiveRelayBalanceSnapshot
                         ? `查余额 ${formatRelayBalanceButtonAmount(effectiveRelayBalanceSnapshot)}`
                         : "查余额",
@@ -6070,7 +6083,16 @@ export function AccountsScreen({
                           className={`truncate text-[13px] font-semibold text-stone-950 ${
                             // A card lays the name out in a nowrap row, so it has to be
                             // allowed to shrink; the list wraps its badges instead.
-                            cardLayout ? "min-w-0 flex-1" : "shrink-0 basis-48"
+                            //
+                            // `basis-48` aligns the badges that follow it into a
+                            // column, but it must stay shrinkable: the grid track
+                            // holding it is `minmax(0,1fr)`, which goes below 12rem
+                            // once the window approaches the 320px minimum. With
+                            // `shrink-0` the name overflowed into the action column
+                            // and, because the scroll container hides overflow-x,
+                            // did so with neither an ellipsis nor a way to scroll to
+                            // it — the text simply ran under the buttons.
+                            cardLayout ? "min-w-0 flex-1" : "min-w-0 basis-48"
                           }`}
                           title={`P${credential.route_priority}-${credential.display_name}`}
                         >

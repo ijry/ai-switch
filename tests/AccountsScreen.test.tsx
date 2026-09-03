@@ -26,6 +26,7 @@ import {
   reorderRouteCredentials,
   refreshRouteCredentialRelayBalance,
   refreshRouteCredentialsQuota,
+  refreshRouteCredentialsRelayBalance,
   restoreRouteCredentials,
   routePoolTestModel,
   saveSettings,
@@ -2793,7 +2794,7 @@ describe("AccountsScreen", () => {
     await userEvent.type(screen.getByLabelText("请求模型 1"), "gpt-5.6-sol");
 
     // Nothing typed yet: the generic default.
-    expect(screen.getByRole("option", { name: "默认 256K" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "默认 128K" })).toBeInTheDocument();
 
     await userEvent.type(screen.getByLabelText("上游模型 1"), "glm-5.3");
     // A 1M family upstream moves the default without the user picking anything,
@@ -3468,10 +3469,65 @@ describe("AccountsScreen", () => {
       await screen.findByTestId(`credential-relay-balance-${relayAccount.id}`),
     ).toHaveTextContent("余额 $37.70");
 
-    await userEvent.click(screen.getByRole("button", { name: "查询 API Account 余额" }));
+    // The accessible name carries the amount the button visibly shows: an
+    // aria-label of just "查询 X 余额" would override it and leave a screen
+    // reader with no balance at all.
+    await userEvent.click(
+      screen.getByRole("button", { name: "查询 API Account 余额（当前 $37.70）" }),
+    );
     await waitFor(() =>
       expect(refreshRouteCredentialRelayBalance).toHaveBeenCalledWith(relayAccount.id),
     );
+  });
+
+  it("keeps a stored balance visible when a batch refresh fails for that account", async () => {
+    // A batch refresh writes an `error` for every account whose panel did not
+    // answer. Hiding the badge on that signal turned one timed-out panel into
+    // "balance gone" on the row while the stored reading was still good.
+    const relayAccount = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://panel.example.com/v1",
+        interface_format: "openai",
+        model_mappings: [],
+        relay_balance: { provider: "new_api" },
+        relay_balance_snapshot: {
+          provider: "new_api",
+          remaining: 37.7,
+          unit: "USD",
+          source_url: "https://panel.example.com/api/usage/token/",
+          checked_at: "2026-09-02T12:00:00Z",
+        },
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockImplementation(async () => [
+      credentialsFixture[0],
+      relayAccount,
+    ]);
+    vi.mocked(refreshRouteCredentialsRelayBalance).mockResolvedValue([
+      {
+        credential: relayAccount,
+        updated: false,
+        source: "error",
+        message: "余额查询地址都没有应答 (panel.example.com: timed out)",
+      },
+    ]);
+    renderScreen();
+
+    const badge = await screen.findByTestId(`credential-relay-balance-${relayAccount.id}`);
+    expect(badge).toHaveTextContent("余额 $37.70");
+
+    await userEvent.click(screen.getByRole("button", { name: "打开刷新菜单" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "查询中转站余额" }));
+    await waitFor(() => expect(refreshRouteCredentialsRelayBalance).toHaveBeenCalled());
+
+    // Still there, and the failure is reachable through the row action's title.
+    expect(
+      await screen.findByTestId(`credential-relay-balance-${relayAccount.id}`),
+    ).toHaveTextContent("余额 $37.70");
+    expect(
+      screen.getByRole("button", { name: /查询 API Account 余额（上次查询失败）/ }),
+    ).toBeInTheDocument();
   });
 
   it("shows the balance beside a green wallet after a successful query", async () => {

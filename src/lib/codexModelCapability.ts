@@ -102,8 +102,11 @@ export const CODEX_CONTEXT_WINDOW_OPTIONS = [
 
 /** Written into the catalog when a row declares no window and its upstream model
  * is not one of the known 1M families. Mirrors `CODEX_DEFAULT_CONTEXT_WINDOW` on
- * the Rust side. */
-export const CODEX_DEFAULT_CONTEXT_WINDOW = 256_000;
+ * the Rust side — the conservative number on purpose: under-claiming only makes
+ * Codex compact early, while over-claiming lets it pack to 95% of a window the
+ * upstream does not have and the turn dies on a 400. A row that knows better
+ * declares its own value. */
+export const CODEX_DEFAULT_CONTEXT_WINDOW = 128_000;
 
 /** Decimal 1M, for the same reason the option list uses it. */
 export const CODEX_ONE_M_CONTEXT_WINDOW = 1_000_000;

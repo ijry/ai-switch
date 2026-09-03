@@ -37,7 +37,15 @@ const DEFAULT_REASONING_LEVELS: &[&str] = &["low", "medium", "high"];
 
 /// Context window written into the Codex catalog when a mapping declares none
 /// and its upstream model is not one of the known 1M families.
-pub(crate) const CODEX_DEFAULT_CONTEXT_WINDOW: u32 = 256_000;
+///
+/// Deliberately the conservative number rather than a guess at what a modern
+/// relay serves. The two wrong answers do not cost the same: under-claiming makes
+/// Codex compact earlier than it had to, while over-claiming makes it keep
+/// packing until 95% of a window the upstream does not have and the turn dies on
+/// a 400 the user cannot act on. A mapping that knows better now declares its own
+/// `context_window`, so the default only has to be safe — it is no longer the
+/// only way to describe a large window.
+pub(crate) const CODEX_DEFAULT_CONTEXT_WINDOW: u32 = 128_000;
 /// Decimal 1M on purpose. `1_048_576` is how the CPA transfer format marks a
 /// Claude 1M tier, and reusing it would make a Codex row come back from a round
 /// trip looking like one.
@@ -757,7 +765,7 @@ mod tests {
         assert_eq!(models[0]["default_reasoning_level"], "medium");
 
         // An untouched row keeps the shipped defaults.
-        assert_eq!(models[1]["context_window"], 256_000);
+        assert_eq!(models[1]["context_window"], 128_000);
         assert_eq!(
             models[1]["supported_reasoning_levels"]
                 .as_array()
@@ -826,7 +834,7 @@ mod tests {
         ] {
             assert_eq!(
                 codex_default_context_window(upstream),
-                256_000,
+                128_000,
                 "upstream={upstream}"
             );
         }
@@ -843,7 +851,7 @@ mod tests {
             codex_effective_context_window(Some(0), "deepseek-v4-flash"),
             1_000_000
         );
-        assert_eq!(codex_effective_context_window(None, "gpt-5.5"), 256_000);
+        assert_eq!(codex_effective_context_window(None, "gpt-5.5"), 128_000);
     }
 
     #[test]
@@ -863,7 +871,7 @@ mod tests {
         assert_eq!(models[0]["context_window"], 1_000_000);
         assert_eq!(models[0]["max_context_window"], 1_000_000);
         assert_eq!(models[1]["slug"], "gpt-5.5");
-        assert_eq!(models[1]["context_window"], 256_000);
+        assert_eq!(models[1]["context_window"], 128_000);
     }
 
     #[test]

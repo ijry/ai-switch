@@ -265,8 +265,37 @@ mod tests {
     }
 }
 
+/// Resolves when the process is asked to stop.
+///
+/// Ctrl+C alone is not enough. `systemd stop`, `docker stop` and every container
+/// orchestrator send SIGTERM, and the default disposition terminates the process
+/// outright — so [`shutdown_runtime`] never runs, the tailscale sidecar and every
+/// PTY child survive the "graceful" stop, and in-flight requests are cut. That is
+/// the most common way this binary is stopped in the deployment it is built for.
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        // A failed registration must not turn into "never shut down": fall back to
+        // Ctrl+C alone rather than hanging on a signal stream that does not exist.
+        match signal(SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = terminate.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    // Windows has no SIGTERM; `ctrl_c` already covers Ctrl+C, Ctrl+Break and the
+    // console close/logoff/shutdown events.
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// Tauri reclaims these through `RunEvent::Exit`; the standalone server has no

@@ -10807,7 +10807,7 @@ data: [DONE]\n\n";
         assert_eq!(data[1].get("id").and_then(Value::as_str), Some("gpt-5"));
         // Nothing was declared, so the upstream's own default is stated. The
         // client cannot derive it — it never sees the mapped-to name.
-        assert_eq!(data[0]["context_window"].as_u64(), Some(256_000));
+        assert_eq!(data[0]["context_window"].as_u64(), Some(128_000));
         assert!(payload.get("models").is_none());
 
         let response = json_models_list_response("codex", &[], None);
@@ -10829,7 +10829,7 @@ data: [DONE]\n\n";
         let data = payload.get("data").and_then(Value::as_array).expect("data");
 
         assert_eq!(data[0]["context_window"].as_u64(), Some(1_000_000));
-        assert_eq!(data[1]["context_window"].as_u64(), Some(256_000));
+        assert_eq!(data[1]["context_window"].as_u64(), Some(128_000));
     }
 
     #[test]
