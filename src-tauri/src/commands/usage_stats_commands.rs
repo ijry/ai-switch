@@ -1,9 +1,14 @@
 use crate::app_state::AppState;
 use crate::core::usage_overview::get_usage_overview_core;
-use crate::core::usage_stats::{get_session_usage_stats_core, reload_model_price_overrides_core};
+use crate::core::usage_stats::{
+    get_model_price_configs_core, get_session_usage_stats_core, reload_model_price_overrides_core,
+    save_model_price_configs_core,
+};
 use crate::error::ApiError;
+use crate::services::model_pricing::ModelPriceConfig;
 use crate::services::session_usage_service::SessionUsageStats;
 use crate::services::usage_overview_service::UsageOverview;
+use std::collections::HashMap;
 use tauri::State;
 
 /// Aggregate token usage and estimated cost from local Claude Code and Codex CLI
@@ -43,6 +48,20 @@ pub async fn get_usage_overview(
     page_size: Option<i64>,
 ) -> Result<UsageOverview, ApiError> {
     get_usage_overview_core(&state.pool, since, page, page_size)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn get_model_price_configs() -> Result<HashMap<String, ModelPriceConfig>, ApiError> {
+    get_model_price_configs_core().await.map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn save_model_price_configs(
+    configs: HashMap<String, ModelPriceConfig>,
+) -> Result<usize, ApiError> {
+    save_model_price_configs_core(configs)
         .await
         .map_err(ApiError::from)
 }

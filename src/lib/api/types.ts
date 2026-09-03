@@ -752,6 +752,14 @@ export type RoutePoolModelTestOutcome = {
   stats: RoutePoolStats;
 };
 
+export type ModelPriceConfig = {
+  display_name: string;
+  input_per_mtok: number;
+  output_per_mtok: number;
+  cache_read_per_mtok?: number | null;
+  cache_write_per_mtok?: number | null;
+};
+
 export type RouteProxyStatus = {
   running: boolean;
   bind_host: string;

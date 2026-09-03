@@ -1,6 +1,7 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Settings2 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { ModelPricingDialog } from "./ModelPricingDialog";
 import { getUsageOverview } from "../../lib/api/client";
 import { formatCompactCount, formatExactCount } from "../../lib/usageFormat";
 import type {
@@ -238,6 +239,7 @@ export function UsageOverviewPanel() {
   const [period, setPeriod] = useState<Period>("today");
   const [page, setPage] = useState(1);
   const [dimension, setDimension] = useState<GroupDimension | null>(null);
+  const [pricingOpen, setPricingOpen] = useState(false);
 
   const since = useMemo(() => periodSince(period), [period]);
 
@@ -312,7 +314,17 @@ export function UsageOverviewPanel() {
             合并本机 CLI 会话记录与代理请求，同一请求只计一次
           </p>
         </div>
-        <div className="grid grid-cols-4 gap-1 rounded-xl bg-stone-100 p-1">
+        <div className="flex items-center gap-2">
+          <button
+            aria-label="配置模型价格"
+            className="grid h-8 w-8 place-items-center rounded-lg border border-stone-200 bg-white text-stone-500 transition-colors hover:bg-stone-50 hover:text-stone-900"
+            onClick={() => setPricingOpen(true)}
+            title="配置模型价格"
+            type="button"
+          >
+            <Settings2 aria-hidden="true" className="h-4 w-4" />
+          </button>
+          <div className="grid grid-cols-4 gap-1 rounded-xl bg-stone-100 p-1">
           {periods.map((item) => (
             <button
               className={`rounded-lg px-2.5 py-1.5 text-[12px] font-semibold transition-colors ${
@@ -327,6 +339,7 @@ export function UsageOverviewPanel() {
               {item.label}
             </button>
           ))}
+          </div>
         </div>
       </div>
 
@@ -438,6 +451,7 @@ export function UsageOverviewPanel() {
           </div>
         </>
       )}
+      {pricingOpen ? <ModelPricingDialog open onClose={() => setPricingOpen(false)} /> : null}
     </div>
   );
 }

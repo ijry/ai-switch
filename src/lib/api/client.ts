@@ -62,6 +62,7 @@ import type {
   UpdateRouteCredentialInput,
   LocalMcpServer,
   MobilePairingPayload,
+  ModelPriceConfig,
   McpAppType,
   McpMarketplaceItem,
   McpMarketplaceProvider,
@@ -179,6 +180,14 @@ export function getSessionUsageStats(since?: string | null): Promise<SessionUsag
 }
 
 /** Reload `~/.ai-switch/model-prices.json`, returning the entry count. */
+export function getModelPriceConfigs(): Promise<Record<string, ModelPriceConfig>> {
+  return invoke("get_model_price_configs");
+}
+
+export function saveModelPriceConfigs(configs: Record<string, ModelPriceConfig>): Promise<number> {
+  return invoke("save_model_price_configs", { configs });
+}
+
 export function reloadModelPriceOverrides(): Promise<number> {
   return invoke("reload_model_price_overrides");
 }

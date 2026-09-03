@@ -5,9 +5,8 @@
 //! amount. Estimates are always tagged [`PriceSource::Estimated`] so the UI can
 //! distinguish them from a price the upstream actually returned.
 //!
-//! Rates are US dollars per million tokens. Cache multipliers follow Anthropic's
-//! published pricing: a cache write costs 1.25x the input rate and a cache read
-//! 0.1x. Users can override or extend the table via
+//! Rates are US dollars per million tokens. Cache prices default to Anthropic's published multipliers (cache write 1.25x
+//! and cache read 0.1x), and can be configured per model. Users can override or extend the table via
 //! `~/.ai-switch/model-prices.json`.
 
 use serde::{Deserialize, Serialize};
@@ -55,6 +54,8 @@ impl PriceSource {
 pub struct ModelRate {
     pub input_per_mtok: f64,
     pub output_per_mtok: f64,
+    pub cache_read_per_mtok: f64,
+    pub cache_write_per_mtok: f64,
 }
 
 /// Substring patterns matched against a normalized model id, most specific
@@ -70,6 +71,8 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
         ModelRate {
             input_per_mtok: 1.0,
             output_per_mtok: 5.0,
+            cache_read_per_mtok: 0.1,
+            cache_write_per_mtok: 1.25,
         },
     ),
     (
@@ -77,6 +80,8 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
         ModelRate {
             input_per_mtok: 3.0,
             output_per_mtok: 15.0,
+            cache_read_per_mtok: 0.30000000000000004,
+            cache_write_per_mtok: 3.75,
         },
     ),
     (
@@ -84,6 +89,8 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
         ModelRate {
             input_per_mtok: 10.0,
             output_per_mtok: 50.0,
+            cache_read_per_mtok: 1.0,
+            cache_write_per_mtok: 12.5,
         },
     ),
     (
@@ -91,6 +98,8 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
         ModelRate {
             input_per_mtok: 10.0,
             output_per_mtok: 50.0,
+            cache_read_per_mtok: 1.0,
+            cache_write_per_mtok: 12.5,
         },
     ),
     (
@@ -98,6 +107,8 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
         ModelRate {
             input_per_mtok: 5.0,
             output_per_mtok: 25.0,
+            cache_read_per_mtok: 0.5,
+            cache_write_per_mtok: 6.25,
         },
     ),
     // Legacy Anthropic ids ordered "3-5-haiku" before "3-opus" etc.
@@ -106,6 +117,8 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
         ModelRate {
             input_per_mtok: 1.0,
             output_per_mtok: 5.0,
+            cache_read_per_mtok: 0.1,
+            cache_write_per_mtok: 1.25,
         },
     ),
     (
@@ -113,6 +126,8 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
         ModelRate {
             input_per_mtok: 3.0,
             output_per_mtok: 15.0,
+            cache_read_per_mtok: 0.30000000000000004,
+            cache_write_per_mtok: 3.75,
         },
     ),
     (
@@ -120,6 +135,8 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
         ModelRate {
             input_per_mtok: 5.0,
             output_per_mtok: 25.0,
+            cache_read_per_mtok: 0.5,
+            cache_write_per_mtok: 6.25,
         },
     ),
     // OpenAI / Codex
@@ -128,6 +145,8 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
         ModelRate {
             input_per_mtok: 1.25,
             output_per_mtok: 10.0,
+            cache_read_per_mtok: 0.125,
+            cache_write_per_mtok: 1.5625,
         },
     ),
     (
@@ -135,6 +154,8 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
         ModelRate {
             input_per_mtok: 0.15,
             output_per_mtok: 0.6,
+            cache_read_per_mtok: 0.015,
+            cache_write_per_mtok: 0.1875,
         },
     ),
     (
@@ -142,6 +163,8 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
         ModelRate {
             input_per_mtok: 2.5,
             output_per_mtok: 10.0,
+            cache_read_per_mtok: 0.25,
+            cache_write_per_mtok: 3.125,
         },
     ),
     (
@@ -149,6 +172,8 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
         ModelRate {
             input_per_mtok: 1.1,
             output_per_mtok: 4.4,
+            cache_read_per_mtok: 0.11000000000000001,
+            cache_write_per_mtok: 1.375,
         },
     ),
     // Google
@@ -157,6 +182,8 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
         ModelRate {
             input_per_mtok: 1.25,
             output_per_mtok: 10.0,
+            cache_read_per_mtok: 0.125,
+            cache_write_per_mtok: 1.5625,
         },
     ),
     (
@@ -164,6 +191,8 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
         ModelRate {
             input_per_mtok: 0.3,
             output_per_mtok: 2.5,
+            cache_read_per_mtok: 0.03,
+            cache_write_per_mtok: 0.375,
         },
     ),
     (
@@ -171,6 +200,8 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
         ModelRate {
             input_per_mtok: 0.3,
             output_per_mtok: 2.5,
+            cache_read_per_mtok: 0.03,
+            cache_write_per_mtok: 0.375,
         },
     ),
     // xAI
@@ -179,15 +210,48 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
         ModelRate {
             input_per_mtok: 3.0,
             output_per_mtok: 15.0,
+            cache_read_per_mtok: 0.30000000000000004,
+            cache_write_per_mtok: 3.75,
         },
     ),
 ];
 
 /// One entry in `~/.ai-switch/model-prices.json`.
-#[derive(Debug, Clone, Deserialize)]
-struct RateOverride {
-    input_per_mtok: f64,
-    output_per_mtok: f64,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelPriceConfig {
+    #[serde(default)]
+    pub display_name: String,
+    pub input_per_mtok: f64,
+    pub output_per_mtok: f64,
+    #[serde(default)]
+    pub cache_read_per_mtok: Option<f64>,
+    #[serde(default)]
+    pub cache_write_per_mtok: Option<f64>,
+}
+
+impl ModelPriceConfig {
+    pub fn into_rate(self) -> ModelRate {
+        ModelRate {
+            input_per_mtok: self.input_per_mtok,
+            output_per_mtok: self.output_per_mtok,
+            cache_read_per_mtok: self
+                .cache_read_per_mtok
+                .unwrap_or(self.input_per_mtok * CACHE_READ_MULTIPLIER),
+            cache_write_per_mtok: self
+                .cache_write_per_mtok
+                .unwrap_or(self.input_per_mtok * CACHE_WRITE_MULTIPLIER),
+        }
+    }
+
+    pub fn from_rate(rate: ModelRate) -> Self {
+        Self {
+            display_name: String::new(),
+            input_per_mtok: rate.input_per_mtok,
+            output_per_mtok: rate.output_per_mtok,
+            cache_read_per_mtok: Some(rate.cache_read_per_mtok),
+            cache_write_per_mtok: Some(rate.cache_write_per_mtok),
+        }
+    }
 }
 
 static OVERRIDES: OnceLock<Mutex<HashMap<String, ModelRate>>> = OnceLock::new();
@@ -211,29 +275,15 @@ pub fn load_overrides_from_str(contents: &str) -> Result<usize, String> {
 }
 
 fn parse_overrides(contents: &str) -> Result<HashMap<String, ModelRate>, String> {
-    let parsed: HashMap<String, RateOverride> = serde_json::from_str(contents)
-        .map_err(|error| format!("model-prices.json is not valid JSON: {error}"))?;
-
-    let mut table = HashMap::new();
-    for (model, rate) in parsed {
-        // A negative or non-finite rate would silently corrupt every total.
-        if !rate.input_per_mtok.is_finite()
-            || !rate.output_per_mtok.is_finite()
-            || rate.input_per_mtok < 0.0
-            || rate.output_per_mtok < 0.0
-        {
-            continue;
-        }
-        table.insert(
-            normalize_model_id(&model).unwrap_or_else(|| model.to_ascii_lowercase()),
-            ModelRate {
-                input_per_mtok: rate.input_per_mtok,
-                output_per_mtok: rate.output_per_mtok,
-            },
-        );
-    }
-
-    Ok(table)
+    Ok(parse_price_configs(contents)?
+        .into_iter()
+        .map(|(model, rate)| {
+            (
+                normalize_model_id(&model).unwrap_or_else(|| model.to_ascii_lowercase()),
+                rate.into_rate(),
+            )
+        })
+        .collect())
 }
 
 /// Reduce a raw model id to a comparable key.
@@ -270,6 +320,26 @@ pub fn rate_for_model(model: &str) -> Option<ModelRate> {
     }
 
     static_rate_for_key(&key)
+}
+
+/// Parse the persisted JSON into the public configuration shape. Invalid and
+/// negative entries are omitted by the same rules used by the estimator.
+pub fn parse_price_configs(contents: &str) -> Result<HashMap<String, ModelPriceConfig>, String> {
+    let parsed: HashMap<String, ModelPriceConfig> = serde_json::from_str(contents)
+        .map_err(|error| format!("model-prices.json is not valid JSON: {error}"))?;
+    Ok(parsed
+        .into_iter()
+        .filter(|(_, rate)| {
+            rate.input_per_mtok.is_finite()
+                && rate.output_per_mtok.is_finite()
+                && rate.input_per_mtok >= 0.0
+                && rate.output_per_mtok >= 0.0
+                && rate.cache_read_per_mtok.unwrap_or(0.0).is_finite()
+                && rate.cache_write_per_mtok.unwrap_or(0.0).is_finite()
+                && rate.cache_read_per_mtok.unwrap_or(0.0) >= 0.0
+                && rate.cache_write_per_mtok.unwrap_or(0.0) >= 0.0
+        })
+        .collect())
 }
 
 /// Resolve `key` against an override table: exact match first, then the longest
@@ -318,8 +388,8 @@ pub fn estimate_cost_micros_with_rate(rate: ModelRate, usage: TokenUsage) -> i64
     let billable = |value: i64| value.max(0) as f64;
 
     let dollars = (billable(usage.input_tokens) * rate.input_per_mtok
-        + billable(usage.cache_write_tokens) * rate.input_per_mtok * CACHE_WRITE_MULTIPLIER
-        + billable(usage.cache_read_tokens) * rate.input_per_mtok * CACHE_READ_MULTIPLIER
+        + billable(usage.cache_write_tokens) * rate.cache_write_per_mtok
+        + billable(usage.cache_read_tokens) * rate.cache_read_per_mtok
         + billable(usage.output_tokens) * rate.output_per_mtok)
         / 1_000_000.0;
 
@@ -485,6 +555,26 @@ mod tests {
             lookup_in(&table, "claude-opus-5-aws").map(|r| r.input_per_mtok),
             Some(4.0)
         );
+    }
+
+    #[test]
+    fn price_configs_preserve_display_and_explicit_cache_rates() {
+        let configs = parse_price_configs(
+            r#"{
+            "claude-sonnet-4": {
+                "display_name": "Sonnet 4",
+                "input_per_mtok": 3.0,
+                "output_per_mtok": 15.0,
+                "cache_read_per_mtok": 0.2,
+                "cache_write_per_mtok": 3.0
+            }
+        }"#,
+        )
+        .expect("price configs");
+        let config = configs.get("claude-sonnet-4").expect("config");
+        assert_eq!(config.display_name, "Sonnet 4");
+        assert_eq!(config.cache_read_per_mtok, Some(0.2));
+        assert_eq!(config.clone().into_rate().cache_write_per_mtok, 3.0);
     }
 
     #[test]

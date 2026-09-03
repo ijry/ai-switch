@@ -72,7 +72,8 @@ use commands::terminal_commands::{
     list_terminal_sessions, resize_terminal, write_terminal_input,
 };
 use commands::usage_stats_commands::{
-    get_session_usage_stats, get_usage_overview, reload_model_price_overrides,
+    get_model_price_configs, get_session_usage_stats, get_usage_overview,
+    reload_model_price_overrides, save_model_price_configs,
 };
 use commands::web_service_commands::{
     create_mobile_pairing, disconnect_tailscale, get_tailscale_status, get_web_server_status,
@@ -527,6 +528,8 @@ pub fn run() {
             list_sessions,
             get_session_messages,
             open_session_terminal,
+            get_model_price_configs,
+            save_model_price_configs,
             get_session_usage_stats,
             get_usage_overview,
             reload_model_price_overrides,
