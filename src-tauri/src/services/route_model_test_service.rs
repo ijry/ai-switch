@@ -308,13 +308,18 @@ impl RouteModelTestService {
                     }
                 }
                 let semantic_failure = detect_response_failed(&body);
-                let tool_call_missing = request.test_tool_call
-                    && transport_success
-                    && !model_test_response_has_tool_call(
+                let tool_probe = (request.test_tool_call && transport_success).then(|| {
+                    model_test_tool_call_probe(
                         model_test_response_format(&platform, &parts.interface_format),
                         &body,
-                    );
-                let success = transport_success && semantic_failure.is_none() && !tool_call_missing;
+                    )
+                });
+                let tool_call_missing = tool_probe == Some(ToolCallProbe::NotCalled);
+                let tool_call_undetermined = tool_probe == Some(ToolCallProbe::Undetermined);
+                let success = transport_success
+                    && semantic_failure.is_none()
+                    && !tool_call_missing
+                    && !tool_call_undetermined;
                 let usage = extract_usage_breakdown(&body);
                 let mut usage = usage;
                 // Price from the model the upstream reported, falling back to the
@@ -332,12 +337,7 @@ impl RouteModelTestService {
                 let error_message = semantic_failure
                     .map(|failure| failure.message)
                     .filter(|_| !matches!(status, 401 | 403))
-                    .or_else(|| {
-                        tool_call_missing.then(|| {
-                            "Model returned a normal response but did not call the test tool"
-                                .to_string()
-                        })
-                    });
+                    .or_else(|| tool_probe.and_then(tool_call_probe_error));
 
                 let outcome = finish_outcome(
                     pool,
@@ -546,16 +546,25 @@ impl RouteModelTestService {
                     model_test_response_format(&platform, &parts.interface_format),
                     &response_body,
                 );
-                let tool_call_missing = request.test_tool_call
-                    && success
-                    && !model_test_response_has_tool_call(
-                        model_test_response_format(&platform, &parts.interface_format),
-                        &body,
-                    );
-                let success = success && !tool_call_missing;
-                let error_message = tool_call_missing.then(|| {
-                    "Model returned a normal response but did not call the test tool".to_string()
-                });
+                // A relay that answers `200 + {"error":{...}}` is a failed request,
+                // not a model that declined to call a tool. The direct path has
+                // always checked this; without it here, a rate limit or an
+                // upstream outage got reported as a capability gap.
+                let semantic_failure = detect_response_failed(&body);
+                let tool_probe = (request.test_tool_call && success && semantic_failure.is_none())
+                    .then(|| {
+                        model_test_tool_call_probe(
+                            model_test_response_format(&platform, &parts.interface_format),
+                            &body,
+                        )
+                    });
+                let success = success
+                    && semantic_failure.is_none()
+                    && tool_probe.is_none_or(|probe| probe == ToolCallProbe::Called);
+                let error_message = semantic_failure
+                    .map(|failure| failure.message)
+                    .filter(|_| !matches!(status, 401 | 403))
+                    .or_else(|| tool_probe.and_then(tool_call_probe_error));
                 finish_proxy_outcome(
                     pool,
                     &platform,
@@ -669,10 +678,105 @@ fn add_model_test_tool(interface_format: &str, mut body: Value) -> Result<Value,
     Ok(body)
 }
 
-fn model_test_response_has_tool_call(interface_format: &str, body: &[u8]) -> bool {
+/// Output budget for a tool-call probe.
+///
+/// A connectivity probe only needs `ai-switch-ok`, so 16 tokens is plenty. A
+/// forced tool call is a different shape of answer: the model has to emit the
+/// function name and its argument JSON, and on a reasoning model the thinking
+/// tokens are spent first. At 16 the response comes back truncated with no call
+/// in it, which used to read as "this model cannot call tools".
+const MODEL_TEST_TOOL_CALL_MAX_TOKENS: u64 = 512;
+
+/// Raises whichever output cap the probe body carries.
+fn raise_output_budget_for_tool_call(body: &mut Value) {
+    for key in ["max_tokens", "max_output_tokens"] {
+        if let Some(slot) = body.get_mut(key) {
+            *slot = json!(MODEL_TEST_TOOL_CALL_MAX_TOKENS);
+        }
+    }
+    if let Some(slot) = body.pointer_mut("/generationConfig/maxOutputTokens") {
+        *slot = json!(MODEL_TEST_TOOL_CALL_MAX_TOKENS);
+    }
+}
+
+/// The message a probe outcome should carry, or `None` when it succeeded.
+fn tool_call_probe_error(probe: ToolCallProbe) -> Option<String> {
+    match probe {
+        ToolCallProbe::Called => None,
+        ToolCallProbe::NotCalled => {
+            Some("Model returned a normal response but did not call the test tool".to_string())
+        }
+        ToolCallProbe::Undetermined => Some(
+            "Could not tell whether the model calls tools: the response was cut off or was not \
+             readable as JSON"
+                .to_string(),
+        ),
+    }
+}
+
+/// What a tool-call probe actually established.
+///
+/// The third arm is the point of this enum: "the response does not answer the
+/// question" is not the same as "the model cannot call tools", and reporting the
+/// former as the latter marks healthy models as incapable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolCallProbe {
+    /// The model called the test tool.
+    Called,
+    /// The model answered normally, in full, without calling it.
+    NotCalled,
+    /// Unreadable or cut off, so the probe proves nothing either way.
+    Undetermined,
+}
+
+/// Whether the upstream stopped because it ran out of output budget.
+///
+/// A truncated response has no tool call in it no matter how capable the model
+/// is: a forced call has to emit the function name plus its argument JSON, and a
+/// reasoning model spends thinking tokens before any of that appears.
+fn model_test_response_truncated(interface_format: &str, value: &Value) -> bool {
+    match interface_format {
+        "openai" => {
+            value
+                .pointer("/choices/0/finish_reason")
+                .and_then(Value::as_str)
+                == Some("length")
+        }
+        "openai-responses" => {
+            value.pointer("/status").and_then(Value::as_str) == Some("incomplete")
+                || value
+                    .pointer("/incomplete_details/reason")
+                    .and_then(Value::as_str)
+                    == Some("max_output_tokens")
+        }
+        "anthropic" => value.pointer("/stop_reason").and_then(Value::as_str) == Some("max_tokens"),
+        "gemini" => {
+            value
+                .pointer("/candidates/0/finishReason")
+                .and_then(Value::as_str)
+                == Some("MAX_TOKENS")
+        }
+        _ => false,
+    }
+}
+
+fn model_test_tool_call_probe(interface_format: &str, body: &[u8]) -> ToolCallProbe {
+    // Not JSON means the transport or a gateway got in the way — a compressed
+    // body, an SSE stream, an HTML error page. None of that says anything about
+    // the model's tool support.
     let Ok(value) = serde_json::from_slice::<Value>(body) else {
-        return false;
+        return ToolCallProbe::Undetermined;
     };
+    if model_test_response_has_tool_call(interface_format, &value) {
+        return ToolCallProbe::Called;
+    }
+    if model_test_response_truncated(interface_format, &value) {
+        return ToolCallProbe::Undetermined;
+    }
+    ToolCallProbe::NotCalled
+}
+
+fn model_test_response_has_tool_call(interface_format: &str, value: &Value) -> bool {
     match interface_format {
         "openai" => value
             .pointer("/choices/0/message/tool_calls")
@@ -836,7 +940,9 @@ pub fn build_model_test_request_with_tool_call(
         // The platform endpoint is always built in its local dialect first. The
         // proxy bridge converts this body to the configured upstream dialect.
         let local_interface_format = model_test_response_format(platform, &interface_format);
-        add_model_test_tool(local_interface_format, request_body)?
+        let mut with_tool = add_model_test_tool(local_interface_format, request_body)?;
+        raise_output_budget_for_tool_call(&mut with_tool);
+        with_tool
     } else {
         request_body
     };
@@ -2013,10 +2119,101 @@ mod tests {
     fn tool_call_model_test_requires_the_named_tool_in_the_response() {
         let response =
             br#"{"choices":[{"message":{"tool_calls":[{"function":{"name":"other_tool"}}]}}]}"#;
-        assert!(!model_test_response_has_tool_call("openai", response));
+        assert_eq!(
+            model_test_tool_call_probe("openai", response),
+            ToolCallProbe::NotCalled
+        );
 
         let response = br#"{"choices":[{"message":{"tool_calls":[{"function":{"name":"ai_switch_test_tool"}}]}}]}"#;
-        assert!(model_test_response_has_tool_call("openai", response));
+        assert_eq!(
+            model_test_tool_call_probe("openai", response),
+            ToolCallProbe::Called
+        );
+    }
+
+    #[test]
+    fn an_unreadable_or_truncated_probe_is_undetermined_not_a_capability_gap() {
+        // Compressed body, an SSE stream, a gateway's HTML error page: none of
+        // these say anything about whether the model can call tools, and calling
+        // them "does not support tool calls" marks healthy models as incapable.
+        for body in [
+            &b""[..],
+            &b"\x1f\x8b\x08\x00compressed"[..],
+            &b"data: {\"choices\":[]}\n\n"[..],
+            &b"<html><body>502 Bad Gateway</body></html>"[..],
+        ] {
+            assert_eq!(
+                model_test_tool_call_probe("openai", body),
+                ToolCallProbe::Undetermined,
+                "{:?}",
+                String::from_utf8_lossy(body)
+            );
+        }
+
+        // Ran out of output budget before any call could be emitted. Each dialect
+        // signals it differently.
+        for (format, body) in [
+            (
+                "openai",
+                &br#"{"choices":[{"finish_reason":"length","message":{"content":""}}]}"#[..],
+            ),
+            (
+                "openai-responses",
+                &br#"{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"reasoning"}]}"#[..],
+            ),
+            (
+                "anthropic",
+                &br#"{"stop_reason":"max_tokens","content":[{"type":"text","text":""}]}"#[..],
+            ),
+            (
+                "gemini",
+                &br#"{"candidates":[{"finishReason":"MAX_TOKENS"}]}"#[..],
+            ),
+        ] {
+            assert_eq!(
+                model_test_tool_call_probe(format, body),
+                ToolCallProbe::Undetermined,
+                "{format}"
+            );
+        }
+
+        // A complete answer that simply did not call the tool still counts.
+        assert_eq!(
+            model_test_tool_call_probe(
+                "openai",
+                br#"{"choices":[{"finish_reason":"stop","message":{"content":"ai-switch-ok"}}]}"#
+            ),
+            ToolCallProbe::NotCalled
+        );
+    }
+
+    #[test]
+    fn a_tool_call_probe_gets_a_real_output_budget() {
+        // 16 tokens is plenty for `ai-switch-ok` but cannot fit a function name
+        // plus its argument JSON, let alone a reasoning model's thinking tokens.
+        let credential = api_credential("openai");
+        let plain = build_model_test_request_with_tool_call(
+            &credential,
+            "codex",
+            Some("gpt-5.5"),
+            None,
+            false,
+        )
+        .expect("plain request");
+        let plain: Value = serde_json::from_str(&plain.request_body_json).expect("json");
+        assert_eq!(plain["max_output_tokens"], 16);
+
+        let probing = build_model_test_request_with_tool_call(
+            &credential,
+            "codex",
+            Some("gpt-5.5"),
+            None,
+            true,
+        )
+        .expect("tool call request");
+        let probing: Value = serde_json::from_str(&probing.request_body_json).expect("json");
+        assert_eq!(probing["max_output_tokens"], 512);
+        assert_eq!(probing["tools"][0]["name"], "ai_switch_test_tool");
     }
 
     #[test]
