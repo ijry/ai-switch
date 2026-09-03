@@ -147,6 +147,7 @@ impl TargetAdapterRegistry {
             adapters: vec![
                 Arc::new(CodexAdapter),
                 Arc::new(JsonAgentAdapter::claude()),
+                Arc::new(JsonAgentAdapter::claude_desktop()),
                 Arc::new(JsonAgentAdapter::gemini()),
                 Arc::new(JsonAgentAdapter::grok()),
                 Arc::new(ZCodeAdapter::codex()),
@@ -283,7 +284,7 @@ mod tests {
             .clients_for_platform(PlatformId::OpenClaw)
             .is_empty());
         assert!(registry.clients_for_platform(PlatformId::Hermes).is_empty());
-        assert!(registry.by_target_key("claude_desktop").is_none());
+        assert!(registry.by_target_key("claude_desktop").is_some());
     }
 
     #[test]
@@ -627,6 +628,7 @@ api_key = "legacy-key"
         for (client_key, platform, target_key) in [
             ("codex", PlatformId::Codex, "codex"),
             ("claude_code", PlatformId::Claude, "claude_code"),
+            ("claude_desktop", PlatformId::Claude, "claude_desktop"),
             ("gemini_cli", PlatformId::Gemini, "gemini_cli"),
             ("grok", PlatformId::Grok, "grok"),
         ] {
@@ -668,6 +670,22 @@ api_key = "legacy-key"
         assert!(codex[1].restart_required);
         // DeepSeek Harness also requires restart
         assert!(codex[2].restart_required);
+
+        // Claude platform should list both CLI and Desktop
+        let claude = registry.clients_for_platform(PlatformId::Claude);
+        assert_eq!(
+            claude
+                .iter()
+                .map(|client| client.client_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["claude_code", "claude_desktop", "zcode", "deepseek_harness"]
+        );
+        assert_eq!(claude[0].display_name, "Claude Code");
+        assert_eq!(claude[1].display_name, "Claude Desktop");
+        assert!(claude[0].native);
+        assert!(claude[1].native);
+        assert!(!claude[0].restart_required);
+        assert!(!claude[1].restart_required);
 
         // Platforms with no adapter list nothing rather than erroring.
         assert!(registry.clients_for_platform(PlatformId::Hermes).is_empty());
