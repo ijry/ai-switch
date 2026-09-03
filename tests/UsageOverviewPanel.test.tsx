@@ -269,6 +269,29 @@ describe("UsageOverviewPanel", () => {
     });
   });
 
+  it("stops refetching once a rolling window has loaded", async () => {
+    renderPanel();
+    await screen.findByText("1.1万");
+
+    // The chart reads `query.isFetching`, so every fetch flips a tracked field
+    // and re-renders. That is only safe if the query key is stable across
+    // renders: a `since` derived from `now.getTime()` mints a new key each time,
+    // so the settling fetch renders into the next one — 180+ requests in two
+    // seconds, each a full session-corpus scan on a blocking thread.
+    await userEvent.click(screen.getByRole("button", { name: "模型" }));
+    await userEvent.click(screen.getByRole("button", { name: "图表" }));
+    await userEvent.click(screen.getByRole("button", { name: "7d" }));
+
+    await waitFor(() => {
+      expect(vi.mocked(getUsageOverview).mock.calls.length).toBeGreaterThan(1);
+    });
+    const settled = vi.mocked(getUsageOverview).mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    // `refreshMs` is 30s, so nothing legitimate can fire inside this window.
+    expect(vi.mocked(getUsageOverview).mock.calls.length).toBe(settled);
+  });
+
   it("labels each row with its source", async () => {
     vi.mocked(getUsageOverview).mockResolvedValue(
       overviewFixture({

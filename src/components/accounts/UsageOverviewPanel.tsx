@@ -397,11 +397,14 @@ export function UsageOverviewPanel() {
   const [pricingOpen, setPricingOpen] = useState(false);
   const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
 
-  const since = periodSince(period);
-
   const query = useQuery({
-    queryKey: ["usage-overview", since, page, pageSize],
-    queryFn: () => getUsageOverview(since, page, pageSize),
+    // `since` is deliberately not part of the key. The rolling presets derive it
+    // from `now`, so a key carrying it changes on every render, and each
+    // settling fetch renders into the next one — an unbounded request loop where
+    // every request is a full session-corpus scan. Recomputing it inside
+    // `queryFn` keeps the window fresh on every poll while the key stays stable.
+    queryKey: ["usage-overview", period, page, pageSize],
+    queryFn: () => getUsageOverview(periodSince(period), page, pageSize),
     placeholderData: keepPreviousData,
     refetchInterval: refreshMs,
   });
