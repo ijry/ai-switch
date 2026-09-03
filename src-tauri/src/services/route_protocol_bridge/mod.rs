@@ -1,4 +1,7 @@
 mod anthropic_cache;
+mod chat_claude;
+mod chat_gemini;
+mod chat_responses;
 mod claude_chat;
 mod claude_gemini;
 mod claude_responses;
@@ -23,6 +26,9 @@ pub enum ProtocolBridgeKind {
     ClaudeToChat,
     ClaudeToResponses,
     ClaudeToGemini,
+    ChatToResponses,
+    ChatToAnthropic,
+    ChatToGemini,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +143,47 @@ pub fn prepare_request(
         };
     }
 
+    // Inbound OpenAI Chat Completions. Unlike the two blocks above this is not
+    // gated on a platform: the wire shape a client speaks is a property of the
+    // client, not of the pool it points at. Third-party clients that only speak
+    // chat completions (WorkBuddy, CodeBuddy CLI, Qoder CLI, DeepSeek Harness)
+    // are written for both the codex and the claude platform, so without this the
+    // claude-platform variants sent an OpenAI body to an Anthropic endpoint and
+    // the codex-platform ones broke against a Responses-only relay.
+    if common::is_create_path(&normalized_path, "chat/completions") {
+        return match upstream_dialect {
+            ApiDialect::OpenAi => Ok(passthrough_request("/chat/completions", body, streaming)),
+            ApiDialect::OpenAiResponses => Ok(PreparedBridgeRequest {
+                kind: Some(ProtocolBridgeKind::ChatToResponses),
+                upstream_path: "/responses".to_string(),
+                upstream_query: None,
+                body: chat_responses::chat_request_to_responses(body)?,
+                streaming,
+                tool_namespaces: BTreeMap::new(),
+            }),
+            ApiDialect::Anthropic => Ok(PreparedBridgeRequest {
+                kind: Some(ProtocolBridgeKind::ChatToAnthropic),
+                upstream_path: "/v1/messages".to_string(),
+                upstream_query: None,
+                body: chat_claude::chat_request_to_anthropic(body)?,
+                streaming,
+                tool_namespaces: BTreeMap::new(),
+            }),
+            ApiDialect::Gemini => {
+                let model = common::gemini_model_from_body(body)?;
+                let (upstream_path, upstream_query) = common::gemini_endpoint(&model, streaming);
+                Ok(PreparedBridgeRequest {
+                    kind: Some(ProtocolBridgeKind::ChatToGemini),
+                    upstream_path,
+                    upstream_query,
+                    body: chat_gemini::chat_request_to_gemini(body)?,
+                    streaming,
+                    tool_namespaces: BTreeMap::new(),
+                })
+            }
+        };
+    }
+
     Ok(passthrough_request(&normalized_path, body, streaming))
 }
 
@@ -190,6 +237,15 @@ pub fn transform_response_with_tool_namespaces(
         }
         ProtocolBridgeKind::ClaudeToGemini => {
             claude_gemini::gemini_response_to_anthropic(status, content_type, body)
+        }
+        ProtocolBridgeKind::ChatToResponses => {
+            chat_responses::responses_response_to_chat(status, content_type, body)
+        }
+        ProtocolBridgeKind::ChatToAnthropic => {
+            chat_claude::anthropic_response_to_chat(status, content_type, body)
+        }
+        ProtocolBridgeKind::ChatToGemini => {
+            chat_gemini::gemini_response_to_chat(status, content_type, body)
         }
     }
 }
@@ -383,6 +439,45 @@ mod tests {
                 prepare_request(PlatformId::Claude, dialect, "/v1/messages", body).unwrap();
             assert_eq!(prepared.kind, expected_kind);
             assert_eq!(prepared.upstream_path, expected_path);
+        }
+    }
+
+    /// Inbound chat completions is routed by the upstream dialect alone. The wire
+    /// shape is the client's, not the pool's: the third-party clients that only
+    /// speak chat are written for the claude platform too, so this must not be
+    /// gated on a platform the way the two blocks above it are.
+    #[test]
+    fn inbound_chat_completions_is_bridged_per_dialect_on_any_platform() {
+        let body = &serde_json::to_vec(&json!({
+            "model": "gpt-5.6-sol",
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .unwrap()[..];
+
+        for platform in [PlatformId::Codex, PlatformId::Claude] {
+            for (dialect, expected_kind, expected_path) in [
+                (ApiDialect::OpenAi, None, "/chat/completions"),
+                (
+                    ApiDialect::OpenAiResponses,
+                    Some(ProtocolBridgeKind::ChatToResponses),
+                    "/responses",
+                ),
+                (
+                    ApiDialect::Anthropic,
+                    Some(ProtocolBridgeKind::ChatToAnthropic),
+                    "/v1/messages",
+                ),
+                (
+                    ApiDialect::Gemini,
+                    Some(ProtocolBridgeKind::ChatToGemini),
+                    "/v1beta/models/gpt-5.6-sol:generateContent",
+                ),
+            ] {
+                let prepared =
+                    prepare_request(platform, dialect, "/v1/chat/completions", body).unwrap();
+                assert_eq!(prepared.kind, expected_kind, "{platform:?} {dialect:?}");
+                assert_eq!(prepared.upstream_path, expected_path, "{platform:?}");
+            }
         }
     }
 
