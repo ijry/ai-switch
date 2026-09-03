@@ -10,7 +10,6 @@ impl TargetRepository {
     pub async fn ensure_defaults(pool: &SqlitePool) -> Result<Vec<TargetApp>, AppError> {
         let defaults = [
             ("claude_code", "claude", "Claude Code"),
-            ("claude_desktop", "claude", "Claude Desktop"),
             ("codex", "codex", "Codex"),
             ("gemini_cli", "gemini", "Gemini CLI"),
             ("grok", "grok", "Grok"),

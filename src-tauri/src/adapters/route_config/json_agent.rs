@@ -43,19 +43,6 @@ impl JsonAgentAdapter {
         }
     }
 
-    pub(super) const fn claude_desktop() -> Self {
-        Self {
-            target_key: "claude_desktop",
-            client_key: "claude_desktop",
-            client_display_name: "Claude Desktop",
-            platform: PlatformId::Claude,
-            config_dir: ".claude",
-            platform_base_url_keys: &["ANTHROPIC_BASE_URL"],
-            platform_auth_token_keys: &["ANTHROPIC_AUTH_TOKEN"],
-            writes_claude_model_env: true,
-        }
-    }
-
     pub(super) const fn gemini() -> Self {
         Self {
             target_key: "gemini_cli",

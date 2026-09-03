@@ -151,7 +151,6 @@ impl TargetAdapterRegistry {
             adapters: vec![
                 Arc::new(CodexAdapter),
                 Arc::new(JsonAgentAdapter::claude()),
-                Arc::new(JsonAgentAdapter::claude_desktop()),
                 Arc::new(JsonAgentAdapter::gemini()),
                 Arc::new(JsonAgentAdapter::grok()),
                 Arc::new(ZCodeAdapter::codex()),
@@ -300,7 +299,11 @@ mod tests {
             .clients_for_platform(PlatformId::OpenClaw)
             .is_empty());
         assert!(registry.clients_for_platform(PlatformId::Hermes).is_empty());
-        assert!(registry.by_target_key("claude_desktop").is_some());
+        // Claude Desktop is deliberately absent: it has no bring-your-own base
+        // URL mechanism (its own config file configures MCP servers only), so no
+        // adapter can route it through the proxy. The target that used to be here
+        // wrote Claude Code's `~/.claude/settings.json` and did nothing else.
+        assert!(registry.by_target_key("claude_desktop").is_none());
     }
 
     #[test]
@@ -644,7 +647,6 @@ api_key = "legacy-key"
         for (client_key, platform, target_key) in [
             ("codex", PlatformId::Codex, "codex"),
             ("claude_code", PlatformId::Claude, "claude_code"),
-            ("claude_desktop", PlatformId::Claude, "claude_desktop"),
             ("gemini_cli", PlatformId::Gemini, "gemini_cli"),
             ("grok", PlatformId::Grok, "grok"),
         ] {
@@ -698,7 +700,9 @@ api_key = "legacy-key"
             assert!(client.requires_client_models, "{}", client.client_key);
         }
 
-        // Claude platform should list both CLI and Desktop
+        // Claude platform lists the CLI plus the third-party clients. Claude
+        // Desktop is not here on purpose — see
+        // `registry_covers_every_platform_that_has_an_adapter`.
         let claude = registry.clients_for_platform(PlatformId::Claude);
         assert_eq!(
             claude
@@ -707,7 +711,6 @@ api_key = "legacy-key"
                 .collect::<Vec<_>>(),
             vec![
                 "claude_code",
-                "claude_desktop",
                 "zcode",
                 "deepseek_harness",
                 "workbuddy",
@@ -716,11 +719,11 @@ api_key = "legacy-key"
             ]
         );
         assert_eq!(claude[0].display_name, "Claude Code");
-        assert_eq!(claude[1].display_name, "Claude Desktop");
         assert!(claude[0].native);
-        assert!(claude[1].native);
         assert!(!claude[0].restart_required);
-        assert!(!claude[1].restart_required);
+        // Exactly one native client per platform: the write dialog default-checks
+        // every `native` client, so a second one would silently double-write.
+        assert_eq!(claude.iter().filter(|client| client.native).count(), 1);
 
         // Platforms with no adapter list nothing rather than erroring.
         assert!(registry.clients_for_platform(PlatformId::Hermes).is_empty());

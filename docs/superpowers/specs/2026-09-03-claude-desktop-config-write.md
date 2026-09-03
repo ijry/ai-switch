@@ -1,7 +1,24 @@
 # Claude Desktop 配置写入支持
 
 日期：2026-09-03
-状态：已实现
+状态：**已撤销**（2026-09-03 审计后移除实现，保留本文档说明原因）
+
+## 撤销原因
+
+这个方案不可实现，下面记录的设计和实现都已从代码中移除。两个层面的问题：
+
+1. **实现写错了文件。** `JsonAgentAdapter::claude_desktop()` 与 `claude()` 逐字段相同，`config_dir` 同为 `.claude`，于是 `resolve_path` 得到 `~/.claude/settings.json`——那是 **Claude Code** 的配置文件。本文档下面「配置文件」一节写的"Claude Desktop 使用与 Claude Code 相同的配置文件路径"与开头「背景」一节写的"官方不共用配置"直接矛盾，代码跟着后者走了。
+   叠加影响：`JsonAgentAdapter::native()` 硬编码 `true`，而写入对话框默认勾选所有 native 客户端，因此 Claude 平台默认把同一个文件写两遍（两条快照、两份备份、两个 target 状态行），并且只要 Claude Code 写过，Claude Desktop 就报"已接管"。
+
+2. **改成正确路径也不会生效。** Claude Desktop 没有 bring-your-own base URL 的机制：它用登录账号鉴权，而它自己的配置文件（macOS `~/Library/Application Support/Claude/claude_desktop_config.json`、Windows `%APPDATA%\Claude\`）**只配置 MCP 服务器**，没有 API endpoint 或 auth token 的概念。所以无论适配器把路径改得多对，都不可能把 Claude Desktop 路由到本机代理。
+
+与 Cursor BYOK 是同一类问题：GUI 客户端的 endpoint 不在本地文件里。**新增 GUI 客户端适配器之前，先确认该客户端真的从本地文件读 API base URL**——CLI 客户端通常会，桌面应用通常不会。
+
+移除范围：`adapters/route_config/json_agent.rs` 的构造器、`adapters/route_config/mod.rs` 的注册、`database/repositories/target_repository.rs` 的种子行，以及三处把它和真 CLI 一起断言的测试。老库里残留的 `target_apps` 行是惰性的——客户端列表由注册表驱动（`target_service.rs::list_config_write_clients_for_home`），不读那张表。
+
+---
+
+以下为原始设计，仅作记录。
 
 ## 背景
 
