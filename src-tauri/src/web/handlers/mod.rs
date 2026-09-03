@@ -12,7 +12,10 @@ use crate::core::terminals::{
     resize_terminal_core, resume_session_terminal_core, write_terminal_input_core,
 };
 use crate::core::usage_overview::get_usage_overview_core;
-use crate::core::usage_stats::{get_session_usage_stats_core, reload_model_price_overrides_core};
+use crate::core::usage_stats::{
+    get_model_price_configs_core, get_session_usage_stats_core, reload_model_price_overrides_core,
+    save_model_price_configs_core,
+};
 use crate::database::repositories::config_snapshot_repository::ConfigSnapshotRepository;
 use crate::error::{ApiError, AppError};
 use crate::models::batch::NewBatch;
@@ -38,6 +41,7 @@ use crate::services::batch_service::BatchService;
 use crate::services::config_write_service::ConfigWriteCoordinator;
 use crate::services::external_client_import_service;
 use crate::services::import_service::{ExampleJsonImportRequest, ImportService};
+use crate::services::model_pricing::ModelPriceConfig;
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_config_service::RouteConfigService;
 use crate::services::route_credential_service::RouteCredentialService;
@@ -54,6 +58,7 @@ use crate::services::target_service::TargetService;
 use crate::services::web_service::{WebService, WebServiceConfig};
 use crate::terminal_manager::CreateTerminalSessionInput;
 use crate::web::event_bridge::EventEmitter;
+use std::collections::HashMap;
 
 pub fn is_sensitive_command(command: &str) -> bool {
     matches!(
@@ -377,6 +382,17 @@ pub async fn dispatch_command(
                 .await
                 .map_err(to_error)?,
         ),
+        "get_model_price_configs" => {
+            to_value(get_model_price_configs_core().await.map_err(to_error)?)
+        }
+        "save_model_price_configs" => {
+            let configs: HashMap<String, ModelPriceConfig> = parse_arg(&args, "configs")?;
+            to_value(
+                save_model_price_configs_core(configs)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
         "get_usage_overview" => {
             let since = optional_string_arg(&args, "since")?;
             let page = optional_i64_arg(&args, "page")?;

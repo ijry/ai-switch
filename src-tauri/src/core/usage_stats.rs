@@ -53,6 +53,49 @@ pub async fn reload_model_price_overrides_core() -> Result<usize, AppError> {
     })
 }
 
+/// Read the configured model prices without changing the active estimator.
+pub async fn get_model_price_configs_core(
+) -> Result<std::collections::HashMap<String, model_pricing::ModelPriceConfig>, AppError> {
+    let path = crate::paths::AppPaths::resolve()?
+        .data_dir
+        .join("model-prices.json");
+    let contents = match tokio::fs::read_to_string(&path).await {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "{}".to_string(),
+        Err(error) => return Err(AppError::from(error)),
+    };
+    model_pricing::parse_price_configs(&contents).map_err(|message| AppError::Validation {
+        code: "validation.model_prices_invalid",
+        message,
+        details: Some(path.to_string_lossy().to_string()),
+        recoverable: true,
+    })
+}
+
+/// Save and immediately activate the model price table.
+pub async fn save_model_price_configs_core(
+    configs: std::collections::HashMap<String, model_pricing::ModelPriceConfig>,
+) -> Result<usize, AppError> {
+    let path = crate::paths::AppPaths::resolve()?
+        .data_dir
+        .join("model-prices.json");
+    let contents =
+        serde_json::to_string_pretty(&configs).map_err(|error| AppError::Validation {
+            code: "validation.model_prices_invalid",
+            message: error.to_string(),
+            details: None,
+            recoverable: true,
+        })?;
+    tokio::fs::create_dir_all(path.parent().expect("price file parent")).await?;
+    tokio::fs::write(&path, contents.as_bytes()).await?;
+    model_pricing::load_overrides_from_str(&contents).map_err(|message| AppError::Validation {
+        code: "validation.model_prices_invalid",
+        message,
+        details: Some(path.to_string_lossy().to_string()),
+        recoverable: true,
+    })
+}
+
 pub(crate) fn parse_window(since: Option<&str>) -> Result<TimeWindow, AppError> {
     let Some(since) = since.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(TimeWindow::default());

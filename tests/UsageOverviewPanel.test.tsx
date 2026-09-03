@@ -2,13 +2,17 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getUsageOverview } from "../src/lib/api/client";
+import { getModelPriceConfigs, getRouteProxyKey, getRouteProxyStatus, getUsageOverview, saveModelPriceConfigs } from "../src/lib/api/client";
 import { createQueryClient } from "../src/lib/query/queryClient";
 import { UsageOverviewPanel } from "../src/components/accounts/UsageOverviewPanel";
 import type { UsageOverview, UsageOverviewRow } from "../src/lib/api/types";
 
 vi.mock("../src/lib/api/client", () => ({
+  getModelPriceConfigs: vi.fn(),
+  getRouteProxyKey: vi.fn(),
+  getRouteProxyStatus: vi.fn(),
   getUsageOverview: vi.fn(),
+  saveModelPriceConfigs: vi.fn(),
 }));
 
 function rowFixture(overrides: Partial<UsageOverviewRow> = {}): UsageOverviewRow {
@@ -94,6 +98,10 @@ describe("UsageOverviewPanel", () => {
   beforeEach(() => {
     vi.mocked(getUsageOverview).mockReset();
     vi.mocked(getUsageOverview).mockResolvedValue(overviewFixture());
+    vi.mocked(getModelPriceConfigs).mockResolvedValue({});
+    vi.mocked(saveModelPriceConfigs).mockReset();
+    vi.mocked(saveModelPriceConfigs).mockResolvedValue(1);
+    vi.mocked(getRouteProxyStatus).mockResolvedValue({ running: false, bind_host: "127.0.0.1" });
   });
 
   it("renders one set of totals with 万/百万/亿 units and the exact figure in a tooltip", async () => {
@@ -108,6 +116,14 @@ describe("UsageOverviewPanel", () => {
     expect(screen.getByTitle("5,584,802,591")).toBeInTheDocument();
     // Cost keeps a currency format rather than a 万/亿 unit.
     expect(screen.getByText("$16,248.91")).toBeInTheDocument();
+  });
+
+  it("opens the model price configuration from the settings icon", async () => {
+    renderPanel();
+    await screen.findByText("1.1万");
+    await userEvent.click(screen.getByRole("button", { name: "配置模型价格" }));
+    expect(await screen.findByRole("dialog", { name: "模型价格配置" })).toBeInTheDocument();
+    expect(screen.getByText("配置各模型 Token 成本")).toBeInTheDocument();
   });
 
   it("keeps the grouping table collapsed until a dimension is clicked", async () => {
@@ -248,5 +264,32 @@ describe("UsageOverviewPanel", () => {
     expect(await screen.findByRole("alert", {}, { timeout: 5_000 })).toHaveTextContent(
       /scan failed|读取用量失败/,
     );
+  });
+
+  it("saves complete model prices and derives omitted cache prices", async () => {
+    const user = userEvent.setup();
+    const { ModelPricingDialog } = await import("../src/components/accounts/ModelPricingDialog");
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <ModelPricingDialog open onClose={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText("暂无模型。请启动本地路由代理或手动添加模型。");
+    await user.type(screen.getByRole("textbox", { name: "手动添加模型" }), "custom-model");
+    await user.click(screen.getByRole("button", { name: "添加" }));
+    await user.type(screen.getByRole("spinbutton", { name: "custom-model input_per_mtok" }), "2");
+    await user.type(screen.getByRole("spinbutton", { name: "custom-model output_per_mtok" }), "8");
+    await user.click(screen.getByRole("button", { name: "保存配置" }));
+
+    await waitFor(() => expect(saveModelPriceConfigs).toHaveBeenCalledWith({
+      "custom-model": {
+        display_name: "",
+        input_per_mtok: 2,
+        output_per_mtok: 8,
+        cache_read_per_mtok: 0.2,
+        cache_write_per_mtok: 2.5,
+      },
+    }));
   });
 });
