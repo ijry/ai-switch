@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "ai-switch"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "assert_fs",
  "async-trait",
