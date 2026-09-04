@@ -9,6 +9,7 @@ use crate::models::route_credential_model::FailureScope;
 use crate::models::route_pool::{
     RoutePoolModelTestOutcome, RoutePoolModelTestRequest, RouteUsageBreakdown,
 };
+use crate::models::route_relay_balance::RELAY_BALANCE_ACCESS_TOKEN_KEY;
 use crate::services::client_identity;
 use crate::services::http_client::{
     build_outbound_http_client, build_outbound_http_client_with_root_certificate,
@@ -1940,6 +1941,7 @@ fn sensitive_secret_values(secret_payload_json: &str) -> Vec<String> {
         "id_token",
         "authorization",
         "x-api-key",
+        RELAY_BALANCE_ACCESS_TOKEN_KEY,
     ];
 
     secret

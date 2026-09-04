@@ -263,6 +263,12 @@ export type RelayBalanceSnapshot = {
   limit?: number | null;
   unit: string;
   unlimited?: boolean;
+  /**
+   * The figures describe the relay panel account rather than this one key, which is
+   * what an uncapped new-api token forces. Every account on the same panel then
+   * reports the same number, so the badge has to say so.
+   */
+  account_level?: boolean;
   expires_at?: string | null;
   source_url: string;
   checked_at: string;
@@ -290,6 +296,10 @@ export type CreateApiRouteCredentialInput = {
   responses_custom_tool_compat?: boolean | null;
   user_agent?: string | null;
   relay_balance_provider?: RelayBalanceProvider | null;
+  /** Relay panel account access token, stored beside the api_key in the secret. */
+  relay_balance_access_token?: string | null;
+  /** Numeric panel user id that goes with the access token (New-Api-User header). */
+  relay_balance_access_token_user_id?: string | null;
 };
 
 export type CopyRouteCredentialInput = {

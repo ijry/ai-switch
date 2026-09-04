@@ -3,6 +3,9 @@ use crate::models::route_credential::RouteCredential;
 use crate::models::route_credential_transfer::{
     RouteCredentialTransferIssue, TRANSFER_FORMAT, TRANSFER_SCHEMA_VERSION,
 };
+use crate::models::route_relay_balance::{
+    RELAY_BALANCE_ACCESS_TOKEN_KEY, RELAY_BALANCE_ACCESS_TOKEN_USER_ID_KEY,
+};
 use crate::services::official_agent_identity_service::{
     is_current_official_agent_identity_credential, validate_agent_identity_credential_fields,
 };
@@ -308,7 +311,18 @@ fn project_api(
     in_pool: bool,
     include_enhanced_metadata: bool,
 ) -> Result<ProjectedCredential, RouteCredentialTransferIssue> {
-    reject_unknown_secret_fields(credential, secret, &["api_key"])?;
+    // The relay panel's account credentials are ours alone — the CPA format has no
+    // slot for them, so they are tolerated and dropped rather than making the whole
+    // export fail on an account that has them.
+    reject_unknown_secret_fields(
+        credential,
+        secret,
+        &[
+            "api_key",
+            RELAY_BALANCE_ACCESS_TOKEN_KEY,
+            RELAY_BALANCE_ACCESS_TOKEN_USER_ID_KEY,
+        ],
+    )?;
     let api_key = secret
         .get("api_key")
         .and_then(nonempty_string)
@@ -346,6 +360,23 @@ fn project_api(
         .filter(|(field, value)| !API_CONFIG_FIELDS.contains(&field.as_str()) && is_nonempty(value))
         .map(|(field, _)| issue(credential, "transfer.api_config_field_ignored", Some(field)))
         .collect::<Vec<_>>();
+
+    // The `relay_balance` config block already warns through the loop above, so the
+    // panel credentials it needs are said out loud too. Otherwise the pair leaves
+    // silently and the balance badge on the importing machine just stops working
+    // with nothing to explain it.
+    for field in [
+        RELAY_BALANCE_ACCESS_TOKEN_KEY,
+        RELAY_BALANCE_ACCESS_TOKEN_USER_ID_KEY,
+    ] {
+        if secret.get(field).is_some_and(is_nonempty) {
+            warnings.push(issue(
+                credential,
+                "transfer.relay_balance_secret_dropped",
+                Some(field),
+            ));
+        }
+    }
 
     if !include_enhanced_metadata {
         for field in [
@@ -592,6 +623,8 @@ fn aliases(field: &str) -> &'static [&'static str] {
         "sub" => &["sub"],
         "headers" => &["headers"],
         "api_key" => &["api_key"],
+        RELAY_BALANCE_ACCESS_TOKEN_KEY => &[RELAY_BALANCE_ACCESS_TOKEN_KEY],
+        RELAY_BALANCE_ACCESS_TOKEN_USER_ID_KEY => &[RELAY_BALANCE_ACCESS_TOKEN_USER_ID_KEY],
         _ => &[],
     }
 }
@@ -964,6 +997,72 @@ mod tests {
         assert_eq!(payload["models"][0]["alias"], "gpt-5");
         assert_eq!(payload["models"][0]["display-name"], "GPT 5");
         assert_eq!(payload["models"][0]["max-context-length"], 1_048_576);
+    }
+
+    /// The relay panel's account access token shares the secret payload with the
+    /// api_key, and an unknown secret field fails the whole export. The CPA format
+    /// has no slot for it, so it is tolerated and left behind rather than turning
+    /// every account that reads an account-level balance into an export error.
+    #[test]
+    fn api_projection_tolerates_the_relay_panel_access_token() {
+        let credential = credential(
+            "api",
+            "codex",
+            json!({
+                "api_key": "sk-test",
+                "relay_balance_access_token": "pat-panel-token",
+                "relay_balance_access_token_user_id": "7",
+            }),
+            json!({
+                "base_url": "https://panel.example.com/v1",
+                "interface_format": "openai",
+                "model_mappings": [],
+            }),
+        );
+
+        let projected = project_credential(&credential, "instance-1", true, true).unwrap();
+        let payload = projected.payload.as_object().unwrap();
+        assert_eq!(payload["api-key-entries"][0]["api-key"], "sk-test");
+        for field in [
+            "relay_balance_access_token",
+            "relay_balance_access_token_user_id",
+        ] {
+            assert!(
+                !payload.contains_key(field),
+                "{field} is ours, not part of the interchange format"
+            );
+            // Leaving quietly would break the balance badge on the importing
+            // machine with nothing on screen to explain it.
+            assert!(
+                projected.warnings.iter().any(|warning| {
+                    warning.code == "transfer.relay_balance_secret_dropped"
+                        && warning.field.as_deref() == Some(field)
+                }),
+                "{field} left without saying so: {:?}",
+                projected.warnings
+            );
+        }
+    }
+
+    /// A secret field nobody knows still fails, so tolerating one key did not turn
+    /// the check off.
+    #[test]
+    fn api_projection_still_rejects_an_unknown_secret_field() {
+        let credential = credential(
+            "api",
+            "codex",
+            json!({"api_key": "sk-test", "mystery": "value"}),
+            json!({
+                "base_url": "https://panel.example.com/v1",
+                "interface_format": "openai",
+                "model_mappings": [],
+            }),
+        );
+
+        let issue = project_credential(&credential, "instance-1", true, true)
+            .expect_err("an unknown secret field is not exportable");
+        assert_eq!(issue.code, "transfer.secret_field_unsupported");
+        assert_eq!(issue.field.as_deref(), Some("mystery"));
     }
 
     #[test]

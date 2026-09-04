@@ -3505,6 +3505,121 @@ describe("AccountsScreen", () => {
     expect(config.relay_balance).toEqual({ provider: "new_api" });
   });
 
+  // A new-api panel usually hands out keys it marked "unlimited", and the
+  // token-scoped endpoint then reports a spend and no balance. Reading the account
+  // behind the key needs the panel's own access token, which belongs with the
+  // api_key in the secret rather than in the config block.
+  it("stores the relay panel access token beside the api key", async () => {
+    vi.mocked(updateRouteCredential).mockResolvedValue(credentialsFixture[1]);
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
+    await userEvent.click(screen.getByLabelText("编辑 余额查询 new-api"));
+    await userEvent.type(
+      screen.getByLabelText("编辑 余额查询面板访问令牌"),
+      "pat-panel-token",
+    );
+    // The panel refuses an access-token request without a matching New-Api-User
+    // header on every current stable release, so the id travels with the token.
+    await userEvent.type(screen.getByLabelText("编辑 余额查询面板用户 ID"), "abc7x");
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const lastCall = vi.mocked(updateRouteCredential).mock.calls.at(-1);
+    expect(JSON.parse(lastCall![1].secret_payload_json)).toEqual({
+      api_key: "sk-test",
+      relay_balance_access_token: "pat-panel-token",
+      relay_balance_access_token_user_id: "7",
+    });
+  });
+
+  // The box is the only way back out: leaving the key in place on an empty field
+  // would make a pasted-by-mistake token impossible to remove from the drawer.
+  it("drops the stored access token when the box is emptied", async () => {
+    const withToken = {
+      ...credentialsFixture[1],
+      secret_payload_json: JSON.stringify({
+        api_key: "sk-test",
+        relay_balance_access_token: "pat-stale",
+        relay_balance_access_token_user_id: "7",
+      }),
+      config_json: JSON.stringify({
+        base_url: "https://panel.example.com/v1",
+        interface_format: "openai",
+        model_mappings: [],
+        relay_balance: { provider: "new_api" },
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([credentialsFixture[0], withToken]);
+    vi.mocked(updateRouteCredential).mockResolvedValue(withToken);
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
+    const tokenField = screen.getByLabelText("编辑 余额查询面板访问令牌");
+    expect(tokenField).toHaveValue("pat-stale");
+    expect(screen.getByLabelText("编辑 余额查询面板用户 ID")).toHaveValue("7");
+    await userEvent.clear(tokenField);
+    await userEvent.clear(screen.getByLabelText("编辑 余额查询面板用户 ID"));
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const lastCall = vi.mocked(updateRouteCredential).mock.calls.at(-1);
+    expect(JSON.parse(lastCall![1].secret_payload_json)).toEqual({ api_key: "sk-test" });
+  });
+
+  // 立即查询 asks the backend to read the account as stored, so a token typed but
+  // not saved comes back as "余额 不限" — the reading it was pasted to replace.
+  it("warns that an unsaved balance setting will not be used by 立即查询", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
+    expect(screen.queryByText(/刚改的这些要先保存/)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("编辑 余额查询 new-api"));
+    expect(await screen.findByText(/刚改的这些要先保存/)).toBeInTheDocument();
+  });
+
+  it("sends the panel access token when creating a new-api relay account", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Relay");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-relay");
+    await openFormTab("高级");
+    await userEvent.click(screen.getByLabelText("创建 余额查询 new-api"));
+    await userEvent.type(
+      screen.getByLabelText("创建 余额查询面板访问令牌"),
+      "pat-panel-token",
+    );
+    await userEvent.type(screen.getByLabelText("创建 余额查询面板用户 ID"), "7");
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() => expect(createApiRouteCredential).toHaveBeenCalled());
+    const lastCall = vi.mocked(createApiRouteCredential).mock.calls.at(-1);
+    expect(lastCall![0]).toMatchObject({
+      relay_balance_provider: "new_api",
+      relay_balance_access_token: "pat-panel-token",
+      relay_balance_access_token_user_id: "7",
+    });
+  });
+
+  // The token box only exists for new-api: sub2api reads the account's own key and
+  // a custom endpoint is whatever URL the user named.
+  it("offers the access token box only for the new-api dialect", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
+    await userEvent.click(screen.getByLabelText("编辑 余额查询 sub2api"));
+    expect(screen.queryByLabelText("编辑 余额查询面板访问令牌")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("编辑 余额查询 new-api"));
+    expect(screen.getByLabelText("编辑 余额查询面板访问令牌")).toBeInTheDocument();
+  });
+
   it("refuses a custom balance query with no request URL", async () => {
     renderScreen();
 
@@ -3650,6 +3765,40 @@ describe("AccountsScreen", () => {
     expect(badge).toHaveAttribute(
       "title",
       expect.stringContaining("来源 https://panel.example.com/api/usage/token/"),
+    );
+  });
+
+  // An account-level reading is the panel account's money, shared by every key on
+  // that panel, so the badge says 账户余额 rather than letting it read as this key's
+  // own allowance.
+  it("labels an account-level balance as the panel account's", async () => {
+    const relayAccount = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://panel.example.com/v1",
+        interface_format: "openai",
+        model_mappings: [],
+        relay_balance: { provider: "new_api" },
+        relay_balance_snapshot: {
+          provider: "new_api",
+          remaining: 12.3,
+          used: 7.7,
+          unit: "USD",
+          account_level: true,
+          source_url: "https://panel.example.com/api/user/self",
+          checked_at: "2026-09-02T12:00:00Z",
+          notes: ["令牌不限额度，显示的是面板账户余额"],
+        },
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([credentialsFixture[0], relayAccount]);
+    renderScreen();
+
+    const badge = await screen.findByTestId(`credential-relay-balance-${relayAccount.id}`);
+    expect(badge).toHaveTextContent("账户余额 $12.30");
+    expect(badge).toHaveAttribute(
+      "title",
+      expect.stringContaining("令牌不限额度，显示的是面板账户余额"),
     );
   });
 

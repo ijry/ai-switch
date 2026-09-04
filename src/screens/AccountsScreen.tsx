@@ -1063,9 +1063,30 @@ function interfaceFormatFromConfig(config: Record<string, unknown>): InterfaceFo
   return routeInterfaceFormats.includes(value as InterfaceFormat) ? (value as InterfaceFormat) : "openai";
 }
 
-function apiSecretJsonWithKey(secretJson: string, apiKey: string) {
+function apiSecretJsonWithKey(
+  secretJson: string,
+  apiKey: string,
+  panelAccount?: RelayBalancePanelAccount,
+) {
   const secret = parseJsonObject(secretJson);
   secret.api_key = apiKey.trim();
+  // Left out by the preview path, which only ever reads the api_key and must not
+  // touch credentials it was never shown.
+  if (panelAccount) {
+    for (const [key, value] of [
+      ["relay_balance_access_token", panelAccount.accessToken],
+      ["relay_balance_access_token_user_id", panelAccount.userId],
+    ] as const) {
+      const trimmed = value.trim();
+      if (trimmed) {
+        secret[key] = trimmed;
+      } else {
+        // Emptying the box removes the stored value; merging would make it
+        // impossible to take back.
+        delete secret[key];
+      }
+    }
+  }
   return JSON.stringify(secret, null, 2);
 }
 
@@ -1128,6 +1149,29 @@ const emptyRelayBalanceForm: RelayBalanceFormState = {
   unit: "",
   divisor: "",
 };
+
+/// The relay panel account's own credentials, used to read a balance that an
+/// uncapped new-api key cannot report. Both live in `secret_payload_json` rather
+/// than the `relay_balance` config block, so they are tracked apart from the form
+/// above.
+type RelayBalancePanelAccount = {
+  accessToken: string;
+  userId: string;
+};
+
+const emptyRelayBalancePanelAccount: RelayBalancePanelAccount = {
+  accessToken: "",
+  userId: "",
+};
+
+function relayBalancePanelAccountFromSecret(
+  secret: Record<string, unknown>,
+): RelayBalancePanelAccount {
+  return {
+    accessToken: stringFromRecord(secret, "relay_balance_access_token"),
+    userId: stringFromRecord(secret, "relay_balance_access_token_user_id"),
+  };
+}
 
 function relayBalanceFormFromConfig(config: Record<string, unknown>): RelayBalanceFormState {
   const raw = config.relay_balance;
@@ -1235,6 +1279,28 @@ function relayBalanceSnapshotFromConfig(
   return raw as RelayBalanceSnapshot;
 }
 
+/// Whether the drawer's balance settings still differ from what the server stores.
+///
+/// 立即查询 asks the backend to query the account as saved, so a panel access token
+/// that was typed but not saved yet comes back as "余额 不限" — the exact reading the
+/// token exists to replace, which reads like the feature is broken rather than like
+/// an unsaved form.
+function relayBalanceSettingsDirty(
+  credential: RouteCredential,
+  form: RelayBalanceFormState,
+  panelAccount: RelayBalancePanelAccount,
+): boolean {
+  const stored = relayBalanceFormFromConfig(parseJsonObject(credential.config_json));
+  const storedAccount = relayBalancePanelAccountFromSecret(
+    parseJsonObject(credential.secret_payload_json),
+  );
+  return (
+    JSON.stringify(stored) !== JSON.stringify(form) ||
+    storedAccount.accessToken !== panelAccount.accessToken.trim() ||
+    storedAccount.userId !== panelAccount.userId.trim()
+  );
+}
+
 function formatRelayBalanceAmount(value: number, unit: string): string {
   const amount = Math.abs(value) >= 1000 ? value.toFixed(0) : value.toFixed(2);
   return unit === "USD" ? `$${amount}` : `${amount} ${unit}`.trim();
@@ -1261,6 +1327,9 @@ function relayBalanceBadge(
   snapshot: RelayBalanceSnapshot,
 ): { label: string; toneClass: string; title: string } {
   const unit = snapshot.unit || "USD";
+  // An account-level reading is the panel account's money, shared by every account
+  // pointing at that panel. Labelling it plain "余额" would read as this key's own.
+  const prefix = snapshot.account_level ? "账户余额" : "余额";
   const details: string[] = [`来源 ${snapshot.source_url}`];
   if (snapshot.plan_name) {
     details.unshift(`套餐 ${snapshot.plan_name}`);
@@ -1291,13 +1360,13 @@ function relayBalanceBadge(
   }
   if (typeof snapshot.remaining !== "number") {
     return {
-      label: "余额 未知",
+      label: `${prefix} 未知`,
       toneClass: "bg-stone-100 text-stone-600",
       title: details.join("\n"),
     };
   }
   return {
-    label: `余额 ${formatRelayBalanceAmount(snapshot.remaining, unit)}`,
+    label: `${prefix} ${formatRelayBalanceAmount(snapshot.remaining, unit)}`,
     toneClass:
       snapshot.remaining <= 0 ? "bg-rose-50 text-rose-700" : "bg-teal-50 text-teal-800",
     title: details.join("\n"),
@@ -2281,6 +2350,8 @@ function RelayBalanceFields({
   idPrefix,
   labelClass,
   onChange,
+  onPanelAccountChange,
+  panelAccount,
   value,
 }: {
   allowCustom?: boolean;
@@ -2288,6 +2359,8 @@ function RelayBalanceFields({
   idPrefix: string;
   labelClass: string;
   onChange: (next: RelayBalanceFormState) => void;
+  onPanelAccountChange: (next: RelayBalancePanelAccount) => void;
+  panelAccount: RelayBalancePanelAccount;
   value: RelayBalanceFormState;
 }) {
   const options = allowCustom
@@ -2323,6 +2396,49 @@ function RelayBalanceFields({
         })}
       </div>
       <p className="text-[11px] text-stone-500">{active.hint}</p>
+      {value.provider === "new_api" ? (
+        <div className="grid gap-2">
+          <label className={labelClass}>
+            面板访问令牌
+            <input
+              aria-label={`${idPrefix} 余额查询面板访问令牌`}
+              autoComplete="off"
+              className={fieldClass}
+              onChange={(event) =>
+                onPanelAccountChange({ ...panelAccount, accessToken: event.target.value })
+              }
+              placeholder="可选，面板 个人设置 → 安全设置 → 系统访问令牌"
+              value={panelAccount.accessToken}
+            />
+            <span className="text-[11px] font-medium text-stone-500">
+              new-api
+              面板常把令牌设成「无限额度」，令牌级接口就只有已用、没有剩余，徽标只能显示「不限」。填上面板账户的访问令牌后改查账户剩余额度——那才是真正会用完的钱。同一面板下的多个账号会显示同一个数。
+            </span>
+          </label>
+          <label className={labelClass}>
+            面板用户 ID
+            <input
+              aria-label={`${idPrefix} 余额查询面板用户 ID`}
+              autoComplete="off"
+              className={fieldClass}
+              inputMode="numeric"
+              // The panel parses it with strconv.Atoi, so anything but digits is a
+              // 401 waiting to happen.
+              onChange={(event) =>
+                onPanelAccountChange({
+                  ...panelAccount,
+                  userId: event.target.value.replace(/\D/g, ""),
+                })
+              }
+              placeholder="例如 114514"
+              value={panelAccount.userId}
+            />
+            <span className="text-[11px] font-medium text-stone-500">
+              现有稳定版 new-api 都要求随访问令牌一起发送这个 ID，和令牌在同一个页面能看到；只有很新的版本可以不填。
+            </span>
+          </label>
+        </div>
+      ) : null}
       {value.provider === "custom" && allowCustom ? (
         <div className="grid gap-2">
           <label className={labelClass}>
@@ -2545,6 +2661,10 @@ export function AccountsScreen({
   const [apiRelayBalance, setApiRelayBalance] = useState<RelayBalanceFormState>(
     emptyRelayBalanceForm,
   );
+  // Lives in the secret payload rather than the config block, so it is tracked
+  // apart from the rest of the balance form.
+  const [apiRelayBalancePanelAccount, setApiRelayBalancePanelAccount] =
+    useState<RelayBalancePanelAccount>(emptyRelayBalancePanelAccount);
   const [editingCredential, setEditingCredential] = useState<RouteCredential | null>(null);
   const [editName, setEditName] = useState("");
   const [editEmail, setEditEmail] = useState("");
@@ -2580,6 +2700,8 @@ export function AccountsScreen({
   const [editRelayBalance, setEditRelayBalance] = useState<RelayBalanceFormState>(
     emptyRelayBalanceForm,
   );
+  const [editRelayBalancePanelAccount, setEditRelayBalancePanelAccount] =
+    useState<RelayBalancePanelAccount>(emptyRelayBalancePanelAccount);
   const [editRelayBalanceError, setEditRelayBalanceError] = useState<string | null>(null);
   /// Held apart from `editingCredential` so pressing 立即查询 in the drawer can
   /// show the fresh reading without re-hydrating (and discarding) unsaved edits.
@@ -3136,6 +3258,7 @@ export function AccountsScreen({
     setApiFetchedModels([]);
     setApiFetchModelsError(null);
     setApiRelayBalance(emptyRelayBalanceForm);
+    setApiRelayBalancePanelAccount(emptyRelayBalancePanelAccount);
     setModelTestOutcome(null);
   }, [activePlatform]);
 
@@ -3178,6 +3301,7 @@ export function AccountsScreen({
       setEditTurnReminder(turnReminderFromConfig(config));
       setEditTurnReminderText(turnReminderTextFromConfig(config));
       setEditRelayBalance(relayBalanceFormFromConfig(config));
+      setEditRelayBalancePanelAccount(relayBalancePanelAccountFromSecret(secret));
       setEditRelayBalanceSnapshot(relayBalanceSnapshotFromConfig(config));
       setEditApiKeyDecodeError(null);
       setEditApiKeyOcrError(null);
@@ -3193,6 +3317,7 @@ export function AccountsScreen({
       setEditTurnReminder(false);
       setEditTurnReminderText("");
       setEditRelayBalance(emptyRelayBalanceForm);
+      setEditRelayBalancePanelAccount(emptyRelayBalancePanelAccount);
       setEditRelayBalanceSnapshot(null);
       setEditApiKeyDecodeError(null);
       setEditApiKeyOcrError(null);
@@ -3591,6 +3716,15 @@ export function AccountsScreen({
           : null;
       const imported = [];
       const selectedApiKeyField = apiKeyFieldForPayload(apiInterfaceFormat, apiKeyField);
+      // Only meaningful for the new-api dialect, and only when actually typed: the
+      // other providers have nowhere to send it.
+      const panelAccount =
+        apiRelayBalance.provider === "new_api"
+          ? {
+              accessToken: apiRelayBalancePanelAccount.accessToken.trim(),
+              userId: apiRelayBalancePanelAccount.userId.trim(),
+            }
+          : emptyRelayBalancePanelAccount;
       for (const [index, key] of apiKeys.entries()) {
         const input = {
           platform: activePlatform,
@@ -3608,6 +3742,12 @@ export function AccountsScreen({
             apiRelayBalance.provider === "none" || apiRelayBalance.provider === "custom"
               ? null
               : apiRelayBalance.provider,
+          ...(panelAccount.accessToken
+            ? { relay_balance_access_token: panelAccount.accessToken }
+            : {}),
+          ...(panelAccount.userId
+            ? { relay_balance_access_token_user_id: panelAccount.userId }
+            : {}),
         };
         imported.push(
           await createApiRouteCredential(
@@ -4138,7 +4278,7 @@ export function AccountsScreen({
       setEditRelayBalanceError(null);
       const nextSecretJson =
         editingCredential.kind === "api"
-          ? apiSecretJsonWithKey(editSecretJson, editApiKey)
+          ? apiSecretJsonWithKey(editSecretJson, editApiKey, editRelayBalancePanelAccount)
           : editSecretJson.trim() || "{}";
       const baseConfig =
         editingCredential.kind === "api"
@@ -7329,6 +7469,8 @@ export function AccountsScreen({
                       fieldClass={fieldClass}
                       idPrefix="创建"
                       labelClass={labelClass}
+                      onPanelAccountChange={setApiRelayBalancePanelAccount}
+                      panelAccount={apiRelayBalancePanelAccount}
                       onChange={setApiRelayBalance}
                       value={apiRelayBalance}
                     />
@@ -8129,6 +8271,8 @@ export function AccountsScreen({
                       fieldClass={fieldClass}
                       idPrefix="编辑"
                       labelClass={labelClass}
+                      onPanelAccountChange={setEditRelayBalancePanelAccount}
+                      panelAccount={editRelayBalancePanelAccount}
                       onChange={(next) => {
                         setEditRelayBalance(next);
                         setEditRelayBalanceError(null);
@@ -8138,6 +8282,16 @@ export function AccountsScreen({
                     {editRelayBalanceError ? (
                       <p className="text-[11px] font-semibold text-red-700">
                         {editRelayBalanceError}
+                      </p>
+                    ) : null}
+                    {editRelayBalance.provider !== "none" &&
+                    relayBalanceSettingsDirty(
+                      editingCredential,
+                      editRelayBalance,
+                      editRelayBalancePanelAccount,
+                    ) ? (
+                      <p className="text-[11px] font-semibold text-amber-700">
+                        立即查询用的是已保存的设置，刚改的这些要先保存修改才会生效。
                       </p>
                     ) : null}
                     {editRelayBalance.provider === "none" ? null : editRelayBalanceSnapshot ? (

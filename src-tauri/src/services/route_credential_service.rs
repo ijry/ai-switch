@@ -19,7 +19,8 @@ use crate::models::route_credential_model::{
 use crate::models::route_credential_transfer::TransferPlatformChoice;
 use crate::models::route_pool::FetchedRouteModel;
 use crate::models::route_relay_balance::{
-    RelayBalanceConfig, RelayBalanceProvider, RELAY_BALANCE_CONFIG_KEY,
+    RelayBalanceConfig, RelayBalanceProvider, RELAY_BALANCE_ACCESS_TOKEN_KEY,
+    RELAY_BALANCE_ACCESS_TOKEN_USER_ID_KEY, RELAY_BALANCE_CONFIG_KEY,
 };
 use crate::services::cpa_import_service::{parse_cpa_text, ParsedOfficialCredential};
 use crate::services::platform_capability_service::PlatformCapabilityService;
@@ -145,7 +146,24 @@ impl RouteCredentialService {
         let api_key_field =
             validate_api_key_field(input.api_key_field.as_deref(), &input.interface_format)?;
 
-        let secret_payload_json = json!({ "api_key": input.api_key.trim() }).to_string();
+        let mut secret = json!({ "api_key": input.api_key.trim() });
+        if let Some(access_token) = input
+            .relay_balance_access_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            secret[RELAY_BALANCE_ACCESS_TOKEN_KEY] = json!(access_token);
+        }
+        if let Some(user_id) = input
+            .relay_balance_access_token_user_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            secret[RELAY_BALANCE_ACCESS_TOKEN_USER_ID_KEY] = json!(user_id);
+        }
+        let secret_payload_json = secret.to_string();
         let mut config = json!({
             "base_url": input.base_url.trim(),
             "interface_format": input.interface_format,
@@ -1570,6 +1588,8 @@ mod tests {
                 responses_custom_tool_compat: None,
                 user_agent: None,
                 relay_balance_provider: None,
+                relay_balance_access_token: None,
+                relay_balance_access_token_user_id: None,
             },
         )
         .await
@@ -1609,6 +1629,8 @@ mod tests {
                 responses_custom_tool_compat: None,
                 user_agent: None,
                 relay_balance_provider: None,
+                relay_balance_access_token: None,
+                relay_balance_access_token_user_id: None,
             },
         )
         .await
@@ -1651,6 +1673,8 @@ mod tests {
                 responses_custom_tool_compat: None,
                 user_agent: None,
                 relay_balance_provider: None,
+                relay_balance_access_token: None,
+                relay_balance_access_token_user_id: None,
             },
         )
         .await
@@ -1730,6 +1754,8 @@ mod tests {
                 responses_custom_tool_compat: Some(true),
                 user_agent: Some("shared-client/1.0".into()),
                 relay_balance_provider: None,
+                relay_balance_access_token: None,
+                relay_balance_access_token_user_id: None,
             },
         )
         .await
@@ -1811,6 +1837,8 @@ mod tests {
                 responses_custom_tool_compat: None,
                 user_agent: None,
                 relay_balance_provider: None,
+                relay_balance_access_token: None,
+                relay_balance_access_token_user_id: None,
             },
         )
         .await
@@ -1858,6 +1886,8 @@ mod tests {
                 responses_custom_tool_compat: None,
                 user_agent: None,
                 relay_balance_provider: None,
+                relay_balance_access_token: None,
+                relay_balance_access_token_user_id: None,
             },
         )
         .await
@@ -1903,6 +1933,8 @@ mod tests {
                 responses_custom_tool_compat: None,
                 user_agent: None,
                 relay_balance_provider: None,
+                relay_balance_access_token: None,
+                relay_balance_access_token_user_id: None,
             },
         )
         .await
@@ -1949,6 +1981,8 @@ mod tests {
                 responses_custom_tool_compat: Some(true),
                 user_agent: None,
                 relay_balance_provider: None,
+                relay_balance_access_token: None,
+                relay_balance_access_token_user_id: None,
             },
         )
         .await
@@ -2036,6 +2070,8 @@ mod tests {
                 responses_custom_tool_compat: None,
                 user_agent: None,
                 relay_balance_provider: None,
+                relay_balance_access_token: None,
+                relay_balance_access_token_user_id: None,
             },
         )
         .await
@@ -2083,6 +2119,8 @@ mod tests {
                 responses_custom_tool_compat: None,
                 user_agent: None,
                 relay_balance_provider: None,
+                relay_balance_access_token: None,
+                relay_balance_access_token_user_id: None,
             },
         )
         .await
@@ -2124,6 +2162,8 @@ mod tests {
                 responses_custom_tool_compat: Some(true),
                 user_agent: None,
                 relay_balance_provider: None,
+                relay_balance_access_token: None,
+                relay_balance_access_token_user_id: None,
             },
         )
         .await
@@ -2159,6 +2199,8 @@ mod tests {
                 responses_custom_tool_compat: None,
                 user_agent: None,
                 relay_balance_provider: None,
+                relay_balance_access_token: None,
+                relay_balance_access_token_user_id: None,
             },
         )
         .await
@@ -2194,6 +2236,8 @@ mod tests {
                 responses_custom_tool_compat: None,
                 user_agent: Some("  MyGrokClient/9.9.9  ".into()),
                 relay_balance_provider: None,
+                relay_balance_access_token: None,
+                relay_balance_access_token_user_id: None,
             },
         )
         .await
@@ -2229,6 +2273,8 @@ mod tests {
                 responses_custom_tool_compat: None,
                 user_agent: Some("   ".into()),
                 relay_balance_provider: None,
+                relay_balance_access_token: None,
+                relay_balance_access_token_user_id: None,
             },
         )
         .await
@@ -2331,6 +2377,8 @@ mod tests {
                 responses_custom_tool_compat: None,
                 user_agent: None,
                 relay_balance_provider: Some("new_api".into()),
+                relay_balance_access_token: None,
+                relay_balance_access_token_user_id: None,
             },
         )
         .await
@@ -2341,6 +2389,93 @@ mod tests {
             config["relay_balance"]["provider"].as_str(),
             Some("new_api")
         );
+    }
+
+    /// The panel access token is a credential, so it lands in the secret payload
+    /// next to the api_key rather than in the config block — that is what earns it
+    /// the masking a paired phone gets on its way to a non-primary client.
+    #[tokio::test]
+    async fn create_api_credential_stores_the_panel_access_token_as_a_secret() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+
+        let created = RouteCredentialService::create_api(
+            &pool,
+            CreateApiRouteCredentialInput {
+                platform: "codex".into(),
+                display_name: "Relay".into(),
+                api_key: "sk-test".into(),
+                base_url: "https://panel.example.com/v1".into(),
+                interface_format: "openai".into(),
+                model_mappings_json: "[]".into(),
+                fetched_models_json: None,
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: None,
+                user_agent: None,
+                relay_balance_provider: Some("new_api".into()),
+                relay_balance_access_token: Some("  pat-panel-token  ".into()),
+                relay_balance_access_token_user_id: None,
+            },
+        )
+        .await
+        .expect("create");
+
+        let secret = serde_json::from_str::<Value>(&created.secret_payload_json).expect("secret");
+        assert_eq!(secret["api_key"].as_str(), Some("sk-test"));
+        assert_eq!(
+            secret["relay_balance_access_token"].as_str(),
+            Some("pat-panel-token"),
+            "trimmed, like every other pasted credential"
+        );
+        assert!(
+            !created.config_json.contains("pat-panel-token"),
+            "a secret must not ride along in the config: {}",
+            created.config_json
+        );
+    }
+
+    #[tokio::test]
+    async fn create_api_credential_omits_a_blank_panel_access_token() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+
+        for token in [None, Some(String::new()), Some("   ".to_string())] {
+            let created = RouteCredentialService::create_api(
+                &pool,
+                CreateApiRouteCredentialInput {
+                    platform: "codex".into(),
+                    display_name: "Relay".into(),
+                    api_key: "sk-test".into(),
+                    base_url: "https://panel.example.com/v1".into(),
+                    interface_format: "openai".into(),
+                    model_mappings_json: "[]".into(),
+                    fetched_models_json: None,
+                    api_key_field: None,
+                    preview_json: None,
+                    batch_id: None,
+                    responses_custom_tool_compat: None,
+                    user_agent: None,
+                    relay_balance_provider: Some("new_api".into()),
+                    relay_balance_access_token: token.clone(),
+                    relay_balance_access_token_user_id: None,
+                },
+            )
+            .await
+            .expect("create");
+
+            let secret =
+                serde_json::from_str::<Value>(&created.secret_payload_json).expect("secret");
+            assert!(
+                secret.get("relay_balance_access_token").is_none(),
+                "an empty box must not leave a key behind ({token:?})"
+            );
+        }
     }
 
     #[tokio::test]
@@ -2367,6 +2502,8 @@ mod tests {
                     responses_custom_tool_compat: None,
                     user_agent: None,
                     relay_balance_provider: provider.clone(),
+                    relay_balance_access_token: None,
+                    relay_balance_access_token_user_id: None,
                 },
             )
             .await
@@ -2404,6 +2541,8 @@ mod tests {
                     responses_custom_tool_compat: None,
                     user_agent: None,
                     relay_balance_provider: Some(provider.into()),
+                    relay_balance_access_token: None,
+                    relay_balance_access_token_user_id: None,
                 },
             )
             .await

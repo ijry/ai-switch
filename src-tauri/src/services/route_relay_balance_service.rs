@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::route_credential::RouteCredential;
 use crate::models::route_relay_balance::{
     RelayBalanceConfig, RelayBalanceProvider, RelayBalanceSnapshot, DEFAULT_NEW_API_QUOTA_PER_UNIT,
+    RELAY_BALANCE_ACCESS_TOKEN_KEY, RELAY_BALANCE_ACCESS_TOKEN_USER_ID_KEY,
     RELAY_BALANCE_SNAPSHOT_KEY,
 };
 use crate::services::deeplink_service::mask_api_key;
@@ -205,6 +206,15 @@ async fn refresh_credential(
 struct BalanceRequest {
     base_url: String,
     api_key: String,
+    /// The panel account's own access token, when the user supplied one.
+    ///
+    /// A New API token with `unlimited_quota` has no allowance of its own, so the
+    /// token-scoped endpoint can only report what it spent. The balance that
+    /// actually runs out belongs to the account, and only this token can read it.
+    access_token: Option<String>,
+    /// The numeric panel user id that goes with `access_token`, for the panels that
+    /// insist on a matching `New-Api-User` header.
+    access_token_user_id: Option<String>,
     interface_format: String,
     /// The account's own `User-Agent`, when it configures one. Relays that gate
     /// a group on the client fingerprint reject anything else, so a balance
@@ -228,15 +238,9 @@ impl BalanceRequest {
                 recoverable: true,
             });
         }
-        let api_key = serde_json::from_str::<Value>(&credential.secret_payload_json)
-            .ok()
-            .and_then(|secret| {
-                secret
-                    .get("api_key")
-                    .and_then(Value::as_str)
-                    .map(|key| key.trim().to_string())
-            })
-            .unwrap_or_default();
+        let secret =
+            serde_json::from_str::<Value>(&credential.secret_payload_json).unwrap_or(Value::Null);
+        let api_key = secret_string(&secret, "api_key").unwrap_or_default();
         if api_key.is_empty() {
             return Err(AppError::Validation {
                 code: "validation.route_relay_balance_api_key_required",
@@ -254,10 +258,18 @@ impl BalanceRequest {
         Ok(Self {
             base_url,
             api_key,
+            access_token: secret_string(&secret, RELAY_BALANCE_ACCESS_TOKEN_KEY),
+            access_token_user_id: secret_string(&secret, RELAY_BALANCE_ACCESS_TOKEN_USER_ID_KEY),
             interface_format,
             user_agent: credential_user_agent(config).map(str::to_string),
         })
     }
+}
+
+/// Reads one trimmed, non-empty string out of a secret payload.
+fn secret_string(secret: &Value, key: &str) -> Option<String> {
+    let value = secret.get(key).and_then(Value::as_str)?.trim();
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 /// Writes the snapshot into a credential's `config_json`.
@@ -503,6 +515,58 @@ fn balance_request_headers(
     Ok(headers)
 }
 
+/// Headers for new-api's account-scoped routes, which authenticate as the panel
+/// user rather than as one key.
+///
+/// `Bearer ` is kept because that is the form cc-switch ships and users have proved
+/// against these panels; new-api strips the prefix before looking the token up, and
+/// its newer releases accept either spelling.
+///
+/// `New-Api-User` carries the numeric user id. Every New API release up to v0.13.2
+/// (the current stable line) refuses an access-token request without it and checks it
+/// against the token's owner; `main` dropped the check, where sending it is harmless.
+/// It is omitted when unknown rather than guessed — a wrong id is rejected exactly
+/// like a missing one, and a literal placeholder is how cc-switch turns an unfilled
+/// box into an unexplained 401.
+///
+/// `x-api-key` is deliberately absent: this is not a relay key, and a panel that
+/// reads that header would authenticate the wrong identity.
+fn account_request_headers(
+    access_token: &str,
+    user_id: Option<&str>,
+    user_agent: Option<&str>,
+) -> Result<HeaderMap, String> {
+    let mut headers = HeaderMap::new();
+    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    headers.insert("accept-encoding", HeaderValue::from_static("identity"));
+    headers.insert(
+        USER_AGENT,
+        match user_agent {
+            Some(value) => HeaderValue::from_str(value)
+                .map_err(|err| format!("Invalid user-agent header: {err}"))?,
+            None => HeaderValue::from_static(USER_AGENT_VALUE),
+        },
+    );
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {access_token}"))
+            .map_err(|err| format!("Invalid authorization header: {err}"))?,
+    );
+    if let Some(user_id) = user_id {
+        // The panel parses it with strconv.Atoi, so anything else is a typo worth
+        // naming rather than a 401 to decipher.
+        if !user_id.chars().all(|character| character.is_ascii_digit()) {
+            return Err(format!("面板用户 ID 必须是数字，收到的是 {user_id}"));
+        }
+        headers.insert(
+            "New-Api-User",
+            HeaderValue::from_str(user_id)
+                .map_err(|err| format!("Invalid New-Api-User header: {err}"))?,
+        );
+    }
+    Ok(headers)
+}
+
 /// Why one candidate URL did not produce a balance.
 ///
 /// The distinction drives the dialect fallback: "this panel answered and does not
@@ -619,11 +683,17 @@ async fn get_json_from_candidates(
 }
 
 const NEW_API_USAGE_PATH: &str = "/api/usage/token/";
+const NEW_API_USER_SELF_PATH: &str = "/api/user/self";
 
-/// new-api's token-scoped usage endpoint. It authenticates with the relay key
-/// the account already stores, so this provider needs no extra input — unlike
-/// `/api/user/self`, which wants a user PAT (and, on releases before 0.14, a
-/// `New-Api-User` header carrying the numeric user id).
+/// new-api's token-scoped usage endpoint, plus the account-scoped one behind it.
+///
+/// `/api/usage/token/` authenticates with the relay key the account already
+/// stores, so the common case needs no extra input. It answers a token-scoped
+/// question though, and a token the panel marked `unlimited_quota` has no
+/// allowance to report — only what it spent. What runs out for those keys is the
+/// panel *account*'s balance, and reading that means `/api/user/self` with the
+/// account's own access token (个人设置 → 系统访问令牌), which is why that token is
+/// worth an input box even though the rest of this provider needs none.
 async fn fetch_new_api_balance(
     client: &Client,
     headers: HeaderMap,
@@ -635,7 +705,23 @@ async fn fetch_new_api_balance(
         .map(|root| format!("{root}{NEW_API_USAGE_PATH}"))
         .collect();
     let (url, body) =
-        get_json_from_candidates(client, &headers, &candidates, &request.api_key).await?;
+        match get_json_from_candidates(client, &headers, &candidates, &request.api_key).await {
+            Ok(found) => found,
+            // Some new-api forks dropped the token-scoped route entirely. With an
+            // access token there is still an account-scoped answer to be had, so a
+            // panel that serves no token usage is worth one more question — but only
+            // when the sweep proved the path absent rather than the host unreachable,
+            // for the same reason the dialect fallback insists on that distinction.
+            Err(err)
+                if request.access_token.is_some()
+                    && err.code() == "validation.route_relay_balance_all_failed" =>
+            {
+                return fetch_new_api_account_balance(client, config, request, None, None)
+                    .await
+                    .map_err(|account_err| merge_account_failure(err, account_err));
+            }
+            Err(err) => return Err(err),
+        };
     let usage = parse_new_api_token_usage(&body).map_err(|message| {
         validation_error(
             "validation.route_relay_balance_parse",
@@ -651,13 +737,23 @@ async fn fetch_new_api_balance(
         .strip_suffix(NEW_API_USAGE_PATH)
         .unwrap_or(url.as_str())
         .to_string();
-    let (divisor, divisor_source) = match config.divisor {
-        Some(divisor) => (divisor, DivisorSource::UserPinned),
-        None => match fetch_new_api_quota_per_unit(client, &panel_root).await {
-            Some(divisor) => (divisor, DivisorSource::Panel),
-            None => (DEFAULT_NEW_API_QUOTA_PER_UNIT, DivisorSource::Default),
-        },
-    };
+
+    // An uncapped token hides the only number the user is asking for. Reading the
+    // account instead is the whole point of storing an access token, so a failure
+    // here is reported rather than quietly downgraded to "余额 不限" — that is the
+    // reading this path exists to replace.
+    if usage.unlimited && request.access_token.is_some() {
+        return fetch_new_api_account_balance(
+            client,
+            config,
+            request,
+            Some(&panel_root),
+            Some(&usage),
+        )
+        .await;
+    }
+
+    let (divisor, divisor_source) = new_api_divisor(client, config, &panel_root).await;
 
     let mut notes = Vec::new();
     if let Some(name) = &usage.name {
@@ -665,6 +761,9 @@ async fn fetch_new_api_balance(
     }
     if usage.unlimited {
         notes.push("面板标记为不限额度".to_string());
+        // The badge would otherwise read "余额 不限" forever on a panel whose
+        // account balance is the thing that actually empties.
+        notes.push("填写面板访问令牌后可显示账户剩余额度".to_string());
     }
     // Always stated, including for the shipped default: the divisor scales the
     // whole figure, so "the panel could not be read, this is a guess" is exactly
@@ -692,11 +791,200 @@ async fn fetch_new_api_balance(
         },
         unit: "USD".to_string(),
         unlimited: usage.unlimited,
+        account_level: false,
         expires_at: usage.expires_at.and_then(unix_seconds_to_rfc3339),
         source_url: url,
         checked_at: Utc::now().to_rfc3339(),
         notes,
     })
+}
+
+/// Reads the panel account's balance with its access token.
+///
+/// `panel_root` is passed when the token endpoint already identified the panel, so
+/// the sweep is not repeated; without it every candidate root is tried, which is
+/// the case for forks that serve only this route.
+async fn fetch_new_api_account_balance(
+    client: &Client,
+    config: &RelayBalanceConfig,
+    request: &BalanceRequest,
+    panel_root: Option<&str>,
+    token_usage: Option<&NewApiTokenUsage>,
+) -> Result<RelayBalanceSnapshot, AppError> {
+    let access_token = request.access_token.as_deref().unwrap_or_default();
+    let headers = account_request_headers(
+        access_token,
+        request.access_token_user_id.as_deref(),
+        request.user_agent.as_deref(),
+    )
+    .map_err(|err| AppError::Validation {
+        code: "validation.route_relay_balance_account_headers",
+        message: "无法构造账户额度查询请求头".to_string(),
+        details: Some(err),
+        recoverable: true,
+    })?;
+    let roots = match panel_root {
+        Some(root) => vec![root.to_string()],
+        None => panel_root_candidates(&request.base_url),
+    };
+    let candidates: Vec<String> = roots
+        .into_iter()
+        .map(|root| format!("{root}{NEW_API_USER_SELF_PATH}"))
+        .collect();
+    let (url, body) = get_json_from_candidates(client, &headers, &candidates, access_token)
+        .await
+        .map_err(|err| with_user_id_hint(err, request))?;
+    let account = parse_new_api_user_self(&body).map_err(|message| {
+        with_user_id_hint(
+            validation_error(
+                "validation.route_relay_balance_account_parse",
+                message,
+                Some(redact_secret(
+                    format!("{url}: {}", truncate_body(&body.to_string())),
+                    access_token,
+                )),
+            ),
+            request,
+        )
+    })?;
+
+    let panel_root = url
+        .strip_suffix(NEW_API_USER_SELF_PATH)
+        .unwrap_or(url.as_str())
+        .to_string();
+    let (divisor, divisor_source) = new_api_divisor(client, config, &panel_root).await;
+
+    let mut notes = Vec::new();
+    match token_usage {
+        Some(usage) => {
+            notes.push("令牌不限额度，显示的是面板账户余额".to_string());
+            if let Some(name) = &usage.name {
+                notes.push(format!("令牌 {name}"));
+            }
+            if let Some(used) = usage.total_used {
+                notes.push(format!("本令牌已用 {}", format_usd(used / divisor)));
+            }
+        }
+        // Reached only when the panel had no token-scoped route at all; saying so
+        // keeps the account-wide figure from reading as this key's allowance.
+        None => notes.push("面板没有令牌级余额接口，显示的是面板账户余额".to_string()),
+    }
+    if let Some(username) = &account.username {
+        notes.push(match account.id {
+            Some(id) => format!("面板账户 {username}（ID {id}）"),
+            None => format!("面板账户 {username}"),
+        });
+    }
+    notes.push(format!(
+        "额度换算 {}",
+        format_divisor(divisor, divisor_source)
+    ));
+
+    Ok(RelayBalanceSnapshot {
+        provider: RelayBalanceProvider::NewApi,
+        // new-api calls it a group; it is what decides this account's pricing, so
+        // it lands where every other provider's plan name does.
+        plan_name: account.group,
+        remaining: account.quota.map(|value| value / divisor),
+        used: account.used_quota.map(|value| value / divisor),
+        // The panel reports what is left and what was spent, never an allowance.
+        // Adding the two would invent a "total" that means "topped up so far".
+        limit: None,
+        unit: "USD".to_string(),
+        // The account has a real number, whatever the token's own cap says. Keeping
+        // `unlimited` here would hide it behind the "不限" badge again.
+        unlimited: false,
+        account_level: true,
+        // The key's own expiry still ends its usefulness, account balance or not.
+        expires_at: token_usage
+            .and_then(|usage| usage.expires_at)
+            .and_then(unix_seconds_to_rfc3339),
+        source_url: url,
+        checked_at: Utc::now().to_rfc3339(),
+        notes,
+    })
+}
+
+/// Folds an account-endpoint failure into the token-endpoint failure that led to
+/// it.
+///
+/// The distinction that matters is who gets the last word. When the account
+/// endpoint answered and refused us — a rejected access token, most often — that
+/// is the diagnosis, and it must not be replaced by "no address worked". When it
+/// was simply not there either, the token failure keeps its code so the caller can
+/// still try the other dialect.
+fn merge_account_failure(token_err: AppError, account_err: AppError) -> AppError {
+    if !matches!(
+        account_err.code(),
+        "validation.route_relay_balance_all_failed" | "validation.route_relay_balance_unreachable"
+    ) {
+        return account_err;
+    }
+    let note = match account_err.details() {
+        Some(details) => format!("也试过面板账户额度接口：{details}"),
+        None => format!("也试过面板账户额度接口：{account_err}"),
+    };
+    append_details(token_err, note)
+}
+
+/// Names the likeliest cause when the account route refused us and no user id was
+/// on file.
+///
+/// Every New API release through v0.13.2 answers 401 to an access-token request with
+/// no `New-Api-User` header, and its own wording talks about a header the user has
+/// never heard of. Pointing at the box that fixes it beats making them find that
+/// out. Left alone once an id is configured: then the refusal is about something
+/// else, and a wrong guess would send them after the wrong field.
+fn with_user_id_hint(err: AppError, request: &BalanceRequest) -> AppError {
+    if request.access_token_user_id.is_some() {
+        return err;
+    }
+    append_details(
+        err,
+        "多数 new-api 面板还要求随访问令牌一起发送用户 ID（New-Api-User 头），请在余额查询里补填面板用户 ID"
+            .to_string(),
+    )
+}
+
+fn append_details(err: AppError, note: String) -> AppError {
+    let AppError::Validation {
+        code,
+        message,
+        details,
+        recoverable,
+    } = err
+    else {
+        return err;
+    };
+    AppError::Validation {
+        code,
+        message,
+        details: Some(match details {
+            Some(details) => format!("{details}；{note}"),
+            None => note,
+        }),
+        recoverable,
+    }
+}
+
+/// The divisor that turns new-api's integer quota into money, and where it came
+/// from. Both the token-scoped and the account-scoped reading need it.
+async fn new_api_divisor(
+    client: &Client,
+    config: &RelayBalanceConfig,
+    panel_root: &str,
+) -> (f64, DivisorSource) {
+    match config.divisor {
+        Some(divisor) => (divisor, DivisorSource::UserPinned),
+        None => match fetch_new_api_quota_per_unit(client, panel_root).await {
+            Some(divisor) => (divisor, DivisorSource::Panel),
+            None => (DEFAULT_NEW_API_QUOTA_PER_UNIT, DivisorSource::Default),
+        },
+    }
+}
+
+fn format_usd(amount: f64) -> String {
+    format!("${amount:.2}")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -766,6 +1054,59 @@ fn parse_new_api_token_usage(body: &Value) -> Result<NewApiTokenUsage, String> {
     Ok(usage)
 }
 
+/// What `/api/user/self` says about the panel account behind a key.
+#[derive(Debug, Clone, PartialEq)]
+struct NewApiUserAccount {
+    id: Option<i64>,
+    username: Option<String>,
+    group: Option<String>,
+    /// Remaining account quota, in the panel's integer unit.
+    quota: Option<f64>,
+    used_quota: Option<f64>,
+}
+
+/// Reads new-api's account-scoped response.
+///
+/// This route stamps the envelope on `success`, not the `code` that
+/// `/api/usage/token/` uses. Probed against real panels on 2026-09-04
+/// (api.justwoker.icu, worldclawpro.ai), a rejected access token comes back as
+/// HTTP 401 with `{"code":"AUTH_UNAUTHORIZED","message":"Unauthorized, invalid
+/// access token","success":false}` — so the refusal is normally caught by the
+/// status check upstream, and `code` there is a *string*, which is why reading it
+/// as the envelope bool has to stay a fallback that yields nothing on those
+/// bodies. The flag is still checked before the numbers because new-api does hand
+/// out 200-with-`false`: that is exactly how `/api/usage/token/` refuses a key.
+fn parse_new_api_user_self(body: &Value) -> Result<NewApiUserAccount, String> {
+    let envelope_ok = body
+        .get("success")
+        .and_then(Value::as_bool)
+        .or_else(|| body.get("code").and_then(Value::as_bool));
+    if envelope_ok == Some(false) {
+        let message = body
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+            .unwrap_or("面板拒绝了账户额度查询");
+        return Err(format!("面板返回失败：{message}"));
+    }
+    let Some(data) = body.get("data").filter(|data| data.is_object()) else {
+        return Err("面板响应里没有 data 对象".to_string());
+    };
+
+    let account = NewApiUserAccount {
+        id: number_field(data, "id").map(|value| value as i64),
+        username: string_field(data, "username").or_else(|| string_field(data, "display_name")),
+        group: string_field(data, "group"),
+        quota: number_field(data, "quota"),
+        used_quota: number_field(data, "used_quota"),
+    };
+    if account.quota.is_none() {
+        return Err("面板响应里没有账户剩余额度字段 quota".to_string());
+    }
+    Ok(account)
+}
+
 /// `GET <panel>/api/status` is unauthenticated and reports the panel's real
 /// `quota_per_unit`. Admins do change it, and hard-coding 500000 silently
 /// reports the wrong dollar figure when they have. Best-effort: any failure
@@ -830,6 +1171,7 @@ async fn fetch_sub2api_balance(
         limit: usage.limit,
         unit: usage.unit,
         unlimited: usage.unlimited,
+        account_level: false,
         expires_at: usage.expires_at,
         source_url: url,
         checked_at: Utc::now().to_rfc3339(),
@@ -961,6 +1303,7 @@ async fn fetch_custom_balance(
         limit: json_path_number(&body, &config.limit_path).map(|value| value / divisor),
         unit: config.display_unit(),
         unlimited: false,
+        account_level: false,
         expires_at: None,
         source_url: url,
         checked_at: Utc::now().to_rfc3339(),
@@ -1065,8 +1408,10 @@ mod tests {
     use super::*;
     use crate::models::route_credential::CreateApiRouteCredentialInput;
     use crate::services::route_credential_service::RouteCredentialService;
+    use axum::http::HeaderMap as AxumHeaderMap;
     use axum::http::StatusCode as HttpStatus;
     use axum::response::Html;
+    use axum::response::IntoResponse;
     use axum::routing::get;
     use axum::{Json, Router};
     use tokio::net::TcpListener;
@@ -1229,6 +1574,96 @@ mod tests {
     }
 
     #[test]
+    fn new_api_user_self_reads_the_account_wide_numbers() {
+        let body = json!({
+            "success": true,
+            "message": "",
+            "data": {
+                "id": 114_514,
+                "username": "pooluser",
+                "display_name": "Pool User",
+                "group": "vip",
+                "quota": 6_150_000,
+                "used_quota": 3_850_000,
+                "request_count": 42,
+            }
+        });
+        let account = parse_new_api_user_self(&body).expect("parses");
+        assert_eq!(account.id, Some(114_514));
+        assert_eq!(account.username.as_deref(), Some("pooluser"));
+        assert_eq!(account.group.as_deref(), Some("vip"));
+        assert_eq!(account.quota, Some(6_150_000.0));
+        assert_eq!(account.used_quota, Some(3_850_000.0));
+    }
+
+    /// The account route stamps its envelope on `success`, and new-api does refuse
+    /// with 200 plus a false flag on its other routes, so a status-only check would
+    /// read such a refusal as a balance of zero.
+    #[test]
+    fn new_api_user_self_surfaces_a_rejected_access_token() {
+        let body = json!({"success": false, "message": "无权进行此操作，access token 无效"});
+        let error = parse_new_api_user_self(&body).expect_err("must not look like success");
+        assert!(error.contains("access token 无效"), "{error}");
+    }
+
+    /// The body real panels actually send with their 401 (probed 2026-09-04 against
+    /// api.justwoker.icu and worldclawpro.ai). `code` is a string here, so reading
+    /// it as the envelope flag must not turn the refusal into a success.
+    #[test]
+    fn new_api_user_self_reads_the_shape_real_panels_refuse_with() {
+        let body = json!({
+            "code": "AUTH_UNAUTHORIZED",
+            "message": "Unauthorized, invalid access token",
+            "success": false,
+        });
+        let error = parse_new_api_user_self(&body).expect_err("must not look like success");
+        assert!(error.contains("invalid access token"), "{error}");
+    }
+
+    #[test]
+    fn new_api_user_self_without_a_quota_field_is_an_error() {
+        let body = json!({"success": true, "data": {"username": "pooluser"}});
+        let error = parse_new_api_user_self(&body).expect_err("no balance to show");
+        assert!(error.contains("quota"), "{error}");
+
+        let body = json!({"success": true, "data": "nope"});
+        let error = parse_new_api_user_self(&body).expect_err("data must be an object");
+        assert!(error.contains("data"), "{error}");
+    }
+
+    /// The account route authenticates the panel *user*, so it carries the access
+    /// token rather than the relay key, and `x-api-key` would only offer a second,
+    /// wrong identity. `New-Api-User` goes along when the id is known: New API's
+    /// stable line rejects the request without it.
+    #[test]
+    fn account_headers_send_the_access_token_and_the_user_id() {
+        let headers = account_request_headers("pat-abcdef123456", None, None).expect("headers");
+        assert_eq!(headers[AUTHORIZATION], "Bearer pat-abcdef123456");
+        assert!(!headers.contains_key("x-api-key"));
+        assert!(
+            !headers.contains_key("New-Api-User"),
+            "an unknown id is left out, not guessed"
+        );
+        assert_eq!(headers[USER_AGENT], USER_AGENT_VALUE);
+        assert_eq!(headers["accept-encoding"], "identity");
+
+        let identified =
+            account_request_headers("pat-abcdef123456", Some("114514"), Some("claude-cli/2.0.1"))
+                .expect("headers");
+        assert_eq!(identified["New-Api-User"], "114514");
+        assert_eq!(identified[USER_AGENT], "claude-cli/2.0.1");
+    }
+
+    /// The panel parses the id with `strconv.Atoi`, so a typo there comes back as a
+    /// bare 401. Naming the field beats decoding that.
+    #[test]
+    fn a_non_numeric_user_id_is_rejected_before_the_request() {
+        let error = account_request_headers("pat-abcdef123456", Some("user-7"), None)
+            .expect_err("not a number");
+        assert!(error.contains("用户 ID"), "{error}");
+    }
+
+    #[test]
     fn sub2api_quota_limited_keys_report_dollars_directly() {
         let body = json!({
             "mode": "quota_limited",
@@ -1344,6 +1779,7 @@ mod tests {
             limit: None,
             unit: "USD".to_string(),
             unlimited: false,
+            account_level: false,
             expires_at: None,
             source_url: "https://panel.example.com/api/usage/token/".to_string(),
             checked_at: "2026-09-02T12:00:00Z".to_string(),
@@ -1434,6 +1870,29 @@ mod tests {
         base_url: &str,
         relay_balance: Option<Value>,
     ) -> RouteCredential {
+        seed_relay_credential_with_access_token(pool, base_url, relay_balance, None).await
+    }
+
+    /// Same, but the secret also carries the panel account's access token — what the
+    /// form writes when the user fills that box. `user_id` rides along for the panels
+    /// that demand a matching `New-Api-User` header.
+    async fn seed_relay_credential_with_access_token(
+        pool: &SqlitePool,
+        base_url: &str,
+        relay_balance: Option<Value>,
+        access_token: Option<&str>,
+    ) -> RouteCredential {
+        seed_relay_credential_with_panel_account(pool, base_url, relay_balance, access_token, None)
+            .await
+    }
+
+    async fn seed_relay_credential_with_panel_account(
+        pool: &SqlitePool,
+        base_url: &str,
+        relay_balance: Option<Value>,
+        access_token: Option<&str>,
+        user_id: Option<&str>,
+    ) -> RouteCredential {
         let created = RouteCredentialService::create_api(
             pool,
             CreateApiRouteCredentialInput {
@@ -1450,6 +1909,8 @@ mod tests {
                 responses_custom_tool_compat: None,
                 user_agent: None,
                 relay_balance_provider: None,
+                relay_balance_access_token: access_token.map(str::to_string),
+                relay_balance_access_token_user_id: user_id.map(str::to_string),
             },
         )
         .await
@@ -1993,6 +2454,406 @@ mod tests {
         assert_eq!(error.code(), "validation.route_relay_balance_all_failed");
         let details = error.details().expect("explains itself");
         assert!(!details.contains("new-api"), "{details}");
+    }
+
+    /// A New API panel with both routes, each checking who is asking.
+    ///
+    /// The token-scoped route only accepts the relay key and the account-scoped one
+    /// only accepts the panel access token, because "the account balance was fetched
+    /// with the wrong credential" is the mistake these two endpoints invite, and a
+    /// fixture that answers either header would not catch it. Passing `None` for a
+    /// route leaves the panel without it, which is how the new-api forks that
+    /// dropped token usage behave.
+    ///
+    /// `demands_user_id` mirrors New API through v0.13.2, which also refuses an
+    /// access-token request that carries no matching `New-Api-User` header.
+    async fn start_new_api_panel(token_usage: Option<Value>, account: Option<Value>) -> String {
+        start_new_api_panel_with_user_id(token_usage, account, false).await
+    }
+
+    async fn start_new_api_panel_with_user_id(
+        token_usage: Option<Value>,
+        account: Option<Value>,
+        demands_user_id: bool,
+    ) -> String {
+        let mut app = Router::new();
+        if let Some(body) = token_usage {
+            app = app.route(
+                NEW_API_USAGE_PATH,
+                get(move |headers: AxumHeaderMap| {
+                    let body = body.clone();
+                    async move {
+                        answer_if_authorized(&headers, "Bearer sk-relay-key", body, "令牌无效")
+                    }
+                }),
+            );
+        }
+        if let Some(body) = account {
+            app = app.route(
+                NEW_API_USER_SELF_PATH,
+                get(move |headers: AxumHeaderMap| {
+                    let body = body.clone();
+                    async move {
+                        if demands_user_id
+                            && header_value(&headers, "New-Api-User") != Some(PANEL_USER_ID)
+                        {
+                            return Json(
+                                json!({"success": false, "message": "无权访问此用户信息"}),
+                            )
+                            .into_response();
+                        }
+                        answer_if_authorized(
+                            &headers,
+                            &format!("Bearer {PANEL_ACCESS_TOKEN}"),
+                            body,
+                            "无权进行此操作，access token 无效",
+                        )
+                    }
+                }),
+            );
+        }
+        format!("http://{}/v1", serve(app).await)
+    }
+
+    /// The panel access token a test account stores. Deliberately unlike the relay
+    /// key: New API hands these out from 个人设置 without an `sk-` prefix.
+    const PANEL_ACCESS_TOKEN: &str = "pat-panel-account-token";
+    const PANEL_USER_ID: &str = "7";
+
+    fn header_value<'a>(headers: &'a AxumHeaderMap, name: &str) -> Option<&'a str> {
+        headers.get(name).and_then(|value| value.to_str().ok())
+    }
+
+    fn answer_if_authorized(
+        headers: &AxumHeaderMap,
+        expected: &str,
+        body: Value,
+        refusal: &str,
+    ) -> axum::response::Response {
+        if header_value(headers, "authorization") != Some(expected) {
+            // 200 with a false flag, the way new-api actually refuses.
+            return Json(json!({"success": false, "message": refusal})).into_response();
+        }
+        Json(body).into_response()
+    }
+
+    /// What `/api/user/self` answers: `quota` is what is left, in the panel's
+    /// integer unit, and there is no "granted" figure at all.
+    fn new_api_account_body() -> Value {
+        json!({
+            "success": true,
+            "message": "",
+            "data": {
+                "id": 7,
+                "username": "pooluser",
+                "group": "vip",
+                "quota": 6_150_000,
+                "used_quota": 3_850_000,
+            }
+        })
+    }
+
+    fn new_api_unlimited_usage_body() -> Value {
+        json!({
+            "code": true,
+            "message": "ok",
+            "data": {
+                "object": "token_usage",
+                "name": "pool key",
+                "total_granted": 0,
+                "total_used": 500_000,
+                "total_available": 0,
+                "unlimited_quota": true,
+                "expires_at": 0,
+            }
+        })
+    }
+
+    /// The reading this whole path exists for: New API panels mostly hand out
+    /// `unlimited_quota` keys, whose token-scoped usage has a spend and no balance.
+    /// What runs out is the account behind the key, so that is what the badge has to
+    /// show once the panel's access token is on file.
+    #[tokio::test]
+    async fn an_unlimited_key_reports_the_panel_accounts_balance() {
+        let base_url = start_new_api_panel(
+            Some(new_api_unlimited_usage_body()),
+            Some(new_api_account_body()),
+        )
+        .await;
+        let pool = memory_pool().await;
+        let credential = seed_relay_credential_with_access_token(
+            &pool,
+            &base_url,
+            Some(json!({"provider": "new_api"})),
+            Some(PANEL_ACCESS_TOKEN),
+        )
+        .await;
+
+        let outcome = RouteRelayBalanceService::refresh_one(&pool, credential.id)
+            .await
+            .expect("refresh");
+        assert_eq!(outcome.source, "new_api");
+
+        let snapshot = snapshot_of(&outcome.credential);
+        assert_eq!(snapshot.remaining, Some(12.3), "6150000 / 500000");
+        assert_eq!(
+            snapshot.used,
+            Some(7.7),
+            "the account's spend, not the key's"
+        );
+        assert_eq!(snapshot.limit, None, "the panel never reports an allowance");
+        assert!(
+            !snapshot.unlimited,
+            "the account has a real number even though the key has no cap"
+        );
+        assert!(snapshot.account_level, "the figures are not this key's");
+        assert_eq!(snapshot.plan_name.as_deref(), Some("vip"));
+        assert!(snapshot.source_url.ends_with(NEW_API_USER_SELF_PATH));
+        assert!(
+            snapshot
+                .notes
+                .iter()
+                .any(|note| note.contains("令牌不限额度")),
+            "the badge has to say whose money it is: {:?}",
+            snapshot.notes
+        );
+        assert!(
+            snapshot.notes.iter().any(|note| note.contains("$1.00")),
+            "the key's own spend is still worth keeping: {:?}",
+            snapshot.notes
+        );
+    }
+
+    /// Without the access token nothing changed: an unlimited key still reports only
+    /// its spend, and the badge says so rather than inventing a balance.
+    #[tokio::test]
+    async fn an_unlimited_key_without_an_access_token_still_reads_as_unlimited() {
+        let base_url = start_new_api_panel(
+            Some(new_api_unlimited_usage_body()),
+            Some(new_api_account_body()),
+        )
+        .await;
+        let pool = memory_pool().await;
+        let credential =
+            seed_relay_credential(&pool, &base_url, Some(json!({"provider": "new_api"}))).await;
+
+        let outcome = RouteRelayBalanceService::refresh_one(&pool, credential.id)
+            .await
+            .expect("refresh");
+        let snapshot = snapshot_of(&outcome.credential);
+        assert!(snapshot.unlimited);
+        assert!(!snapshot.account_level);
+        assert_eq!(snapshot.remaining, None);
+        assert_eq!(snapshot.used, Some(1.0), "500000 / 500000");
+        assert!(
+            snapshot
+                .notes
+                .iter()
+                .any(|note| note.contains("面板访问令牌")),
+            "the way out is named: {:?}",
+            snapshot.notes
+        );
+    }
+
+    /// A capped key answers its own question, so the account is left alone: the
+    /// panel's balance is shared by every key on it, and reporting it for a key that
+    /// has an allowance of its own would overstate what this account can spend.
+    #[tokio::test]
+    async fn a_capped_key_keeps_its_own_numbers_even_with_an_access_token() {
+        let base_url =
+            start_new_api_panel(Some(new_api_usage_body()), Some(new_api_account_body())).await;
+        let pool = memory_pool().await;
+        let credential = seed_relay_credential_with_access_token(
+            &pool,
+            &base_url,
+            Some(json!({"provider": "new_api"})),
+            Some(PANEL_ACCESS_TOKEN),
+        )
+        .await;
+
+        let outcome = RouteRelayBalanceService::refresh_one(&pool, credential.id)
+            .await
+            .expect("refresh");
+        let snapshot = snapshot_of(&outcome.credential);
+        assert!(!snapshot.account_level);
+        assert_eq!(snapshot.remaining, Some(0.5), "250000 / 500000");
+        assert_eq!(snapshot.limit, Some(1.0));
+        assert!(snapshot.source_url.ends_with(NEW_API_USAGE_PATH));
+    }
+
+    /// The AR-style fork: `/api/usage/token/` was removed, so the account route is
+    /// the only balance the panel serves. Worth one extra question when an access
+    /// token is on file, because the alternative is reporting a healthy account as
+    /// "查询失败".
+    #[tokio::test]
+    async fn a_panel_without_token_usage_falls_back_to_the_account_route() {
+        let base_url = start_new_api_panel(None, Some(new_api_account_body())).await;
+        let pool = memory_pool().await;
+        let credential = seed_relay_credential_with_access_token(
+            &pool,
+            &base_url,
+            Some(json!({"provider": "new_api"})),
+            Some(PANEL_ACCESS_TOKEN),
+        )
+        .await;
+
+        let outcome = RouteRelayBalanceService::refresh_one(&pool, credential.id)
+            .await
+            .expect("the account route answers");
+        let snapshot = snapshot_of(&outcome.credential);
+        assert!(snapshot.account_level);
+        assert_eq!(snapshot.remaining, Some(12.3));
+        assert!(
+            snapshot
+                .notes
+                .iter()
+                .any(|note| note.contains("没有令牌级余额接口")),
+            "an account-wide figure must not read as this key's: {:?}",
+            snapshot.notes
+        );
+    }
+
+    /// A rejected access token is a configuration mistake the user has to see. The
+    /// tempting alternative — keep the token-scoped reading and note the failure —
+    /// puts "余额 不限" back on the row, which is the exact reading this path was
+    /// added to replace.
+    #[tokio::test]
+    async fn a_rejected_access_token_fails_the_query_instead_of_reading_as_unlimited() {
+        let base_url = start_new_api_panel(
+            Some(new_api_unlimited_usage_body()),
+            Some(new_api_account_body()),
+        )
+        .await;
+        let pool = memory_pool().await;
+        let credential = seed_relay_credential_with_access_token(
+            &pool,
+            &base_url,
+            Some(json!({"provider": "new_api"})),
+            Some("pat-stale"),
+        )
+        .await;
+
+        let error = RouteRelayBalanceService::refresh_one(&pool, credential.id.clone())
+            .await
+            .expect_err("the panel refused the access token");
+        assert_eq!(error.code(), "validation.route_relay_balance_account_parse");
+        let details = error.details().expect("explains itself");
+        assert!(details.contains("access token 无效"), "{details}");
+        assert!(
+            details.contains(NEW_API_USER_SELF_PATH),
+            "the address tried is part of the diagnosis: {details}"
+        );
+        // A failed query leaves the previous reading in place rather than writing a
+        // blank one.
+        let stored = RouteCredentialRepository::get(&pool, &credential.id)
+            .await
+            .expect("reload");
+        assert!(RelayBalanceSnapshot::from_config_json(&stored.config_json).is_none());
+    }
+
+    /// The account route is reached only with the account's own token. Reusing the
+    /// relay key would look like it works on panels that accept either, and this
+    /// fixture refuses to.
+    #[tokio::test]
+    async fn the_account_route_is_not_queried_with_the_relay_key() {
+        let base_url = start_new_api_panel(None, Some(new_api_account_body())).await;
+        let pool = memory_pool().await;
+        let credential = seed_relay_credential_with_access_token(
+            &pool,
+            &base_url,
+            Some(json!({"provider": "new_api"})),
+            Some("sk-relay-key"),
+        )
+        .await;
+
+        let error = RouteRelayBalanceService::refresh_one(&pool, credential.id)
+            .await
+            .expect_err("the relay key is not the account's token");
+        assert!(error
+            .details()
+            .is_some_and(|details| details.contains("access token 无效")));
+    }
+
+    /// New API through v0.13.2 — every stable release — also insists on a
+    /// `New-Api-User` header matching the token's owner.
+    #[tokio::test]
+    async fn a_panel_that_demands_a_user_id_is_answered_with_one() {
+        let base_url = start_new_api_panel_with_user_id(
+            Some(new_api_unlimited_usage_body()),
+            Some(new_api_account_body()),
+            true,
+        )
+        .await;
+        let pool = memory_pool().await;
+        let credential = seed_relay_credential_with_panel_account(
+            &pool,
+            &base_url,
+            Some(json!({"provider": "new_api"})),
+            Some(PANEL_ACCESS_TOKEN),
+            Some(PANEL_USER_ID),
+        )
+        .await;
+
+        let outcome = RouteRelayBalanceService::refresh_one(&pool, credential.id)
+            .await
+            .expect("refresh");
+        let snapshot = snapshot_of(&outcome.credential);
+        assert!(snapshot.account_level);
+        assert_eq!(snapshot.remaining, Some(12.3));
+    }
+
+    /// Without the id the same panel refuses, in wording that never mentions the box
+    /// the user has to fill. The failure has to name it, or the token looks broken.
+    #[tokio::test]
+    async fn a_refusal_without_a_user_id_points_at_the_missing_field() {
+        let base_url = start_new_api_panel_with_user_id(
+            Some(new_api_unlimited_usage_body()),
+            Some(new_api_account_body()),
+            true,
+        )
+        .await;
+        let pool = memory_pool().await;
+        let credential = seed_relay_credential_with_access_token(
+            &pool,
+            &base_url,
+            Some(json!({"provider": "new_api"})),
+            Some(PANEL_ACCESS_TOKEN),
+        )
+        .await;
+
+        let error = RouteRelayBalanceService::refresh_one(&pool, credential.id)
+            .await
+            .expect_err("the panel wants a user id");
+        let details = error.details().expect("explains itself");
+        assert!(details.contains("New-Api-User"), "{details}");
+        assert!(details.contains("用户 ID"), "{details}");
+    }
+
+    /// With an id on file a refusal is about something else, so the hint stays out of
+    /// the way instead of sending the user after a field they already filled.
+    #[tokio::test]
+    async fn a_refusal_with_a_user_id_on_file_keeps_the_panels_own_reason() {
+        let base_url = start_new_api_panel(
+            Some(new_api_unlimited_usage_body()),
+            Some(new_api_account_body()),
+        )
+        .await;
+        let pool = memory_pool().await;
+        let credential = seed_relay_credential_with_panel_account(
+            &pool,
+            &base_url,
+            Some(json!({"provider": "new_api"})),
+            Some("pat-stale"),
+            Some(PANEL_USER_ID),
+        )
+        .await;
+
+        let error = RouteRelayBalanceService::refresh_one(&pool, credential.id)
+            .await
+            .expect_err("the access token is stale");
+        let details = error.details().expect("explains itself");
+        assert!(details.contains("access token 无效"), "{details}");
+        assert!(!details.contains("New-Api-User"), "{details}");
     }
 
     #[tokio::test]

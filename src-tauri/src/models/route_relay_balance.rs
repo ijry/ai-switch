@@ -5,6 +5,22 @@ use serde_json::Value;
 pub const RELAY_BALANCE_CONFIG_KEY: &str = "relay_balance";
 /// Key under `route_credentials.config_json` holding the last queried snapshot.
 pub const RELAY_BALANCE_SNAPSHOT_KEY: &str = "relay_balance_snapshot";
+/// Key under `route_credentials.secret_payload_json` holding the relay panel's
+/// account-level access token (New API 个人设置 → 系统访问令牌).
+///
+/// It lives with the api_key rather than in `config_json` because it authenticates
+/// as the whole panel account — it can mint and revoke keys — so it has to inherit
+/// the same masking the api_key gets on its way to a non-primary web client.
+pub const RELAY_BALANCE_ACCESS_TOKEN_KEY: &str = "relay_balance_access_token";
+/// Key under `route_credentials.secret_payload_json` holding the numeric panel user
+/// id that goes with the access token.
+///
+/// New API up to and including v0.13.2 — the current stable line — rejects an
+/// access-token request that carries no `New-Api-User` header, and compares the
+/// value against the token's owner. It is not itself a secret, but it is useless
+/// without the token and meaningless apart from it, so the pair is stored and masked
+/// together instead of splitting one credential across two columns.
+pub const RELAY_BALANCE_ACCESS_TOKEN_USER_ID_KEY: &str = "relay_balance_access_token_user_id";
 /// new-api reports quota as an integer that has to be divided by the panel's
 /// `QuotaPerUnit` to become dollars. This is the shipped default; panels may
 /// change it, and `GET /api/status` reports whatever the panel actually uses.
@@ -207,6 +223,15 @@ pub struct RelayBalanceSnapshot {
     /// The panel says this key has no cap, which makes the numbers meaningless.
     #[serde(default)]
     pub unlimited: bool,
+    /// The figures describe the panel *account*, not this one key.
+    ///
+    /// A New API token with `unlimited_quota` has no cap of its own, so what
+    /// actually runs out is the account behind it — and reading that needs the
+    /// account's access token. Two consequences the UI has to state: the number is
+    /// shared by every account pointing at the same panel, and it is not this key's
+    /// allowance.
+    #[serde(default)]
+    pub account_level: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
     pub source_url: String,
@@ -357,6 +382,7 @@ mod tests {
             limit: Some(50.0),
             unit: "USD".to_string(),
             unlimited: false,
+            account_level: false,
             expires_at: None,
             source_url: "https://panel.example.com/api/usage/token/".to_string(),
             checked_at: "2026-09-02T12:00:00Z".to_string(),
@@ -390,6 +416,7 @@ mod tests {
             limit: None,
             unit: "USD".to_string(),
             unlimited: false,
+            account_level: false,
             expires_at: None,
             source_url: "https://panel.example.com/v1/usage".to_string(),
             checked_at: "2026-09-02T12:00:00Z".to_string(),

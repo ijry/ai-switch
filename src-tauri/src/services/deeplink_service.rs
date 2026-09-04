@@ -175,6 +175,8 @@ pub fn to_create_api_input(parsed: &DeepLinkProviderImport) -> CreateApiRouteCre
         responses_custom_tool_compat: None,
         user_agent: None,
         relay_balance_provider: None,
+        relay_balance_access_token: None,
+        relay_balance_access_token_user_id: None,
     }
 }
 

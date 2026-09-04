@@ -199,6 +199,16 @@ pub struct CreateApiRouteCredentialInput {
     /// and paths are configured from the edit drawer afterwards.
     #[serde(default)]
     pub relay_balance_provider: Option<String>,
+    /// The relay panel account's access token, for reading an account balance the
+    /// key's own (uncapped) usage endpoint cannot report. Travels with creation
+    /// rather than waiting for the edit drawer because a new-api account without it
+    /// reports "余额 不限" — which is the reading it exists to replace.
+    #[serde(default)]
+    pub relay_balance_access_token: Option<String>,
+    /// The numeric panel user id that goes with the access token, which New API's
+    /// stable line requires as a `New-Api-User` header.
+    #[serde(default)]
+    pub relay_balance_access_token_user_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
