@@ -1285,6 +1285,86 @@ describe("AccountsScreen", () => {
     ).toBeInTheDocument();
   });
 
+  it("gives the model list its own line in both layouts", async () => {
+    renderScreen();
+
+    await screen.findByText("Team Account");
+    const listRow = screen.getByTestId("account-model-list-cred-official-1");
+    expect(listRow).toContainElement(screen.getByText("基线模型"));
+    expect(listRow).not.toContainElement(
+      within(screen.getByLabelText("放置在 Team Account 前")).getByText("正常"),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "卡片模式" }));
+
+    const card = screen.getByTestId("account-card-cred-official-1");
+    const cardRow = within(card).getByTestId("account-model-list-cred-official-1");
+    expect(cardRow).toContainElement(within(card).getByText("基线模型"));
+    expect(cardRow).not.toContainElement(within(card).getByText("正常"));
+  });
+
+  it("moves the card concurrency and cooldown tags onto the stats footer", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      {
+        ...credentialsFixture[0],
+        active_request_count: 1,
+        cooldown_until: new Date(Date.now() + 45_000).toISOString(),
+        max_concurrency: 2,
+      },
+    ]);
+    renderScreen();
+
+    await screen.findByText("Team Account");
+    await userEvent.click(screen.getByRole("button", { name: "卡片模式" }));
+
+    const card = screen.getByTestId("account-card-cred-official-1");
+    const footer = within(card).getByTestId("account-card-footer-cred-official-1");
+    // 右下角：footer 是卡片最后一块（mt-auto 贴底），计数器又是 footer 的末尾。
+    expect(card.lastElementChild).toBe(footer);
+    expect(footer.firstElementChild).toContainElement(within(card).getByText(/请求 3/));
+    expect(footer.lastElementChild).toContainElement(
+      within(card).getByTestId("credential-activity-cred-official-1"),
+    );
+    expect(footer.lastElementChild).toContainElement(
+      within(card).getByTestId("credential-cooldown-cred-official-1"),
+    );
+    expect(within(card).getByTestId("account-model-list-cred-official-1")).not.toContainElement(
+      within(card).getByTestId("credential-cooldown-cred-official-1"),
+    );
+
+    // 列表模式仍把它们留在徽章行，紧跟状态标签。
+    await userEvent.click(screen.getByRole("button", { name: "列表模式" }));
+    const row = await screen.findByLabelText("放置在 Team Account 前");
+    expect(screen.queryByTestId("account-card-footer-cred-official-1")).not.toBeInTheDocument();
+    expect(within(row).getByText("正常").closest("div")).toContainElement(
+      within(row).getByTestId("credential-activity-cred-official-1"),
+    );
+  });
+
+  it("keeps the card footer for a live counter when request stats are hidden", async () => {
+    window.localStorage.setItem(
+      "ai-switch.account-display-preferences",
+      JSON.stringify({ showAccountType: false, showModelList: true, showRequestStats: false }),
+    );
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      {
+        ...credentialsFixture[0],
+        active_request_count: 1,
+        max_concurrency: 2,
+      },
+    ]);
+    renderScreen();
+
+    await screen.findByText("Team Account");
+    await userEvent.click(screen.getByRole("button", { name: "卡片模式" }));
+
+    const card = screen.getByTestId("account-card-cred-official-1");
+    expect(card).not.toHaveTextContent("请求 3");
+    expect(
+      within(card).getByTestId("account-card-footer-cred-official-1"),
+    ).toContainElement(within(card).getByTestId("credential-activity-cred-official-1"));
+  });
+
   it("reorders accounts when a card is dropped on the right half of its neighbour", async () => {
     renderScreen();
 

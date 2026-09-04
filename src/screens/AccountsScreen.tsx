@@ -6077,6 +6077,38 @@ export function AccountsScreen({
                         )}
                     </>
                   );
+                  // Concurrency and cooldown ride along with the badges in a row,
+                  // but a card sends them to the footer so they sit next to the
+                  // stats instead of pushing the status badges onto a new line.
+                  const concurrencyBadge =
+                    (credential.active_request_count ?? 0) > 0 ? (
+                      <span
+                        aria-label={`正在处理请求，当前 ${credential.active_request_count}/${credential.max_concurrency}`}
+                        className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700"
+                        data-testid={`credential-activity-${credential.id}`}
+                      >
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+                        {credential.active_request_count}/{credential.max_concurrency}
+                      </span>
+                    ) : null;
+                  const cooldownBadge =
+                    cooldownState?.active && retryLabel ? (
+                      <CredentialFailureTooltip credential={credential}>
+                        <span
+                          className="rounded-full bg-orange-50 px-2 py-0.5 text-[11px] font-semibold text-orange-800"
+                          data-testid={`credential-cooldown-${credential.id}`}
+                          title={`临时失败退避中，冷却至 ${retryLabel}`}
+                        >
+                          冷却 {formatCooldownRemaining(cooldownState.remaining)}
+                        </span>
+                      </CredentialFailureTooltip>
+                    ) : null;
+                  // The model list gets a line of its own in both layouts: it can
+                  // carry four tags on its own, and inline it pushed the status
+                  // badges past a wrap where they were easy to miss.
+                  const modelListBlock = accountDisplayPreferences.showModelList ? (
+                    <ModelMappingSummary platform={activePlatform} mappings={modelMappings} />
+                  ) : null;
                   const badges = (
                     <>
                         {accountDisplayPreferences.showAccountType ? (
@@ -6097,30 +6129,8 @@ export function AccountsScreen({
                             {failureTag?.label ?? accountStatusLabel(credential.status)}
                           </span>
                         </CredentialFailureTooltip>
-                        {(credential.active_request_count ?? 0) > 0 && (
-                          <span
-                            aria-label={`正在处理请求，当前 ${credential.active_request_count}/${credential.max_concurrency}`}
-                            className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700"
-                            data-testid={`credential-activity-${credential.id}`}
-                          >
-                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
-                            {credential.active_request_count}/{credential.max_concurrency}
-                          </span>
-                        )}
-                        {accountDisplayPreferences.showModelList ? (
-                          <ModelMappingSummary platform={activePlatform} mappings={modelMappings} />
-                        ) : null}
-                        {cooldownState?.active && retryLabel && (
-                          <CredentialFailureTooltip credential={credential}>
-                            <span
-                              className="rounded-full bg-orange-50 px-2 py-0.5 text-[11px] font-semibold text-orange-800"
-                              data-testid={`credential-cooldown-${credential.id}`}
-                              title={`临时失败退避中，冷却至 ${retryLabel}`}
-                            >
-                              冷却 {formatCooldownRemaining(cooldownState.remaining)}
-                            </span>
-                          </CredentialFailureTooltip>
-                        )}
+                        {cardLayout ? null : concurrencyBadge}
+                        {cardLayout ? null : cooldownBadge}
                         {modelIssues.length > 0 && (
                           <span
                             className="group relative inline-flex outline-none focus:ring-2 focus:ring-orange-300"
@@ -6312,6 +6322,11 @@ export function AccountsScreen({
                       )}
                     </div>
                   );
+                  // Without stats the footer still has to render when a counter is
+                  // live, otherwise turning off 请求统计 would also hide 并发/冷却.
+                  const cardFooterVisible = Boolean(
+                    accountDisplayPreferences.showRequestStats || concurrencyBadge || cooldownBadge,
+                  );
                   if (cardLayout) {
                     return (
                       <Fragment key={credential.id}>
@@ -6339,12 +6354,37 @@ export function AccountsScreen({
                             {actionsBlock}
                           </div>
                           <div className="flex flex-wrap items-center gap-1.5">{badges}</div>
-                          {/* mt-auto keeps the stats line pinned to the bottom so the
-                              footers of a grid row stay on one baseline. */}
-                          {accountDisplayPreferences.showRequestStats ? (
-                            <p className="mt-auto truncate border-t border-stone-200/70 pt-1.5 text-[11px] text-stone-500">
-                              {statsLine}
-                            </p>
+                          {modelListBlock ? (
+                            <div
+                              className="flex min-w-0 flex-wrap items-center gap-1.5"
+                              data-testid={`account-model-list-${credential.id}`}
+                            >
+                              {modelListBlock}
+                            </div>
+                          ) : null}
+                          {/* mt-auto keeps the footer pinned to the bottom so the
+                              footers of a grid row stay on one baseline. The live
+                              counters sit at its right end, away from the stats. */}
+                          {cardFooterVisible ? (
+                            <div
+                              className="mt-auto flex items-center gap-2 border-t border-stone-200/70 pt-1.5"
+                              data-testid={`account-card-footer-${credential.id}`}
+                            >
+                              {accountDisplayPreferences.showRequestStats ? (
+                                <p className="min-w-0 flex-1 truncate text-[11px] text-stone-500">
+                                  {statsLine}
+                                </p>
+                              ) : null}
+                              {concurrencyBadge || cooldownBadge ? (
+                                // ml-auto rather than justify-between: with the stats
+                                // line hidden the counters are the only child, and
+                                // justify-between would leave them at the left edge.
+                                <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                                  {concurrencyBadge}
+                                  {cooldownBadge}
+                                </span>
+                              ) : null}
+                            </div>
                           ) : null}
                         </article>
                       </Fragment>
@@ -6371,6 +6411,14 @@ export function AccountsScreen({
                         {nameBlock}
                         {badges}
                       </div>
+                      {modelListBlock ? (
+                        <div
+                          className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5"
+                          data-testid={`account-model-list-${credential.id}`}
+                        >
+                          {modelListBlock}
+                        </div>
+                      ) : null}
                       {accountDisplayPreferences.showRequestStats ? (
                         <p className="mt-0.5 truncate text-[12px] text-stone-500">{statsLine}</p>
                       ) : null}
