@@ -137,15 +137,22 @@ jobs:
           # Empty on a `release: published` run, where both are wanted.
           WANT_HOMEBREW: ${{ inputs.homebrew }}
           WANT_WINGET: ${{ inputs.winget }}
+          DRY_RUN: ${{ inputs.dry_run }}
         shell: bash
         run: |
           set -euo pipefail
 
+          # A dry run reads neither secret: it renders the manifests, installs the
+          # cask locally to check it, prints what winget would receive, and stops
+          # before both steps that push. Demanding the tokens anyway would make
+          # the rehearsal impossible until the tap repository and the winget fork
+          # exist, which is backwards — the rehearsal is how you find out whether
+          # those are worth creating.
           homebrew=true
           if [[ "$WANT_HOMEBREW" == "false" ]]; then
             homebrew=false
             echo "::notice::Homebrew skipped: this run did not ask for it."
-          elif [[ -z "$HOMEBREW_TAP_TOKEN" ]]; then
+          elif [[ -z "$HOMEBREW_TAP_TOKEN" && "$DRY_RUN" != "true" ]]; then
             homebrew=false
             echo "::warning::Homebrew skipped: secret HOMEBREW_TAP_TOKEN is not set (see docs-site/docs/dev/release.md)."
           fi
@@ -154,7 +161,7 @@ jobs:
           if [[ "$WANT_WINGET" == "false" ]]; then
             winget=false
             echo "::notice::WinGet skipped: this run did not ask for it."
-          elif [[ -z "$WINGET_TOKEN" ]]; then
+          elif [[ -z "$WINGET_TOKEN" && "$DRY_RUN" != "true" ]]; then
             winget=false
             echo "::warning::WinGet skipped: secret WINGET_TOKEN is not set (see docs-site/docs/dev/release.md)."
           fi

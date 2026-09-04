@@ -6,6 +6,10 @@ function readWorkflow() {
   return readFileSync(resolve(process.cwd(), ".github/workflows/release.yml"), "utf8");
 }
 
+function readPackageManagersWorkflow() {
+  return readFileSync(resolve(process.cwd(), ".github/workflows/package-managers.yml"), "utf8");
+}
+
 describe("release workflow release notes", () => {
   const workflow = readWorkflow();
 
@@ -118,5 +122,25 @@ describe("package manager handoff", () => {
     // submission never marks the release itself as failed; a handoff that throws
     // here would give that back.
     expect(workflow).toContain("::warning::Could not dispatch package-managers.yml");
+  });
+});
+
+describe("package manager dry run", () => {
+  const workflow = readPackageManagersWorkflow();
+
+  it("does not require the tokens it never reads", () => {
+    // A dry run stops before both pushing steps, so gating it on the secrets made
+    // the rehearsal impossible until the tap repository and the winget fork
+    // existed — while the rehearsal is exactly what tells you whether an ad-hoc
+    // signed cask is still installable at all.
+    expect(workflow).toContain('elif [[ -z "$HOMEBREW_TAP_TOKEN" && "$DRY_RUN" != "true" ]]; then');
+    expect(workflow).toContain('elif [[ -z "$WINGET_TOKEN" && "$DRY_RUN" != "true" ]]; then');
+    expect(workflow).toContain("DRY_RUN: ${{ inputs.dry_run }}");
+  });
+
+  it("keeps every outward-facing step behind the dry-run switch", () => {
+    // Two steps reach another repository: the cask push and the winget PR. Both
+    // have to stay gated, or a rehearsal would publish.
+    expect(workflow.match(/^\s+if: \$\{\{ !inputs\.dry_run \}\}$/gm) ?? []).toHaveLength(2);
   });
 });

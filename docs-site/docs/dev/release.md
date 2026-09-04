@@ -237,6 +237,8 @@ git tag -d v0.6.8
 
 手动运行另外有三个开关：`homebrew` 和 `winget` 可以分别关掉，`dry_run` 会渲染并校验清单、但不碰任何外部仓库。
 
+`dry_run` 不需要任何 secret：它跳过的两步正好就是唯一读 secret 的那两步（推 cask、开 winget PR），所以 tap 仓库和 token 都还没准备好时也能先完整预演一遍——包括在 `macos-latest` 上真的 `brew install --cask` 装一次并断言隔离属性已清掉。对一个 ad-hoc 签名的包来说，这一次预演正是判断「Homebrew 这条渠道现在还通不通」的办法，值不值得去建 tap 仓库要看它的结果。
+
 草稿和预发布（`-rc` / `-beta` / `-alpha`）一律跳过，并在日志里写明原因而不是报错：草稿的资产还没有公开下载地址，而预发布一旦进了 tap 就会推给所有执行 `brew upgrade` 的人。
 
 ### 需要配置什么

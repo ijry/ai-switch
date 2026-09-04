@@ -237,6 +237,8 @@ The `release: published` event does **not** fire for a release the pipeline publ
 
 A manual run has three more switches: `homebrew` and `winget` can each be turned off, and `dry_run` renders and checks the manifests without touching any external repository.
 
+`dry_run` needs no secret at all: the two steps it skips are the only two that read one (pushing the cask, opening the winget PR), so the whole rehearsal works before the tap repository and the tokens exist — including a real `brew install --cask` on `macos-latest` that asserts the quarantine attribute was cleared. For an ad-hoc signed bundle that rehearsal is how you find out whether Homebrew still accepts this channel at all, which is what decides whether creating the tap is worth it.
+
 Drafts and prereleases (`-rc` / `-beta` / `-alpha`) are always skipped, with the reason in the log rather than a failure: a draft's assets have no public download URL yet, and a prerelease in the tap would reach everyone who runs `brew upgrade`.
 
 ### What has to be configured
