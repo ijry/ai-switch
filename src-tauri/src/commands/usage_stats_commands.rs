@@ -46,8 +46,9 @@ pub async fn get_usage_overview(
     since: Option<String>,
     page: Option<i64>,
     page_size: Option<i64>,
+    utc_offset_minutes: Option<i32>,
 ) -> Result<UsageOverview, ApiError> {
-    get_usage_overview_core(&state.pool, since, page, page_size)
+    get_usage_overview_core(&state.pool, since, page, page_size, utc_offset_minutes)
         .await
         .map_err(ApiError::from)
 }

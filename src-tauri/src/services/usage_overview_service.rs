@@ -830,6 +830,7 @@ pub async fn build_usage_overview(
     page: i64,
     page_size: i64,
     window: TimeWindow,
+    utc_offset_minutes: Option<i32>,
 ) -> Result<UsageOverview, AppError> {
     let proxy_rows = RoutePoolRepository::list_request_events(pool, since).await?;
 
@@ -851,14 +852,24 @@ pub async fn build_usage_overview(
         page,
         page_size,
         // The chart's x-axis is the window the caller asked for, sliced at the
-        // machine's own midnight so its columns line up with the 当日 / 本周
-        // presets the UI computes from the same clock.
+        // *caller's* midnight so its columns line up with the 当日 / 本周 presets
+        // the UI computes from its own clock. Falling back to the server's offset
+        // only matters for a caller that reports none.
+        //
+        // Still one fixed offset for the whole window, so a DST region is off by an
+        // hour on the far side of a transition and the transition day itself is
+        // 23h or 25h rather than 24h. Correcting that needs a real timezone
+        // database (the client reports an offset, not a zone name), which is a
+        // dependency this has not earned yet — the daily and hourly labels either
+        // side of the change are still the right buckets, only the boundary moves.
         TrendFrame {
             start_ms: window.start_ms,
             end_ms: window
                 .end_ms
                 .unwrap_or_else(|| Utc::now().timestamp_millis()),
-            offset: Local::now().offset().fix(),
+            offset: utc_offset_minutes
+                .and_then(|minutes| FixedOffset::east_opt(minutes * 60))
+                .unwrap_or_else(|| Local::now().offset().fix()),
         },
     ))
 }

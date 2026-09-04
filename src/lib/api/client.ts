@@ -209,6 +209,12 @@ export function getUsageOverview(
     since: since ?? null,
     page,
     page_size: pageSize,
+    // The chart's buckets are cut at *this* client's midnight. `since` is already
+    // computed from this calendar, so letting the server use its own offset
+    // instead sliced the first and last bucket at a different instant and shifted
+    // every hour label — invisible on the desktop, wrong on a paired phone in
+    // another timezone. getTimezoneOffset is minutes *behind* UTC, hence the sign.
+    utc_offset_minutes: -new Date().getTimezoneOffset(),
   });
 }
 

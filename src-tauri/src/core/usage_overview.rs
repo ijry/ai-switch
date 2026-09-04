@@ -16,11 +16,21 @@ const MAX_PAGE_SIZE: i64 = 100;
 ///
 /// `since` is an optional RFC 3339 timestamp, matching `get_route_pool` and
 /// `get_session_usage_stats` so the UI can reuse its period selector.
+///
+/// `utc_offset_minutes` is the *caller's* offset east of UTC, used to slice the
+/// chart's buckets. The caller has to supply it: the window start is computed
+/// from the client's own calendar (its midnight, its start-of-week), so bucketing
+/// with the server's offset instead cut the first and last bucket at a different
+/// instant and shifted every hour label. That is invisible on the desktop, where
+/// both clocks are the same machine, and wrong for every browser and paired phone
+/// in another timezone. `None` falls back to the server's offset, which is right
+/// for a caller that has no clock of its own to report.
 pub async fn get_usage_overview_core(
     pool: &SqlitePool,
     since: Option<String>,
     page: Option<i64>,
     page_size: Option<i64>,
+    utc_offset_minutes: Option<i32>,
 ) -> Result<UsageOverview, AppError> {
     let window = super::usage_stats::parse_window(since.as_deref())?;
     let (page, page_size) = normalize_pagination(page, page_size);
@@ -33,8 +43,19 @@ pub async fn get_usage_overview_core(
         page,
         page_size,
         window,
+        normalize_utc_offset(utc_offset_minutes),
     )
     .await
+}
+
+/// Rejects an offset no real timezone uses rather than trusting the wire.
+///
+/// The value comes from a browser, and `FixedOffset::east_opt` refuses anything
+/// past ±24h by returning `None` — which would turn a hand-crafted request into a
+/// panic at the unwrap, or a silent fallback that is harder to explain than a
+/// clamp. Real offsets run from −12:00 to +14:00.
+fn normalize_utc_offset(minutes: Option<i32>) -> Option<i32> {
+    minutes.filter(|value| (-12 * 60..=14 * 60).contains(value))
 }
 
 /// Clamp paging into a usable range rather than rejecting it: a stale page
@@ -72,9 +93,10 @@ mod tests {
             .await
             .expect("migrations");
 
-        let error = get_usage_overview_core(&pool, Some("last tuesday".to_string()), None, None)
-            .await
-            .expect_err("must reject");
+        let error =
+            get_usage_overview_core(&pool, Some("last tuesday".to_string()), None, None, None)
+                .await
+                .expect_err("must reject");
 
         assert!(matches!(
             error,

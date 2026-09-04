@@ -420,8 +420,12 @@ pub async fn dispatch_command(
             let since = optional_string_arg(&args, "since")?;
             let page = optional_i64_arg(&args, "page")?;
             let page_size = optional_i64_arg(&args, "page_size")?;
+            // The browser's own offset, so a phone in another timezone gets its
+            // buckets cut at its midnight rather than the server's.
+            let utc_offset_minutes = optional_i64_arg(&args, "utc_offset_minutes")?
+                .and_then(|value| i32::try_from(value).ok());
             to_value(
-                get_usage_overview_core(&state.pool, since, page, page_size)
+                get_usage_overview_core(&state.pool, since, page, page_size, utc_offset_minutes)
                     .await
                     .map_err(to_error)?,
             )
