@@ -129,7 +129,7 @@ There are two ways. The first is recommended.
 
 ### Option A: Let AI Switch write the config
 
-Click the **📄 button** in the toolbar (tooltip 写入路由配置文件, "write route config files"). It requires the proxy to be running.
+Click the **🔌 button** in the toolbar (tooltip 对接客户端：把当前算力池写入客户端配置, "connect a client: write the current pool into its config"). It requires the proxy to be running. Check the clients to write in the dialog, then click 写入 ("write").
 
 AI Switch points the current platform's CLI config at the local proxy. For Codex it edits `~/.codex/config.toml`, adding a model provider named `ai-switch` and selecting it, and writes a model catalog to `~/.codex/ai-switch-model-catalog.json`.
 
@@ -158,12 +158,14 @@ Every request it makes now goes through AI Switch.
 
 OpenCode, OpenClaw, and Hermes don't support native config writing, and you may simply prefer to control the config yourself.
 
-You need two values, both in the toolbar dropdown (click ▾ for 更多测试操作, "more test actions"):
+You need two values, both in the dialog opened by the **🔌 button** (tooltip 写入路由配置文件, "write route config files"), under 「在以上客户端之外使用」 ("use outside the clients above"):
 
-- **「复制 Base URL」** ("copy base URL") — the current proxy address, e.g. `http://127.0.0.1:19527`
-- **「复制 sk」** ("copy sk") — the local proxy key, shaped like `sk-ai-switch-<uuid>`
+- **Base URL** — the current proxy address, e.g. `http://127.0.0.1:19527`
+- **API Key** — the local proxy key, shaped like `sk-ai-switch-<uuid>`
 
-The proxy key is **one per platform**. It is never displayed in plain text; you can only copy it.
+Both have a one-click copy button. The API Key is masked by default; click the eye icon to reveal it.
+
+The proxy key is **one per agent tab**, so switching tabs means copying a different key.
 
 Its job is to tell the proxy which platform a request belongs to. Send it in the `Authorization: Bearer`, `x-api-key`, or `x-goog-api-key` header, or as a `key` / `api_key` query parameter. It is **local authentication only and is never forwarded upstream** — the upstream sees the account's own real key.
 

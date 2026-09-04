@@ -1,6 +1,7 @@
-import { FileCog, X } from "lucide-react";
+import { Check, Copy, Eye, EyeOff, Plug, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { ConfigWriteClientStatus } from "../../lib/api/types";
+import { copySensitiveText } from "../../lib/routeCredentialTransfer";
 
 const fileStatusLabels: Record<string, string> = {
   missing: "未建立",
@@ -15,12 +16,116 @@ function nativeClientKeys(clients: ConfigWriteClientStatus[]): string[] {
   return clients.filter((client) => client.native).map((client) => client.client_key);
 }
 
+type EndpointRowProps = {
+  label: string;
+  /** `null` while the value is still being read. */
+  value: string | null;
+  /** Masked behind a reveal toggle: the pool key routes to every pooled account. */
+  secret?: boolean;
+};
+
+/** One copyable connection parameter for clients this dialog cannot write. */
+function EndpointRow({ label, value, secret = false }: EndpointRowProps) {
+  const [copied, setCopied] = useState(false);
+  const [revealed, setRevealed] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const copiedTimerRef = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (copiedTimerRef.current !== null) {
+        window.clearTimeout(copiedTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  const copy = async () => {
+    if (!value) {
+      return;
+    }
+    try {
+      await copySensitiveText(value);
+      setError(null);
+      setCopied(true);
+      if (copiedTimerRef.current !== null) {
+        window.clearTimeout(copiedTimerRef.current);
+      }
+      copiedTimerRef.current = window.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      setError("复制失败：剪贴板不可用。");
+    }
+  };
+
+  return (
+    <div className="grid gap-1">
+      <span className="text-[11px] font-semibold text-stone-600">{label}</span>
+      <div className="flex items-center gap-1.5">
+        <input
+          aria-label={label}
+          autoComplete="off"
+          className="h-8 min-w-0 flex-1 rounded-md border border-stone-200 bg-white px-2.5 font-mono text-[11px] text-stone-800 outline-none placeholder:font-sans placeholder:text-stone-400"
+          onKeyDown={(event) => {
+            // The field lives inside the write form, where Enter would submit it.
+            if (event.key === "Enter") {
+              event.preventDefault();
+            }
+          }}
+          placeholder="读取中..."
+          readOnly
+          type={secret && !revealed ? "password" : "text"}
+          value={value ?? ""}
+        />
+        {secret ? (
+          <button
+            aria-label={revealed ? `隐藏 ${label}` : `显示 ${label}`}
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-stone-200 bg-white text-stone-600 transition-colors hover:bg-stone-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            onClick={() => setRevealed((current) => !current)}
+            title={revealed ? "隐藏" : "显示"}
+            type="button"
+          >
+            {revealed ? (
+              <EyeOff aria-hidden="true" className="h-3.5 w-3.5" />
+            ) : (
+              <Eye aria-hidden="true" className="h-3.5 w-3.5" />
+            )}
+          </button>
+        ) : null}
+        <button
+          aria-label={`复制 ${label}`}
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-stone-200 bg-white text-stone-600 transition-colors hover:bg-stone-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={!value}
+          onClick={() => void copy()}
+          title={value ? `复制 ${label}` : "本地路由代理尚未就绪"}
+          type="button"
+        >
+          {copied ? (
+            <Check aria-hidden="true" className="h-3.5 w-3.5 text-emerald-600" />
+          ) : (
+            <Copy aria-hidden="true" className="h-3.5 w-3.5" />
+          )}
+        </button>
+      </div>
+      {error ? (
+        <p className="text-[11px] text-red-700" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 type ConfigWriteTargetsDialogProps = {
   platform: string;
+  /** Human-readable name of the agent tab, for prose that names it. */
+  platformLabel?: string;
   clients: ConfigWriteClientStatus[];
   /** `null` means the user has never chosen, so only the native client is checked. */
   initialSelection: string[] | null;
   capabilityDisabledReason?: string;
+  /** Pool endpoint for clients this dialog cannot write; `null` until it is read. */
+  poolBaseUrl?: string | null;
+  poolApiKey?: string | null;
   loading: boolean;
   error: string | null;
   onClose: () => void;
@@ -29,9 +134,12 @@ type ConfigWriteTargetsDialogProps = {
 
 export function ConfigWriteTargetsDialog({
   platform,
+  platformLabel,
   clients,
   initialSelection,
   capabilityDisabledReason,
+  poolBaseUrl = null,
+  poolApiKey = null,
   loading,
   error,
   onClose,
@@ -140,7 +248,7 @@ export function ConfigWriteTargetsDialog({
         ref={dialogRef}
         aria-labelledby="config-write-targets-title"
         aria-modal="true"
-        className="w-full max-w-md overflow-hidden rounded-lg border border-stone-200 bg-white shadow-2xl"
+        className="flex max-h-[calc(100vh-2rem)] w-full max-w-md flex-col overflow-hidden rounded-lg border border-stone-200 bg-white shadow-2xl"
         role="dialog"
         tabIndex={-1}
       >
@@ -153,7 +261,7 @@ export function ConfigWriteTargetsDialog({
               className="mt-0.5 flex items-center gap-2 text-base font-semibold text-stone-950"
               id="config-write-targets-title"
             >
-              <FileCog aria-hidden="true" className="h-4 w-4 text-stone-500" />
+              <Plug aria-hidden="true" className="h-4 w-4 text-stone-500" />
               选择要写入的客户端
             </h2>
             <p className="mt-1 text-xs leading-5 text-stone-500">
@@ -172,8 +280,8 @@ export function ConfigWriteTargetsDialog({
           </button>
         </header>
 
-        <form onSubmit={submit}>
-          <div className="grid gap-3 px-5 py-4">
+        <form className="flex min-h-0 flex-1 flex-col" onSubmit={submit}>
+          <div className="grid min-h-0 flex-1 gap-3 overflow-y-auto px-5 py-4">
             {capabilityDisabledReason ? (
               <p
                 className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-950"
@@ -233,6 +341,20 @@ export function ConfigWriteTargetsDialog({
                 写入后需重启 {restartNames} 才生效（它不监听配置文件变化）。
               </p>
             ) : null}
+
+            <section className="grid gap-2.5 rounded-md border border-stone-200 bg-stone-50 px-3 py-3">
+              <div className="grid gap-0.5">
+                <h3 className="text-xs font-semibold text-stone-950">在以上客户端之外使用</h3>
+                <p className="text-[11px] leading-5 text-stone-500">
+                  如果你需要在以上客户端之外的情况使用当前算力池端点，可以用下面的参数手动配置。
+                </p>
+              </div>
+              <EndpointRow label="Base URL" value={poolBaseUrl} />
+              <EndpointRow label="API Key" secret value={poolApiKey} />
+              <p className="text-[11px] leading-5 text-amber-800">
+                {`注意：每个智能体标签页的算力池端点 API Key 都不一样。这里给出的是 ${platformLabel ?? platform} 标签页的 Key，别的标签页要各自复制。`}
+              </p>
+            </section>
 
             {error ? (
               <p

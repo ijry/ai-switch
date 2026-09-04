@@ -93,7 +93,7 @@ Unavailable on the other three, with reason code `capability.native_config_unava
 
 > Native configuration writing is not implemented for this platform.
 
-Configure those by hand, copying the base URL and proxy key from the UI. AI Switch neither parses nor modifies their config files.
+Configure those by hand: click the 🔌 button in the toolbar and copy the Base URL and API Key from the 「在以上客户端之外使用」 section at the bottom of the dialog. AI Switch neither parses nor modifies their config files.
 
 ### `official_import`
 

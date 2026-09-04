@@ -1674,9 +1674,16 @@ describe("AccountsScreen", () => {
     renderScreen("hermes");
 
     expect(await screen.findByLabelText("Hermes 部分支持")).toBeInTheDocument();
+    // No native config write here, but the dialog still has to open: it is where
+    // the endpoint parameters for a hand-configured client live.
     const writeConfig = screen.getByLabelText("写入路由配置文件");
-    expect(writeConfig).toBeDisabled();
+    expect(writeConfig).toBeEnabled();
     expect(writeConfig).toHaveAttribute("title", expect.stringContaining("原生配置"));
+    await userEvent.click(writeConfig);
+    expect(await screen.findByLabelText("复制 Base URL")).toBeInTheDocument();
+    expect(screen.getByText("该平台的原生配置写入尚未实现。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "写入" })).toBeDisabled();
+    await userEvent.click(screen.getByLabelText("关闭选择要写入的客户端"));
     await userEvent.click(screen.getByLabelText("打开刷新菜单"));
     expect(screen.getByLabelText("刷新官方账号额度")).toBeDisabled();
     await waitFor(() => expect(refreshRouteCredentialsQuota).not.toHaveBeenCalled());
@@ -3846,7 +3853,7 @@ describe("AccountsScreen", () => {
     });
   });
 
-  it("copies the running route proxy Base URL and platform sk", async () => {
+  it("hands out the pool endpoint from the config write dialog instead of the menu", async () => {
     vi.mocked(getRouteProxyStatus).mockResolvedValue({
       running: true,
       bind_host: "127.0.0.1",
@@ -3856,13 +3863,23 @@ describe("AccountsScreen", () => {
     poolStateByPlatform.set("codex", ["cred-official-1"]);
     renderScreen("codex", "out_of_pool");
 
+    // The endpoint now belongs with the client write, not the test menu.
     await waitFor(() => expect(screen.getByLabelText("真实生成测试算力池路由")).toBeEnabled());
     await userEvent.click(screen.getByLabelText("打开算力池测试菜单"));
+    expect(screen.queryByLabelText("复制 Base URL")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("复制 sk")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("写入路由配置文件"));
+    await screen.findByText("选择要写入的客户端");
+
     await userEvent.click(screen.getByLabelText("复制 Base URL"));
     expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("https://127.0.0.1:43111");
 
-    await userEvent.click(screen.getByLabelText("打开算力池测试菜单"));
-    await userEvent.click(screen.getByLabelText("复制 sk"));
+    // The key is per platform, so the dialog reads the active tab's own key.
+    await waitFor(() =>
+      expect(screen.getByLabelText("API Key")).toHaveValue("sk-ai-switch-codex-key"),
+    );
+    await userEvent.click(screen.getByLabelText("复制 API Key"));
     expect(getRouteProxyKey).toHaveBeenCalledWith("codex");
     expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("sk-ai-switch-codex-key");
   });

@@ -21,6 +21,7 @@ import {
   MessageSquareText,
   MoreVertical,
   Play,
+  Plug,
   Plus,
   RefreshCw,
   ScanText,
@@ -2460,7 +2461,7 @@ export function AccountsScreen({
   const [refreshMenuOpen, setRefreshMenuOpen] = useState(false);
   const [modelTestMenuOpen, setModelTestMenuOpen] = useState(false);
   const [modelTestMenuCopied, setModelTestMenuCopied] = useState<
-    "curl" | "curl-powershell" | "curl-cmd" | "base-url" | "sk" | null
+    "curl" | "curl-powershell" | "curl-cmd" | null
   >(null);
   const [copiedCredentialId, setCopiedCredentialId] = useState<string | null>(null);
   const [copyingCredential, setCopyingCredential] = useState<RouteCredential | null>(null);
@@ -3905,6 +3906,14 @@ export function AccountsScreen({
     queryFn: () => listConfigWriteClients(activePlatform),
     enabled: configWriteDialogOpen || configWriteOutcomes.length > 0,
   });
+  // The dialog also hands out the pool endpoint for clients it cannot write, and
+  // the key is per platform. Only read while the dialog is open: reading creates
+  // the key when it does not exist yet.
+  const routeProxyKeyQuery = useQuery({
+    queryKey: ["route-proxy-key", activePlatform],
+    queryFn: () => getRouteProxyKey(activePlatform),
+    enabled: configWriteDialogOpen,
+  });
   const clientByTargetKey = useMemo(() => {
     const map = new Map<string, ConfigWriteClientStatus>();
     for (const client of configWriteClientsQuery.data ?? []) {
@@ -4607,44 +4616,6 @@ export function AccountsScreen({
     }
   };
 
-  const copyModelTestBaseUrl = async () => {
-    const baseUrl = routeProxyQuery.data?.base_url?.trim();
-    if (!routeProxyQuery.data?.running || !baseUrl) {
-      setRoutePoolFeedback({
-        type: "error",
-        message: "复制 Base URL 失败：本地路由代理尚未启动。",
-      });
-      return;
-    }
-
-    try {
-      await copySensitiveText(baseUrl);
-      setModelTestMenuCopied("base-url");
-      setModelTestMenuOpen(false);
-      window.setTimeout(() => setModelTestMenuCopied(null), 1400);
-    } catch (error) {
-      setRoutePoolFeedback({
-        type: "error",
-        message: "复制 Base URL 失败：" + formatApiError(error, "剪贴板不可用。"),
-      });
-    }
-  };
-
-  const copyModelTestSk = async () => {
-    try {
-      const proxyKey = await getRouteProxyKey(activePlatform);
-      await copySensitiveText(proxyKey);
-      setModelTestMenuCopied("sk");
-      setModelTestMenuOpen(false);
-      window.setTimeout(() => setModelTestMenuCopied(null), 1400);
-    } catch (error) {
-      setRoutePoolFeedback({
-        type: "error",
-        message: "复制 sk 失败：" + formatApiError(error, "无法读取本地路由密钥。"),
-      });
-    }
-  };
-
   const openRoutePoolModelsDialog = () => {
     setModelTestMenuOpen(false);
     routePoolModelsMutation.reset();
@@ -5095,22 +5066,21 @@ export function AccountsScreen({
                     ? "border-amber-400 text-amber-700"
                     : "border-stone-300 text-stone-700"
                 }`}
-                disabled={
-                  !routeProxyQuery.data?.running ||
-                  !configWriteEnabled ||
-                  writeConfigsMutation.isPending
-                }
+                // Platforms without a native config write still open the dialog:
+                // it is where the endpoint parameters for hand-configured clients
+                // live, and the write itself stays gated inside it.
+                disabled={!routeProxyQuery.data?.running || writeConfigsMutation.isPending}
                 onClick={() => setConfigWriteDialogOpen(true)}
                 title={
                   !configWriteEnabled
-                    ? configWriteReason
+                    ? configWriteReason + "可在弹窗里复制端点参数手动配置。"
                     : configWriteStale
                       ? "配置已变更，需重新写入才会生效"
-                      : undefined
+                      : "对接客户端：把当前算力池写入客户端配置"
                 }
                 type="button"
               >
-                <FileCode2 aria-hidden="true" className="h-3.5 w-3.5" />
+                <Plug aria-hidden="true" className="h-3.5 w-3.5" />
                 {configWriteStale ? (
                   <span
                     aria-hidden="true"
@@ -5208,28 +5178,6 @@ export function AccountsScreen({
                     >
                       <Copy aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
                       复制 curl（CMD）
-                    </button>
-                    <button
-                      aria-label="复制 Base URL"
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-45"
-                      disabled={!routeProxyQuery.data?.running || !routeProxyQuery.data?.base_url}
-                      onClick={() => void copyModelTestBaseUrl()}
-                      role="menuitem"
-                      title={!routeProxyQuery.data?.running ? "本地路由代理尚未启动" : "复制当前路由代理 Base URL"}
-                      type="button"
-                    >
-                      <Copy aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-                      复制 Base URL
-                    </button>
-                    <button
-                      aria-label="复制 sk"
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
-                      onClick={() => void copyModelTestSk()}
-                      role="menuitem"
-                      type="button"
-                    >
-                      <KeyRound aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-                      复制 sk
                     </button>
                     <button
                       aria-label="查看模型列表"
@@ -7018,6 +6966,11 @@ export function AccountsScreen({
           }}
           onSubmit={(clientKeys) => writeConfigsMutation.mutate(clientKeys)}
           platform={activePlatform}
+          platformLabel={platformLabels[activePlatform]}
+          poolApiKey={routeProxyKeyQuery.data ?? null}
+          poolBaseUrl={
+            routeProxyQuery.data?.running ? routeProxyQuery.data.base_url ?? null : null
+          }
         />
       ) : null}
 

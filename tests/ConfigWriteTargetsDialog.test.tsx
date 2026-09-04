@@ -4,6 +4,13 @@ import { describe, expect, it, vi } from "vitest";
 import { ConfigWriteTargetsDialog } from "../src/components/accounts/ConfigWriteTargetsDialog";
 import type { ConfigWriteClientStatus } from "../src/lib/api/types";
 
+/** Call after `userEvent.setup()`: it installs a clipboard stub of its own. */
+function stubClipboard() {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  return writeText;
+}
+
 const clients: ConfigWriteClientStatus[] = [
   {
     client_key: "codex",
@@ -41,6 +48,9 @@ function setup(overrides: Partial<React.ComponentProps<typeof ConfigWriteTargets
       onClose={onClose}
       onSubmit={onSubmit}
       platform="codex"
+      platformLabel="Codex"
+      poolApiKey="sk-ai-switch-codex-key"
+      poolBaseUrl="http://127.0.0.1:43111"
       {...overrides}
     />,
   );
@@ -130,5 +140,50 @@ describe("ConfigWriteTargetsDialog", () => {
 
     await user.keyboard("{Escape}");
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("copies the pool endpoint for clients it cannot write", async () => {
+    const user = userEvent.setup();
+    const writeText = stubClipboard();
+    setup();
+
+    expect(screen.getByLabelText("Base URL")).toHaveValue("http://127.0.0.1:43111");
+    await user.click(screen.getByLabelText("复制 Base URL"));
+    expect(writeText).toHaveBeenLastCalledWith("http://127.0.0.1:43111");
+
+    await user.click(screen.getByLabelText("复制 API Key"));
+    expect(writeText).toHaveBeenLastCalledWith("sk-ai-switch-codex-key");
+  });
+
+  it("keeps the key masked until the user reveals it, and names the tab it belongs to", async () => {
+    const user = userEvent.setup();
+    setup();
+
+    // Each agent tab has its own key, so the prose has to say which one this is.
+    expect(screen.getByText(/每个智能体标签页的算力池端点 API Key 都不一样/)).toBeInTheDocument();
+    expect(screen.getByText(/Codex 标签页的 Key/)).toBeInTheDocument();
+
+    const key = screen.getByLabelText("API Key");
+    expect(key).toHaveAttribute("type", "password");
+    await user.click(screen.getByLabelText("显示 API Key"));
+    expect(key).toHaveAttribute("type", "text");
+    await user.click(screen.getByLabelText("隐藏 API Key"));
+    expect(key).toHaveAttribute("type", "password");
+  });
+
+  it("cannot copy an endpoint value that has not been read yet", () => {
+    setup({ poolApiKey: null });
+
+    expect(screen.getByLabelText("复制 API Key")).toBeDisabled();
+    expect(screen.getByLabelText("复制 Base URL")).toBeEnabled();
+  });
+
+  it("does not submit the write when Enter is pressed in an endpoint field", async () => {
+    const user = userEvent.setup();
+    const { onSubmit } = setup();
+
+    await user.click(screen.getByLabelText("Base URL"));
+    await user.keyboard("{Enter}");
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 });
