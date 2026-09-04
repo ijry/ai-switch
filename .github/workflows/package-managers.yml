@@ -1,0 +1,325 @@
+name: Package Managers
+
+# Publishes a release that is *already* on GitHub Releases to the package
+# managers. Kept out of release.yml on purpose: a rejected Homebrew push or a
+# winget-pkgs review must never be able to hold up or fail the release itself,
+# and re-submitting a package for an older tag has to be possible long after
+# that tag's build machines are gone.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, e.g. v0.8.0. Defaults to the latest published release."
+        required: false
+        type: string
+      homebrew:
+        description: "Push the Homebrew cask to the tap"
+        required: false
+        default: true
+        type: boolean
+      winget:
+        description: "Open the winget-pkgs pull request"
+        required: false
+        default: true
+        type: boolean
+      dry_run:
+        description: "Render and check the manifests, then stop before touching any external repository"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-managers-${{ github.event.inputs.tag || github.event.release.tag_name || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      publishable: ${{ steps.release.outputs.publishable }}
+      homebrew: ${{ steps.plan.outputs.homebrew }}
+      winget: ${{ steps.plan.outputs.winget }}
+      winget_identifier: ${{ steps.plan.outputs.winget_identifier }}
+      winget_installers_regex: ${{ steps.plan.outputs.winget_installers_regex }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve the published release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Empty for `release: published`, where the tag comes from the event.
+          INPUT_TAG: ${{ inputs.tag }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-$EVENT_TAG}"
+          if [[ -z "$tag" ]]; then
+            # A manual run with no tag targets whatever is currently newest.
+            tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > release.json
+
+          draft="$(node -p "require('./release.json').draft")"
+          prerelease="$(node -p "require('./release.json').prerelease")"
+          version="${tag#v}"
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          # A draft has no public download URLs, and package managers track
+          # stable versions only: an rc in the tap would reach every `brew
+          # upgrade` user. Both cases stop here with a readable reason instead
+          # of failing halfway through a submission.
+          if [[ "$draft" == "true" ]]; then
+            echo "publishable=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$tag is still a draft; nothing to publish to the package managers."
+          elif [[ "$prerelease" == "true" ]]; then
+            echo "publishable=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$tag is a prerelease; package managers only track stable releases."
+          else
+            echo "publishable=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Render the package manifests
+        if: steps.release.outputs.publishable == 'true'
+        env:
+          # Through the environment rather than inlined into the script: the tag
+          # can come from a dispatch input, and `${{ }}` is substituted before
+          # bash ever sees quoting.
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/create-package-manifests.mjs \
+            --release release.json \
+            --tag "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --out-dir package-manifests
+
+      - name: Upload the rendered manifests
+        if: steps.release.outputs.publishable == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-manifests
+          path: package-manifests
+          if-no-files-found: error
+
+      - name: Decide which package managers this run can reach
+        id: plan
+        if: steps.release.outputs.publishable == 'true'
+        env:
+          # Secrets are unavailable in a job-level `if`, so the reachable
+          # targets get decided here and the publish jobs gate on the outputs.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          # Empty on a `release: published` run, where both are wanted.
+          WANT_HOMEBREW: ${{ inputs.homebrew }}
+          WANT_WINGET: ${{ inputs.winget }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          homebrew=true
+          if [[ "$WANT_HOMEBREW" == "false" ]]; then
+            homebrew=false
+            echo "::notice::Homebrew skipped: this run did not ask for it."
+          elif [[ -z "$HOMEBREW_TAP_TOKEN" ]]; then
+            homebrew=false
+            echo "::warning::Homebrew skipped: secret HOMEBREW_TAP_TOKEN is not set (see docs-site/docs/dev/release.md)."
+          fi
+
+          winget=true
+          if [[ "$WANT_WINGET" == "false" ]]; then
+            winget=false
+            echo "::notice::WinGet skipped: this run did not ask for it."
+          elif [[ -z "$WINGET_TOKEN" ]]; then
+            winget=false
+            echo "::warning::WinGet skipped: secret WINGET_TOKEN is not set (see docs-site/docs/dev/release.md)."
+          fi
+
+          echo "homebrew=$homebrew" >> "$GITHUB_OUTPUT"
+          echo "winget=$winget" >> "$GITHUB_OUTPUT"
+
+          # winget-releaser looks the installer up again by regex; hand it the
+          # anchored pattern for the asset already resolved above so the two
+          # cannot disagree.
+          summary=package-manifests/summary.json
+          echo "winget_identifier=$(node -p "require('./$summary').winget.identifier")" >> "$GITHUB_OUTPUT"
+          echo "winget_installers_regex=$(node -p "require('./$summary').winget.installersRegex")" >> "$GITHUB_OUTPUT"
+
+  homebrew:
+    name: Homebrew cask
+    needs: resolve
+    if: needs.resolve.outputs.publishable == 'true' && needs.resolve.outputs.homebrew == 'true'
+    # An Apple Silicon runner with Homebrew preinstalled, so the cask can be
+    # installed for real before it is pushed. For an ad-hoc signed bundle that
+    # is the only check worth having: a cask that renders fine can still leave
+    # the app quarantined and unopenable.
+    runs-on: macos-latest
+
+    env:
+      TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'ijry/homebrew-ai-switch' }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+
+    steps:
+      - name: Download the rendered manifests
+        uses: actions/download-artifact@v4
+        with:
+          name: package-manifests
+          path: package-manifests
+
+      - name: Stage the cask in a local tap
+        id: tap
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="${TAP_REPO%%/*}"
+          repo_name="${TAP_REPO##*/}"
+          # `brew tap ijry/ai-switch` resolves to the repo `homebrew-ai-switch`,
+          # and every brew command wants the short form.
+          tap="$owner/${repo_name#homebrew-}"
+          tap_dir="$(brew --repository)/Library/Taps/$owner/$repo_name"
+
+          mkdir -p "$tap_dir/Casks"
+          cp package-manifests/homebrew/Casks/ai-switch.rb "$tap_dir/Casks/ai-switch.rb"
+          # Homebrew only treats a directory under Library/Taps as a tap once it
+          # is a git repository.
+          git -C "$tap_dir" init -q -b main
+          git -C "$tap_dir" add -A
+          git -C "$tap_dir" -c user.email=ci@local -c user.name=ci commit -qm "Stage ai-switch $VERSION"
+
+          echo "tap=$tap" >> "$GITHUB_OUTPUT"
+
+      - name: Check the cask style
+        # Advisory: a third-party tap has no style gate of its own, and a
+        # RuboCop update should not be able to hold back a release. The install
+        # below is the check that has to pass.
+        continue-on-error: true
+        env:
+          TAP: ${{ steps.tap.outputs.tap }}
+        run: brew style "$TAP"
+
+      - name: Install the cask from the local tap
+        env:
+          TAP: ${{ steps.tap.outputs.tap }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install --cask "$TAP/ai-switch"
+
+          app="/Applications/AI Switch.app"
+          if [[ ! -d "$app" ]]; then
+            echo "The cask installed without leaving $app behind." >&2
+            exit 1
+          fi
+          # Homebrew quarantines what it downloads; the cask's postflight is the
+          # only reason the installed copy opens without the manual Gatekeeper
+          # steps from the install guide. Assert it actually ran.
+          if xattr "$app" | grep -q com.apple.quarantine; then
+            echo "The cask left com.apple.quarantine on $app." >&2
+            exit 1
+          fi
+
+          brew uninstall --cask "$TAP/ai-switch"
+
+      - name: Push the cask to the tap
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh repo view "$TAP_REPO" >/dev/null 2>&1; then
+            echo "Tap repository $TAP_REPO is missing, or HOMEBREW_TAP_TOKEN cannot see it." >&2
+            echo "Create it as a public repository whose name starts with homebrew- and re-run." >&2
+            exit 1
+          fi
+
+          # Not shallow: pushing from a shallow clone is a needless way to lose a
+          # release to a git error, and a tap holds one file.
+          git clone "https://x-access-token:$GH_TOKEN@github.com/$TAP_REPO.git" tap
+          if ! git -C tap rev-parse --verify HEAD >/dev/null 2>&1; then
+            # A brand-new empty tap: GitHub adopts the first pushed branch as the
+            # default, and brew reads casks from the default branch.
+            git -C tap checkout -q -B main
+          fi
+
+          mkdir -p tap/Casks
+          cp package-manifests/homebrew/Casks/ai-switch.rb tap/Casks/ai-switch.rb
+
+          # `git add` first so a cask that is not in the tap yet counts as a
+          # change; `git diff` alone ignores an untracked file.
+          git -C tap add Casks/ai-switch.rb
+          if git -C tap diff --cached --quiet; then
+            echo "::notice::$TAP_REPO already carries ai-switch $VERSION; nothing to push."
+            exit 0
+          fi
+
+          git -C tap \
+              -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "ai-switch $VERSION"
+          git -C tap push -u origin HEAD
+
+  winget:
+    name: WinGet manifest
+    needs: resolve
+    if: needs.resolve.outputs.publishable == 'true' && needs.resolve.outputs.winget == 'true'
+    # `ubuntu-latest`, not `ubuntu-slim`: winget-releaser@v2 installs Komac with
+    # `cargo binstall`, which needs the cargo that only the full image carries.
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download the rendered manifests
+        uses: actions/download-artifact@v4
+        with:
+          name: package-manifests
+          path: package-manifests
+
+      - name: Report what would be submitted
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e '
+            const summary = require("./package-manifests/summary.json");
+            console.log(JSON.stringify(summary.winget, null, 2));
+          '
+
+      # Opens a pull request against microsoft/winget-pkgs through a fork, so
+      # the version only reaches users once a winget moderator merges it. Two
+      # prerequisites the action cannot create for you, both checked by its own
+      # first step: the package must already exist in winget-pkgs (submit the
+      # very first version by hand with `komac new`), and `fork-user` must own a
+      # fork of microsoft/winget-pkgs.
+      - name: Submit the manifest to winget-pkgs
+        if: ${{ !inputs.dry_run }}
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: ${{ needs.resolve.outputs.winget_identifier }}
+          version: ${{ needs.resolve.outputs.version }}
+          # The action's default resolves to the branch name on a manual run.
+          release-tag: ${{ needs.resolve.outputs.tag }}
+          installers-regex: ${{ needs.resolve.outputs.winget_installers_regex }}
+          # A classic PAT with the `public_repo` scope. Komac opens the pull
+          # request over GraphQL, which fine-grained tokens cannot do against a
+          # repository they do not own.
+          token: ${{ secrets.WINGET_TOKEN }}
+          fork-user: ${{ vars.WINGET_FORK_USER || github.repository_owner }}
+

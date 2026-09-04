@@ -103,6 +103,17 @@ The tag version without the `v` prefix must exactly match both `package.json` an
 
 The workflow builds signed Tauri desktop bundles, `ai-switch-server`, `ai-switch-tsnet`, and `latest.json` updater metadata for GitHub Releases.
 
+### Package Managers
+
+A separate workflow, `.github/workflows/package-managers.yml`, publishes an **already published** release to Homebrew and WinGet. It runs on `release: published`, and `workflow_dispatch` accepts a `tag` so any past release can be re-submitted without rebuilding it. Drafts and prereleases are skipped.
+
+Both paths write to another repository and need a secret. A missing secret logs a warning and skips that path instead of failing the run:
+
+- `HOMEBREW_TAP_TOKEN` — PAT with `contents: write` on the tap repository (`HOMEBREW_TAP_REPO`, default `ijry/homebrew-ai-switch`)
+- `WINGET_TOKEN` — classic PAT with the `public_repo` scope, plus a fork of `microsoft/winget-pkgs` under `WINGET_FORK_USER`
+
+Two one-time steps are not automatable: create the public `homebrew-` tap repository, and submit the first `ijry.AISwitch` version to winget-pkgs by hand — the action only bumps a package that already exists there. See [Release Process](https://ijry.github.io/ai-switch/en/dev/release) for the full setup.
+
 ## Web Service And Server Mode
 
 Desktop and browser share one React UI. Desktop uses Tauri IPC. Browser mode uses:

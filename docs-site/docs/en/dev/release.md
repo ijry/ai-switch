@@ -1,6 +1,6 @@
 ---
 title: Release Process
-description: How AI Switch releases work — a version tag triggers GitHub Actions, which validates version consistency, builds for three platforms, signs updater artifacts, generates latest.json, and publishes to GitHub Releases.
+description: How AI Switch releases work — a version tag triggers GitHub Actions, which validates version consistency, builds for three platforms, signs updater artifacts, generates latest.json, publishes to GitHub Releases, and then hands the release to Homebrew and WinGet from a separate workflow.
 ---
 
 # Release Process
@@ -201,6 +201,99 @@ A successful run attaches the following to the GitHub Release:
 - **`latest.json`:** the Tauri updater manifest that drives desktop auto-updates
 
 How users get these is covered in [installation](/en/guide/installation); running the server build is covered in [standalone server](/en/deploy/standalone-server).
+
+## Publishing to package managers (Homebrew / WinGet)
+
+`.github/workflows/package-managers.yml` hands a release that is **already published** to the package managers. Keeping it out of `release.yml` is deliberate: a winget submission waits on Microsoft's review and a Homebrew push can fail on an expired token, and neither should be able to hold up or fail the release itself. The other direction matters too — re-submitting a tag from months ago needs no rebuild.
+
+### What triggers it
+
+| Trigger | Behaviour |
+| --- | --- |
+| A release is published | Runs automatically, tag taken from the event |
+| Manual `workflow_dispatch` | Pass `tag` to publish any past release; leave it empty for the latest one |
+
+A manual run has three more switches: `homebrew` and `winget` can each be turned off, and `dry_run` renders and checks the manifests without touching any external repository.
+
+Drafts and prereleases (`-rc` / `-beta` / `-alpha`) are always skipped, with the reason in the log rather than a failure: a draft's assets have no public download URL yet, and a prerelease in the tap would reach everyone who runs `brew upgrade`.
+
+### What has to be configured
+
+Both paths write to **someone else's repository**, so both need a repository secret. **A missing secret does not fail the workflow** — it logs a warning, skips that path, and lets the other one run.
+
+| Secret / Variable | Kind | Purpose |
+| --- | --- | --- |
+| `HOMEBREW_TAP_TOKEN` | secret | PAT with `contents: write` on the tap repository |
+| `HOMEBREW_TAP_REPO` | variable, optional | Tap repository, defaults to `ijry/homebrew-ai-switch` |
+| `WINGET_TOKEN` | secret | **Classic** PAT, `public_repo` scope only |
+| `WINGET_FORK_USER` | variable, optional | Account holding the winget-pkgs fork, defaults to the repo owner |
+
+::: warning The WinGet token has to be a classic PAT
+The tool that opens the pull request is Komac, which goes through GitHub's GraphQL API — and a fine-grained token can only reach GraphQL for resources whose owner matches the token's own. The target is `microsoft/winget-pkgs`, so fine-grained tokens and GitHub Apps both fail here.
+:::
+
+### Homebrew: one-time setup
+
+1. Create a **public** repository `ijry/homebrew-ai-switch`. The name has to start with `homebrew-` for `brew tap ijry/ai-switch` to resolve.
+2. Generate a PAT with `contents: write` on it and store it as `HOMEBREW_TAP_TOKEN`.
+
+From then on each release renders the cask on `macos-latest`, stages it in a local tap, **actually runs `brew install --cask`**, asserts `/Applications/AI Switch.app` exists with the quarantine flag cleared, and only then pushes to the tap. For an ad-hoc signed bundle that install check is the one that matters: a cask that parses fine can still install an app that refuses to open.
+
+::: tip The cask does the Gatekeeper dance for the user
+The macOS bundle is ad-hoc signed and never notarized (see the section in [installation](/en/guide/installation)), so the cask carries a `postflight` that runs `xattr -dr com.apple.quarantine` on the copy Homebrew just placed. It touches that one path and changes no system setting, but it saves the user the manual "System Settings → Open Anyway" trip.
+
+The cask also declares `depends_on arch: :arm64` (CI only builds Apple Silicon) and `auto_updates true` (the app's own updater replaces the bundle, so what Homebrew recorded goes stale by itself).
+:::
+
+### WinGet: the first version has to be submitted by hand
+
+The automation can only do **version bumps**, never the initial listing. `winget-releaser`'s very first step checks whether the package exists in `microsoft/winget-pkgs` and errors out if it does not:
+
+```text
+::error::Package ijry.AISwitch does not exist in the winget-pkgs repository.
+Please add atleast one version of the package before using this action.
+```
+
+So the one-time setup is three steps:
+
+1. Fork `microsoft/winget-pkgs` under `ijry` — the tooling will not create the fork for you.
+2. Submit the first version of `ijry.AISwitch` by hand with [Komac](https://github.com/russellbanks/Komac) or [wingetcreate](https://github.com/microsoft/winget-create) and wait for a winget maintainer to merge it. The identifier is case-sensitive and has to match its directory path exactly (`manifests/i/ijry/AISwitch/<version>/`).
+3. Generate a classic PAT (`public_repo`) and store it as `WINGET_TOKEN`.
+
+Each release then opens a pull request against `microsoft/winget-pkgs`. **A Microsoft maintainer has to merge it before the version reaches users**, and that step is outside our control.
+
+::: tip The installer itself does not need code signing
+Nothing in winget-pkgs' policy docs requires code signing, and `SignatureSha256` only applies to MSIX/APPX. Its validation pipeline cares about other things: multi-engine antivirus scanning, a silent install as a non-elevated user, and post-install registry entries that agree with the manifest's `Publisher` and `PackageName`.
+
+Tauri's NSIS installer defaults to `currentUser` mode, so it needs no elevation, and `InstallerType: nullsoft` needs no hand-written silent switches — the winget client supplies `/S` once it recognises nullsoft.
+:::
+
+### What users run
+
+Once both setups above are done and each channel has its first version landed:
+
+```bash
+# macOS (Apple Silicon)
+brew tap ijry/ai-switch
+brew install --cask ai-switch
+```
+
+```powershell
+# Windows
+winget install ijry.AISwitch
+```
+
+Until then neither command finds the package, which is why [installation](/en/guide/installation) still only documents downloading from Releases.
+
+### How the manifests are generated
+
+`scripts/create-package-manifests.mjs` starts from the release's API response and does three things:
+
+1. **Picks the installers.** It matches on the updater platform token (`darwin-aarch64`, `windows-x86_64`) plus the extension, excluding `.sig`, `.app.tar.gz` and `.nsis.zip` — payloads only the updater ever downloads. The repo has shipped two asset naming schemes and both match; zero matches or more than one is an error rather than a guess.
+2. **Resolves sha256.** The releases API now reports a `digest` per asset, so the usual path never pulls the 31 MB dmg down to hash it. Assets from older releases have no digest and fall back to a streaming download.
+3. **Renders the cask and writes winget's inputs to `summary.json`.** The `installers-regex` handed to `winget-releaser` is an anchored pattern built from the file name step 1 already resolved, so its own second lookup cannot disagree with step 1.
+
+`pnpm release:manifest:test` covers the script — every platform in `release.yml` runs it — and the cases pin v0.8.0's real asset list.
 
 ## See also
 
