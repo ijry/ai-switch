@@ -17,10 +17,10 @@ test("creates updater manifest from signed platform assets", async () => {
     await mkdir(winDir, { recursive: true });
     await mkdir(linuxDir, { recursive: true });
 
-    await writeFile(path.join(winDir, "ai-switch_v0.1.0_windows-x86_64_setup.exe"), "binary");
-    await writeFile(path.join(winDir, "ai-switch_v0.1.0_windows-x86_64_setup.exe.sig"), "win-signature\n");
-    await writeFile(path.join(linuxDir, "ai-switch_v0.1.0_linux-x86_64.AppImage"), "binary");
-    await writeFile(path.join(linuxDir, "ai-switch_v0.1.0_linux-x86_64.AppImage.sig"), "linux-signature\n");
+    await writeFile(path.join(winDir, "ai-switch-0.1.0-windows-x86_64-setup.exe"), "binary");
+    await writeFile(path.join(winDir, "ai-switch-0.1.0-windows-x86_64-setup.exe.sig"), "win-signature\n");
+    await writeFile(path.join(linuxDir, "ai-switch-0.1.0-linux-x86_64.AppImage"), "binary");
+    await writeFile(path.join(linuxDir, "ai-switch-0.1.0-linux-x86_64.AppImage.sig"), "linux-signature\n");
 
     const output = path.join(root, "latest.json");
     await createManifest({
@@ -38,7 +38,7 @@ test("creates updater manifest from signed platform assets", async () => {
     assert.equal(manifest.platforms["linux-x86_64"].signature, "linux-signature");
     assert.equal(
       manifest.platforms["windows-x86_64"].url,
-      "https://github.com/ijry/ai-switch/releases/download/v0.1.0/ai-switch_v0.1.0_windows-x86_64_setup.exe",
+      "https://github.com/ijry/ai-switch/releases/download/v0.1.0/ai-switch-0.1.0-windows-x86_64-setup.exe",
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -51,8 +51,8 @@ test("includes release notes from a file", async () => {
   try {
     const winDir = path.join(root, "windows-x86_64");
     await mkdir(winDir, { recursive: true });
-    await writeFile(path.join(winDir, "ai-switch_v0.1.0_windows-x86_64_setup.exe"), "binary");
-    await writeFile(path.join(winDir, "ai-switch_v0.1.0_windows-x86_64_setup.exe.sig"), "signature\n");
+    await writeFile(path.join(winDir, "ai-switch-0.1.0-windows-x86_64-setup.exe"), "binary");
+    await writeFile(path.join(winDir, "ai-switch-0.1.0-windows-x86_64-setup.exe.sig"), "signature\n");
 
     const notesFile = path.join(root, "release-notes.md");
     await writeFile(notesFile, "## 修复\n\n- 显示更新日志\n\n");
@@ -79,7 +79,7 @@ test("fails when a platform directory has no signed updater asset", async () => 
   try {
     const winDir = path.join(root, "windows-x86_64");
     await mkdir(winDir, { recursive: true });
-    await writeFile(path.join(winDir, "ai-switch_v0.1.0_windows-x86_64_setup.exe"), "binary");
+    await writeFile(path.join(winDir, "ai-switch-0.1.0-windows-x86_64-setup.exe"), "binary");
 
     await assert.rejects(
       () =>
@@ -104,6 +104,8 @@ test("prefers macOS updater archive over signed installer image", async () => {
     const macDir = path.join(root, "darwin-aarch64");
     await mkdir(macDir, { recursive: true });
 
+    // Staging strips the spaces Tauri puts in bundle names, but the URL builder
+    // has to keep escaping whatever it is handed.
     await writeFile(path.join(macDir, "AI Switch.app.tar.gz"), "archive");
     await writeFile(path.join(macDir, "AI Switch.app.tar.gz.sig"), "archive-signature\n");
     await writeFile(path.join(macDir, "AI Switch.dmg"), "dmg");

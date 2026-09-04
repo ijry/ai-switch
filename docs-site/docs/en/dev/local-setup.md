@@ -89,15 +89,15 @@ go build -o ../../src-tauri/binaries/ai-switch-tsnet-x86_64-pc-windows-msvc.exe 
 
 The filename suffix must be your current Rust target triple — Tauri's `externalBin` mechanism looks the binary up by triple. `rustc -vV` prints your machine's `host:` triple.
 
-## Updater manifest tests
+## Release script tests
 
-The release pipeline generates and verifies `latest.json`, and those scripts ship with Node's built-in test runner:
+The release pipeline stages the assets, builds the release body, and generates and verifies `latest.json`. Those scripts ship with Node's built-in test runner:
 
 ```powershell
 pnpm release:manifest:test
 ```
 
-This runs `scripts/create-updater-manifest.test.mjs` and `scripts/verify-updater-signatures.test.mjs`. CI executes this step in every platform build job, so run it locally after touching anything under `scripts/`.
+This runs the tests for four scripts under `scripts/`: `create-updater-manifest`, `verify-updater-signatures`, `stage-release-assets`, and `create-release-body`. CI executes this step in every platform build job, so run it locally after touching anything under `scripts/`.
 
 ## Run the desktop app
 

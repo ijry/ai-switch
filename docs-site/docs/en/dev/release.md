@@ -93,14 +93,16 @@ Each platform runs the same sequence:
 2. **Linux system dependencies.** Linux only: `apt-get install` for `libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `patchelf`, `libgtk-3-dev`.
 3. **Toolchains.** pnpm 10.12.4, Node 22 (with pnpm cache), stable Rust, stable Go (cached on `sidecar/ai-switch-tsnet/go.sum`).
 4. **Install dependencies.** `pnpm install --frozen-lockfile`.
-5. **Compute platform variables.** Reads the host triple from `rustc -vV` and derives the updater platform id (`windows-x86_64`, `darwin-aarch64`, `linux-x86_64`, …) plus the sidecar and server binary paths.
+5. **Compute platform variables.** Reads the host triple from `rustc -vV` and derives the updater platform id (`windows-x86_64`, `darwin-aarch64`, `linux-x86_64`, …), `APP_VERSION`, plus the sidecar and server binary paths.
 6. **Frontend checks.** `pnpm typecheck`, `pnpm test:run`, `pnpm release:manifest:test`.
 7. **Build the frontend.** `pnpm build`.
 8. **Sidecar tests and build.** `go test ./...`, then `go build -trimpath -ldflags="-s -w"` into `src-tauri/binaries/ai-switch-tsnet-<triple><suffix>`, asserting the file actually exists afterwards.
 9. **Rust checks.** `pnpm rust:check`, `pnpm rust:test`.
 10. **Package with Tauri.** `pnpm tauri build --ci --bundles <that platform's formats>`.
 11. **Build the standalone server.** `pnpm server:build:release`.
-12. **Stage assets.** Recursively collects `.exe`/`.msi`/`.dmg`/`.deb`/`.AppImage`/`.zip`/`.tar.gz`/`.sig` from `src-tauri/target/release/bundle` and renames each to `ai-switch_<tag>_<platform>_<original>`. The server and sidecar binaries are zipped separately as `ai-switch-server_<tag>_<platform>.zip` and `ai-switch-tsnet_<tag>_<platform>.zip`. This step also asserts **at least one `.sig` file** was staged, failing otherwise.
+12. **Stage assets.** `scripts/stage-release-assets.mjs` renames the installers from `src-tauri/target/release/bundle` to `ai-switch-<version>-<platform>` (`.exe` always gets the `-setup` suffix), names the updater-only `.app.tar.gz` / `.nsis.zip` payloads `ai-switch-updater-<version>-<platform>`, and keeps every `.sig` beside the file it signs. The deb intermediates (`control.tar.gz`, `data.tar.gz`, `debian-binary`) and anything inside the built `.app` are skipped. Missing installers or missing signatures fail the step. The server and sidecar binaries are zipped separately as `ai-switch-server_<tag>_<platform>.zip` and `ai-switch-tsnet_<tag>_<platform>.zip`.
+
+    The naming is not arbitrary: the GitHub release page sorts assets by name and folds all but the first few behind "Show all N assets". Putting the version right after `ai-switch-` sorts the installers ahead of `ai-switch-server_` and `ai-switch-tsnet_`, so the Windows `.exe` and the macOS `.dmg` people came for stay visible. `<platform>` stays the updater platform id rather than a friendlier `windows-x64` because the package-manager publishing picks its installers by that token (see below).
 13. **Upload artifacts.** Named by updater platform id, with `if-no-files-found: error`.
 
 Note that CI reruns the full check suite on each platform. A single release therefore executes the tests three times, which is how platform-specific problems surface here rather than in the wild.
@@ -125,7 +127,7 @@ https://github.com/ijry/ai-switch/releases/latest/download/latest.json
 ## publish: manifest generation and signature verification
 
 1. **Download every artifact.** `actions/download-artifact` pulls all three platforms into `release-assets/`, one subdirectory per platform.
-2. **Read the release notes.** A paginated `gh api` query finds the release matching the tag and writes its body to `release-notes.md`. If nothing is found, the job exits with an error.
+2. **Restore the release notes.** The `prepare` job's `release_notes` output is written back to `release-notes.md`. An empty file fails the job.
 3. **Generate the updater manifest.** `scripts/create-updater-manifest.mjs` identifies the target platform from the subdirectory name and picks the updater asset by a preference order (Windows prefers `.exe` then `.msi`; macOS prefers `.tar.gz` then `.dmg`; Linux prefers `.AppImage` then `.deb`), writing `release-assets/latest.json`:
 
    ```bash
@@ -137,7 +139,7 @@ https://github.com/ijry/ai-switch/releases/latest/download/latest.json
      --notes-file release-notes.md
    ```
 
-4. **Verify signing key consistency.** `scripts/verify-updater-signatures.mjs` extracts the signer key ID from each `.sig`'s minisign payload and compares it against the key ID derived from `pubkey` in `tauri.conf.json`:
+4. **Verify signing key consistency.** `scripts/verify-updater-signatures.mjs` extracts the signer key ID from each platform's signature payload in the manifest and compares it against the key ID derived from `pubkey` in `tauri.conf.json`:
 
    ```bash
    node scripts/verify-updater-signatures.mjs \
@@ -147,7 +149,21 @@ https://github.com/ijry/ai-switch/releases/latest/download/latest.json
 
    The point of this check: if the signing key is rotated without updating the public key in the config, already-installed clients fail verification and the update path breaks silently. Catching that before publishing is far cheaper than recovering afterwards.
 
-5. **Promote to a real release.** `ncipollo/release-action` runs again with `draft: false`, `replacesArtifacts: true`, and `artifactErrorsFailBuild: true`, uploading everything under `release-assets/**/*.*` including `latest.json`.
+5. **Delete the `.sig` files.** The signatures are inlined in `latest.json` by now, and the client only ever reads the manifest — it never fetches a sibling `.sig`. So `find release-assets -name '*.sig' -delete` keeps them from spending the few asset rows the release page shows.
+6. **Build the release body.** `scripts/create-release-body.mjs` scans the platform subdirectories for installers and prepends a bilingual download table (one row each for Windows, macOS, and Linux, plus a line for the standalone server) to the tag message, writing `release-body.md`:
+
+   ```bash
+   node scripts/create-release-body.mjs \
+     --assets-dir release-assets \
+     --tag "<tag>" \
+     --repo "<owner/repo>" \
+     --output release-body.md \
+     --notes-file release-notes.md
+   ```
+
+   The table goes into the GitHub release body only. The manifest's `notes` stay the verbatim tag message, because the desktop client splits it on the 29-hyphen separator to pick a language and a stray table would leak into the changelog.
+
+7. **Promote to a real release.** `ncipollo/release-action` runs again with `draft: false`, `bodyFile: release-body.md`, `replacesArtifacts: true`, and `artifactErrorsFailBuild: true`, uploading everything under `release-assets/**/*.*` including `latest.json`.
 
 ## Cutting a release
 
@@ -191,14 +207,17 @@ The better habit is **running the full check suite locally before tagging** — 
 
 ## What a release produces
 
-A successful run attaches the following to the GitHub Release:
+A successful run attaches the following to the GitHub Release, in the order the asset list shows them:
 
-- **Windows:** an NSIS installer (`.exe`) and its `.sig`
-- **macOS:** an `.app` archive and a `.dmg`, with `.sig` files
-- **Linux:** a `.deb` and an `.AppImage`, with `.sig` files
+- **Windows:** `ai-switch-<version>-windows-x86_64-setup.exe`
+- **macOS:** `ai-switch-<version>-darwin-aarch64.dmg`
+- **Linux:** `ai-switch-<version>-linux-x86_64.AppImage` and `ai-switch-<version>-linux-x86_64.deb`
 - **Per platform:** `ai-switch-server_<tag>_<platform>.zip` (standalone server)
 - **Per platform:** `ai-switch-tsnet_<tag>_<platform>.zip` (Tailscale sidecar)
+- **macOS:** `ai-switch-updater-<version>-darwin-aarch64.app.tar.gz` (only the auto-updater downloads it)
 - **`latest.json`:** the Tauri updater manifest that drives desktop auto-updates
+
+The `.sig` files are not published as separate assets; their signatures live inside `latest.json`. The release body also opens with a download table pointing straight at the first three groups above.
 
 How users get these is covered in [installation](/en/guide/installation); running the server build is covered in [standalone server](/en/deploy/standalone-server).
 

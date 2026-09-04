@@ -9,24 +9,21 @@ AI Switch 桌面端从 GitHub Releases 获取，三个平台都有预构建的�
 
 ## 下载
 
-打开 [Releases 页面](https://github.com/ijry/ai-switch/releases/latest)，在资产列表里找对应你系统的文件。
+打开 [Releases 页面](https://github.com/ijry/ai-switch/releases/latest)，正文顶部有一张下载表格，三个平台的安装包各占一行，点对应你系统的链接就行。
 
-资产文件名统一是 `ai-switch_<版本>_<平台>_<原始文件名>` 的形式，`<平台>` 部分是 `windows-x86_64`、`darwin-aarch64` 或 `linux-x86_64`，照这个前缀找就行。
+想直接翻资产列表也可以：桌面端安装包命名为 `ai-switch-<版本>-<平台>`（如 `ai-switch-0.8.0-windows-x86_64-setup.exe`），排在列表最前面。往后是独立服务器、Tailscale sidecar，以及自动更新才会用到的 `ai-switch-updater-*` 和 `latest.json`。
 
 带 `-rc`、`-beta`、`-alpha` 的版本是预发布版，正常使用请挑不带这些后缀的。
 
 ### Windows
 
-下载 NSIS 安装包（`.exe`），双击安装。当前发布的是 **x86_64** 架构。
+下载 `ai-switch-<版本>-windows-x86_64-setup.exe`（NSIS 安装包），双击安装。当前发布的是 **x86_64** 架构。
 
 安装完成后可执行文件所在目录会同时带一份 `web/` 目录，里面是 Web 界面的静态资源，Web 服务模式会用到。
 
 ### macOS
 
-有两种资产：
-
-- **`.dmg`** —— 挂载后把 AI Switch 拖进「应用程序」，常规装法
-- **`.app`**（打包在压缩包里）—— 直接解压使用
+装机用 **`ai-switch-<版本>-darwin-aarch64.dmg`**：挂载后把 AI Switch 拖进「应用程序」。同名的 `ai-switch-updater-*.app.tar.gz` 是内置自动更新下载的 `.app` 归档，手动安装不需要它。
 
 当前发布的是 **aarch64（Apple Silicon）** 架构，因为 CI 的 macOS 构建跑在 Apple Silicon runner 上。Intel Mac 需要自己从源码构建。
 
@@ -36,16 +33,16 @@ AI Switch 桌面端从 GitHub Releases 获取，三个平台都有预构建的�
 
 有两种资产，都是 **x86_64**：
 
-- **`.deb`** —— Debian / Ubuntu 系用 `sudo apt install ./<文件名>.deb` 安装
-- **`.AppImage`** —— 不用安装，`chmod +x` 之后直接运行
+- **`ai-switch-<版本>-linux-x86_64.deb`** —— Debian / Ubuntu 系用 `sudo apt install ./<文件名>` 安装
+- **`ai-switch-<版本>-linux-x86_64.AppImage`** —— 不用安装，`chmod +x` 之后直接运行
 
 ```bash
 # .deb
-sudo apt install ./ai-switch_0.6.7_linux-x86_64_ai-switch_0.6.7_amd64.deb
+sudo apt install ./ai-switch-0.8.0-linux-x86_64.deb
 
 # AppImage
-chmod +x ./ai-switch_*_linux-x86_64_*.AppImage
-./ai-switch_*_linux-x86_64_*.AppImage
+chmod +x ./ai-switch-0.8.0-linux-x86_64.AppImage
+./ai-switch-0.8.0-linux-x86_64.AppImage
 ```
 
 AI Switch 是 Tauri 应用，依赖系统的 WebKitGTK。发行版没预装的话需要自己补上（Debian / Ubuntu 上对应 `libwebkit2gtk-4.1-0`、`libgtk-3-0`、`librsvg2-2`，托盘图标还需要 ayatana appindicator）。`.deb` 会声明依赖，`apt` 会自动处理；用 AppImage 的话要手动确认。

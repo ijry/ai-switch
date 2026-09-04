@@ -186,6 +186,7 @@ jobs:
           "HOST_TRIPLE=$hostTriple" >> $env:GITHUB_ENV
           "EXE_SUFFIX=$exeSuffix" >> $env:GITHUB_ENV
           "UPDATER_PLATFORM=$platform" >> $env:GITHUB_ENV
+          "APP_VERSION=$("${{ github.ref_name }}" -replace '^v', '')" >> $env:GITHUB_ENV
           "SIDECAR_BIN=src-tauri/binaries/ai-switch-tsnet-$hostTriple$exeSuffix" >> $env:GITHUB_ENV
           "SERVER_BIN=src-tauri/target/release/ai-switch-server$exeSuffix" >> $env:GITHUB_ENV
 
@@ -234,18 +235,16 @@ jobs:
           $dest = "release-assets/$env:UPDATER_PLATFORM"
           New-Item -ItemType Directory -Force $dest | Out-Null
 
-          $bundleFiles = Get-ChildItem src-tauri/target/release/bundle -Recurse -File |
-            Where-Object {
-              $_.Name -match '\.(exe|msi|dmg|deb|AppImage|zip|tar\.gz|sig)$'
-            }
-
-          if (-not $bundleFiles) {
-            throw "No Tauri bundle assets found."
-          }
-
-          foreach ($file in $bundleFiles) {
-            $safeName = ("ai-switch_{0}_{1}_{2}" -f $tag, $env:UPDATER_PLATFORM, $file.Name) -replace '[^\w.\-]+', '-'
-            Copy-Item $file.FullName (Join-Path $dest $safeName)
+          # GitHub sorts the release page's asset list by name and folds all but
+          # the first few away, so the installers are named to sort ahead of the
+          # server and sidecar archives. See scripts/stage-release-assets.mjs.
+          node scripts/stage-release-assets.mjs `
+            --bundle-dir src-tauri/target/release/bundle `
+            --dest $dest `
+            --platform $env:UPDATER_PLATFORM `
+            --version $env:APP_VERSION
+          if ($LASTEXITCODE -ne 0) {
+            throw "Staging the Tauri bundle assets failed."
           }
 
           # The standalone server has no Tauri resource map, so the frontend has
@@ -265,11 +264,6 @@ jobs:
           $sidecarArchive = Join-Path $dest "ai-switch-tsnet_${tag}_$env:UPDATER_PLATFORM.zip"
           Compress-Archive -Path "$serverStage/*" -DestinationPath $serverArchive -Force
           Compress-Archive -Path $env:SIDECAR_BIN -DestinationPath $sidecarArchive -Force
-
-          $signatureCount = (Get-ChildItem $dest -Filter *.sig -File).Count
-          if ($signatureCount -lt 1) {
-            throw "No Tauri updater signature files were staged."
-          }
 
       - name: Upload release assets
         uses: actions/upload-artifact@v4
@@ -322,6 +316,24 @@ jobs:
       - name: Verify updater signature keys
         run: node scripts/verify-updater-signatures.mjs --manifest release-assets/latest.json --tauri-config src-tauri/tauri.conf.json
 
+      - name: Drop the signature files from the asset list
+        shell: bash
+        run: |
+          # latest.json now carries every signature inline, and that manifest is
+          # the only thing that reads them: the updater never fetches a sibling
+          # .sig URL. Publishing them anyway only spends the handful of asset
+          # rows GitHub shows before it folds the rest away.
+          find release-assets -name '*.sig' -delete
+
+      - name: Build the release body
+        run: |
+          node scripts/create-release-body.mjs \
+            --assets-dir release-assets \
+            --tag "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --output release-body.md \
+            --notes-file release-notes.md
+
       - name: Create or update release
         uses: ncipollo/release-action@v1
         with:
@@ -331,7 +343,7 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
           allowUpdates: true
-          bodyFile: release-notes.md
+          bodyFile: release-body.md
           replacesArtifacts: true
           artifactErrorsFailBuild: true
           artifacts: "release-assets/**/*.*"

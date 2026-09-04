@@ -19,10 +19,18 @@ describe("release workflow release notes", () => {
     expect(workflow).not.toContain("generateReleaseNotes: true");
   });
 
-  it("writes the same notes into every release update so the body is not cleared", () => {
-    const bodyFileUses = workflow.match(/^\s+bodyFile: release-notes\.md$/gm) ?? [];
+  it("gives every release update a body file so the body is not cleared", () => {
+    const bodyFileUses = workflow.match(/^\s+bodyFile: release-(notes|body)\.md$/gm) ?? [];
 
     expect(bodyFileUses).toHaveLength(2);
+  });
+
+  it("keeps the download table out of the notes the client renders", () => {
+    // The published body gets a download table prepended, but latest.json feeds
+    // the in-app changelog, which splits the tag message on its own separator.
+    expect(workflow.match(/^\s+bodyFile: release-body\.md$/gm) ?? []).toHaveLength(1);
+    expect(workflow).toContain("--output release-body.md");
+    expect(workflow).not.toContain("--notes-file release-body.md");
   });
 
   it("feeds the notes file into the updater manifest", () => {
@@ -56,5 +64,29 @@ describe("standalone server release archive", () => {
     // tailscale_sidecar.rs falls back to a sibling `ai-switch-tsnet[.exe]`, not
     // the target-triple name the build produces.
     expect(workflow).toContain('"ai-switch-tsnet$env:EXE_SUFFIX"');
+  });
+});
+
+describe("release asset list", () => {
+  const workflow = readWorkflow();
+
+  it("names the bundle assets through the staging script", () => {
+    // GitHub sorts the asset list by name and folds all but the first few away,
+    // so the installers only stay visible while the script decides their names.
+    expect(workflow).toContain("node scripts/stage-release-assets.mjs");
+    // create-package-manifests.mjs resolves the Homebrew and WinGet installers
+    // by the updater platform token, so the staged names have to carry it.
+    expect(workflow).toContain("--platform $env:UPDATER_PLATFORM");
+    expect(workflow).toContain("--version $env:APP_VERSION");
+  });
+
+  it("deletes the signature files only after the manifest inlined them", () => {
+    const manifest = workflow.indexOf("scripts/create-updater-manifest.mjs");
+    const verify = workflow.indexOf("scripts/verify-updater-signatures.mjs");
+    const deletion = workflow.indexOf("find release-assets -name '*.sig' -delete");
+
+    expect(manifest).toBeGreaterThan(-1);
+    expect(deletion).toBeGreaterThan(manifest);
+    expect(deletion).toBeGreaterThan(verify);
   });
 });

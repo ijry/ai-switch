@@ -93,14 +93,16 @@ prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-
 2. **Linux 系统依赖** —— 仅 Linux 执行 `apt-get install`（`libwebkit2gtk-4.1-dev`、`libayatana-appindicator3-dev`、`librsvg2-dev`、`patchelf`、`libgtk-3-dev`）。
 3. **工具链** —— pnpm 10.12.4、Node 22（带 pnpm 缓存）、stable Rust、stable Go（按 `sidecar/ai-switch-tsnet/go.sum` 缓存）。
 4. **安装依赖** —— `pnpm install --frozen-lockfile`。
-5. **计算平台变量** —— 从 `rustc -vV` 取 host 三元组，推导出更新器平台标识（`windows-x86_64` / `darwin-aarch64` / `linux-x86_64` 等）、sidecar 与服务器二进制路径。
+5. **计算平台变量** —— 从 `rustc -vV` 取 host 三元组，推导出更新器平台标识（`windows-x86_64` / `darwin-aarch64` / `linux-x86_64` 等）、`APP_VERSION`，以及 sidecar 与服务器二进制路径。
 6. **前端检查** —— `pnpm typecheck`、`pnpm test:run`、`pnpm release:manifest:test`。
 7. **构建前端** —— `pnpm build`。
 8. **sidecar 测试与构建** —— `go test ./...`，然后 `go build -trimpath -ldflags="-s -w"` 输出到 `src-tauri/binaries/ai-switch-tsnet-<三元组><后缀>`，并校验文件确实存在。
 9. **Rust 检查** —— `pnpm rust:check`、`pnpm rust:test`。
 10. **打包 Tauri** —— `pnpm tauri build --ci --bundles <该平台的格式>`。
 11. **构建独立服务器** —— `pnpm server:build:release`。
-12. **归集产物** —— 从 `src-tauri/target/release/bundle` 递归收集 `.exe`/`.msi`/`.dmg`/`.deb`/`.AppImage`/`.zip`/`.tar.gz`/`.sig`，统一重命名为 `ai-switch_<tag>_<平台>_<原名>`；另外把服务器与 sidecar 二进制分别压成 `ai-switch-server_<tag>_<平台>.zip` 与 `ai-switch-tsnet_<tag>_<平台>.zip`。这一步还会断言**至少存在一个 `.sig` 文件**，否则报错。
+12. **归集产物** —— 运行 `scripts/stage-release-assets.mjs`，把 `src-tauri/target/release/bundle` 下的安装包重命名为 `ai-switch-<版本>-<平台>`（`.exe` 统一带 `-setup` 后缀），只有更新器会下载的 `.app.tar.gz` / `.nsis.zip` 命名为 `ai-switch-updater-<版本>-<平台>`，`.sig` 跟随它签名的那个文件。deb 的中间产物（`control.tar.gz`、`data.tar.gz`、`debian-binary`）与 `.app` 目录内部一律跳过。没有安装包或没有 `.sig` 就直接报错。另外把服务器与 sidecar 二进制分别压成 `ai-switch-server_<tag>_<平台>.zip` 与 `ai-switch-tsnet_<tag>_<平台>.zip`。
+
+    命名不是随手取的：GitHub Release 页面按文件名排序，只展开前几个，其余折进「Show all N assets」。版本号紧跟 `ai-switch-` 能让安装包排在 `ai-switch-server_`、`ai-switch-tsnet_` 之前，用户要的 Windows `.exe` 和 macOS `.dmg` 才不会被折起来。`<平台>` 沿用更新器平台标识而不是更友好的 `windows-x64`，因为包管理器上架靠这个 token 挑安装包（见下文）。
 13. **上传产物** —— 以更新器平台标识为 artifact 名上传，`if-no-files-found: error`。
 
 注意 CI 会在每个平台上重跑全部检查。这意味着一次发布相当于跑三遍完整测试套件，任何平台相关的问题都会在这里暴露。
@@ -125,7 +127,7 @@ https://github.com/ijry/ai-switch/releases/latest/download/latest.json
 ## publish：清单生成与签名校验
 
 1. **下载全部产物** —— `actions/download-artifact` 把三个平台的 artifact 取到 `release-assets/` 下，每个平台一个子目录。
-2. **读取发布说明** —— 用 `gh api` 分页查询 Release 列表，取出 `prepare` 阶段生成的 body 写入 `release-notes.md`。取不到就报错退出。
+2. **还原发布说明** —— 把 `prepare` 作业的 `release_notes` 输出写回 `release-notes.md`。为空就报错退出。
 3. **生成更新器清单** —— 运行 `scripts/create-updater-manifest.mjs`，按平台子目录名识别目标平台，从预设的偏好顺序里挑出对应的更新器资源（Windows 优先 `.exe` 再 `.msi`，macOS 优先 `.tar.gz` 再 `.dmg`，Linux 优先 `.AppImage` 再 `.deb`），产出 `release-assets/latest.json`：
 
    ```bash
@@ -137,7 +139,7 @@ https://github.com/ijry/ai-switch/releases/latest/download/latest.json
      --notes-file release-notes.md
    ```
 
-4. **校验签名密钥一致性** —— 运行 `scripts/verify-updater-signatures.mjs`，从每个 `.sig` 的 minisign 载荷里解出签名者 key ID，与 `tauri.conf.json` 里 `pubkey` 解出的 key ID 逐一比对：
+4. **校验签名密钥一致性** —— 运行 `scripts/verify-updater-signatures.mjs`，从清单里每个平台的签名载荷解出签名者 key ID，与 `tauri.conf.json` 里 `pubkey` 解出的 key ID 逐一比对：
 
    ```bash
    node scripts/verify-updater-signatures.mjs \
@@ -147,7 +149,21 @@ https://github.com/ijry/ai-switch/releases/latest/download/latest.json
 
    这道校验的意义是：如果签名密钥被轮换而配置里的公钥没跟着更新，已安装的客户端会验签失败、更新链路静默断裂。在发布前拦下来远比事后补救便宜。
 
-5. **转为正式发布** —— 再次调用 `ncipollo/release-action`，`draft: false`、`replacesArtifacts: true`、`artifactErrorsFailBuild: true`，上传 `release-assets/**/*.*` 下的全部文件（含 `latest.json`）。
+5. **删除 `.sig`** —— 签名此时已经内联进 `latest.json`，客户端只读清单、不会去取同名 `.sig`，所以 `find release-assets -name '*.sig' -delete`，不再占用 Release 页面本来就不多的可见资产位。
+6. **生成 Release 正文** —— 运行 `scripts/create-release-body.mjs`，扫描各平台子目录里的安装包，在 tag 提交信息之前拼一张中英双语下载表（Windows / macOS / Linux 各一行，独立服务器另起一行），写入 `release-body.md`：
+
+   ```bash
+   node scripts/create-release-body.mjs \
+     --assets-dir release-assets \
+     --tag "<tag>" \
+     --repo "<owner/repo>" \
+     --output release-body.md \
+     --notes-file release-notes.md
+   ```
+
+   下载表只进 GitHub Release 正文。更新清单的 `notes` 仍然是原样的 tag 提交信息——桌面端按 29 个连字符的分隔线切分中英文，多一张表格会串进更新日志里。
+
+7. **转为正式发布** —— 再次调用 `ncipollo/release-action`，`draft: false`、`bodyFile: release-body.md`、`replacesArtifacts: true`、`artifactErrorsFailBuild: true`，上传 `release-assets/**/*.*` 下的全部文件（含 `latest.json`）。
 
 ## 发布操作示例
 
@@ -191,14 +207,17 @@ git tag -d v0.6.8
 
 ## 发布产物一览
 
-一次成功的发布会在 GitHub Release 上产出：
+一次成功的发布会在 GitHub Release 上产出（按资产列表里的先后顺序）：
 
-- **Windows**：NSIS 安装器（`.exe`）及其 `.sig`
-- **macOS**：`.app` 归档与 `.dmg`，及其 `.sig`
-- **Linux**：`.deb` 与 `.AppImage`，及其 `.sig`
+- **Windows**：`ai-switch-<版本>-windows-x86_64-setup.exe`
+- **macOS**：`ai-switch-<版本>-darwin-aarch64.dmg`
+- **Linux**：`ai-switch-<版本>-linux-x86_64.AppImage` 与 `ai-switch-<版本>-linux-x86_64.deb`
 - **每个平台**：`ai-switch-server_<tag>_<平台>.zip`（独立服务器）
 - **每个平台**：`ai-switch-tsnet_<tag>_<平台>.zip`（Tailscale sidecar）
+- **macOS**：`ai-switch-updater-<版本>-darwin-aarch64.app.tar.gz`（只有自动更新会下载）
 - **`latest.json`**：Tauri 更新器清单，桌面端自动更新的数据源
+
+`.sig` 不作为独立资产发布，签名内联在 `latest.json` 里。Release 正文顶部另有一张下载表，直接指向上面前三类文件。
 
 用户如何拿到这些产物见[安装](/guide/installation)，独立服务器的用法见[独立服务器](/deploy/standalone-server)。
 

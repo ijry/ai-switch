@@ -89,15 +89,15 @@ go build -o ../../src-tauri/binaries/ai-switch-tsnet-x86_64-pc-windows-msvc.exe 
 
 文件名后缀必须是当前 Rust 目标三元组，Tauri 的 `externalBin` 机制按三元组查找二进制。用 `rustc -vV` 可以看到本机的 `host:` 三元组。
 
-## 更新器清单测试
+## 发布脚本测试
 
-发布流程会生成并校验 `latest.json`，对应脚本自带 Node 原生测试：
+发布流程会归集产物、生成 Release 正文并校验 `latest.json`，对应脚本自带 Node 原生测试：
 
 ```powershell
 pnpm release:manifest:test
 ```
 
-它跑的是 `scripts/create-updater-manifest.test.mjs` 与 `scripts/verify-updater-signatures.test.mjs`。CI 在每个平台的构建作业里都会执行这一步，所以改动 `scripts/` 下的发布脚本后本地务必先跑一次。
+它跑的是 `scripts/` 下四个脚本的测试：`create-updater-manifest`、`verify-updater-signatures`、`stage-release-assets`、`create-release-body`。CI 在每个平台的构建作业里都会执行这一步，所以改动 `scripts/` 下的发布脚本后本地务必先跑一次。
 
 ## 运行桌面应用
 

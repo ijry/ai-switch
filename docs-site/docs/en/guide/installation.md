@@ -9,24 +9,21 @@ AI Switch desktop builds come from GitHub Releases, with prebuilt packages for a
 
 ## Download
 
-Open the [latest release page](https://github.com/ijry/ai-switch/releases/latest) and find the asset for your system.
+Open the [latest release page](https://github.com/ijry/ai-switch/releases/latest). The release body starts with a download table — one row per platform, so click the link for your system.
 
-Asset names follow the pattern `ai-switch_<version>_<platform>_<original filename>`, where `<platform>` is `windows-x86_64`, `darwin-aarch64`, or `linux-x86_64`. Match on that prefix.
+If you would rather scan the asset list: the desktop installers are named `ai-switch-<version>-<platform>` (for example `ai-switch-0.8.0-windows-x86_64-setup.exe`) and sort to the top of it. Below them come the standalone server, the Tailscale sidecar, and the `ai-switch-updater-*` archives plus `latest.json` that only the built-in updater needs.
 
 Versions containing `-rc`, `-beta`, or `-alpha` are prereleases. For normal use, pick one without those suffixes.
 
 ### Windows
 
-Download the NSIS installer (`.exe`) and run it. Current releases are **x86_64**.
+Download `ai-switch-<version>-windows-x86_64-setup.exe` (the NSIS installer) and run it. Current releases are **x86_64**.
 
 After installation, the directory holding the executable also contains a `web/` folder with the web UI's static assets, which web service mode serves.
 
 ### macOS
 
-Two assets are published:
-
-- **`.dmg`** — mount it and drag AI Switch into Applications. The usual route.
-- **`.app`** (inside an archive) — unpack and run it directly.
+Install from **`ai-switch-<version>-darwin-aarch64.dmg`**: mount it and drag AI Switch into Applications. The matching `ai-switch-updater-*.app.tar.gz` is the `.app` archive the built-in updater downloads; a manual install does not need it.
 
 Current releases are **aarch64 (Apple Silicon)**, because the macOS CI build runs on an Apple Silicon runner. Intel Macs need to build from source.
 
@@ -36,16 +33,16 @@ If Gatekeeper blocks the first launch, that is expected — see [macOS won't ope
 
 Two assets, both **x86_64**:
 
-- **`.deb`** — on Debian/Ubuntu, install with `sudo apt install ./<filename>.deb`
-- **`.AppImage`** — no installation; `chmod +x` and run
+- **`ai-switch-<version>-linux-x86_64.deb`** — on Debian/Ubuntu, install with `sudo apt install ./<filename>`
+- **`ai-switch-<version>-linux-x86_64.AppImage`** — no installation; `chmod +x` and run
 
 ```bash
 # .deb
-sudo apt install ./ai-switch_0.6.7_linux-x86_64_ai-switch_0.6.7_amd64.deb
+sudo apt install ./ai-switch-0.8.0-linux-x86_64.deb
 
 # AppImage
-chmod +x ./ai-switch_*_linux-x86_64_*.AppImage
-./ai-switch_*_linux-x86_64_*.AppImage
+chmod +x ./ai-switch-0.8.0-linux-x86_64.AppImage
+./ai-switch-0.8.0-linux-x86_64.AppImage
 ```
 
 AI Switch is a Tauri app and depends on the system WebKitGTK. If your distribution doesn't ship it, install it yourself — on Debian/Ubuntu that means `libwebkit2gtk-4.1-0`, `libgtk-3-0`, and `librsvg2-2`, plus ayatana appindicator for the tray icon. The `.deb` declares its dependencies so `apt` resolves them automatically; with the AppImage you have to check manually.
