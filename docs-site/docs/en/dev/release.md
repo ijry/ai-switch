@@ -229,8 +229,11 @@ How users get these is covered in [installation](/en/guide/installation); runnin
 
 | Trigger | Behaviour |
 | --- | --- |
-| A release is published | Runs automatically, tag taken from the event |
+| `release.yml` finished publishing | Runs automatically: the last step of the publish job dispatches this workflow with the tag it just published |
+| Someone published a release by hand | Runs automatically, tag taken from the event |
 | Manual `workflow_dispatch` | Pass `tag` to publish any past release; leave it empty for the latest one |
+
+The `release: published` event does **not** fire for a release the pipeline published. GitHub does not start workflow runs from events created by its own `GITHUB_TOKEN`, and that is the token release-action publishes with — which is why v0.8.1 went out with no package-manager run at all. `workflow_dispatch` is one of the two documented exceptions to that rule (`repository_dispatch` is the other), so `release.yml` dispatches this workflow explicitly once the release is out, passing the tag as the ref so the manifests are rendered by the same commit that produced the installers. A dispatch that fails only logs a warning: a published release should not be marked failed because of the package managers, and the missing run can be repeated by hand with the same tag.
 
 A manual run has three more switches: `homebrew` and `winget` can each be turned off, and `dry_run` renders and checks the manifests without touching any external repository.
 

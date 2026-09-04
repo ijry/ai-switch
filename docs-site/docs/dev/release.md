@@ -229,8 +229,11 @@ git tag -d v0.6.8
 
 | 触发 | 行为 |
 | --- | --- |
-| Release 被 publish | 自动运行，tag 取自事件 |
+| `release.yml` 发布完成 | 自动运行：publish 作业最后一步按刚发布的 tag 派发本工作流 |
+| 有人手工 publish 一个 Release | 自动运行，tag 取自事件 |
 | 手动 `workflow_dispatch` | 用 `tag` 输入补发任意历史版本；留空则取最新一个 Release |
+
+`release: published` 事件对流水线发布的 Release **不会**触发。GitHub 不会用自己的 `GITHUB_TOKEN` 产生的事件去启动新的工作流运行，而这个 Release 正是 release-action 用那个 token 发布的——v0.8.1 因此完全没跑过包管理器。`workflow_dispatch` 是这条规则的两个例外之一（另一个是 `repository_dispatch`），所以 `release.yml` 在发布之后显式派发一次，并且用 tag 而不是分支作为 ref，让清单由产出这批安装包的那个提交来渲染。派发本身失败只留一条 warning：已经发布的 Release 不该因为包管理器被标成失败，缺的那一次可以事后用同一个 tag 手动补跑。
 
 手动运行另外有三个开关：`homebrew` 和 `winget` 可以分别关掉，`dry_run` 会渲染并校验清单、但不碰任何外部仓库。
 

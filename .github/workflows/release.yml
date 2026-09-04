@@ -279,6 +279,12 @@ jobs:
       - prepare
       - build
 
+    # actions: write is what the package-manager handoff at the end of this job
+    # needs; the workflow-level default only grants contents: write.
+    permissions:
+      contents: write
+      actions: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -347,3 +353,29 @@ jobs:
           replacesArtifacts: true
           artifactErrorsFailBuild: true
           artifacts: "release-assets/**/*.*"
+
+      - name: Hand the release to the package managers
+        # package-managers.yml also listens for `release: published`, but that
+        # event never fires for a release published here: GitHub does not start
+        # workflow runs from events its own GITHUB_TOKEN created, and
+        # ncipollo/release-action publishes with exactly that token. v0.8.1 went
+        # out with no package-manager run at all as a result. workflow_dispatch is
+        # one of the two documented exceptions to that rule, so the handoff is
+        # made explicitly rather than left to the event.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Dispatched against the tag, so the manifests are rendered by the same
+          # commit that produced the assets. A handoff that cannot be dispatched
+          # must not turn an already published release red — the whole reason the
+          # package managers live in their own workflow — so it warns and the run
+          # can be repeated by hand with the same tag input.
+          if ! gh workflow run package-managers.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$TAG" \
+            -f tag="$TAG"; then
+            echo "::warning::Could not dispatch package-managers.yml for ${TAG}. Run that workflow by hand with tag=${TAG}."
+          fi

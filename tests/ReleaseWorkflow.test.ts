@@ -90,3 +90,33 @@ describe("release asset list", () => {
     expect(deletion).toBeGreaterThan(verify);
   });
 });
+
+describe("package manager handoff", () => {
+  const workflow = readWorkflow();
+
+  it("dispatches package-managers.yml instead of relying on the release event", () => {
+    // `release: published` does not fire for a release created with the job's own
+    // GITHUB_TOKEN, so v0.8.1 published without any package-manager run. The
+    // dispatch is the only thing that starts one; the tag input is what tells it
+    // which release to package.
+    expect(workflow).toContain("gh workflow run package-managers.yml");
+    expect(workflow).toContain('-f tag="$TAG"');
+  });
+
+  it("dispatches the tag so the manifests come from the released commit", () => {
+    expect(workflow).toContain('--ref "$TAG"');
+  });
+
+  it("grants the publish job the actions: write the dispatch needs", () => {
+    // The workflow-level default is contents: write alone, and a dispatch with
+    // that token is a 403 — which would only surface as a red release run.
+    expect(workflow).toMatch(/permissions:\n\s+contents: write\n\s+actions: write/);
+  });
+
+  it("cannot fail an already published release", () => {
+    // The package managers live in their own workflow precisely so a rejected
+    // submission never marks the release itself as failed; a handoff that throws
+    // here would give that back.
+    expect(workflow).toContain("::warning::Could not dispatch package-managers.yml");
+  });
+});

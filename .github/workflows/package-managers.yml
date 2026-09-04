@@ -5,6 +5,11 @@ name: Package Managers
 # winget-pkgs review must never be able to hold up or fail the release itself,
 # and re-submitting a package for an older tag has to be possible long after
 # that tag's build machines are gone.
+#
+# In practice the run comes from release.yml's explicit dispatch, not from the
+# release event: GitHub does not start workflow runs from events created by its
+# own GITHUB_TOKEN, which is what release-action publishes with. The `release`
+# trigger below therefore only covers a release a person published by hand.
 on:
   release:
     types: [published]
