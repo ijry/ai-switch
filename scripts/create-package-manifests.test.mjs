@@ -41,6 +41,54 @@ const V0_8_0_ASSETS = [
   "latest.json",
 ].map((name) => asset(name));
 
+// A release built on both macOS runners. Every tag up to v0.8.2 predates the
+// Intel job, so both shapes have to keep rendering a cask.
+const DUAL_ARCH_ASSETS = [
+  "ai-switch-0.9.0-darwin-aarch64.dmg",
+  "ai-switch-0.9.0-darwin-x86_64.dmg",
+  "ai-switch-0.9.0-linux-x86_64.AppImage",
+  "ai-switch-0.9.0-linux-x86_64.deb",
+  "ai-switch-0.9.0-windows-x86_64-setup.exe",
+  "ai-switch-server_v0.9.0_darwin-aarch64.zip",
+  "ai-switch-server_v0.9.0_darwin-x86_64.zip",
+  "ai-switch-tsnet_v0.9.0_darwin-x86_64.zip",
+  "ai-switch-updater-0.9.0-darwin-aarch64.app.tar.gz",
+  "ai-switch-updater-0.9.0-darwin-aarch64.app.tar.gz.sig",
+  "ai-switch-updater-0.9.0-darwin-x86_64.app.tar.gz",
+  "ai-switch-updater-0.9.0-darwin-x86_64.app.tar.gz.sig",
+  "ai-switch-updater-0.9.0-windows-x86_64.nsis.zip",
+  "ai-switch-updater-0.9.0-windows-x86_64.nsis.zip.sig",
+  "latest.json",
+].map((name) => asset(name));
+
+const DMG_BASE = "https://github.com/ijry/ai-switch/releases/download/v0.9.0/ai-switch-0.9.0-darwin";
+
+// Stanza order per the Cask Cookbook, which brew style's Cask/StanzaOrder cop
+// enforces. `arch` leads its own group ahead of `version` when it is present.
+const CASK_STANZA_ORDER = [
+  "version ",
+  "sha256 ",
+  "url ",
+  "name ",
+  "desc ",
+  "homepage ",
+  "livecheck do",
+  "auto_updates ",
+  "depends_on :macos",
+  "app ",
+  "postflight do",
+  "zap ",
+];
+
+function assertStanzaOrder(cask, order) {
+  let cursor = -1;
+  for (const stanza of order) {
+    const index = cask.indexOf(`\n  ${stanza}`);
+    assert.ok(index > cursor, `${stanza} is out of order`);
+    cursor = index;
+  }
+}
+
 test("selects one installer per platform from the legacy asset naming", () => {
   const selected = selectInstallerAssets(V0_8_0_ASSETS);
 
@@ -49,6 +97,16 @@ test("selects one installer per platform from the legacy asset naming", () => {
     selected.windows.name,
     "ai-switch_v0.8.0_windows-x86_64_AI-Switch_0.8.0_x64-setup.exe",
   );
+  // No Intel job existed yet, and that has to stay publishable rather than error.
+  assert.equal(selected.macosIntel, undefined);
+});
+
+test("selects both macOS dmgs once the Intel job publishes one", () => {
+  const selected = selectInstallerAssets(DUAL_ARCH_ASSETS);
+
+  assert.equal(selected.macos.name, "ai-switch-0.9.0-darwin-aarch64.dmg");
+  assert.equal(selected.macosIntel.name, "ai-switch-0.9.0-darwin-x86_64.dmg");
+  assert.equal(selected.windows.name, "ai-switch-0.9.0-windows-x86_64-setup.exe");
 });
 
 test("selects one installer per platform from the current asset naming", () => {
@@ -152,8 +210,8 @@ test("renders a cask whose stanzas match the release it was built from", () => {
   );
   assert.match(cask, /^ {6}verified: "github\.com\/ijry\/ai-switch\/"$/m);
   assert.match(cask, /^ {2}app "AI Switch\.app"$/m);
-  // Only Apple Silicon is built, so an Intel Mac must be told rather than
-  // handed an arm64 bundle. The bare :macos is what brew style's
+  // Only Apple Silicon has a dmg in this release, so an Intel Mac must be told
+  // rather than handed an arm64 bundle. The bare :macos is what brew style's
   // Homebrew/OSDependsOn asks for now that casks can also target Linux.
   assert.match(cask, /^ {2}depends_on :macos, arch: :arm64$/m);
   assert.match(cask, /^ {2}auto_updates true$/m);
@@ -165,6 +223,50 @@ test("renders a cask whose stanzas match the release it was built from", () => {
   assert.equal(cask.endsWith("end\n"), true);
 });
 
+test("renders one arch-templated cask when both macOS dmgs are published", () => {
+  const cask = renderHomebrewCask({
+    version: "0.9.0",
+    sha256: "a".repeat(64),
+    url: `${DMG_BASE}-aarch64.dmg`,
+    intel: { sha256: "b".repeat(64), url: `${DMG_BASE}-x86_64.dmg` },
+    repo: "ijry/ai-switch",
+  });
+
+  assert.match(cask, /^ {2}arch arm: "aarch64", intel: "x86_64"$/m);
+  // Cask/Sha256ArchOrder wants arm before intel, and the values line up under
+  // Layout/HashAlignment's table style.
+  assert.match(cask, /^ {2}sha256 arm: {3}"a{64}",\n {9}intel: "b{64}"$/m);
+  // One url stanza for both: #{arch} resolves to the token for the running Mac.
+  assert.match(
+    cask,
+    /^ {2}url "https:\/\/github\.com\/ijry\/ai-switch\/releases\/download\/v#\{version\}\/ai-switch-#\{version\}-darwin-#\{arch\}\.dmg",$/m,
+  );
+  assert.match(cask, /^ {6}verified: "github\.com\/ijry\/ai-switch\/"$/m);
+  // An Intel Mac now has something to install, so the refusal has to go with it.
+  assert.match(cask, /^ {2}depends_on :macos$/m);
+  assert.doesNotMatch(cask, /arch: :arm64/);
+  assert.equal(cask.endsWith("end\n"), true);
+});
+
+test("refuses to guess a URL template when the two dmgs are not named alike", () => {
+  // The legacy scheme spelled the arm arch twice and the Intel one as `x64` in
+  // its second half, so no single #{arch} substitution reproduces both names.
+  assert.throws(
+    () =>
+      renderHomebrewCask({
+        version: "0.9.0",
+        sha256: "a".repeat(64),
+        url: "https://github.com/ijry/ai-switch/releases/download/v0.9.0/ai-switch_v0.9.0_darwin-aarch64_AI-Switch_0.9.0_aarch64.dmg",
+        intel: {
+          sha256: "b".repeat(64),
+          url: "https://github.com/ijry/ai-switch/releases/download/v0.9.0/ai-switch_v0.9.0_darwin-x86_64_AI-Switch_0.9.0_x64.dmg",
+        },
+        repo: "ijry/ai-switch",
+      }),
+    /do not share one arch-templated URL/,
+  );
+});
+
 test("keeps the cask stanzas in the order brew style expects", () => {
   const cask = renderHomebrewCask({
     version: "0.8.0",
@@ -173,26 +275,19 @@ test("keeps the cask stanzas in the order brew style expects", () => {
     repo: "ijry/ai-switch",
   });
 
-  const order = [
-    "version ",
-    "sha256 ",
-    "url ",
-    "name ",
-    "desc ",
-    "homepage ",
-    "livecheck do",
-    "auto_updates ",
-    "depends_on :macos",
-    "app ",
-    "postflight do",
-    "zap ",
-  ];
-  let cursor = -1;
-  for (const stanza of order) {
-    const index = cask.indexOf(`\n  ${stanza}`);
-    assert.ok(index > cursor, `${stanza} is out of order`);
-    cursor = index;
-  }
+  assertStanzaOrder(cask, CASK_STANZA_ORDER);
+});
+
+test("keeps the dual-arch cask stanzas in order too, with arch leading", () => {
+  const cask = renderHomebrewCask({
+    version: "0.9.0",
+    sha256: "a".repeat(64),
+    url: `${DMG_BASE}-aarch64.dmg`,
+    intel: { sha256: "b".repeat(64), url: `${DMG_BASE}-x86_64.dmg` },
+    repo: "ijry/ai-switch",
+  });
+
+  assertStanzaOrder(cask, ["arch ", ...CASK_STANZA_ORDER]);
 });
 
 test("keeps the cask description inside the length Homebrew audits for", () => {
@@ -270,6 +365,50 @@ test("writes the cask and a summary the workflow can read back", async () => {
 
     const written = JSON.parse(await readFile(path.join(outDir, "summary.json"), "utf8"));
     assert.deepEqual(written, summary);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("carries both macOS checksums from the release into the cask", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ai-switch-packages-"));
+
+  try {
+    const releaseFile = path.join(root, "release.json");
+    // Distinct digests on purpose: brew style flags a cask whose two
+    // architectures report the same sha256, and so would a release that somehow
+    // published one dmg twice.
+    await writeFile(
+      releaseFile,
+      JSON.stringify({
+        tag_name: "v0.9.0",
+        draft: false,
+        prerelease: false,
+        assets: DUAL_ARCH_ASSETS.map((entry) => ({
+          ...entry,
+          digest: `sha256:${(entry.name.includes("x86_64") ? "c" : "d").repeat(64)}`,
+        })),
+      }),
+    );
+
+    const outDir = path.join(root, "out");
+    const summary = await createPackageManifests({
+      releaseFile,
+      tag: "v0.9.0",
+      repo: "ijry/ai-switch",
+      outDir,
+      fetchImpl: () => {
+        throw new Error("must not download when every asset reports a digest");
+      },
+    });
+
+    assert.equal(summary.installers.macos.sha256, "d".repeat(64));
+    assert.equal(summary.installers.macosIntel.sha256, "c".repeat(64));
+
+    const cask = await readFile(path.join(outDir, "homebrew", "Casks", "ai-switch.rb"), "utf8");
+    assert.match(cask, /^ {2}arch arm: "aarch64", intel: "x86_64"$/m);
+    assert.match(cask, /^ {2}sha256 arm: {3}"d{64}",\n {9}intel: "c{64}"$/m);
+    assert.match(cask, /-darwin-#\{arch\}\.dmg/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

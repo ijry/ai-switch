@@ -1,11 +1,11 @@
 ---
 title: 发布流程
-description: AI Switch 的自动化发布流程：版本 tag 触发 GitHub Actions，经过版本一致性校验、三平台构建矩阵、Tauri 更新器签名与 latest.json 清单生成，最终发布到 GitHub Releases，再由独立工作流推送到 Homebrew 与 WinGet。
+description: AI Switch 的自动化发布流程：版本 tag 触发 GitHub Actions，经过版本一致性校验、四个构建目标的矩阵、Tauri 更新器签名与 latest.json 清单生成，最终发布到 GitHub Releases，再由独立工作流推送到 Homebrew 与 WinGet。
 ---
 
 # 发布流程
 
-AI Switch 的发布完全由 GitHub Actions 驱动。推送一个符合规范的版本 tag，`.github/workflows/release.yml` 会自动完成校验、三平台构建、签名与发布。
+AI Switch 的发布完全由 GitHub Actions 驱动。推送一个符合规范的版本 tag，`.github/workflows/release.yml` 会自动完成校验、四个目标的构建、签名与发布。
 
 ## 触发条件
 
@@ -34,10 +34,10 @@ v1.0.0-alpha.2
 | 作业 | 运行环境 | 职责 |
 | --- | --- | --- |
 | `prepare` | `ubuntu-latest` | 校验 tag 与版本一致性、校验 tag 归属分支、创建草稿 Release 并生成发布说明 |
-| `build` | 矩阵：`windows-latest` / `macos-latest` / `ubuntu-latest` | 跑全量检查、构建 sidecar、打包 Tauri 安装包与独立服务器、上传产物 |
+| `build` | 矩阵：`windows-latest` / `macos-latest` / `macos-15-intel` / `ubuntu-latest` | 跑全量检查、构建 sidecar、打包 Tauri 安装包与独立服务器、上传产物 |
 | `publish` | `ubuntu-latest` | 汇总产物、生成并校验 `latest.json`、把草稿 Release 转为正式发布 |
 
-依赖关系是 `prepare` → `build`（矩阵并行）→ `publish`。`build` 设置了 `fail-fast: false`，某个平台失败时其余平台仍会跑完，方便一次看清所有问题。
+依赖关系是 `prepare` → `build`（矩阵并行）→ `publish`。`build` 设置了 `fail-fast: false`，某个目标失败时其余目标仍会跑完，方便一次看清所有问题。
 
 ## prepare：发布前的两道闸门
 
@@ -79,21 +79,24 @@ prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-
 
 草稿状态很关键：构建期间用户不会看到一个残缺的 Release，只有 `publish` 作业成功后才会翻正。
 
-## build：三平台矩阵
+## build：四个目标的矩阵
 
 | 标签 | Runner | Bundle 格式 |
 | --- | --- | --- |
 | Windows | `windows-latest` | `nsis` |
-| macOS | `macos-latest` | `app`、`dmg` |
+| macOS (Apple Silicon) | `macos-latest` | `app`、`dmg` |
+| macOS (Intel) | `macos-15-intel` | `app`、`dmg` |
 | Linux | `ubuntu-latest` | `deb`、`appimage` |
 
-每个平台的步骤顺序：
+macOS 两行是两次独立的原生构建，不是一个 universal 包：arm64 的 dmg 在 Intel Mac 上完全跑不起来，Rosetta 也不管这个方向。`macos-15-intel` 是 GitHub 下线 `macos-13` 之后给 x86_64 留的标签，官方公告说它是 Actions 最后一个 Intel 镜像，可用到 2027 年 8 月；那之后要继续发 Intel 包，就得改成在 arm runner 上交叉编译 `x86_64-apple-darwin`。选原生而不是现在就交叉编译，是为了让 `go test`、`cargo test` 和前端测试跑在真正会发出去的那个架构上。
+
+每个目标的步骤顺序：
 
 1. **校验签名密钥** —— 如果 `TAURI_SIGNING_PRIVATE_KEY` 为空直接抛错，绝不产出未签名的更新器资源。
 2. **Linux 系统依赖** —— 仅 Linux 执行 `apt-get install`（`libwebkit2gtk-4.1-dev`、`libayatana-appindicator3-dev`、`librsvg2-dev`、`patchelf`、`libgtk-3-dev`）。
 3. **工具链** —— pnpm 10.12.4、Node 22（带 pnpm 缓存）、stable Rust、stable Go（按 `sidecar/ai-switch-tsnet/go.sum` 缓存）。
 4. **安装依赖** —— `pnpm install --frozen-lockfile`。
-5. **计算平台变量** —— 从 `rustc -vV` 取 host 三元组，推导出更新器平台标识（`windows-x86_64` / `darwin-aarch64` / `linux-x86_64` 等）、`APP_VERSION`，以及 sidecar 与服务器二进制路径。
+5. **计算平台变量** —— 从 `rustc -vV` 取 host 三元组，推导出更新器平台标识（`windows-x86_64` / `darwin-aarch64` / `darwin-x86_64` / `linux-x86_64`）、`APP_VERSION`，以及 sidecar 与服务器二进制路径。整个 job 里没有一处写死架构：两个 macOS 目标共用同一份步骤，靠 `RUNNER_ARCH` 分流。
 6. **前端检查** —— `pnpm typecheck`、`pnpm test:run`、`pnpm release:manifest:test`。
 7. **构建前端** —— `pnpm build`。
 8. **sidecar 测试与构建** —— `go test ./...`，然后 `go build -trimpath -ldflags="-s -w"` 输出到 `src-tauri/binaries/ai-switch-tsnet-<三元组><后缀>`，并校验文件确实存在。
@@ -105,7 +108,7 @@ prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-
     命名不是随手取的：GitHub Release 页面按文件名排序，只展开前几个，其余折进「Show all N assets」。版本号紧跟 `ai-switch-` 能让安装包排在 `ai-switch-server_`、`ai-switch-tsnet_` 之前，用户要的 Windows `.exe` 和 macOS `.dmg` 才不会被折起来。`<平台>` 沿用更新器平台标识而不是更友好的 `windows-x64`，因为包管理器上架靠这个 token 挑安装包（见下文）。
 13. **上传产物** —— 以更新器平台标识为 artifact 名上传，`if-no-files-found: error`。
 
-注意 CI 会在每个平台上重跑全部检查。这意味着一次发布相当于跑三遍完整测试套件，任何平台相关的问题都会在这里暴露。
+注意 CI 会在每个目标上重跑全部检查。这意味着一次发布相当于跑四遍完整测试套件，任何平台或架构相关的问题都会在这里暴露。
 
 ## 更新器签名
 
@@ -126,7 +129,7 @@ https://github.com/ijry/ai-switch/releases/latest/download/latest.json
 
 ## publish：清单生成与签名校验
 
-1. **下载全部产物** —— `actions/download-artifact` 把三个平台的 artifact 取到 `release-assets/` 下，每个平台一个子目录。
+1. **下载全部产物** —— `actions/download-artifact` 把四个目标的 artifact 取到 `release-assets/` 下，每个目标一个子目录（按更新器平台标识命名）。
 2. **还原发布说明** —— 把 `prepare` 作业的 `release_notes` 输出写回 `release-notes.md`。为空就报错退出。
 3. **生成更新器清单** —— 运行 `scripts/create-updater-manifest.mjs`，按平台子目录名识别目标平台，从预设的偏好顺序里挑出对应的更新器资源（Windows 优先 `.exe` 再 `.msi`，macOS 优先 `.tar.gz` 再 `.dmg`，Linux 优先 `.AppImage` 再 `.deb`），产出 `release-assets/latest.json`：
 
@@ -150,7 +153,7 @@ https://github.com/ijry/ai-switch/releases/latest/download/latest.json
    这道校验的意义是：如果签名密钥被轮换而配置里的公钥没跟着更新，已安装的客户端会验签失败、更新链路静默断裂。在发布前拦下来远比事后补救便宜。
 
 5. **删除 `.sig`** —— 签名此时已经内联进 `latest.json`，客户端只读清单、不会去取同名 `.sig`，所以 `find release-assets -name '*.sig' -delete`，不再占用 Release 页面本来就不多的可见资产位。
-6. **生成 Release 正文** —— 运行 `scripts/create-release-body.mjs`，扫描各平台子目录里的安装包，在 tag 提交信息之前拼一张中英双语下载表（Windows / macOS / Linux 各一行，独立服务器另起一行），写入 `release-body.md`：
+6. **生成 Release 正文** —— 运行 `scripts/create-release-body.mjs`，扫描各目标子目录里的安装包，在 tag 提交信息之前拼一张中英双语下载表（Windows / macOS Apple Silicon / macOS Intel / Linux 各一行，独立服务器另起一行），写入 `release-body.md`：
 
    ```bash
    node scripts/create-release-body.mjs \
@@ -203,18 +206,18 @@ git push origin :refs/tags/v0.6.8
 git tag -d v0.6.8
 ```
 
-推荐做法是**在打 tag 前先本地跑一遍完整检查**，见[本地开发](/dev/local-setup)的"一次跑完所有检查"。CI 跑三个平台一次发布耗时不短，把可以本地发现的问题留到 CI 里发现很浪费时间。
+推荐做法是**在打 tag 前先本地跑一遍完整检查**，见[本地开发](/dev/local-setup)的"一次跑完所有检查"。CI 跑四个目标一次发布耗时不短，把可以本地发现的问题留到 CI 里发现很浪费时间。
 
 ## 发布产物一览
 
 一次成功的发布会在 GitHub Release 上产出（按资产列表里的先后顺序）：
 
 - **Windows**：`ai-switch-<版本>-windows-x86_64-setup.exe`
-- **macOS**：`ai-switch-<版本>-darwin-aarch64.dmg`
+- **macOS**：`ai-switch-<版本>-darwin-aarch64.dmg`（Apple Silicon）与 `ai-switch-<版本>-darwin-x86_64.dmg`（Intel）
 - **Linux**：`ai-switch-<版本>-linux-x86_64.AppImage` 与 `ai-switch-<版本>-linux-x86_64.deb`
-- **每个平台**：`ai-switch-server_<tag>_<平台>.zip`（独立服务器）
-- **每个平台**：`ai-switch-tsnet_<tag>_<平台>.zip`（Tailscale sidecar）
-- **macOS**：`ai-switch-updater-<版本>-darwin-aarch64.app.tar.gz`（只有自动更新会下载）
+- **每个目标**：`ai-switch-server_<tag>_<平台>.zip`（独立服务器）
+- **每个目标**：`ai-switch-tsnet_<tag>_<平台>.zip`（Tailscale sidecar）
+- **macOS**：`ai-switch-updater-<版本>-darwin-aarch64.app.tar.gz` 与 `ai-switch-updater-<版本>-darwin-x86_64.app.tar.gz`（只有自动更新会下载）
 - **`latest.json`**：Tauri 更新器清单，桌面端自动更新的数据源
 
 `.sig` 不作为独立资产发布，签名内联在 `latest.json` 里。Release 正文顶部另有一张下载表，直接指向上面前三类文件。
@@ -237,7 +240,7 @@ git tag -d v0.6.8
 
 手动运行另外有三个开关：`homebrew` 和 `winget` 可以分别关掉，`dry_run` 会渲染并校验清单、但不碰任何外部仓库。
 
-`dry_run` 不需要任何 secret：它跳过的两步正好就是唯一读 secret 的那两步（推 cask、开 winget PR），所以 tap 仓库和 token 都还没准备好时也能先完整预演一遍——包括在 `macos-latest` 上真的 `brew install --cask` 装一次并断言隔离属性已清掉。对一个 ad-hoc 签名的包来说，这一次预演正是判断「Homebrew 这条渠道现在还通不通」的办法，值不值得去建 tap 仓库要看它的结果。
+`dry_run` 不需要任何 secret：它跳过的正好就是唯一读 secret 的那两处（推 cask 的 `homebrew-push` 作业、开 winget PR 的那一步），所以 tap 仓库和 token 都还没准备好时也能先完整预演一遍——包括在两种芯片的 Mac 上都真的 `brew install --cask` 装一次并断言隔离属性已清掉。对一个 ad-hoc 签名的包来说，这一次预演正是判断「Homebrew 这条渠道现在还通不通」的办法，值不值得去建 tap 仓库要看它的结果。
 
 草稿和预发布（`-rc` / `-beta` / `-alpha`）一律跳过，并在日志里写明原因而不是报错：草稿的资产还没有公开下载地址，而预发布一旦进了 tap 就会推给所有执行 `brew upgrade` 的人。
 
@@ -261,12 +264,14 @@ git tag -d v0.6.8
 1. 建一个**公开**仓库 `ijry/homebrew-ai-switch`（名字必须以 `homebrew-` 开头，`brew tap ijry/ai-switch` 才能解析到它）。
 2. 生成一个对该仓库有 `contents: write` 的 PAT，存成 `HOMEBREW_TAP_TOKEN`。
 
-之后每次发布，工作流在 `macos-latest` 上渲染 cask、放进一个本地 tap、**真的 `brew install --cask` 装一遍**，确认 `/Applications/AI Switch.app` 存在且隔离属性已被清掉，然后才推到 tap 仓库。对一个 ad-hoc 签名的包来说这道安装验证是必要的：cask 语法正确但装完打不开，是这类应用最容易出的问题。
+之后每次发布，`homebrew` 作业在 cask 声明支持的**每一种芯片**上各跑一遍：渲染好的 cask 放进一个本地 tap、**真的 `brew install --cask` 装一遍**，确认 `/Applications/AI Switch.app` 存在且隔离属性已被清掉。两边都过了，才由 `homebrew-push` 作业推到 tap 仓库（这一步只要 git 和 gh，跑在 `ubuntu-latest` 上）。对一个 ad-hoc 签名的包来说这道安装验证是必要的：cask 语法正确但装完打不开，是这类应用最容易出的问题。
+
+跑几台 Mac 由 `resolve` 作业按渲染结果决定：Release 里有 `darwin-x86_64` 的 dmg 就是 `macos-latest` 加 `macos-15-intel`，没有就只有前者。补发 v0.8.2 及更早的 tag 会落进后一种——那些版本渲染出来的仍是 arm-only 的 cask，在 Intel runner 上装它只会被 `depends_on arch: :arm64` 正确拒绝，不该被当成失败。
 
 ::: tip cask 帮用户跳过了 Gatekeeper 那一套
 macOS 包是 ad-hoc 签名、没有公证的（见[安装](/guide/installation)里那一节），所以 cask 里带了一个 `postflight`，在 Homebrew 刚放好的那份 app 上执行 `xattr -dr com.apple.quarantine`。它只作用于那一个路径，不改任何系统设置，但用户不用再手动走「系统设置 → 仍要打开」。
 
-cask 还声明了 `depends_on arch: :arm64`（CI 只构建 Apple Silicon）和 `auto_updates true`（应用自带更新器会自己换掉 app，Homebrew 记录的版本本来就会过期）。
+cask 还声明了 `auto_updates true`（应用自带更新器会自己换掉 app，Homebrew 记录的版本本来就会过期）。两个架构都有 dmg 之后，`depends_on` 只剩下「这是个 macOS cask」这一层意思，架构限制已经去掉了。
 :::
 
 ### WinGet：第一个版本必须手工提交
@@ -297,7 +302,7 @@ Tauri 的 NSIS 安装包默认是 `currentUser` 模式，不需要提权；`Inst
 上面两处准备做完、并且各自的第一个版本已经落地之后，用户就可以这样装：
 
 ```bash
-# macOS（Apple Silicon）
+# macOS（Apple Silicon 与 Intel 同一条命令，cask 自己认架构）
 brew tap ijry/ai-switch
 brew install --cask ai-switch
 ```
@@ -313,11 +318,13 @@ winget install ijry.AISwitch
 
 `scripts/create-package-manifests.mjs` 从 Release 的 API 响应出发，做三件事：
 
-1. **挑安装包**。按更新器平台标识（`darwin-aarch64`、`windows-x86_64`）加扩展名匹配，排除 `.sig`、`.app.tar.gz`、`.nsis.zip` 这些只有更新器会下载的资源。仓库先后用过两套资产命名，两套都能匹配；匹配到 0 个或多于 1 个都直接报错，不猜。
+1. **挑安装包**。按更新器平台标识（`darwin-aarch64`、`darwin-x86_64`、`windows-x86_64`）加扩展名匹配，排除 `.sig`、`.app.tar.gz`、`.nsis.zip` 这些只有更新器会下载的资源。仓库先后用过两套资产命名，两套都能匹配；匹配到多于 1 个直接报错，不猜。`darwin-x86_64` 是唯一允许缺席的那个——v0.8.2 及更早的 tag 根本没有 Intel 构建，补发它们必须还能渲染出 cask。
 2. **取 sha256**。Release API 现在对每个资产直接给出 `digest`，所以正常情况下不用把 31 MB 的 dmg 拉下来算哈希；老版本的资产没有这个字段，会退回下载并流式计算。
 3. **渲染 cask，并把 winget 需要的输入写进 `summary.json`**。给 `winget-releaser` 的 `installers-regex` 是用第 1 步已经确定的文件名生成的锚定正则，这样它自己再匹配一次的结果不可能和第 1 步不一致。
 
-这个脚本由 `pnpm release:manifest:test` 覆盖（`release.yml` 的每个平台都会跑），用例里钉着 v0.8.0 真实的资产列表。
+两个 dmg 都在时，cask 用一个 `arch arm: "aarch64", intel: "x86_64"` 加一条带 `#{arch}` 的 `url` 服务两种机器，`sha256` 按架构分开写——这也是 Homebrew 自己的 style cop 会把 `on_arm` / `on_intel` 块自动改成的形状。两个 URL 必须只差那个架构 token，差别更大就直接报错而不是猜一个模板出来：tap 没有人工审核，猜错就是给 Intel 用户一个 404。
+
+这个脚本由 `pnpm release:manifest:test` 覆盖（`release.yml` 的每个目标都会跑），用例里钉着 v0.8.0 真实的资产列表（arm-only）和一份两架构齐全的资产列表。
 
 ## 相关阅读
 

@@ -51,6 +51,7 @@ jobs:
       version: ${{ steps.release.outputs.version }}
       publishable: ${{ steps.release.outputs.publishable }}
       homebrew: ${{ steps.plan.outputs.homebrew }}
+      homebrew_runners: ${{ steps.plan.outputs.homebrew_runners }}
       winget: ${{ steps.plan.outputs.winget }}
       winget_identifier: ${{ steps.plan.outputs.winget_identifier }}
       winget_installers_regex: ${{ steps.plan.outputs.winget_installers_regex }}
@@ -138,6 +139,7 @@ jobs:
           WANT_HOMEBREW: ${{ inputs.homebrew }}
           WANT_WINGET: ${{ inputs.winget }}
           DRY_RUN: ${{ inputs.dry_run }}
+          TAG: ${{ steps.release.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
@@ -176,18 +178,40 @@ jobs:
           echo "winget_identifier=$(node -p "require('./$summary').winget.identifier")" >> "$GITHUB_OUTPUT"
           echo "winget_installers_regex=$(node -p "require('./$summary').winget.installersRegex")" >> "$GITHUB_OUTPUT"
 
+          # Which Macs the rendered cask can actually be installed on. A release
+          # from before the Intel build job renders the arm-only cask, and an
+          # Intel runner would be told so by `depends_on arch: :arm64` — a
+          # correct refusal that must not read as a broken re-publish.
+          if [[ "$(node -p "Boolean(require('./$summary').installers.macosIntel)")" == "true" ]]; then
+            runners='["macos-latest", "macos-15-intel"]'
+          else
+            runners='["macos-latest"]'
+            echo "::notice::$TAG has no darwin-x86_64 dmg; the cask stays Apple Silicon only."
+          fi
+          echo "homebrew_runners=$runners" >> "$GITHUB_OUTPUT"
+
   homebrew:
-    name: Homebrew cask
+    name: Homebrew cask (${{ matrix.os }})
     needs: resolve
     if: needs.resolve.outputs.publishable == 'true' && needs.resolve.outputs.homebrew == 'true'
-    # An Apple Silicon runner with Homebrew preinstalled, so the cask can be
-    # installed for real before it is pushed. For an ad-hoc signed bundle that
-    # is the only check worth having: a cask that renders fine can still leave
-    # the app quarantined and unopenable.
-    runs-on: macos-latest
+    # Runners with Homebrew preinstalled, so the cask can be installed for real
+    # before it is pushed. For an ad-hoc signed bundle that is the only check
+    # worth having: a cask that renders fine can still leave the app quarantined
+    # and unopenable. One runner per architecture the cask claims to serve —
+    # `arch` turns the Intel URL into a string nothing else in CI ever fetches,
+    # and brew verifies each arch's dmg against its own sha256, so an install
+    # here is what proves the template resolves to the file it should.
+    # `fail-fast: false` so a failure on one Mac still reports what the other did.
+    strategy:
+      fail-fast: false
+      matrix:
+        # The fallback is only ever reached on a run that skipped the render
+        # step, where this job is skipped too — but the matrix is set up from the
+        # raw output, and `fromJSON("")` is a workflow error rather than a skip.
+        os: ${{ fromJSON(needs.resolve.outputs.homebrew_runners || '["macos-latest"]') }}
+    runs-on: ${{ matrix.os }}
 
     env:
-      TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'ijry/homebrew-ai-switch' }}
       VERSION: ${{ needs.resolve.outputs.version }}
 
     steps:
@@ -199,6 +223,8 @@ jobs:
 
       - name: Stage the cask in a local tap
         id: tap
+        env:
+          TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'ijry/homebrew-ai-switch' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -251,8 +277,35 @@ jobs:
 
           brew uninstall --cask "$TAP/ai-switch"
 
+  homebrew-push:
+    name: Push the Homebrew cask
+    # Needing `homebrew` is what makes this the gate: a failed install blocks the
+    # push, so nothing reaches the tap until the cask installed cleanly on every
+    # Mac it claims to serve. The conditions are repeated rather than inherited
+    # because a skipped dependency is not something to rely on — without them a
+    # draft or prerelease run could reach the artifact download and fail there.
+    # Runs on Linux: pushing one file needs git and gh, not a Mac.
+    needs:
+      - resolve
+      - homebrew
+    if: >-
+      needs.resolve.outputs.publishable == 'true'
+      && needs.resolve.outputs.homebrew == 'true'
+      && !inputs.dry_run
+    runs-on: ubuntu-latest
+
+    env:
+      TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'ijry/homebrew-ai-switch' }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+
+    steps:
+      - name: Download the rendered manifests
+        uses: actions/download-artifact@v4
+        with:
+          name: package-manifests
+          path: package-manifests
+
       - name: Push the cask to the tap
-        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         shell: bash

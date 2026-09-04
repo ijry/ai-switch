@@ -1,11 +1,11 @@
 ---
 title: Release Process
-description: How AI Switch releases work — a version tag triggers GitHub Actions, which validates version consistency, builds for three platforms, signs updater artifacts, generates latest.json, publishes to GitHub Releases, and then hands the release to Homebrew and WinGet from a separate workflow.
+description: How AI Switch releases work — a version tag triggers GitHub Actions, which validates version consistency, builds four targets, signs updater artifacts, generates latest.json, publishes to GitHub Releases, and then hands the release to Homebrew and WinGet from a separate workflow.
 ---
 
 # Release Process
 
-Releasing AI Switch is fully automated. Push a conforming version tag and `.github/workflows/release.yml` handles validation, three-platform builds, signing, and publication.
+Releasing AI Switch is fully automated. Push a conforming version tag and `.github/workflows/release.yml` handles validation, the four-target build, signing, and publication.
 
 ## What triggers it
 
@@ -34,10 +34,10 @@ The concurrency group keys on `github.ref` with `cancel-in-progress: false`, so 
 | Job | Runner | Responsibility |
 | --- | --- | --- |
 | `prepare` | `ubuntu-latest` | Validate the tag and version consistency, verify the tag's branch ancestry, create a draft release with generated notes |
-| `build` | matrix: `windows-latest` / `macos-latest` / `ubuntu-latest` | Run all checks, build the sidecar, package the Tauri installers and standalone server, upload artifacts |
+| `build` | matrix: `windows-latest` / `macos-latest` / `macos-15-intel` / `ubuntu-latest` | Run all checks, build the sidecar, package the Tauri installers and standalone server, upload artifacts |
 | `publish` | `ubuntu-latest` | Collect artifacts, generate and verify `latest.json`, promote the draft to a real release |
 
-The dependency chain is `prepare` → `build` (parallel matrix) → `publish`. `build` sets `fail-fast: false`, so one platform failing does not cancel the others — you get to see every problem in a single run.
+The dependency chain is `prepare` → `build` (parallel matrix) → `publish`. `build` sets `fail-fast: false`, so one target failing does not cancel the others — you get to see every problem in a single run.
 
 ## prepare: two gates before anything is built
 
@@ -79,21 +79,24 @@ prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-
 
 The draft state matters: users never see a half-populated release while builds run, and it only flips to published after `publish` succeeds.
 
-## build: the three-platform matrix
+## build: the four-target matrix
 
 | Label | Runner | Bundle formats |
 | --- | --- | --- |
 | Windows | `windows-latest` | `nsis` |
-| macOS | `macos-latest` | `app`, `dmg` |
+| macOS (Apple Silicon) | `macos-latest` | `app`, `dmg` |
+| macOS (Intel) | `macos-15-intel` | `app`, `dmg` |
 | Linux | `ubuntu-latest` | `deb`, `appimage` |
 
-Each platform runs the same sequence:
+The two macOS rows are two independent native builds rather than one universal bundle: an arm64 dmg does not run on an Intel Mac at all, and Rosetta does not translate in that direction. `macos-15-intel` is the label GitHub introduced when it retired `macos-13`, announced as the last Intel image Actions will offer and available until August 2027. Shipping Intel past that date means cross-compiling `x86_64-apple-darwin` from the arm runner; building natively until then is what keeps `go test`, `cargo test` and the frontend suite running on the architecture that actually ships.
+
+Each target runs the same sequence:
 
 1. **Validate the signing secret.** If `TAURI_SIGNING_PRIVATE_KEY` is empty the job throws immediately — unsigned updater artifacts are never produced.
 2. **Linux system dependencies.** Linux only: `apt-get install` for `libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `patchelf`, `libgtk-3-dev`.
 3. **Toolchains.** pnpm 10.12.4, Node 22 (with pnpm cache), stable Rust, stable Go (cached on `sidecar/ai-switch-tsnet/go.sum`).
 4. **Install dependencies.** `pnpm install --frozen-lockfile`.
-5. **Compute platform variables.** Reads the host triple from `rustc -vV` and derives the updater platform id (`windows-x86_64`, `darwin-aarch64`, `linux-x86_64`, …), `APP_VERSION`, plus the sidecar and server binary paths.
+5. **Compute platform variables.** Reads the host triple from `rustc -vV` and derives the updater platform id (`windows-x86_64`, `darwin-aarch64`, `darwin-x86_64`, `linux-x86_64`), `APP_VERSION`, plus the sidecar and server binary paths. Nothing in the job hard-codes an architecture: both macOS targets run the identical steps and diverge on `RUNNER_ARCH`.
 6. **Frontend checks.** `pnpm typecheck`, `pnpm test:run`, `pnpm release:manifest:test`.
 7. **Build the frontend.** `pnpm build`.
 8. **Sidecar tests and build.** `go test ./...`, then `go build -trimpath -ldflags="-s -w"` into `src-tauri/binaries/ai-switch-tsnet-<triple><suffix>`, asserting the file actually exists afterwards.
@@ -105,7 +108,7 @@ Each platform runs the same sequence:
     The naming is not arbitrary: the GitHub release page sorts assets by name and folds all but the first few behind "Show all N assets". Putting the version right after `ai-switch-` sorts the installers ahead of `ai-switch-server_` and `ai-switch-tsnet_`, so the Windows `.exe` and the macOS `.dmg` people came for stay visible. `<platform>` stays the updater platform id rather than a friendlier `windows-x64` because the package-manager publishing picks its installers by that token (see below).
 13. **Upload artifacts.** Named by updater platform id, with `if-no-files-found: error`.
 
-Note that CI reruns the full check suite on each platform. A single release therefore executes the tests three times, which is how platform-specific problems surface here rather than in the wild.
+Note that CI reruns the full check suite on each target. A single release therefore executes the tests four times, which is how platform- and architecture-specific problems surface here rather than in the wild.
 
 ## Updater signing
 
@@ -126,7 +129,7 @@ https://github.com/ijry/ai-switch/releases/latest/download/latest.json
 
 ## publish: manifest generation and signature verification
 
-1. **Download every artifact.** `actions/download-artifact` pulls all three platforms into `release-assets/`, one subdirectory per platform.
+1. **Download every artifact.** `actions/download-artifact` pulls all four targets into `release-assets/`, one subdirectory per target, named by updater platform id.
 2. **Restore the release notes.** The `prepare` job's `release_notes` output is written back to `release-notes.md`. An empty file fails the job.
 3. **Generate the updater manifest.** `scripts/create-updater-manifest.mjs` identifies the target platform from the subdirectory name and picks the updater asset by a preference order (Windows prefers `.exe` then `.msi`; macOS prefers `.tar.gz` then `.dmg`; Linux prefers `.AppImage` then `.deb`), writing `release-assets/latest.json`:
 
@@ -150,7 +153,7 @@ https://github.com/ijry/ai-switch/releases/latest/download/latest.json
    The point of this check: if the signing key is rotated without updating the public key in the config, already-installed clients fail verification and the update path breaks silently. Catching that before publishing is far cheaper than recovering afterwards.
 
 5. **Delete the `.sig` files.** The signatures are inlined in `latest.json` by now, and the client only ever reads the manifest — it never fetches a sibling `.sig`. So `find release-assets -name '*.sig' -delete` keeps them from spending the few asset rows the release page shows.
-6. **Build the release body.** `scripts/create-release-body.mjs` scans the platform subdirectories for installers and prepends a bilingual download table (one row each for Windows, macOS, and Linux, plus a line for the standalone server) to the tag message, writing `release-body.md`:
+6. **Build the release body.** `scripts/create-release-body.mjs` scans the target subdirectories for installers and prepends a bilingual download table (one row each for Windows, macOS Apple Silicon, macOS Intel, and Linux, plus a line for the standalone server) to the tag message, writing `release-body.md`:
 
    ```bash
    node scripts/create-release-body.mjs \
@@ -203,18 +206,18 @@ git push origin :refs/tags/v0.6.8
 git tag -d v0.6.8
 ```
 
-The better habit is **running the full check suite locally before tagging** — see "Run every check at once" in [local setup](/en/dev/local-setup). A three-platform release run is not fast, and letting CI discover problems you could have caught locally wastes real time.
+The better habit is **running the full check suite locally before tagging** — see "Run every check at once" in [local setup](/en/dev/local-setup). A four-target release run is not fast, and letting CI discover problems you could have caught locally wastes real time.
 
 ## What a release produces
 
 A successful run attaches the following to the GitHub Release, in the order the asset list shows them:
 
 - **Windows:** `ai-switch-<version>-windows-x86_64-setup.exe`
-- **macOS:** `ai-switch-<version>-darwin-aarch64.dmg`
+- **macOS:** `ai-switch-<version>-darwin-aarch64.dmg` (Apple Silicon) and `ai-switch-<version>-darwin-x86_64.dmg` (Intel)
 - **Linux:** `ai-switch-<version>-linux-x86_64.AppImage` and `ai-switch-<version>-linux-x86_64.deb`
-- **Per platform:** `ai-switch-server_<tag>_<platform>.zip` (standalone server)
-- **Per platform:** `ai-switch-tsnet_<tag>_<platform>.zip` (Tailscale sidecar)
-- **macOS:** `ai-switch-updater-<version>-darwin-aarch64.app.tar.gz` (only the auto-updater downloads it)
+- **Per target:** `ai-switch-server_<tag>_<platform>.zip` (standalone server)
+- **Per target:** `ai-switch-tsnet_<tag>_<platform>.zip` (Tailscale sidecar)
+- **macOS:** `ai-switch-updater-<version>-darwin-aarch64.app.tar.gz` and `ai-switch-updater-<version>-darwin-x86_64.app.tar.gz` (only the auto-updater downloads them)
 - **`latest.json`:** the Tauri updater manifest that drives desktop auto-updates
 
 The `.sig` files are not published as separate assets; their signatures live inside `latest.json`. The release body also opens with a download table pointing straight at the first three groups above.
@@ -237,7 +240,7 @@ The `release: published` event does **not** fire for a release the pipeline publ
 
 A manual run has three more switches: `homebrew` and `winget` can each be turned off, and `dry_run` renders and checks the manifests without touching any external repository.
 
-`dry_run` needs no secret at all: the two steps it skips are the only two that read one (pushing the cask, opening the winget PR), so the whole rehearsal works before the tap repository and the tokens exist — including a real `brew install --cask` on `macos-latest` that asserts the quarantine attribute was cleared. For an ad-hoc signed bundle that rehearsal is how you find out whether Homebrew still accepts this channel at all, which is what decides whether creating the tap is worth it.
+`dry_run` needs no secret at all: what it skips is exactly what reads one (the `homebrew-push` job, and the step that opens the winget PR), so the whole rehearsal works before the tap repository and the tokens exist — including a real `brew install --cask` on both chip families that asserts the quarantine attribute was cleared. For an ad-hoc signed bundle that rehearsal is how you find out whether Homebrew still accepts this channel at all, which is what decides whether creating the tap is worth it.
 
 Drafts and prereleases (`-rc` / `-beta` / `-alpha`) are always skipped, with the reason in the log rather than a failure: a draft's assets have no public download URL yet, and a prerelease in the tap would reach everyone who runs `brew upgrade`.
 
@@ -261,12 +264,14 @@ The tool that opens the pull request is Komac, which goes through GitHub's Graph
 1. Create a **public** repository `ijry/homebrew-ai-switch`. The name has to start with `homebrew-` for `brew tap ijry/ai-switch` to resolve.
 2. Generate a PAT with `contents: write` on it and store it as `HOMEBREW_TAP_TOKEN`.
 
-From then on each release renders the cask on `macos-latest`, stages it in a local tap, **actually runs `brew install --cask`**, asserts `/Applications/AI Switch.app` exists with the quarantine flag cleared, and only then pushes to the tap. For an ad-hoc signed bundle that install check is the one that matters: a cask that parses fine can still install an app that refuses to open.
+From then on the `homebrew` job runs once per chip family the cask claims to serve: it stages the rendered cask in a local tap, **actually runs `brew install --cask`**, and asserts `/Applications/AI Switch.app` exists with the quarantine flag cleared. Only once every leg passes does `homebrew-push` write to the tap — that job needs nothing but git and gh, so it runs on `ubuntu-latest`. For an ad-hoc signed bundle the install check is the one that matters: a cask that parses fine can still install an app that refuses to open.
+
+How many Macs that is comes from the `resolve` job, which reads what it just rendered: a release carrying a `darwin-x86_64` dmg gets `macos-latest` plus `macos-15-intel`, anything older gets only the former. Re-publishing v0.8.2 or earlier lands in the second case — those tags still render the arm-only cask, and installing it on an Intel runner would be correctly refused by `depends_on arch: :arm64` rather than broken.
 
 ::: tip The cask does the Gatekeeper dance for the user
 The macOS bundle is ad-hoc signed and never notarized (see the section in [installation](/en/guide/installation)), so the cask carries a `postflight` that runs `xattr -dr com.apple.quarantine` on the copy Homebrew just placed. It touches that one path and changes no system setting, but it saves the user the manual "System Settings → Open Anyway" trip.
 
-The cask also declares `depends_on arch: :arm64` (CI only builds Apple Silicon) and `auto_updates true` (the app's own updater replaces the bundle, so what Homebrew recorded goes stale by itself).
+The cask also declares `auto_updates true` (the app's own updater replaces the bundle, so what Homebrew recorded goes stale by itself). With a dmg for both architectures, `depends_on` is down to saying "this is a macOS cask" — the arch restriction is gone.
 :::
 
 ### WinGet: the first version has to be submitted by hand
@@ -297,7 +302,7 @@ Tauri's NSIS installer defaults to `currentUser` mode, so it needs no elevation,
 Once both setups above are done and each channel has its first version landed:
 
 ```bash
-# macOS (Apple Silicon)
+# macOS — same command on Apple Silicon and Intel; the cask picks the arch
 brew tap ijry/ai-switch
 brew install --cask ai-switch
 ```
@@ -313,11 +318,13 @@ Until then neither command finds the package, which is why [installation](/en/gu
 
 `scripts/create-package-manifests.mjs` starts from the release's API response and does three things:
 
-1. **Picks the installers.** It matches on the updater platform token (`darwin-aarch64`, `windows-x86_64`) plus the extension, excluding `.sig`, `.app.tar.gz` and `.nsis.zip` — payloads only the updater ever downloads. The repo has shipped two asset naming schemes and both match; zero matches or more than one is an error rather than a guess.
+1. **Picks the installers.** It matches on the updater platform token (`darwin-aarch64`, `darwin-x86_64`, `windows-x86_64`) plus the extension, excluding `.sig`, `.app.tar.gz` and `.nsis.zip` — payloads only the updater ever downloads. The repo has shipped two asset naming schemes and both match; more than one match is an error rather than a guess. `darwin-x86_64` is the one token allowed to be absent: v0.8.2 and earlier had no Intel build, and re-publishing them still has to render a cask.
 2. **Resolves sha256.** The releases API now reports a `digest` per asset, so the usual path never pulls the 31 MB dmg down to hash it. Assets from older releases have no digest and fall back to a streaming download.
 3. **Renders the cask and writes winget's inputs to `summary.json`.** The `installers-regex` handed to `winget-releaser` is an anchored pattern built from the file name step 1 already resolved, so its own second lookup cannot disagree with step 1.
 
-`pnpm release:manifest:test` covers the script — every platform in `release.yml` runs it — and the cases pin v0.8.0's real asset list.
+With both dmgs present the cask serves them from a single `arch arm: "aarch64", intel: "x86_64"` stanza and one `url` carrying `#{arch}`, with `sha256` split per architecture — which is also what Homebrew's own style cops rewrite `on_arm` / `on_intel` blocks into. The two URLs have to differ in nothing but that arch token; anything wider is an error rather than a guessed template, because the tap has no review step and a wrong guess is a 404 for every Intel user.
+
+`pnpm release:manifest:test` covers the script — every target in `release.yml` runs it — and the cases pin v0.8.0's real asset list (arm-only) alongside a dual-architecture one.
 
 ## See also
 

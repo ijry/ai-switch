@@ -9,7 +9,7 @@ AI Switch desktop builds come from GitHub Releases, with prebuilt packages for a
 
 ## Download
 
-Open the [latest release page](https://github.com/ijry/ai-switch/releases/latest). The release body starts with a download table — one row per platform, so click the link for your system.
+Open the [latest release page](https://github.com/ijry/ai-switch/releases/latest). The release body starts with a download table — one row per platform, with Apple Silicon and Intel macOS on separate rows, so click the link for your system.
 
 If you would rather scan the asset list: the desktop installers are named `ai-switch-<version>-<platform>` (for example `ai-switch-0.8.0-windows-x86_64-setup.exe`) and sort to the top of it. Below them come the standalone server, the Tailscale sidecar, and the `ai-switch-updater-*` archives plus `latest.json` that only the built-in updater needs.
 
@@ -23,9 +23,14 @@ After installation, the directory holding the executable also contains a `web/` 
 
 ### macOS
 
-Install from **`ai-switch-<version>-darwin-aarch64.dmg`**: mount it and drag AI Switch into Applications. The matching `ai-switch-updater-*.app.tar.gz` is the `.app` archive the built-in updater downloads; a manual install does not need it.
+Each chip family gets its own native dmg:
 
-Current releases are **aarch64 (Apple Silicon)**, because the macOS CI build runs on an Apple Silicon runner. Intel Macs need to build from source.
+- **Apple Silicon (M-series)** — `ai-switch-<version>-darwin-aarch64.dmg`
+- **Intel** — `ai-switch-<version>-darwin-x86_64.dmg`
+
+Mount it and drag AI Switch into Applications. The matching `ai-switch-updater-*.app.tar.gz` is the `.app` archive the built-in updater downloads; a manual install does not need it.
+
+Not sure which you have? Apple menu → About This Mac: if the "Chip" line reads Apple M-something, take aarch64; if it reads Intel, take x86_64. The wrong one will not open — Rosetta only translates Intel binaries onto Apple Silicon, never the other way round.
 
 If Gatekeeper blocks the first launch, that is expected — see [macOS won't open it](#macos-won-t-open-it-damaged-or-unverified-developer).
 
@@ -102,8 +107,8 @@ Most macOS unlocking guides online were written years ago. Two of their standard
 
 The Releases page **does not currently publish SHA-256 checksums**, so there is no official hash to compare against. What you can do:
 
-- **Check where it came from.** The URL must be under `github.com/ijry/ai-switch/releases/…` and the filename must match `ai-switch_<version>_darwin-aarch64_…`.
-- **The `.app.tar.gz` carries a verifiable minisign signature.** `ai-switch_<version>_darwin-aarch64_AI-Switch.app.tar.gz` ships with a matching `.sig`, and the public key is in the repo at `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`). Note that **the `.dmg` has no `.sig`** — that signature exists for the auto-updater and does not cover the dmg installer.
+- **Check where it came from.** The URL must be under `github.com/ijry/ai-switch/releases/…` and the filename must be `ai-switch-<version>-darwin-aarch64.dmg` or `ai-switch-<version>-darwin-x86_64.dmg`.
+- **The `.app.tar.gz` carries a verifiable minisign signature.** `ai-switch-updater-<version>-darwin-<arch>.app.tar.gz` ships with a matching `.sig`, and the public key is in the repo at `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`). Note that **the `.dmg` has no `.sig`** — that signature exists for the auto-updater and does not cover the dmg installer.
 
 Neither substitutes for Apple notarization: notarization means Apple scanned the contents, whereas a signature only proves the file came from whoever holds that private key and was not swapped in transit.
 
@@ -180,7 +185,7 @@ So the trust anchor for the update path is the public key compiled into the app 
 
 ## Building from source
 
-If you'd rather not use a prebuilt package, or you need a target that isn't published — an Intel Mac, Linux on ARM — you can build it yourself.
+If you'd rather not use a prebuilt package, or you need a target that isn't published — Linux on ARM, say — you can build it yourself.
 
 Broadly you'll need Node (with pnpm), a Rust toolchain, and Go for building the Tailscale sidecar:
 

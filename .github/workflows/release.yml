@@ -103,8 +103,19 @@ jobs:
           - label: Windows
             os: windows-latest
             bundles: nsis
-          - label: macOS
+          - label: macOS (Apple Silicon)
             os: macos-latest
+            bundles: "app dmg"
+          # An arm64 dmg does not run on an Intel Mac at all — not even under
+          # Rosetta — so the second macOS row is the whole of Intel support.
+          # `macos-15-intel` is the label that replaced the retired `macos-13`
+          # image; GitHub has announced it as the last x86_64 macOS image
+          # Actions will offer, available until August 2027. Building natively
+          # rather than cross-compiling from the arm runner is what keeps
+          # `go test`, `cargo test` and the frontend suite running on the
+          # architecture that actually ships.
+          - label: macOS (Intel)
+            os: macos-15-intel
             bundles: "app dmg"
           - label: Linux
             os: ubuntu-latest

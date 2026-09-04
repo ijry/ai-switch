@@ -9,7 +9,7 @@ AI Switch 桌面端从 GitHub Releases 获取，三个平台都有预构建的�
 
 ## 下载
 
-打开 [Releases 页面](https://github.com/ijry/ai-switch/releases/latest)，正文顶部有一张下载表格，三个平台的安装包各占一行，点对应你系统的链接就行。
+打开 [Releases 页面](https://github.com/ijry/ai-switch/releases/latest)，正文顶部有一张下载表格，每个平台各占一行（macOS 的 Apple Silicon 和 Intel 分开两行），点对应你系统的那个链接就行。
 
 想直接翻资产列表也可以：桌面端安装包命名为 `ai-switch-<版本>-<平台>`（如 `ai-switch-0.8.0-windows-x86_64-setup.exe`），排在列表最前面。往后是独立服务器、Tailscale sidecar，以及自动更新才会用到的 `ai-switch-updater-*` 和 `latest.json`。
 
@@ -23,9 +23,14 @@ AI Switch 桌面端从 GitHub Releases 获取，三个平台都有预构建的�
 
 ### macOS
 
-装机用 **`ai-switch-<版本>-darwin-aarch64.dmg`**：挂载后把 AI Switch 拖进「应用程序」。同名的 `ai-switch-updater-*.app.tar.gz` 是内置自动更新下载的 `.app` 归档，手动安装不需要它。
+两种芯片各有一个原生 dmg，按机型挑：
 
-当前发布的是 **aarch64（Apple Silicon）** 架构，因为 CI 的 macOS 构建跑在 Apple Silicon runner 上。Intel Mac 需要自己从源码构建。
+- **Apple Silicon（M 系列）** —— `ai-switch-<版本>-darwin-aarch64.dmg`
+- **Intel** —— `ai-switch-<版本>-darwin-x86_64.dmg`
+
+挂载后把 AI Switch 拖进「应用程序」。同名的 `ai-switch-updater-*.app.tar.gz` 是内置自动更新下载的 `.app` 归档，手动安装不需要它。
+
+不确定自己是哪种：苹果菜单 →「关于本机」，「芯片」那行写 Apple M… 就选 aarch64，写 Intel 就选 x86_64。挑错了打不开——aarch64 的包在 Intel Mac 上连 Rosetta 也救不了（Rosetta 只把 Intel 程序翻译到 Apple Silicon，反方向不成立）。
 
 首次打开会被 Gatekeeper 拦住，这是预期行为，处理方式见 [macOS 打不开：「已损坏」「无法验证开发者」](#macos-打不开-「已损坏」「无法验证开发者」)。
 
@@ -102,8 +107,8 @@ xattr -dr com.apple.quarantine "/Applications/AI Switch.app"
 
 Release 页面目前**不公布 SHA-256 校验值**，所以没法拿官方哈希来核对。能做的是这两件事：
 
-- **确认下载来源**。地址必须是 `github.com/ijry/ai-switch/releases/…`，文件名符合 `ai-switch_<版本>_darwin-aarch64_…` 的格式。
-- **`.app.tar.gz` 带 minisign 签名可验**。资产列表里 `ai-switch_<版本>_darwin-aarch64_AI-Switch.app.tar.gz` 有配套的 `.sig` 文件，公钥在仓库的 `src-tauri/tauri.conf.json` 里（`plugins.updater.pubkey`）。注意 **`.dmg` 没有 `.sig`** —— 这个签名是给自动更新用的，不覆盖 dmg 安装包。
+- **确认下载来源**。地址必须是 `github.com/ijry/ai-switch/releases/…`，文件名符合 `ai-switch-<版本>-darwin-aarch64.dmg` 或 `ai-switch-<版本>-darwin-x86_64.dmg`。
+- **`.app.tar.gz` 带 minisign 签名可验**。资产列表里 `ai-switch-updater-<版本>-darwin-<架构>.app.tar.gz` 有配套的 `.sig` 文件，公钥在仓库的 `src-tauri/tauri.conf.json` 里（`plugins.updater.pubkey`）。注意 **`.dmg` 没有 `.sig`** —— 这个签名是给自动更新用的，不覆盖 dmg 安装包。
 
 这些都替代不了 Apple 公证：公证的价值在于 Apple 扫描过内容，而签名只能证明文件出自持有该私钥的一方、传输途中没被换掉。
 
@@ -180,7 +185,7 @@ OpenCode、OpenClaw、Hermes 不在此列 —— AI Switch 不写它们的原生
 
 ## 从源码构建
 
-不想用预构建包，或者需要 Intel Mac、Linux ARM 之类 Releases 里没有的目标，可以自己构建。
+不想用预构建包，或者需要 Linux ARM 之类 Releases 里没有的目标，可以自己构建。
 
 大致需要 Node（配 pnpm）、Rust 工具链，以及构建 Tailscale sidecar 用的 Go：
 
