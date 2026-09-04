@@ -105,7 +105,7 @@ export function WebServiceSettings() {
           </div>
         </div>
         <button
-          className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-semibold text-stone-700 transition-colors hover:border-stone-300 hover:bg-white"
+          className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-semibold text-stone-700 motion-control hover:border-stone-300 hover:bg-white"
           onClick={() => {
             void configQuery.refetch();
             void statusQuery.refetch();
@@ -125,7 +125,7 @@ export function WebServiceSettings() {
             <label className="flex flex-col gap-1.5 text-[12px] font-medium text-stone-600">
               <span>{t("settings.webService.host")}</span>
               <input
-                className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
+                className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
                 onChange={(event) => setForm((current) => ({ ...current, host: event.target.value }))}
                 value={form.host}
               />
@@ -133,7 +133,7 @@ export function WebServiceSettings() {
             <label className="flex flex-col gap-1.5 text-[12px] font-medium text-stone-600">
               <span>{t("settings.webService.port")}</span>
               <input
-                className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
+                className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
                 min={1}
                 max={65535}
                 onChange={(event) =>
@@ -148,7 +148,7 @@ export function WebServiceSettings() {
           <label className="flex flex-col gap-1.5 text-[12px] font-medium text-stone-600">
             <span>{t("settings.webService.token")}</span>
             <input
-              className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
+              className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
               onChange={(event) => setForm((current) => ({ ...current, token: event.target.value }))}
               type="password"
               value={form.token ?? ""}
@@ -207,7 +207,7 @@ export function WebServiceSettings() {
 
           <div className="flex flex-wrap items-center gap-2">
             <button
-              className="rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white motion-control hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60"
               disabled={saveMutation.isPending}
               onClick={() => saveMutation.mutate()}
               type="button"
@@ -216,7 +216,7 @@ export function WebServiceSettings() {
             </button>
             {status?.running ? (
               <button
-                className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 motion-control hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
                 disabled={stopMutation.isPending}
                 onClick={() => stopMutation.mutate()}
                 type="button"
@@ -226,7 +226,7 @@ export function WebServiceSettings() {
               </button>
             ) : (
               <button
-                className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 motion-control hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
                 disabled={startMutation.isPending}
                 onClick={() => startMutation.mutate()}
                 type="button"

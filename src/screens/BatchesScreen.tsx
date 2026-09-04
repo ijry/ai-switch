@@ -24,7 +24,7 @@ export function BatchesScreen() {
             onChange={(event) => setSearch(event.target.value)}
             aria-label="Search batches, accounts, providers"
             placeholder="Search batches, accounts, providers"
-            className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition placeholder:text-stone-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+            className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control placeholder:text-stone-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
           />
         </div>
       </div>

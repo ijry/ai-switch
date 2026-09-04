@@ -226,7 +226,7 @@ export function ModelMappingSummary({
         <button
           aria-expanded={open}
           aria-haspopup="dialog"
-          className="rounded-full bg-sky-100 px-2 py-0.5 font-mono text-[10px] font-semibold text-sky-900 transition-colors hover:bg-sky-200"
+          className="rounded-full bg-sky-100 px-2 py-0.5 font-mono text-[10px] font-semibold text-sky-900 motion-control hover:bg-sky-200"
           onClick={() => setOpen((current) => !current)}
           title="查看完整模型映射"
           type="button"

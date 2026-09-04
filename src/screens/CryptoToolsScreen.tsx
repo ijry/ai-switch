@@ -48,7 +48,7 @@ export function CryptoToolsScreen() {
           <span className="text-[12px] font-semibold text-stone-600">{t("crypto.input")}</span>
           <textarea
             aria-label={t("crypto.input")}
-            className="min-h-64 resize-y rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+            className="min-h-64 resize-y rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
             onChange={(event) => setInput(event.target.value)}
             placeholder={t("crypto.inputPlaceholder")}
             value={input}
@@ -59,7 +59,7 @@ export function CryptoToolsScreen() {
           <span className="text-[12px] font-semibold text-stone-600">{t("crypto.operation")}</span>
           <select
             aria-label={t("crypto.operation")}
-            className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-medium text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+            className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-medium text-stone-900 outline-none motion-control focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
             onChange={(event) => setOperation(event.target.value as CryptoOperation)}
             value={operation}
           >
@@ -78,7 +78,7 @@ export function CryptoToolsScreen() {
             {t("crypto.output")}
           </label>
           <button
-            className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-semibold text-stone-700 motion-control hover:bg-stone-50 disabled:opacity-50"
             disabled={!result.output}
             onClick={copyOutput}
             type="button"

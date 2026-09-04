@@ -34,7 +34,7 @@ export function ImportPanel({ onImport }: ImportPanelProps) {
   }
 
   const fieldClass =
-    "mt-1.5 w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100";
+    "mt-1.5 w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-blue-400 focus:ring-2 focus:ring-blue-100";
   const labelClass = "block text-[12px] font-semibold text-stone-600";
 
   return (

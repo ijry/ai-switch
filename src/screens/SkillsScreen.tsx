@@ -162,7 +162,7 @@ export function SkillsScreen() {
   };
 
   return (
-    <section className="space-y-3">
+    <section className="skills-screen space-y-3 rounded-2xl bg-white/20 p-1 sm:p-2">
       <SkillsToolbar
         agentType={agentType}
         agents={agentOptions}
@@ -182,9 +182,9 @@ export function SkillsScreen() {
         workspacePath={workspacePath}
       />
 
-      <SkillsTabs value={view} onChange={setView} />
+      <div className="rounded-2xl border border-stone-200 bg-white/70 px-2 shadow-sm"><SkillsTabs value={view} onChange={setView} /></div>
       {view === "packages" ? (
-        <div className="grid min-h-[420px] min-w-0 gap-3 lg:grid-cols-[minmax(220px,320px)_minmax(0,1fr)]">
+        <div className="grid min-h-[420px] min-w-0 gap-3 rounded-2xl lg:grid-cols-[minmax(220px,320px)_minmax(0,1fr)]">
           <SkillPackagesList
             loading={packagesQuery.isLoading}
             onSelect={setSelectedPackageId}
@@ -217,7 +217,7 @@ export function SkillsScreen() {
             selectedId={selectedId}
             total={listQuery.data?.skills.length ?? 0}
           />
-          <main className="min-h-0 min-w-0 overflow-hidden border border-stone-200 bg-white p-3 shadow-sm">{selected ? <SkillEditor item={selected} draft={draft} draftId={draftId} editing={editing || creating} layout={layout} saving={saveMutation.isPending} onEdit={() => { setEditing(true); if (readQuery.data) { setDraft(readQuery.data.content); setDraftId(readQuery.data.skill.id); setLayout(readQuery.data.skill.layout); } }} onDraftChange={setDraft} onIdChange={setDraftId} onLayoutChange={setLayout} onCancel={() => { setEditing(false); if (creating) { setCreating(false); setSelectedId(null); } }} onSave={() => saveMutation.mutate()} onDelete={() => { if (window.confirm(t("skills.deleteConfirm", { id: selected.id }))) deleteMutation.mutate(); }} /> : <div className="grid h-full min-h-[360px] place-items-center text-center text-[13px] text-stone-500"><div><FilePenLine className="mx-auto h-8 w-8 text-stone-300" /><p className="mt-2">{t("skills.emptySelection")}</p></div></div>}</main>
+          <main className="min-h-0 min-w-0 overflow-hidden rounded-2xl border border-stone-200 bg-white p-3 shadow-sm">{selected ? <SkillEditor item={selected} draft={draft} draftId={draftId} editing={editing || creating} layout={layout} saving={saveMutation.isPending} onEdit={() => { setEditing(true); if (readQuery.data) { setDraft(readQuery.data.content); setDraftId(readQuery.data.skill.id); setLayout(readQuery.data.skill.layout); } }} onDraftChange={setDraft} onIdChange={setDraftId} onLayoutChange={setLayout} onCancel={() => { setEditing(false); if (creating) { setCreating(false); setSelectedId(null); } }} onSave={() => saveMutation.mutate()} onDelete={() => { if (window.confirm(t("skills.deleteConfirm", { id: selected.id }))) deleteMutation.mutate(); }} /> : <div className="grid h-full min-h-[360px] place-items-center text-center text-[13px] text-stone-500"><div><FilePenLine className="mx-auto h-8 w-8 text-stone-300" /><p className="mt-2">{t("skills.emptySelection")}</p></div></div>}</main>
         </div>
       )}
       {error || pickerError ? <p className="border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-800" role="alert">{pickerError ?? errorMessage}</p> : null}

@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AnimatePresence } from "motion/react";
 import { ChevronDown, ChevronUp, RotateCcw } from "lucide-react";
 import { useState } from "react";
 import {
@@ -7,6 +8,7 @@ import {
   rollbackConfigSnapshot,
 } from "../lib/api/client";
 import type { ConfigSnapshotSummary, TargetConfigStatus } from "../lib/api/types";
+import { MotionCollapse, MotionListItem } from "../components/motion/MotionPrimitives";
 
 export function TargetsScreen() {
   const statusesQuery = useQuery({
@@ -27,7 +29,13 @@ export function TargetsScreen() {
         </p>
       ) : null}
       <div className="space-y-2">
-        {statusesQuery.data?.map((status) => <TargetStatusRow key={status.target.id} status={status} />)}
+        <AnimatePresence initial={false}>
+          {statusesQuery.data?.map((status) => (
+            <MotionListItem itemKey={status.target.id} key={status.target.id}>
+              <TargetStatusRow status={status} />
+            </MotionListItem>
+          ))}
+        </AnimatePresence>
       </div>
     </section>
   );
@@ -102,7 +110,7 @@ function TargetStatusRow({ status }: { status: TargetConfigStatus }) {
         </p>
       ) : null}
 
-      {expanded ? (
+      <MotionCollapse open={expanded}>
         <div className="mt-3 border-t border-stone-200 pt-3">
           {snapshotsQuery.isLoading ? <p className="text-[12px] text-stone-500">Loading snapshots...</p> : null}
           {snapshotsQuery.error ? (
@@ -127,7 +135,7 @@ function TargetStatusRow({ status }: { status: TargetConfigStatus }) {
             </p>
           ) : null}
         </div>
-      ) : null}
+      </MotionCollapse>
     </article>
   );
 }

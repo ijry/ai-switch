@@ -2,6 +2,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { BarChart3, ChevronLeft, ChevronRight, List, Settings2 } from "lucide-react";
 import { useState } from "react";
 import { ModelPricingDialog } from "./ModelPricingDialog";
+import { MotionNumber } from "../motion/MotionPrimitives";
 import { UsageTrendChart } from "./UsageTrendChart";
 import { getUsageOverview } from "../../lib/api/client";
 import { formatCompactCount, formatCostMicros, formatExactCount } from "../../lib/usageFormat";
@@ -137,7 +138,7 @@ function SummaryCard({
     <div className="rounded-xl border border-stone-200 bg-stone-50 p-3">
       <p className="text-[11px] font-medium text-stone-500">{label}</p>
       <p className="mt-1 text-lg font-semibold text-stone-950" title={title}>
-        {value}
+        <MotionNumber value={value} />
       </p>
     </div>
   );
@@ -377,7 +378,7 @@ function RequestRow({
           aria-controls={detailId(row.id)}
           aria-expanded={expanded}
           aria-label={`${expanded ? "隐藏" : "查看"}请求 ${row.id} 详情`}
-          className="justify-self-end rounded-lg border border-stone-200 bg-white px-2.5 py-1 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50"
+          className="justify-self-end rounded-lg border border-stone-200 bg-white px-2.5 py-1 text-[12px] font-semibold text-stone-700 motion-control hover:bg-stone-50"
           onClick={onToggle}
           type="button"
         >
@@ -463,7 +464,7 @@ export function UsageOverviewPanel() {
         <div className="flex items-center gap-2">
           <button
             aria-label="配置模型价格"
-            className="grid h-8 w-8 place-items-center rounded-lg border border-stone-200 bg-white text-stone-500 transition-colors hover:bg-stone-50 hover:text-stone-900"
+            className="grid h-8 w-8 place-items-center rounded-lg border border-stone-200 bg-white text-stone-500 motion-control hover:bg-stone-50 hover:text-stone-900"
             onClick={() => setPricingOpen(true)}
             title="配置模型价格"
             type="button"
@@ -473,7 +474,7 @@ export function UsageOverviewPanel() {
           <div className="grid grid-cols-7 gap-1 rounded-xl bg-stone-100 p-1">
           {periods.map((item) => (
             <button
-              className={`rounded-lg px-2 py-1 text-[11px] font-semibold transition-colors ${
+              className={`rounded-lg px-2 py-1 text-[11px] font-semibold motion-control ${
                 period === item.key
                   ? "bg-white text-stone-950 shadow-sm"
                   : "text-stone-500 hover:text-stone-900"
@@ -538,7 +539,7 @@ export function UsageOverviewPanel() {
                 {groupDimensions.map((item) => (
                   <button
                     aria-pressed={dimension === item.key}
-                    className={`rounded-lg px-2.5 py-1 text-[12px] font-semibold transition-colors ${
+                    className={`rounded-lg px-2.5 py-1 text-[12px] font-semibold motion-control ${
                       dimension === item.key
                         ? "bg-white text-stone-950 shadow-sm"
                         : "text-stone-500 hover:text-stone-900"
@@ -557,7 +558,7 @@ export function UsageOverviewPanel() {
                     <button
                       aria-label={label}
                       aria-pressed={groupView === key}
-                      className={`grid h-7 w-7 place-items-center rounded-md transition-colors ${
+                      className={`grid h-7 w-7 place-items-center rounded-md motion-control ${
                         groupView === key
                           ? "bg-white text-stone-950 shadow-sm"
                           : "text-stone-500 hover:text-stone-900"
@@ -597,7 +598,7 @@ export function UsageOverviewPanel() {
                 </p>
                 <button
                   aria-label="上一页"
-                  className="grid h-6 w-6 place-items-center rounded-md border border-stone-300 bg-white text-stone-700 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="grid h-6 w-6 place-items-center rounded-md border border-stone-300 bg-white text-stone-700 motion-control hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"
                   disabled={page <= 1}
                   onClick={() => setPage((current) => Math.max(1, current - 1))}
                   type="button"
@@ -609,7 +610,7 @@ export function UsageOverviewPanel() {
                 </span>
                 <button
                   aria-label="下一页"
-                  className="grid h-6 w-6 place-items-center rounded-md border border-stone-300 bg-white text-stone-700 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="grid h-6 w-6 place-items-center rounded-md border border-stone-300 bg-white text-stone-700 motion-control hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"
                   disabled={page >= pageCount}
                   onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
                   type="button"

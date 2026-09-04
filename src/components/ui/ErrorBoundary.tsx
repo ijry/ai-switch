@@ -51,7 +51,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           </pre>
         )}
         <button
-          className="self-start rounded-lg border border-stone-600 px-3 py-1.5 text-[12px] font-semibold transition hover:border-stone-400"
+          className="self-start rounded-lg border border-stone-600 px-3 py-1.5 text-[12px] font-semibold motion-control hover:border-stone-400"
           onClick={this.reset}
           type="button"
         >

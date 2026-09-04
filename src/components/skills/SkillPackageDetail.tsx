@@ -21,14 +21,14 @@ export function SkillPackageDetail({
 
   if (loading) {
     return (
-      <main className="grid min-h-[360px] min-w-0 place-items-center border border-stone-200 bg-white p-4 text-[12px] text-stone-500 shadow-sm">
+      <main className="grid min-h-[360px] min-w-0 place-items-center rounded-2xl border border-stone-200 bg-white p-4 text-[12px] text-stone-500 shadow-sm">
         {t("skills.packageScanning")}
       </main>
     );
   }
   if (!detail) {
     return (
-      <main className="grid min-h-[360px] min-w-0 place-items-center border border-stone-200 bg-white p-4 text-center text-[12px] text-stone-500 shadow-sm">
+      <main className="grid min-h-[360px] min-w-0 place-items-center rounded-2xl border border-stone-200 bg-white p-4 text-center text-[12px] text-stone-500 shadow-sm">
         {t("skills.packageSelect")}
       </main>
     );
@@ -39,14 +39,14 @@ export function SkillPackageDetail({
     : detail.package.name;
 
   return (
-    <main className="min-h-0 min-w-0 overflow-hidden border border-stone-200 bg-white p-4 shadow-sm">
+    <main className="min-h-0 min-w-0 overflow-hidden rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-3 border-b border-stone-200 pb-3">
         <div className="min-w-0">
           <h2 className="truncate text-[15px] font-semibold text-stone-950">{packageName}</h2>
           <p className="mt-1 break-all font-mono text-[11px] text-stone-500">{detail.package.id}</p>
         </div>
         <button
-          className="shrink-0 bg-stone-900 px-3 py-2 text-[12px] font-semibold text-white hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-50"
+          className="shrink-0 rounded-xl bg-stone-900 px-3 py-2 text-[12px] font-semibold text-white motion-control hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={installing || detail.package.installed_count >= detail.package.skill_count}
           onClick={onInstallMissing}
           type="button"
@@ -98,7 +98,7 @@ export function SkillPackageDetail({
               }))
           ).map((member) => (
             <button
-              className="min-w-0 border border-stone-200 px-2.5 py-2 text-left hover:border-stone-400 hover:bg-stone-50"
+              className="min-w-0 rounded-xl border border-stone-200 px-2.5 py-2 text-left motion-control hover:border-stone-400 hover:bg-stone-50"
               disabled={!member.skill}
               key={member.id}
               onClick={() => {

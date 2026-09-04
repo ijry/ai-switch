@@ -24,6 +24,7 @@ import { getSessionMessages, listSessions, openSessionTerminal } from "../lib/ap
 import { useI18n, type Language } from "../lib/i18n";
 import type { SessionMessage, SessionMeta } from "../lib/api/types";
 import { isDesktop } from "../lib/transport";
+import { MotionMenu } from "../components/motion/MotionPrimitives";
 
 type SessionsScreenProps = {
   initialPlatform?: string | null;
@@ -383,7 +384,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
     return (
       <button
         key={sessionKey(session)}
-        className={`w-full cursor-pointer rounded-xl border p-3 text-left transition-colors ${
+        className={`w-full cursor-pointer rounded-xl border p-3 text-left motion-control ${
           active
             ? "border-emerald-700 bg-emerald-950 text-white shadow-sm"
             : "border-stone-200 bg-white/88 hover:border-emerald-200 hover:bg-emerald-50/70"
@@ -423,7 +424,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
           <div className="flex shrink-0 items-center gap-1 rounded-xl border border-stone-200 bg-stone-50 p-1">
             <button
               aria-pressed={listMode === "grouped"}
-              className={`inline-flex cursor-pointer items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
+              className={`inline-flex cursor-pointer items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold motion-control ${
                 listMode === "grouped"
                   ? "bg-emerald-700 text-white shadow-sm"
                   : "text-stone-600 hover:bg-white hover:text-stone-950"
@@ -436,7 +437,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
             </button>
             <button
               aria-pressed={listMode === "flat"}
-              className={`inline-flex cursor-pointer items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
+              className={`inline-flex cursor-pointer items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold motion-control ${
                 listMode === "flat"
                   ? "bg-emerald-700 text-white shadow-sm"
                   : "text-stone-600 hover:bg-white hover:text-stone-950"
@@ -499,7 +500,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                       <button
                         aria-controls={`session-group-${groupKey}`}
                         aria-expanded={expanded}
-                        className="flex w-full cursor-pointer items-center justify-between rounded-xl px-1 py-1 text-left transition-colors hover:bg-white/70"
+                        className="flex w-full cursor-pointer items-center justify-between rounded-xl px-1 py-1 text-left motion-control hover:bg-white/70"
                         onClick={() => toggleGroup(groupKey)}
                         type="button"
                       >
@@ -536,7 +537,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
           <>
             <div className="rounded-2xl border border-stone-200 bg-white/86 p-4 shadow-sm">
               <button
-                className="mb-3 inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:bg-stone-50 md:hidden"
+                className="mb-3 inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 motion-control hover:bg-stone-50 md:hidden"
                 onClick={() => setMobileDetailOpen(false)}
                 type="button"
               >
@@ -555,7 +556,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                   </span>
                   <button
                     aria-label={t("sessions.openTerminal")}
-                    className="grid h-9 w-9 cursor-pointer place-items-center rounded-xl border border-stone-200 bg-white text-stone-700 transition-colors hover:border-emerald-200 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                    className="grid h-9 w-9 cursor-pointer place-items-center rounded-xl border border-stone-200 bg-white text-stone-700 motion-control hover:border-emerald-200 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
                     disabled={!canOpenTerminal}
                     onClick={() => void openSelectedSessionTerminal()}
                     title={
@@ -574,7 +575,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                       aria-expanded={copyMenuOpen}
                       aria-haspopup="menu"
                       aria-label={t("sessions.copyMenu")}
-                      className={`grid h-9 w-9 cursor-pointer place-items-center rounded-xl border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+                      className={`grid h-9 w-9 cursor-pointer place-items-center rounded-xl border motion-control focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
                         copyMenuOpen
                           ? "border-emerald-700 bg-emerald-700 text-white"
                           : "border-stone-200 bg-white text-stone-700 hover:border-emerald-200 hover:bg-emerald-50"
@@ -586,13 +587,15 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                       <MoreHorizontal className="h-4 w-4" />
                     </button>
                     {copyMenuOpen && (
-                      <div
-                        aria-label={t("sessions.copyMenu")}
+                      <MotionMenu
+                        ariaLabel={t("sessions.copyMenu")}
                         className="absolute right-0 top-full z-30 mt-2 min-w-48 rounded-2xl border border-stone-200 bg-white p-1 shadow-xl shadow-stone-900/15"
+                        open={copyMenuOpen}
+                        origin="top-right"
                         role="menu"
                       >
                         <button
-                          className="flex w-full cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-left text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="flex w-full cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-left text-[12px] font-semibold text-stone-700 motion-control hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
                           disabled={!selectedSession.projectDir}
                           onClick={() => void copyText(selectedSession.projectDir, "project")}
                           role="menuitem"
@@ -602,7 +605,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                           {copiedValue === "project" ? t("sessions.copied") : t("sessions.copyDirectory")}
                         </button>
                         <button
-                          className="flex w-full cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-left text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50"
+                          className="flex w-full cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-left text-[12px] font-semibold text-stone-700 motion-control hover:bg-stone-50"
                           onClick={() => void copyText(selectedSession.sourcePath, "source")}
                           role="menuitem"
                           type="button"
@@ -612,7 +615,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                         </button>
                         {selectedSession.resumeCommand && (
                           <button
-                            className="flex w-full cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-left text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50"
+                            className="flex w-full cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-left text-[12px] font-semibold text-stone-700 motion-control hover:bg-stone-50"
                             onClick={() => void copyText(selectedSession.resumeCommand, "resume")}
                             role="menuitem"
                             type="button"
@@ -621,7 +624,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                             {copiedValue === "resume" ? t("sessions.copied") : t("sessions.copyResume")}
                           </button>
                         )}
-                      </div>
+                      </MotionMenu>
                     )}
                   </div>
                 </div>
@@ -660,7 +663,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                         aria-expanded={navigationOpen}
                         aria-haspopup="dialog"
                         aria-label={t("sessions.quickNavigation")}
-                        className={`inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border px-3 py-2 text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+                        className={`inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border px-3 py-2 text-[12px] font-semibold motion-control focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
                           navigationOpen
                             ? "border-emerald-700 bg-emerald-700 text-white"
                             : "border-stone-200 bg-white text-stone-700 hover:border-emerald-200 hover:bg-emerald-50"
@@ -673,9 +676,11 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                         <span className="hidden sm:inline">{t("sessions.quickNavigation")}</span>
                       </button>
                       {navigationOpen && (
-                        <div
-                          aria-label={t("sessions.quickNavigation")}
+                        <MotionMenu
+                          ariaLabel={t("sessions.quickNavigation")}
                           className="absolute right-0 top-full z-30 mt-2 w-80 max-w-[calc(100vw-2rem)] rounded-2xl border border-stone-200 bg-white p-3 shadow-xl shadow-stone-900/15"
+                          open={navigationOpen}
+                          origin="top-right"
                           role="dialog"
                         >
                           <div className="flex items-center justify-between gap-3">
@@ -689,7 +694,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                             {tocItems.length === 0 && <p className="text-[12px] text-stone-500">{t("sessions.noNavigation")}</p>}
                             {tocItems.map(({ message, index }, tocIndex) => (
                               <a
-                                className="flex items-start gap-2 rounded-xl border border-stone-200 bg-stone-50 px-2 py-2 text-[12px] text-stone-600 transition-colors hover:border-emerald-200 hover:bg-emerald-50"
+                                className="flex items-start gap-2 rounded-xl border border-stone-200 bg-stone-50 px-2 py-2 text-[12px] text-stone-600 motion-control hover:border-emerald-200 hover:bg-emerald-50"
                                 href={`#session-message-${index}`}
                                 key={`${message.role}-${message.ts ?? index}-${tocIndex}`}
                                 onClick={() => setNavigationOpen(false)}
@@ -707,7 +712,7 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                               </a>
                             ))}
                           </div>
-                        </div>
+                        </MotionMenu>
                       )}
                     </div>
                   </div>

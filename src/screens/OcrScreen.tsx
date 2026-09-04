@@ -120,7 +120,7 @@ export function OcrScreen() {
             </p>
           )}
           <button
-            className="mt-4 inline-flex items-center gap-2 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-stone-800 disabled:opacity-50"
+            className="mt-4 inline-flex items-center gap-2 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white motion-control hover:bg-stone-800 disabled:opacity-50"
             disabled={recognizing}
             onClick={runRecognition}
             type="button"
