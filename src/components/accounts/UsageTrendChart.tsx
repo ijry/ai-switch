@@ -241,7 +241,7 @@ export function UsageTrendChart({
   return (
     <div
       className={`rounded-xl border border-stone-200 bg-white p-3 ${
-        stale ? "opacity-60 transition-opacity" : ""
+        stale ? "opacity-60 motion-control" : ""
       }`}
     >
       <div className="flex flex-wrap items-baseline gap-x-2">

@@ -282,14 +282,14 @@ export function TailscaleSettings({ enabled, exposureMode = "private" }: Tailsca
               <input
                 aria-label={t("settings.tailscale.authKey")}
                 autoComplete="off"
-                className="min-w-0 flex-1 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
+                className="min-w-0 flex-1 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
                 onChange={(event) => setAuthKey(event.target.value)}
                 placeholder={t("settings.tailscale.authKeyPlaceholder")}
                 type="password"
                 value={authKey}
               />
               <button
-                className="inline-flex items-center gap-1.5 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white motion-control hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60"
                 disabled={busy || authKey.trim().length === 0}
                 onClick={() => authKeyMutation.mutate(authKey.trim())}
                 type="button"
@@ -307,7 +307,7 @@ export function TailscaleSettings({ enabled, exposureMode = "private" }: Tailsca
 
       <div className="flex flex-wrap gap-2">
         <button
-          className="inline-flex items-center gap-1.5 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex items-center gap-1.5 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white motion-control hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60"
           disabled={!enabled || busy}
           onClick={() => loginMutation.mutate()}
           type="button"
@@ -316,7 +316,7 @@ export function TailscaleSettings({ enabled, exposureMode = "private" }: Tailsca
           {t("settings.tailscale.login")}
         </button>
         <button
-          className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 motion-control hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
           disabled={!enabled || busy}
           onClick={() => disconnectMutation.mutate()}
           type="button"

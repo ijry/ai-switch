@@ -1,6 +1,7 @@
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Download, RefreshCw, RotateCcw, ShieldAlert, X } from "lucide-react";
+import { motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../../lib/i18n";
 import { isDesktop } from "../../lib/transport";
@@ -66,16 +67,12 @@ export function AutoUpdatePrompt() {
     };
   }, []);
 
-  if (!update) {
-    return null;
-  }
-
   const progress = download.total
     ? Math.min(100, Math.round((download.downloaded / download.total) * 100))
     : 0;
 
   const installUpdate = async () => {
-    if (installing || installed) {
+    if (!update || installing || installed) {
       return;
     }
 
@@ -121,13 +118,23 @@ export function AutoUpdatePrompt() {
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-[100] grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">
-      <div
+  return update ? (
+        <motion.div
+          key="auto-update-prompt"
+          className="fixed inset-0 z-[100] grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+        >
+      <motion.div
         aria-label={t("updates.promptTitle")}
         aria-modal="true"
-        className="w-full max-w-md rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl"
+        className="motion-dialog w-full max-w-md rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl"
         role="dialog"
+        initial={{ opacity: 0, y: 14, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 10, scale: 0.98 }}
+        transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
       >
         <div className="flex items-start justify-between gap-4">
           <div className="flex min-w-0 items-start gap-3">
@@ -144,7 +151,7 @@ export function AutoUpdatePrompt() {
           {!installing && !installed && (
             <button
               aria-label={t("updates.promptLater")}
-              className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700"
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-stone-400 motion-control hover:bg-stone-100 hover:text-stone-700"
               onClick={() => setUpdate(null)}
               title={t("updates.promptLater")}
               type="button"
@@ -177,7 +184,7 @@ export function AutoUpdatePrompt() {
               </span>
             </div>
             <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-stone-200">
-              <div className="h-full rounded-full bg-amber-500 transition-all" style={{ width: `${progress}%` }} />
+              <div className="h-full rounded-full bg-amber-500 motion-control" style={{ width: `${progress}%` }} />
             </div>
           </div>
         )}
@@ -185,7 +192,7 @@ export function AutoUpdatePrompt() {
         <div className="mt-5 flex justify-end gap-2 border-t border-stone-100 pt-3">
           {!installed && (
             <button
-              className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:bg-stone-50 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 motion-control hover:bg-stone-50 disabled:opacity-50"
               disabled={installing}
               onClick={() => setUpdate(null)}
               type="button"
@@ -194,7 +201,7 @@ export function AutoUpdatePrompt() {
             </button>
           )}
           <button
-            className="inline-flex items-center gap-1.5 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-stone-800 disabled:cursor-not-allowed disabled:bg-stone-400"
+            className="inline-flex items-center gap-1.5 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white motion-control hover:bg-stone-800 disabled:cursor-not-allowed disabled:bg-stone-400"
             disabled={installing}
             onClick={installed ? () => void relaunchApp() : () => void installUpdate()}
             type="button"
@@ -203,7 +210,7 @@ export function AutoUpdatePrompt() {
             {installed ? t("updates.relaunch") : installing ? t("updates.promptInstalling") : t("updates.promptUpdate")}
           </button>
         </div>
-      </div>
-    </div>
-  );
+      </motion.div>
+        </motion.div>
+      ) : null;
 }

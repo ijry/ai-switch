@@ -106,7 +106,7 @@ export function WebAuthGate({ onAuthenticated }: WebAuthGateProps) {
           <span>{t("auth.token")}</span>
           <input
             autoComplete="current-password"
-            className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-medium text-stone-900 shadow-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+            className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-medium text-stone-900 shadow-sm outline-none motion-control focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
             onChange={(event) => setToken(event.target.value)}
             placeholder={t("auth.tokenPlaceholder")}
             type="password"
@@ -117,7 +117,7 @@ export function WebAuthGate({ onAuthenticated }: WebAuthGateProps) {
         {error && <p className="text-[12px] font-medium text-red-700">{error}</p>}
 
         <button
-          className="w-full rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white transition-colors duration-150 hover:bg-stone-800 disabled:opacity-60"
+          className="w-full rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white motion-control duration-150 hover:bg-stone-800 disabled:opacity-60"
           disabled={pending}
           type="submit"
         >

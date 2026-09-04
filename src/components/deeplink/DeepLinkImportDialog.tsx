@@ -3,6 +3,7 @@ import { createApiRouteCredential, getRoutePool, setRoutePoolMembers } from "../
 import type { CreateApiRouteCredentialInput, InterfaceFormat } from "../../lib/api/types";
 import { getTransport, isDesktop } from "../../lib/transport";
 import { Button } from "../ui/Button";
+import { AnimatePresence, motion } from "motion/react";
 
 export type DeepLinkProviderImportPayload = {
   scheme: "ccswitch" | "aiswitch" | string;
@@ -151,12 +152,24 @@ export function DeepLinkImportDialog({ onImported }: DeepLinkImportDialogProps) 
   }
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-stone-950/40 p-4">
-      <div
+    <AnimatePresence>
+      {(payload || bannerError) ? (
+        <motion.div
+          key="deep-link-import"
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-stone-950/40 p-4"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+        >
+      <motion.div
         aria-label="导入 API 账号"
         aria-modal="true"
-        className="w-full max-w-lg rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl"
+        className="motion-dialog w-full max-w-lg rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl"
         role="dialog"
+        initial={{ opacity: 0, y: 12, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 8, scale: 0.98 }}
+        transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
       >
         {bannerError && !payload ? (
           <>
@@ -235,7 +248,9 @@ export function DeepLinkImportDialog({ onImported }: DeepLinkImportDialogProps) 
             </div>
           </>
         ) : null}
-      </div>
-    </div>
+      </motion.div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
   );
 }

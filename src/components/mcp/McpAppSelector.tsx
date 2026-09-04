@@ -16,7 +16,7 @@ export function McpAppSelector({ selectedApps, onChange, legend }: McpAppSelecto
       <legend className="text-[12px] font-semibold text-stone-800">{legend}</legend>
       <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
         {MCP_APPS.map((app) => (
-          <label className="flex items-center gap-2 border border-stone-200 px-2 py-1.5 text-[11px]" key={app.id}>
+          <label className="flex items-center gap-2 rounded-xl border border-stone-200 bg-stone-50/50 px-2 py-1.5 text-[11px] motion-control" key={app.id}>
             <input
               checked={selectedApps.includes(app.id)}
               onChange={(event) =>

@@ -1,5 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { DeepLinkImportDialog } from "./components/deeplink/DeepLinkImportDialog";
 import { LowDiskSpaceBanner } from "./components/system/LowDiskSpaceBanner";
 import { AutoUpdatePrompt } from "./components/updates/AutoUpdatePrompt";
@@ -29,6 +30,7 @@ import { UpdatesScreen } from "./screens/UpdatesScreen";
 import { VibeScreen } from "./screens/VibeScreen";
 import { McpScreen } from "./screens/McpScreen";
 import { SkillsScreen } from "./screens/SkillsScreen";
+import { MotionPage, MotionProvider, type MotionDirection } from "./components/motion/MotionPrimitives";
 
 const queryClient = createQueryClient();
 
@@ -72,6 +74,8 @@ export type PoolScopeFocus = {
 
 export function App() {
   const [screen, setScreen] = useState("Codex");
+  const screenRef = useRef("Codex");
+  const [navigationDirection, setNavigationDirection] = useState<MotionDirection>("neutral");
   const [sessionPlatform, setSessionPlatform] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [webReady, setWebReady] = useState(canSkipWebAuthGate);
@@ -98,6 +102,17 @@ export function App() {
   }, []);
 
   const navigate = (nextScreen: string) => {
+    const screens = Array.from(implementedScreens);
+    const previousIndex = screens.indexOf(screenRef.current);
+    const nextIndex = screens.indexOf(nextScreen);
+    setNavigationDirection(
+      previousIndex === -1 || nextIndex === -1
+        ? "neutral"
+        : nextIndex >= previousIndex
+          ? "forward"
+          : "backward",
+    );
+    screenRef.current = nextScreen;
     if (nextScreen === "Sessions") {
       setSessionPlatform(null);
     }
@@ -105,6 +120,8 @@ export function App() {
   };
 
   const openSessions = (platform?: string | null) => {
+    setNavigationDirection("forward");
+    screenRef.current = "Sessions";
     setSessionPlatform(platform ?? null);
     setScreen("Sessions");
   };
@@ -113,6 +130,8 @@ export function App() {
     (platform: string, options?: { joinedPool?: boolean }) => {
       const nextScreen = agentScreenByPlatform[platform as AgentPlatform];
       if (nextScreen) {
+        setNavigationDirection("forward");
+        screenRef.current = nextScreen;
         setScreen(nextScreen);
       }
       // Land the user on the segment where the imported account now lives so it
@@ -132,6 +151,7 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <I18nProvider>
+        <MotionProvider>
         <DeepLinkImportDialog onImported={handleDeepLinkImported} />
         <AutoUpdatePrompt />
         {/* Gated on `webReady` so the poll never runs before the web token exists. */}
@@ -141,21 +161,29 @@ export function App() {
         ) : (
           <>
             {vibeMounted && (
-              <div aria-hidden={!vibeActive} className={vibeActive ? "contents" : "hidden"}>
+              <motion.div
+                aria-hidden={!vibeActive}
+                className={vibeActive ? "vibe-host" : "vibe-host vibe-host--inactive"}
+                animate={vibeActive ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.985 }}
+                initial={{ opacity: 0, scale: 0.985 }}
+                transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+              >
                 <ErrorBoundary label="Vibe">
-                  <VibeScreen onExitVibe={() => setScreen("Codex")} />
+                  <VibeScreen onExitVibe={() => navigate("Codex")} />
                 </ErrorBoundary>
-              </div>
+              </motion.div>
             )}
             {!vibeActive && (
               <AppLayout
                 activeScreen={screen}
                 onNavigate={navigate}
-                onOpenVibe={() => setScreen("Vibe")}
+                onOpenVibe={() => navigate("Vibe")}
                 onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
                 sidebarCollapsed={sidebarCollapsed}
               >
-                {agentPlatform && (
+                <AnimatePresence initial={false} mode="wait">
+                  <MotionPage direction={navigationDirection} key={screen}>
+                    {agentPlatform && (
                   <AccountsScreen
                     onOpenSessions={openSessions}
                     platform={agentPlatform}
@@ -177,15 +205,18 @@ export function App() {
                 {screen === "MCP" && <McpScreen />}
                 {screen === "Skills" && <SkillsScreen />}
                 {screen === "Log" && <OperationLogScreen />}
-                {!implementedScreens.has(screen) && (
-                  <div className="rounded-2xl border border-stone-200 bg-white/80 p-5 text-sm text-stone-500 shadow-sm">
-                    {screen}
-                  </div>
-                )}
+                  {!implementedScreens.has(screen) && (
+                    <div className="rounded-2xl border border-stone-200 bg-white/80 p-5 text-sm text-stone-500 shadow-sm">
+                      {screen}
+                    </div>
+                  )}
+                  </MotionPage>
+                </AnimatePresence>
               </AppLayout>
             )}
           </>
         )}
+        </MotionProvider>
       </I18nProvider>
     </QueryClientProvider>
   );

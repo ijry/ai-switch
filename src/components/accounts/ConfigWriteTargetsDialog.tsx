@@ -80,7 +80,7 @@ function EndpointRow({ label, value, secret = false }: EndpointRowProps) {
         {secret ? (
           <button
             aria-label={revealed ? `隐藏 ${label}` : `显示 ${label}`}
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-stone-200 bg-white text-stone-600 transition-colors hover:bg-stone-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-stone-200 bg-white text-stone-600 motion-control hover:bg-stone-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             onClick={() => setRevealed((current) => !current)}
             title={revealed ? "隐藏" : "显示"}
             type="button"
@@ -94,7 +94,7 @@ function EndpointRow({ label, value, secret = false }: EndpointRowProps) {
         ) : null}
         <button
           aria-label={`复制 ${label}`}
-          className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-stone-200 bg-white text-stone-600 transition-colors hover:bg-stone-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-stone-200 bg-white text-stone-600 motion-control hover:bg-stone-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={!value}
           onClick={() => void copy()}
           title={value ? `复制 ${label}` : "本地路由代理尚未就绪"}
@@ -293,7 +293,7 @@ export function ConfigWriteTargetsDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-stone-950/45 p-4 backdrop-blur-sm"
+      className="motion-overlay fixed inset-0 z-[80] flex items-center justify-center bg-stone-950/45 p-4 backdrop-blur-sm"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget && !loading) {
           onClose();
@@ -326,7 +326,7 @@ export function ConfigWriteTargetsDialog({
           </div>
           <button
             aria-label="关闭接入算力池"
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50"
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-500 motion-control hover:bg-stone-100 hover:text-stone-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50"
             disabled={loading}
             onClick={onClose}
             title="关闭"
@@ -347,7 +347,7 @@ export function ConfigWriteTargetsDialog({
                 ref={builtinTabRef}
                 aria-controls="config-write-builtin-panel"
                 aria-selected={activeTab === "builtin"}
-                className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+                className={`rounded px-3 py-1.5 text-xs font-semibold motion-control focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
                   activeTab === "builtin"
                     ? "bg-stone-900 text-white"
                     : "text-stone-600 hover:text-stone-950"
@@ -365,7 +365,7 @@ export function ConfigWriteTargetsDialog({
                 ref={manualTabRef}
                 aria-controls="config-write-manual-panel"
                 aria-selected={activeTab === "manual"}
-                className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+                className={`rounded px-3 py-1.5 text-xs font-semibold motion-control focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
                   activeTab === "manual"
                     ? "bg-stone-900 text-white"
                     : "text-stone-600 hover:text-stone-950"
@@ -509,7 +509,7 @@ export function ConfigWriteTargetsDialog({
 
           <footer className="flex justify-end gap-2 border-t border-stone-200 bg-stone-50 px-6 py-3">
             <button
-              className="h-9 rounded-md border border-stone-300 bg-white px-4 text-sm font-semibold text-stone-700 transition-colors hover:bg-stone-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50"
+              className="h-9 rounded-md border border-stone-300 bg-white px-4 text-sm font-semibold text-stone-700 motion-control hover:bg-stone-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50"
               disabled={loading}
               onClick={onClose}
               type="button"
@@ -517,7 +517,7 @@ export function ConfigWriteTargetsDialog({
               取消
             </button>
             <button
-              className="h-9 rounded-md bg-stone-900 px-4 text-sm font-semibold text-white transition-colors hover:bg-stone-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+              className="h-9 rounded-md bg-stone-900 px-4 text-sm font-semibold text-white motion-control hover:bg-stone-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
               disabled={disabled || loading || selected.length === 0}
               type="submit"
             >

@@ -1,4 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { motion } from "motion/react";
+import { MotionMenu } from "../components/motion/MotionPrimitives";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import {
@@ -464,8 +466,6 @@ function LiveLogStage({ title, body }: { title: string; body: string | null | un
   );
 }
 
-
-
 type AccountsScreenProps = {
   platform?: PlatformKey;
   onOpenSessions?: (platform: PlatformKey) => void;
@@ -574,7 +574,6 @@ function credentialBatchFilterKey(credential: RouteCredential): string {
 function credentialBatchFilterLabel(key: string): string {
   return key === SINGLE_ACCOUNT_FILTER ? "单账号" : key;
 }
-
 
 function kindLabel(kind: RouteCredential["kind"]) {
   return kind === "api" ? "API" : "官方";
@@ -881,7 +880,6 @@ function normalizeModelMappings(mappings: ModelMapping[], platform: PlatformKey)
 
   return { error: null, mappings: normalized };
 }
-
 
 function numberFromRecord(record: Record<string, unknown>, key: string): number | null {
   const value = record[key];
@@ -1636,7 +1634,7 @@ function CodexMappingCapabilityFields({
         上下文
         <select
           aria-label={`上下文长度 ${index + 1}`}
-          className="rounded-lg border border-stone-200 bg-white px-2 py-1 text-[12px] font-medium text-stone-800 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+          className="rounded-lg border border-stone-200 bg-white px-2 py-1 text-[12px] font-medium text-stone-800 outline-none motion-control focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
           onChange={(event) =>
             onPatch({
               context_window: event.target.value ? Number(event.target.value) : null,
@@ -1665,7 +1663,7 @@ function CodexMappingCapabilityFields({
           const checked = effectiveLevels.includes(level);
           return (
             <label
-              className={`inline-flex cursor-pointer items-center rounded-lg border px-2 py-1 text-[11px] font-semibold transition-colors ${
+              className={`inline-flex cursor-pointer items-center rounded-lg border px-2 py-1 text-[11px] font-semibold motion-control ${
                 checked
                   ? "border-violet-300 bg-violet-100 text-violet-900"
                   : "border-stone-200 bg-white text-stone-500 hover:bg-stone-50"
@@ -1776,7 +1774,7 @@ function ModelMappingsEditor({
         <div className="flex flex-wrap items-center gap-2">
           {onFetchModels ? (
             <button
-              className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-[12px] font-semibold text-blue-900 transition-colors hover:bg-blue-100 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-[12px] font-semibold text-blue-900 motion-control hover:bg-blue-100 disabled:opacity-50"
               disabled={isFetchingModels}
               onClick={onFetchModels}
               type="button"
@@ -1786,7 +1784,7 @@ function ModelMappingsEditor({
             </button>
           ) : null}
           <button
-            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[12px] font-semibold text-emerald-900 transition-colors hover:bg-emerald-100 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[12px] font-semibold text-emerald-900 motion-control hover:bg-emerald-100 disabled:opacity-50"
             disabled={fetchedModels.length === 0}
             onClick={oneClickSetup}
             type="button"
@@ -1795,7 +1793,7 @@ function ModelMappingsEditor({
             一键设置
           </button>
           <button
-            className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 motion-control hover:bg-stone-50"
             onClick={addRow}
             type="button"
           >
@@ -1865,7 +1863,7 @@ function ModelMappingsEditor({
                   <>
                     <input
                       aria-label={`显示名称 ${index + 1}`}
-                      className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:bg-stone-100 disabled:text-stone-500"
+                      className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:bg-stone-100 disabled:text-stone-500"
                       disabled={!editableLabel}
                       onChange={(event) => updateRow(index, { label: event.target.value })}
                       placeholder={editableLabel ? "Sonnet" : roleTemplate?.hint ?? ""}
@@ -1873,7 +1871,7 @@ function ModelMappingsEditor({
                     />
                     <select
                       aria-label={`请求模型 ${index + 1}`}
-                      className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                      className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                       disabled={isTemplateRow}
                       onChange={(event) => updateRow(index, { from: event.target.value })}
                       value={mapping.from}
@@ -1889,7 +1887,7 @@ function ModelMappingsEditor({
                 ) : (
                   <input
                     aria-label={`请求模型 ${index + 1}`}
-                    className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                     list={modelListId}
                     onChange={(event) => updateRow(index, { from: event.target.value })}
                     placeholder="gpt-5.5"
@@ -1899,7 +1897,7 @@ function ModelMappingsEditor({
                 <ArrowRight className="hidden h-4 w-4 text-stone-400 sm:block" />
                 <input
                   aria-label={`上游模型 ${index + 1}`}
-                  className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                  className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                   list={modelListId}
                   onChange={(event) => updateRow(index, { to: event.target.value })}
                   placeholder="例如：gpt-4o"
@@ -1927,7 +1925,7 @@ function ModelMappingsEditor({
                 ) : null}
                 <button
                   aria-label={`删除模型映射 ${index + 1}`}
-                  className="grid h-9 w-9 place-items-center rounded-xl border border-stone-200 bg-white text-stone-500 transition-colors hover:bg-red-50 hover:text-red-700"
+                  className="grid h-9 w-9 place-items-center rounded-xl border border-stone-200 bg-white text-stone-500 motion-control hover:bg-red-50 hover:text-red-700"
                   onClick={() => removeRow(index)}
                   type="button"
                 >
@@ -2382,7 +2380,7 @@ function RelayBalanceFields({
             <button
               aria-label={`${idPrefix} 余额查询 ${option.label}`}
               aria-pressed={selected}
-              className={`h-8 min-w-0 cursor-pointer whitespace-nowrap rounded-md px-1 text-[12px] font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
+              className={`h-8 min-w-0 cursor-pointer whitespace-nowrap rounded-md px-1 text-[12px] font-semibold motion-control focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
                 selected ? "bg-white text-stone-950 shadow-sm" : "text-stone-600 hover:text-stone-900"
               }`}
               key={option.value}
@@ -2982,7 +2980,6 @@ export function AccountsScreen({
     setBatchStatus("");
   }, [accountView]);
 
-
   const credentialsQuery = useQuery<RouteCredentialPage>({
     queryKey: [
       "route-credential-page",
@@ -3350,7 +3347,6 @@ export function AccountsScreen({
 
     return () => window.clearTimeout(timeout);
   }, [configWriteOutcomes]);
-
 
   const accountPageData = credentialsQuery.data;
   const credentials = accountPageData?.items ?? [];
@@ -5067,13 +5063,13 @@ export function AccountsScreen({
   };
 
   const fieldClass =
-    "rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100";
+    "rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-blue-400 focus:ring-2 focus:ring-blue-100";
   const monoFieldClass = `${fieldClass} font-mono`;
   const labelClass = "grid gap-1.5 text-[12px] font-semibold text-stone-600";
   const secondaryButtonClass =
-    "rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:bg-stone-50";
+    "rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 motion-control hover:bg-stone-50";
   const primaryButtonClass =
-    "rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-stone-800 disabled:opacity-50";
+    "rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white shadow-sm motion-control hover:bg-stone-800 disabled:opacity-50";
   const handleEditUserAgentChange = (next: string) => {
     setEditUserAgent(next);
     if (editingCredential?.kind === "official") {
@@ -5090,7 +5086,7 @@ export function AccountsScreen({
   return (
     <section className="accounts-screen flex h-full min-h-0 flex-col overflow-hidden">
       <div
-        className="account-workspace grid h-full min-h-0 overflow-hidden rounded-lg bg-transparent transition-[grid-template-rows] duration-300 ease-out"
+        className="account-workspace grid h-full min-h-0 overflow-hidden rounded-lg bg-transparent motion-layout duration-300 ease-out"
         data-testid="account-workspace"
         onMouseMove={(event) => {
           if (toolbarAutoHidden && event.clientY <= 10) {
@@ -5125,7 +5121,7 @@ export function AccountsScreen({
           }}
         >
           <div
-            className={`min-w-0 flex-1 transition-all duration-300 max-[599px]:hidden ${sidebarCollapsed ? "hidden" : ""} ${toolbarAutoHidden ? "pointer-events-none -translate-y-3 opacity-0" : "translate-y-0 opacity-100"}`}
+            className={`min-w-0 flex-1 motion-control duration-300 max-[599px]:hidden ${sidebarCollapsed ? "hidden" : ""} ${toolbarAutoHidden ? "pointer-events-none -translate-y-3 opacity-0" : "translate-y-0 opacity-100"}`}
             data-testid="workspace-toolbar-leading"
           >
             <div className="flex items-center gap-2">
@@ -5179,7 +5175,7 @@ export function AccountsScreen({
               {routeProxyQuery.data?.running ? (
                 <button
                   aria-label="停止本地路由代理"
-                  className="grid h-6 w-6 place-items-center border border-red-700 bg-red-600 text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+                  className="grid h-6 w-6 place-items-center border border-red-700 bg-red-600 text-white motion-control hover:bg-red-700 disabled:opacity-50"
                   disabled={startProxyMutation.isPending || stopProxyMutation.isPending}
                   onClick={() => stopProxyMutation.mutate()}
                   title="停止本地路由代理"
@@ -5190,7 +5186,7 @@ export function AccountsScreen({
               ) : (
                 <button
                   aria-label="启动本地路由代理"
-                  className="grid h-6 w-6 place-items-center border border-emerald-700 bg-emerald-600 text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
+                  className="grid h-6 w-6 place-items-center border border-emerald-700 bg-emerald-600 text-white motion-control hover:bg-emerald-700 disabled:opacity-50"
                   disabled={startProxyMutation.isPending || stopProxyMutation.isPending}
                   onClick={() => startProxyMutation.mutate()}
                   title="启动本地路由代理"
@@ -5201,7 +5197,7 @@ export function AccountsScreen({
               )}
               <button
                 aria-label="写入路由配置文件"
-                className={`relative grid h-6 w-6 place-items-center border bg-white transition-colors hover:bg-stone-200 disabled:opacity-50 ${
+                className={`relative grid h-6 w-6 place-items-center border bg-white motion-control hover:bg-stone-200 disabled:opacity-50 ${
                   configWriteStale
                     ? "border-amber-400 text-amber-700"
                     : "border-stone-300 text-stone-700"
@@ -5236,7 +5232,7 @@ export function AccountsScreen({
               {activePlatform === "claude" ? (
                 <button
                   aria-label="编辑全局客户端配置"
-                  className="grid h-6 w-6 place-items-center border border-stone-300 bg-white text-stone-700 transition-colors hover:bg-stone-200 disabled:opacity-50"
+                  className="grid h-6 w-6 place-items-center border border-stone-300 bg-white text-stone-700 motion-control hover:bg-stone-200 disabled:opacity-50"
                   disabled={!settingsQuery.data}
                   onClick={openClientConfigDialog}
                   title="全局客户端配置（整池共用，写入配置时合并进 settings.json）"
@@ -5248,7 +5244,7 @@ export function AccountsScreen({
               <div className="relative flex shrink-0" ref={modelTestMenuRef}>
                 <button
                   aria-label="真实生成测试算力池路由"
-                  className="grid h-6 w-6 place-items-center rounded-l-md border border-stone-300 border-r-0 bg-transparent text-sky-700 transition-colors hover:bg-stone-100 disabled:opacity-50"
+                  className="grid h-6 w-6 place-items-center rounded-l-md border border-stone-300 border-r-0 bg-transparent text-sky-700 motion-control hover:bg-stone-100 disabled:opacity-50"
                   disabled={!modelTestEnabled || !hasEligiblePoolModelTestCredential || modelTestMutation.isPending}
                   onClick={openRouteTestDialog}
                   title={
@@ -5266,7 +5262,7 @@ export function AccountsScreen({
                   aria-expanded={modelTestMenuOpen}
                   aria-haspopup="menu"
                   aria-label="打开算力池测试菜单"
-                  className="grid h-6 w-5 place-items-center rounded-r-md border border-stone-300 bg-transparent text-sky-700 transition-colors hover:bg-stone-100"
+                  className="grid h-6 w-5 place-items-center rounded-r-md border border-stone-300 bg-transparent text-sky-700 motion-control hover:bg-stone-100"
                   onClick={() => setModelTestMenuOpen((open) => !open)}
                   title="更多测试操作"
                   type="button"
@@ -5276,19 +5272,20 @@ export function AccountsScreen({
                   ) : (
                     <ChevronDown
                       aria-hidden="true"
-                      className={"h-3 w-3 transition-transform " + (modelTestMenuOpen ? "rotate-180" : "")}
+                      className={"h-3 w-3 motion-control " + (modelTestMenuOpen ? "rotate-180" : "")}
                     />
                   )}
                 </button>
-                {modelTestMenuOpen ? (
-                  <div
-                    aria-label="算力池测试菜单"
-                    className="absolute right-0 top-full z-50 mt-1 min-w-44 rounded-lg border border-stone-200 bg-white p-1 shadow-lg"
-                    role="menu"
-                  >
+                <MotionMenu
+                  ariaLabel="算力池测试菜单"
+                  className="absolute right-0 top-full z-50 mt-1 min-w-44 rounded-lg border border-stone-200 bg-white p-1 shadow-lg"
+                  open={modelTestMenuOpen}
+                  origin="top-right"
+                  role="menu"
+                >
                     <button
                       aria-label="复制 curl 执行语句"
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 motion-control hover:bg-stone-100"
                       onClick={() => void copyModelTestCurl("posix")}
                       role="menuitem"
                       title="Git Bash / WSL / macOS / Linux"
@@ -5299,7 +5296,7 @@ export function AccountsScreen({
                     </button>
                     <button
                       aria-label="复制 PowerShell curl 执行语句"
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 motion-control hover:bg-stone-100"
                       onClick={() => void copyModelTestCurl("powershell")}
                       role="menuitem"
                       title="Windows PowerShell 5.1 与 PowerShell 7 都适用"
@@ -5310,7 +5307,7 @@ export function AccountsScreen({
                     </button>
                     <button
                       aria-label="复制 CMD curl 执行语句"
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 motion-control hover:bg-stone-100"
                       onClick={() => void copyModelTestCurl("cmd")}
                       role="menuitem"
                       title="cmd.exe"
@@ -5321,7 +5318,7 @@ export function AccountsScreen({
                     </button>
                     <button
                       aria-label="查看模型列表"
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 motion-control hover:bg-stone-100"
                       onClick={openRoutePoolModelsDialog}
                       role="menuitem"
                       type="button"
@@ -5331,7 +5328,7 @@ export function AccountsScreen({
                     </button>
                     <button
                       aria-label="实时日志"
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 transition-colors hover:bg-stone-100"
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 motion-control hover:bg-stone-100"
                       onClick={() => {
                         setModelTestMenuOpen(false);
                         setLiveLogOpen(true);
@@ -5342,15 +5339,14 @@ export function AccountsScreen({
                       <ScrollText aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
                       实时日志
                     </button>
-                  </div>
-                ) : null}
+                </MotionMenu>
               </div>
             </div>
           </div>
-          <div className={`flex min-w-0 flex-1 justify-end transition-all duration-300 max-[599px]:hidden ${toolbarAutoHidden ? "pointer-events-none -translate-y-3 opacity-0" : "translate-y-0 opacity-100"}`}>
+          <div className={`flex min-w-0 flex-1 justify-end motion-control duration-300 max-[599px]:hidden ${toolbarAutoHidden ? "pointer-events-none -translate-y-3 opacity-0" : "translate-y-0 opacity-100"}`}>
             <button
               aria-label="会话管理"
-              className="grid h-7 w-7 shrink-0 place-items-center border border-stone-300 bg-white text-stone-700 transition-colors hover:bg-stone-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-400"
+              className="grid h-7 w-7 shrink-0 place-items-center border border-stone-300 bg-white text-stone-700 motion-control hover:bg-stone-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-400"
               onClick={() => onOpenSessions?.(activePlatform)}
               title="会话管理"
               type="button"
@@ -5466,7 +5462,7 @@ export function AccountsScreen({
                 <p className="font-mono text-[11px]">{modelTestStatusLine(modelTestOutcome)}</p>
                 <button
                   aria-label="关闭真实生成测试结果"
-                  className="grid h-7 w-7 place-items-center rounded-lg text-current opacity-70 transition hover:bg-white/70 hover:opacity-100"
+                  className="grid h-7 w-7 place-items-center rounded-lg text-current opacity-70 motion-control hover:bg-white/70 hover:opacity-100"
                   onClick={closeModelTestOutcome}
                   type="button"
                 >
@@ -5551,7 +5547,7 @@ export function AccountsScreen({
             </p>
             <button
               aria-label="关闭真实生成测试错误"
-              className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-red-800 opacity-70 transition hover:bg-white/70 hover:opacity-100"
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-red-800 opacity-70 motion-control hover:bg-white/70 hover:opacity-100"
               onClick={closeModelTestOutcome}
               type="button"
             >
@@ -5559,8 +5555,27 @@ export function AccountsScreen({
             </button>
           </div>
         ) : null}
-      {statsOpen && <UsageOverviewPanel />}
-      {accountView !== "stats" && (
+      <>
+        {statsOpen ? (
+          <motion.div
+            key="account-stats"
+            className="account-view-motion min-h-full"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <UsageOverviewPanel />
+          </motion.div>
+        ) : (
+          <motion.div
+            key={accountView}
+            className="account-view-motion min-h-full"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
+          >
       <section className="flex min-h-full flex-col border-t border-stone-300/80 bg-transparent pt-2">
         <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-y border-stone-300/80 bg-stone-100/90 px-2 py-1.5 backdrop-blur-sm">
           <div className="min-w-0 flex-1">
@@ -5582,7 +5597,7 @@ export function AccountsScreen({
                         {accountFilterLabels.get(filterKey) ?? credentialBatchFilterLabel(filterKey)}
                         <button
                           aria-label={`移除筛选 ${accountFilterLabels.get(filterKey) ?? credentialBatchFilterLabel(filterKey)}`}
-                            className="p-0.5 text-blue-700 transition-colors hover:bg-blue-100"
+                            className="p-0.5 text-blue-700 motion-control hover:bg-blue-100"
                           onClick={(event) => {
                             event.stopPropagation();
                             removeAccountFilter(filterKey);
@@ -5596,18 +5611,23 @@ export function AccountsScreen({
                   )}
                   <button
                     aria-label="打开账号筛选"
-                    className="ml-auto inline-flex items-center gap-1 px-1.5 py-1 text-[12px] font-semibold text-stone-600 transition-colors hover:bg-stone-50"
+                    className="ml-auto inline-flex items-center gap-1 px-1.5 py-1 text-[12px] font-semibold text-stone-600 motion-control hover:bg-stone-50"
                     onClick={(event) => {
                       event.stopPropagation();
                       setAccountFilterMenuOpen((open) => !open);
                     }}
                     type="button"
                   >
-                    <ChevronDown className={`h-3.5 w-3.5 transition-transform ${accountFilterMenuOpen ? "rotate-180" : ""}`} />
+                    <ChevronDown className={`h-3.5 w-3.5 motion-control ${accountFilterMenuOpen ? "rotate-180" : ""}`} />
                   </button>
                 </div>
-                {accountFilterMenuOpen && (
-                  <div className="absolute left-0 right-0 z-20 mt-1 max-h-56 overflow-auto rounded-md border border-stone-300 bg-white p-1 shadow-lg">
+                <MotionMenu
+                  ariaLabel="账号筛选"
+                  className="absolute left-0 right-0 z-20 mt-1 max-h-56 overflow-auto rounded-xl border border-stone-300 bg-white p-1 shadow-lg"
+                  open={accountFilterMenuOpen}
+                  origin="top-left"
+                  role="menu"
+                >
                     {accountFilterOptions.length === 0 ? (
                       <p className="px-2 py-2 text-[12px] text-stone-500">暂无可筛选项</p>
                     ) : (
@@ -5616,7 +5636,7 @@ export function AccountsScreen({
                         return (
                           <button
                             aria-label={`筛选 ${accountFilterLabels.get(option) ?? credentialBatchFilterLabel(option)}`}
-                            className={`flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-left text-[12px] font-semibold transition-colors ${
+                            className={`flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-left text-[12px] font-semibold motion-control ${
                               checked ? "bg-blue-50 text-blue-800" : "text-stone-700 hover:bg-stone-50"
                             }`}
                             key={option}
@@ -5632,15 +5652,14 @@ export function AccountsScreen({
                     {accountFilters.length > 0 && (
                       <button
                         aria-label="清空账号筛选"
-                        className="mt-1 w-full rounded-sm border border-stone-300 px-2.5 py-1.5 text-[12px] font-semibold text-stone-600 transition-colors hover:bg-stone-50"
+                        className="mt-1 w-full rounded-sm border border-stone-300 px-2.5 py-1.5 text-[12px] font-semibold text-stone-600 motion-control hover:bg-stone-50"
                         onClick={() => { setAccountFilters([]); setAccountPage(1); }}
                         type="button"
                       >
                         清空筛选
                       </button>
                     )}
-                  </div>
-                )}
+                </MotionMenu>
               </div>
             </div>
           </div>
@@ -5656,7 +5675,7 @@ export function AccountsScreen({
                   <button
                     aria-label={option.label}
                     aria-pressed={active}
-                    className={`grid h-6 w-6 place-items-center rounded-md transition-colors ${
+                    className={`grid h-6 w-6 place-items-center rounded-md motion-control ${
                       active
                         ? "bg-stone-900 text-white shadow-sm"
                         : "text-stone-600 hover:bg-stone-100"
@@ -5678,7 +5697,7 @@ export function AccountsScreen({
             {selectedAccountIds.size > 0 && (
               <button
                 aria-label="导出选中账号"
-                className="grid h-7 w-7 place-items-center border border-stone-300 bg-white text-stone-700 transition-colors hover:bg-stone-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-400"
+                className="grid h-7 w-7 place-items-center border border-stone-300 bg-white text-stone-700 motion-control hover:bg-stone-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-400"
                 onClick={openExport}
                 title="导出选中账号"
                 type="button"
@@ -5688,7 +5707,7 @@ export function AccountsScreen({
             )}
             <button
               aria-label="新增账号"
-              className="grid h-7 w-7 place-items-center border border-stone-700 bg-stone-800 text-white transition-colors hover:bg-stone-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-400"
+              className="grid h-7 w-7 place-items-center border border-stone-700 bg-stone-800 text-white motion-control hover:bg-stone-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-400"
               onClick={() => {
                 setJoinPoolOnCreate(true);
                 setCreateTab("basic");
@@ -5703,7 +5722,7 @@ export function AccountsScreen({
               <div className="flex overflow-hidden rounded-lg border border-stone-300 bg-white shadow-sm">
                 <button
                   aria-label="刷新账号列表"
-                  className="grid h-7 w-7 place-items-center bg-white text-stone-700 transition-colors hover:bg-stone-100 disabled:opacity-50"
+                  className="grid h-7 w-7 place-items-center bg-white text-stone-700 motion-control hover:bg-stone-100 disabled:opacity-50"
                   disabled={credentialsQuery.isFetching || quotaRefreshPlatformMutation.isPending}
                   onClick={() => {
                     setRefreshMenuOpen(false);
@@ -5722,7 +5741,7 @@ export function AccountsScreen({
                   aria-expanded={refreshMenuOpen}
                   aria-haspopup="menu"
                   aria-label="打开刷新菜单"
-                  className="grid h-7 w-6 place-items-center border-l border-stone-200 bg-white text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-50"
+                  className="grid h-7 w-6 place-items-center border-l border-stone-200 bg-white text-stone-600 motion-control hover:bg-stone-100 disabled:opacity-50"
                   disabled={credentialsQuery.isFetching || quotaRefreshPlatformMutation.isPending}
                   onClick={() => setRefreshMenuOpen((open) => !open)}
                   title="更多刷新操作"
@@ -5730,19 +5749,20 @@ export function AccountsScreen({
                 >
                   <ChevronDown
                     aria-hidden="true"
-                    className={`h-3.5 w-3.5 transition-transform ${refreshMenuOpen ? "rotate-180" : ""}`}
+                    className={`h-3.5 w-3.5 motion-control ${refreshMenuOpen ? "rotate-180" : ""}`}
                   />
                 </button>
               </div>
-              {refreshMenuOpen ? (
-                <div
-                  aria-label="刷新操作"
-                  className="absolute right-0 top-full z-30 mt-1 min-w-36 overflow-hidden rounded-lg border border-stone-200 bg-white p-1 shadow-lg"
-                  role="menu"
-                >
+              <MotionMenu
+                ariaLabel="刷新操作"
+                className="absolute right-0 top-full z-30 mt-1 min-w-36 overflow-hidden rounded-xl border border-stone-200 bg-white p-1 shadow-lg"
+                open={refreshMenuOpen}
+                origin="top-right"
+                role="menu"
+              >
                   <button
                     aria-label="刷新账号列表"
-                    className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50 disabled:opacity-50"
+                    className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] font-semibold text-stone-700 motion-control hover:bg-stone-50 disabled:opacity-50"
                     disabled={credentialsQuery.isFetching || quotaRefreshPlatformMutation.isPending}
                     onClick={() => {
                       setRefreshMenuOpen(false);
@@ -5770,7 +5790,7 @@ export function AccountsScreen({
                       ] as const
                     ).map(([key, label]) => (
                       <label
-                        className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50"
+                        className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 motion-control hover:bg-stone-50"
                         key={key}
                       >
                         <input
@@ -5788,7 +5808,7 @@ export function AccountsScreen({
                   </div>
                   <button
                     aria-label="刷新官方账号额度"
-                    className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] font-semibold text-violet-700 transition-colors hover:bg-violet-50 disabled:opacity-50"
+                    className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] font-semibold text-violet-700 motion-control hover:bg-violet-50 disabled:opacity-50"
                     disabled={
                       !officialQuotaEnabled ||
                       quotaRefreshPlatformMutation.isPending ||
@@ -5810,7 +5830,7 @@ export function AccountsScreen({
                   </button>
                   <button
                     aria-label="查询中转站余额"
-                    className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] font-semibold text-teal-700 transition-colors hover:bg-teal-50 disabled:opacity-50"
+                    className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] font-semibold text-teal-700 motion-control hover:bg-teal-50 disabled:opacity-50"
                     disabled={
                       relayBalancePlatformMutation.isPending || credentialsQuery.isFetching
                     }
@@ -5828,8 +5848,7 @@ export function AccountsScreen({
                     />
                     查中转站余额
                   </button>
-                </div>
-              ) : null}
+              </MotionMenu>
             </div>
           </div>
         </div>
@@ -5841,7 +5860,7 @@ export function AccountsScreen({
                 <span>已选 {selectedAccountIds.size} 个账号</span>
                 <button
                   aria-label="取消账号选择"
-                  className="rounded-lg border border-amber-200 bg-white px-2 py-1 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50"
+                  className="rounded-lg border border-amber-200 bg-white px-2 py-1 text-[12px] font-semibold text-stone-700 motion-control hover:bg-stone-50"
                   onClick={clearAccountSelection}
                   type="button"
                 >
@@ -5867,7 +5886,7 @@ export function AccountsScreen({
                     {batchStatus && (
                       <button
                         aria-label="应用批量状态"
-                        className="inline-flex items-center justify-center rounded-lg bg-amber-700 px-2.5 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-amber-800 disabled:opacity-50"
+                        className="inline-flex items-center justify-center rounded-lg bg-amber-700 px-2.5 py-1.5 text-[12px] font-semibold text-white motion-control hover:bg-amber-800 disabled:opacity-50"
                         disabled={batchStatusMutation.isPending}
                         onClick={setSelectedAccountsStatus}
                         type="button"
@@ -5880,7 +5899,7 @@ export function AccountsScreen({
                 {accountView === "archived" ? (
                   <button
                     aria-label="批量恢复账号"
-                    className="grid h-7 w-7 place-items-center border border-emerald-200 bg-white text-emerald-800 transition-colors hover:bg-emerald-50 disabled:opacity-50"
+                    className="grid h-7 w-7 place-items-center border border-emerald-200 bg-white text-emerald-800 motion-control hover:bg-emerald-50 disabled:opacity-50"
                     disabled={archiveMutation.isPending || restoreMutation.isPending}
                     onClick={restoreSelectedAccounts}
                     title="批量恢复账号"
@@ -5894,7 +5913,7 @@ export function AccountsScreen({
                     {accountView === "out_of_pool" ? (
                       <button
                         aria-label="批量加入算力池"
-                        className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-700 px-2.5 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-emerald-800 disabled:opacity-50"
+                        className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-700 px-2.5 py-1.5 text-[12px] font-semibold text-white motion-control hover:bg-emerald-800 disabled:opacity-50"
                         disabled={routePoolMutation.isPending}
                         onClick={addSelectedToPool}
                         type="button"
@@ -5904,7 +5923,7 @@ export function AccountsScreen({
                     ) : (
                       <button
                         aria-label="批量移出算力池"
-                        className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-emerald-800 transition-colors hover:bg-emerald-50 disabled:opacity-50"
+                        className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-emerald-800 motion-control hover:bg-emerald-50 disabled:opacity-50"
                         disabled={routePoolMutation.isPending}
                         onClick={removeSelectedFromPool}
                         type="button"
@@ -5914,7 +5933,7 @@ export function AccountsScreen({
                     )}
                     <button
                       aria-label="批量归档账号"
-                      className="inline-flex h-7 items-center justify-center gap-1.5 border border-amber-200 bg-white px-2.5 text-[12px] font-semibold text-amber-800 transition-colors hover:bg-amber-50 disabled:opacity-50"
+                      className="inline-flex h-7 items-center justify-center gap-1.5 border border-amber-200 bg-white px-2.5 text-[12px] font-semibold text-amber-800 motion-control hover:bg-amber-50 disabled:opacity-50"
                       disabled={archiveMutation.isPending || restoreMutation.isPending}
                       onClick={archiveSelectedAccounts}
                       title="批量归档账号"
@@ -5927,7 +5946,7 @@ export function AccountsScreen({
                 )}
                 <button
                   aria-label="批量删除账号"
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-red-700 motion-control hover:bg-red-50 disabled:opacity-50"
                   disabled={batchDeleteMutation.isPending}
                   onClick={requestDeleteSelectedAccounts}
                   type="button"
@@ -6204,7 +6223,7 @@ export function AccountsScreen({
                             aria-label={`打开 ${baseUrlLink.host}`}
                             // Hidden until the row is hovered or the button itself is
                             // focused: keyboard users never lose access to it.
-                            className="-ml-1 shrink-0 text-stone-400 opacity-0 transition-opacity hover:text-blue-600 focus-visible:opacity-100 group-hover/name:opacity-100"
+                            className="-ml-1 shrink-0 text-stone-400 opacity-0 motion-control hover:text-blue-600 focus-visible:opacity-100 group-hover/name:opacity-100"
                             onClick={(event) => {
                               event.stopPropagation();
                               void openExternal(baseUrlLink.href);
@@ -6398,7 +6417,7 @@ export function AccountsScreen({
                             aria-expanded={actionMenuOpen}
                             aria-haspopup="menu"
                             aria-label={`更多操作 ${credential.display_name}`}
-                            className="grid h-7 w-7 place-items-center border border-stone-200 text-stone-700 transition-colors hover:bg-stone-50"
+                            className="grid h-7 w-7 place-items-center border border-stone-200 text-stone-700 motion-control hover:bg-stone-50"
                             onClick={() =>
                               setOpenActionMenuId((current) =>
                                 current === credential.id ? null : credential.id,
@@ -6410,16 +6429,17 @@ export function AccountsScreen({
                             <MoreVertical aria-hidden="true" className="h-3.5 w-3.5" />
                             <span className="sr-only">更多操作</span>
                           </button>
-                          {actionMenuOpen ? (
-                            <div
-                              aria-label={`${credential.display_name} 操作菜单`}
-                              className="absolute right-0 top-full z-50 mt-1 min-w-36 rounded-lg border border-stone-200 bg-white p-1 shadow-lg"
-                              role="menu"
-                            >
+                          <MotionMenu
+                            ariaLabel={`${credential.display_name} 操作菜单`}
+                            className="absolute right-0 top-full z-50 mt-1 min-w-36 rounded-xl border border-stone-200 bg-white p-1 shadow-lg"
+                            open={actionMenuOpen}
+                            origin="top-right"
+                            role="menu"
+                          >
                               {rowActions.map((action) => (
                                 <button
                                   aria-label={action.ariaLabel}
-                                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-45"
+                                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-stone-700 motion-control hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-45"
                                   disabled={action.disabled}
                                   key={action.key}
                                   onClick={() => {
@@ -6434,8 +6454,7 @@ export function AccountsScreen({
                                   {action.menuLabel}
                                 </button>
                               ))}
-                            </div>
-                          ) : null}
+                          </MotionMenu>
                         </div>
                       ) : (
                         rowActions.map((action) => (
@@ -6445,7 +6464,7 @@ export function AccountsScreen({
                               action.inlineLabel
                                 ? "flex h-7 items-center gap-1 px-2"
                                 : "grid h-7 w-7 place-items-center"
-                            } border transition-colors disabled:opacity-50 ${action.inlineToneClass}`}
+                            } border motion-control disabled:opacity-50 ${action.inlineToneClass}`}
                             disabled={action.disabled}
                             key={action.key}
                             onClick={action.onClick}
@@ -6473,7 +6492,7 @@ export function AccountsScreen({
                         {placeholderSlot}
                         <article
                           aria-label={`放置在 ${credential.display_name} 前`}
-                          className={`group/name flex h-full min-w-0 flex-col gap-1.5 rounded-xl border p-2.5 transition-shadow ${
+                          className={`group/name flex h-full min-w-0 flex-col gap-1.5 rounded-xl border p-2.5 motion-control ${
                             isDragged
                               ? "border-blue-400 bg-white shadow-lg"
                               : isKeyboardDragged
@@ -6535,7 +6554,7 @@ export function AccountsScreen({
                   {placeholderSlot}
                   <div
                     aria-label={`放置在 ${credential.display_name} 前`}
-                    className={`mx-1 mb-0.5 grid grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-3 py-2.5 transition-colors last:mb-0 ${
+                    className={`mx-1 mb-0.5 grid grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-3 py-2.5 motion-control last:mb-0 ${
                       isDragged
                         ? "border-blue-400 bg-white shadow-lg"
                         : isKeyboardDragged
@@ -6626,7 +6645,9 @@ export function AccountsScreen({
           ) : null}
         </div>
       </section>
-      )}
+          </motion.div>
+        )}
+      </>
 
         </div>
         <footer
@@ -6640,13 +6661,21 @@ export function AccountsScreen({
                 <button
                   aria-label={option.label}
                   aria-pressed={active}
-                  className={`grid h-6 place-items-center rounded-md px-1 text-[11px] font-semibold transition-colors ${active ? "bg-stone-900 text-white shadow-sm" : "text-stone-600 hover:bg-stone-100"}`}
+                  className={`relative grid h-6 place-items-center rounded-md px-1 text-[11px] font-semibold motion-control ${active ? "bg-stone-900 text-white shadow-sm" : "text-stone-600 hover:bg-stone-100"}`}
                   key={option.key}
                   onClick={() => selectAccountView(option.key)}
                   title={option.label}
                   type="button"
                 >
                   {option.label}
+                  {active ? (
+                    <motion.span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-x-1 bottom-0 h-0.5 rounded-full bg-amber-400"
+                      layoutId="account-view-active-indicator"
+                      transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                    />
+                  ) : null}
                 </button>
               );
             })}
@@ -6703,7 +6732,12 @@ export function AccountsScreen({
         </div>
 
       {pendingDelete && (
-        <div className="fixed inset-0 z-[80] grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">
+        <div className="motion-overlay fixed inset-0 z-[80] grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !deleteMutation.isPending && !batchDeleteMutation.isPending) {
+              setPendingDelete(null);
+            }
+          }}>
           <div
             aria-label="删除确认弹窗"
             aria-modal="true"
@@ -6728,7 +6762,7 @@ export function AccountsScreen({
               </button>
               <button
                 aria-label="确认删除"
-                className="rounded-xl border border-red-700 bg-red-600 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+                className="rounded-xl border border-red-700 bg-red-600 px-3 py-2 text-[13px] font-semibold text-white motion-control hover:bg-red-700 disabled:opacity-50"
                 disabled={deleteMutation.isPending || batchDeleteMutation.isPending}
                 onClick={() => {
                   if (pendingDelete.kind === "batch") {
@@ -6748,7 +6782,13 @@ export function AccountsScreen({
       )}
 
       {clientConfigOpen && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">
+        <div className="motion-overlay fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setClientConfigOpen(false);
+            }
+          }}
+        >
           <div
             aria-label="全局客户端配置弹窗"
             className="w-full max-w-lg rounded-2xl border border-stone-200 bg-white p-4 shadow-2xl"
@@ -6766,7 +6806,7 @@ export function AccountsScreen({
               </div>
               <button
                 aria-label="关闭全局客户端配置弹窗"
-                className="rounded-xl border border-stone-200 p-1.5 text-stone-500 transition-colors hover:bg-stone-50"
+                className="rounded-xl border border-stone-200 p-1.5 text-stone-500 motion-control hover:bg-stone-50"
                 onClick={() => setClientConfigOpen(false)}
                 type="button"
               >
@@ -6778,7 +6818,7 @@ export function AccountsScreen({
               <span className="text-[12px] font-semibold text-stone-600">配置片段（JSON 对象）</span>
               <textarea
                 aria-label="全局客户端配置 JSON"
-                className="min-h-40 rounded-xl border border-stone-200 bg-white px-3 py-2 font-mono text-[12px] text-stone-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                className="min-h-40 rounded-xl border border-stone-200 bg-white px-3 py-2 font-mono text-[12px] text-stone-900 outline-none motion-control focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                 onChange={(event) => setClientConfigDraft(event.target.value)}
                 placeholder={'{\n  "includeCoAuthoredBy": false\n}'}
                 spellCheck={false}
@@ -6795,14 +6835,14 @@ export function AccountsScreen({
 
             <div className="mt-4 flex justify-end gap-2">
               <button
-                className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:bg-stone-50"
+                className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 motion-control hover:bg-stone-50"
                 onClick={() => setClientConfigOpen(false)}
                 type="button"
               >
                 取消
               </button>
               <button
-                className="rounded-xl border border-blue-700 bg-blue-600 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+                className="rounded-xl border border-blue-700 bg-blue-600 px-3 py-2 text-[13px] font-semibold text-white motion-control hover:bg-blue-700 disabled:opacity-50"
                 disabled={saveClientConfigMutation.isPending}
                 onClick={submitClientConfig}
                 type="button"
@@ -6815,7 +6855,13 @@ export function AccountsScreen({
       )}
 
       {modelTestDialogOpen && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">
+        <div className="motion-overlay fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setModelTestDialogOpen(false);
+            }
+          }}
+        >
           <div
             aria-label="真实生成测试弹窗"
             className="w-full max-w-md rounded-2xl border border-stone-200 bg-white p-4 shadow-2xl"
@@ -6834,7 +6880,7 @@ export function AccountsScreen({
               </div>
               <button
                 aria-label="关闭真实生成测试弹窗"
-                className="rounded-xl border border-stone-200 p-1.5 text-stone-500 transition-colors hover:bg-stone-50"
+                className="rounded-xl border border-stone-200 p-1.5 text-stone-500 motion-control hover:bg-stone-50"
                 onClick={() => setModelTestDialogOpen(false)}
                 type="button"
               >
@@ -6852,7 +6898,7 @@ export function AccountsScreen({
                       <button
                         aria-label={`测试接口 ${endpoint}`}
                         aria-pressed={selected}
-                        className={`h-9 min-w-0 cursor-pointer whitespace-nowrap rounded-md px-1 font-mono text-[11px] font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
+                        className={`h-9 min-w-0 cursor-pointer whitespace-nowrap rounded-md px-1 font-mono text-[11px] font-semibold motion-control focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
                           selected
                             ? "bg-white text-stone-950 shadow-sm"
                             : "text-stone-600 hover:text-stone-900"
@@ -6946,7 +6992,13 @@ export function AccountsScreen({
       )}
 
       {liveLogOpen && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">
+        <div className="motion-overlay fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setLiveLogOpen(false);
+            }
+          }}
+        >
           <div
             aria-label="实时日志弹窗"
             className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-2xl border border-stone-200 bg-white p-4 shadow-2xl"
@@ -7053,7 +7105,13 @@ export function AccountsScreen({
         </div>
       )}
       {routePoolModelsDialogOpen && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">
+        <div className="motion-overlay fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setRoutePoolModelsDialogOpen(false);
+            }
+          }}
+        >
           <div
             aria-label="算力池模型列表"
             className="w-full max-w-lg rounded-2xl border border-stone-200 bg-white p-4 shadow-2xl"
@@ -7071,7 +7129,7 @@ export function AccountsScreen({
               </div>
               <button
                 aria-label="关闭算力池模型列表"
-                className="rounded-xl border border-stone-200 p-1.5 text-stone-500 transition-colors hover:bg-stone-50"
+                className="rounded-xl border border-stone-200 p-1.5 text-stone-500 motion-control hover:bg-stone-50"
                 onClick={closeRoutePoolModelsDialog}
                 type="button"
               >
@@ -7208,7 +7266,13 @@ export function AccountsScreen({
       ) : null}
 
       {createOpen && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm">
+        <div className="motion-overlay fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setCreateOpen(false);
+            }
+          }}
+        >
           <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-stone-200 bg-white p-4 shadow-2xl">
             <div className="flex items-center justify-between gap-4">
               <div>
@@ -7219,7 +7283,7 @@ export function AccountsScreen({
               </div>
               <button
                 aria-label="关闭新增账号"
-                className="rounded-xl border border-stone-200 p-1.5 text-stone-500 transition-colors hover:bg-stone-50"
+                className="rounded-xl border border-stone-200 p-1.5 text-stone-500 motion-control hover:bg-stone-50"
                 onClick={() => setCreateOpen(false)}
                 type="button"
               >
@@ -7234,7 +7298,7 @@ export function AccountsScreen({
                 ["external", "导入其他客户端"],
               ].map(([mode, label]) => (
                 <button
-                  className={`rounded-lg px-3 py-1.5 text-[13px] font-semibold transition-colors ${
+                  className={`rounded-lg px-3 py-1.5 text-[13px] font-semibold motion-control ${
                     createMode === mode ? "bg-white text-stone-950 shadow-sm" : "text-stone-500"
                   }`}
                   disabled={mode === "official" && !officialImportEnabled}
@@ -7351,7 +7415,7 @@ export function AccountsScreen({
                         <div className="flex flex-col gap-2 sm:w-28">
                           <button
                             aria-label="Base64 解码 API Key"
-                            className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:bg-white"
+                            className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] font-semibold text-stone-700 motion-control hover:bg-white"
                             onClick={decodeApiKey}
                             type="button"
                           >
@@ -7359,7 +7423,7 @@ export function AccountsScreen({
                           </button>
                           <button
                             aria-label="OCR识别 API Key"
-                            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] font-semibold text-blue-700 transition-colors hover:bg-white disabled:opacity-50"
+                            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] font-semibold text-blue-700 motion-control hover:bg-white disabled:opacity-50"
                             disabled={apiKeyOcrRecognizing}
                             onClick={runApiKeyOcr}
                             type="button"
@@ -7592,7 +7656,7 @@ export function AccountsScreen({
                 <div className="grid gap-2">
                   <button
                     aria-label="导入 JSON 文件"
-                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] font-semibold text-blue-900 transition-colors hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] font-semibold text-blue-900 motion-control hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
                     disabled={!desktop}
                     onClick={() => void chooseOfficialFiles()}
                     title={desktop ? undefined : "此功能仅桌面端可用。"}
@@ -7652,7 +7716,13 @@ export function AccountsScreen({
       )}
 
       {editingCredential && (
-        <div className="fixed inset-0 z-50 flex justify-end bg-stone-950/28 backdrop-blur-sm">
+        <div className="motion-overlay fixed inset-0 z-50 flex justify-end bg-stone-950/28 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setEditingCredential(null);
+            }
+          }}
+        >
           <aside className="m-3 h-[calc(100%-1.5rem)] w-full max-w-2xl overflow-y-auto rounded-2xl border border-stone-200 bg-white p-4 shadow-2xl">
             <div className="flex items-start justify-between gap-4">
               <div>
@@ -7664,7 +7734,7 @@ export function AccountsScreen({
               </div>
               <button
                 aria-label="关闭编辑账号"
-                className="rounded-xl border border-stone-200 p-1.5 text-stone-500 transition-colors hover:bg-stone-50"
+                className="rounded-xl border border-stone-200 p-1.5 text-stone-500 motion-control hover:bg-stone-50"
                 onClick={() => setEditingCredential(null)}
                 type="button"
               >
@@ -8085,7 +8155,7 @@ export function AccountsScreen({
                       <div className="flex gap-2 sm:w-52">
                         <button
                           aria-label="编辑 Base64 解码 API Key"
-                          className="flex-1 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:bg-white"
+                          className="flex-1 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[13px] font-semibold text-stone-700 motion-control hover:bg-white"
                           onClick={decodeEditApiKey}
                           type="button"
                         >
@@ -8093,7 +8163,7 @@ export function AccountsScreen({
                         </button>
                         <button
                           aria-label="编辑 OCR识别 API Key"
-                          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] font-semibold text-blue-700 transition-colors hover:bg-white disabled:opacity-50"
+                          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] font-semibold text-blue-700 motion-control hover:bg-white disabled:opacity-50"
                           disabled={editApiKeyOcrRecognizing}
                           onClick={runEditApiKeyOcr}
                           type="button"
@@ -8394,7 +8464,7 @@ export function AccountsScreen({
 
             <div className="mt-4 flex flex-wrap justify-between gap-2 border-t border-stone-100 pt-3">
               <button
-                className="inline-flex items-center gap-1.5 rounded-xl border border-red-200 bg-white px-3 py-2 text-[13px] font-semibold text-red-700 transition-colors hover:bg-red-50"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-red-200 bg-white px-3 py-2 text-[13px] font-semibold text-red-700 motion-control hover:bg-red-50"
                 disabled={deleteMutation.isPending}
                 onClick={() =>
                   setPendingDelete({

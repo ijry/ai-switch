@@ -312,7 +312,7 @@ export function RouteCredentialExportDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-stone-950/45 p-4"
+      className="motion-overlay fixed inset-0 z-[80] flex items-center justify-center bg-stone-950/45 p-4"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           handleClose();
@@ -343,7 +343,7 @@ export function RouteCredentialExportDialog({
           <button
             ref={closeButtonRef}
             aria-label={t("routeExport.closeAria")}
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-500 motion-control hover:bg-stone-100 hover:text-stone-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             onClick={handleClose}
             title={t("routeExport.close")}
             type="button"
@@ -435,7 +435,7 @@ export function RouteCredentialExportDialog({
                     ref={jsonTabRef}
                     aria-controls="route-export-json-panel"
                     aria-selected={activeTab === "json"}
-                    className={`rounded px-3 py-1.5 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+                    className={`rounded px-3 py-1.5 text-xs font-medium motion-control focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
                       activeTab === "json" ? "bg-white text-stone-950 shadow-sm" : "text-stone-600 hover:text-stone-950"
                     }`}
                     id="route-export-json-tab"
@@ -451,7 +451,7 @@ export function RouteCredentialExportDialog({
                     ref={linksTabRef}
                     aria-controls="route-export-links-panel"
                     aria-selected={activeTab === "links"}
-                    className={`rounded px-3 py-1.5 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+                    className={`rounded px-3 py-1.5 text-xs font-medium motion-control focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
                       activeTab === "links" ? "bg-white text-stone-950 shadow-sm" : "text-stone-600 hover:text-stone-950"
                     }`}
                     id="route-export-links-tab"
@@ -502,7 +502,7 @@ export function RouteCredentialExportDialog({
                               </div>
                               <button
                                 aria-label={t("routeExport.copySchemeAria", { name: link.display_name })}
-                                className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-stone-200 text-stone-600 transition-colors hover:bg-stone-100 hover:text-stone-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+                                className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-stone-200 text-stone-600 motion-control hover:bg-stone-100 hover:text-stone-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
                                 disabled={!link.url || sensitiveActionsDisabled}
                                 onClick={() => link.url && void handleCopySchemeLink(link.url)}
                                 title={t("routeExport.copySchemeTitle")}

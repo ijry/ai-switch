@@ -151,7 +151,7 @@ export function RouteProxyHttpsSettings() {
           </div>
         </div>
         <button
-          className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-semibold text-stone-700 transition-colors hover:border-stone-300 hover:bg-white"
+          className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-semibold text-stone-700 motion-control hover:border-stone-300 hover:bg-white"
           onClick={() => {
             void httpsQuery.refetch();
             void proxyQuery.refetch();
@@ -255,7 +255,7 @@ export function RouteProxyHttpsSettings() {
           <div className="flex flex-wrap items-center gap-2">
             {!https.certReady ? (
               <button
-                className="inline-flex items-center gap-1.5 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white motion-control hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60"
                 disabled={isMutating}
                 onClick={() => enableMutation.mutate()}
                 type="button"
@@ -265,7 +265,7 @@ export function RouteProxyHttpsSettings() {
               </button>
             ) : null}
             <button
-              className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 motion-control hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
               disabled={!https.certReady || isMutating}
               onClick={() => reimportMutation.mutate()}
               type="button"
@@ -274,7 +274,7 @@ export function RouteProxyHttpsSettings() {
               {t("settings.https.reimport")}
             </button>
             <button
-              className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 motion-control hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
               disabled={!https.certReady || isMutating}
               onClick={() =>
                 confirmAndRun(t("settings.https.regenerateConfirm"), () => regenerateMutation.mutate())
@@ -285,7 +285,7 @@ export function RouteProxyHttpsSettings() {
               {t("settings.https.regenerate")}
             </button>
             <button
-              className="inline-flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] font-semibold text-amber-800 transition-colors hover:border-amber-300 disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] font-semibold text-amber-800 motion-control hover:border-amber-300 disabled:cursor-not-allowed disabled:opacity-60"
               disabled={!https.certReady || isMutating}
               onClick={() =>
                 confirmAndRun(t("settings.https.uninstallConfirm"), () => uninstallMutation.mutate())
@@ -296,7 +296,7 @@ export function RouteProxyHttpsSettings() {
               {t("settings.https.uninstall")}
             </button>
             <button
-              className="inline-flex items-center gap-1.5 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[13px] font-semibold text-red-700 transition-colors hover:border-red-300 disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[13px] font-semibold text-red-700 motion-control hover:border-red-300 disabled:cursor-not-allowed disabled:opacity-60"
               disabled={!https.certReady || isMutating}
               onClick={() =>
                 confirmAndRun(t("settings.https.deleteConfirm"), () => deleteMutation.mutate())
@@ -308,7 +308,7 @@ export function RouteProxyHttpsSettings() {
             </button>
             {isDesktop() ? (
               <button
-                className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 transition-colors hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 motion-control hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
                 disabled={!https.certReady || openDirectoryMutation.isPending}
                 onClick={() => openDirectoryMutation.mutate()}
                 type="button"

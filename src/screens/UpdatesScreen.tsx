@@ -151,7 +151,7 @@ export function UpdatesScreen() {
                 <p className="mt-1 text-[13px] text-stone-600">{statusText}</p>
               </div>
               <button
-                className="inline-flex items-center gap-2 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-stone-800 disabled:cursor-not-allowed disabled:bg-stone-400"
+                className="inline-flex items-center gap-2 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white motion-control hover:bg-stone-800 disabled:cursor-not-allowed disabled:bg-stone-400"
                 disabled={!desktop || checking || installing}
                 onClick={handleCheck}
                 title={desktop ? undefined : t("common.desktopOnly")}
@@ -184,7 +184,7 @@ export function UpdatesScreen() {
                     </p>
                   </div>
                   <button
-                    className="inline-flex items-center gap-2 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-stone-800 disabled:cursor-not-allowed disabled:bg-stone-400"
+                    className="inline-flex items-center gap-2 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white motion-control hover:bg-stone-800 disabled:cursor-not-allowed disabled:bg-stone-400"
                     disabled={installing || installed}
                     onClick={handleInstall}
                     type="button"
@@ -204,7 +204,7 @@ export function UpdatesScreen() {
                       </span>
                     </div>
                     <div className="mt-2 h-2 overflow-hidden rounded-full bg-stone-200">
-                      <div className="h-full rounded-full bg-stone-900 transition-all" style={{ width: `${progress}%` }} />
+                      <div className="h-full rounded-full bg-stone-900 motion-control" style={{ width: `${progress}%` }} />
                     </div>
                   </div>
                 )}
@@ -238,7 +238,7 @@ export function UpdatesScreen() {
             </div>
             {installed && (
               <button
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 transition-colors hover:bg-stone-50"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-800 motion-control hover:bg-stone-50"
                 onClick={handleRelaunch}
                 type="button"
               >

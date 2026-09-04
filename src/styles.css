@@ -474,9 +474,9 @@ button:disabled {
   height: 3.25rem;
   justify-content: center;
   transition:
-    background-color 120ms ease,
-    border-color 120ms ease,
-    color 120ms ease;
+    background-color var(--motion-duration-instant, 120ms) var(--motion-ease-standard),
+    border-color var(--motion-duration-instant, 120ms) var(--motion-ease-standard),
+    color var(--motion-duration-instant, 120ms) var(--motion-ease-standard);
   width: 100%;
 }
 
@@ -720,9 +720,9 @@ button:disabled {
   border-radius: 0.85rem 0.85rem 0 0;
   height: calc(100% - 0.25rem);
   transition:
-    background-color 160ms ease,
-    border-color 160ms ease,
-    color 160ms ease;
+    background-color var(--motion-duration-control, 180ms) var(--motion-ease-standard),
+    border-color var(--motion-duration-control, 180ms) var(--motion-ease-standard),
+    color var(--motion-duration-control, 180ms) var(--motion-ease-standard);
 }
 
 .vibe-dark-tab {
@@ -774,9 +774,9 @@ button:disabled {
   border-bottom: 0;
   border-radius: 0.85rem 0.85rem 0 0;
   transition:
-    background-color 160ms ease,
-    border-color 160ms ease,
-    color 160ms ease;
+    background-color var(--motion-duration-control, 180ms) var(--motion-ease-standard),
+    border-color var(--motion-duration-control, 180ms) var(--motion-ease-standard),
+    color var(--motion-duration-control, 180ms) var(--motion-ease-standard);
 }
 
 .vibe-light-tab {
@@ -2456,10 +2456,10 @@ button:disabled {
   clip-path: polygon(0.55rem 0, calc(100% - 0.35rem) 0, 100% 100%, 0 100%);
   color: #ffffff;
   transition:
-    background-color 160ms ease,
-    border-color 160ms ease,
-    color 160ms ease,
-    box-shadow 160ms ease;
+    background-color var(--motion-duration-control, 180ms) var(--motion-ease-standard),
+    border-color var(--motion-duration-control, 180ms) var(--motion-ease-standard),
+    color var(--motion-duration-control, 180ms) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-control, 180ms) var(--motion-ease-standard);
 }
 
 .vibe-skin--starship-cockpit .vibe-skin-tab:hover {
@@ -2664,7 +2664,7 @@ button:disabled {
   inset: 0;
   z-index: 2;
   opacity: 0;
-  transition: opacity 260ms ease;
+  transition: opacity var(--motion-duration-surface, 240ms) var(--motion-ease-standard);
 }
 
 .vibe-skin-space-ship-webgl-ready .vibe-skin-space-ship-webgl-host {
@@ -2684,7 +2684,7 @@ button:disabled {
 }
 
 .vibe-skin-space-ship-fallback {
-  transition: opacity 220ms ease;
+  transition: opacity var(--motion-duration-control, 180ms) var(--motion-ease-standard);
 }
 
 .vibe-skin-space-ship-webgl-ready .vibe-skin-space-ship-fallback {
@@ -3254,5 +3254,240 @@ button:disabled {
   .vibe-skin-space-telemetry-line:last-child::after {
     animation-duration: 60s;
     animation-iteration-count: 1;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Motion system                                                               */
+/* -------------------------------------------------------------------------- */
+:root {
+  --motion-ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --motion-duration-instant: 120ms;
+  --motion-duration-control: 180ms;
+  --motion-duration-surface: 240ms;
+  --motion-duration-page: 320ms;
+  --motion-focus-ring: 0 0 0 3px rgba(96, 165, 250, 0.18);
+}
+
+.motion-control {
+  transition:
+    transform var(--motion-duration-control) var(--motion-ease-standard),
+    color var(--motion-duration-control) var(--motion-ease-standard),
+    background-color var(--motion-duration-control) var(--motion-ease-standard),
+    border-color var(--motion-duration-control) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-control) var(--motion-ease-standard),
+    opacity var(--motion-duration-control) var(--motion-ease-standard),
+    filter var(--motion-duration-control) var(--motion-ease-standard);
+  transform-origin: center;
+}
+
+.motion-page {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  transform-origin: center top;
+  will-change: transform, opacity;
+}
+
+.vibe-host {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  transform-origin: center;
+  will-change: transform, opacity;
+}
+
+.vibe-host--inactive {
+  pointer-events: none;
+}
+
+.app-shell {
+  transition: grid-template-columns var(--motion-duration-page) var(--motion-ease-standard);
+}
+
+.motion-layout {
+  transition: grid-template-rows var(--motion-duration-page) var(--motion-ease-standard);
+}
+
+.app-sidebar {
+  transition:
+    padding var(--motion-duration-page) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-surface) var(--motion-ease-standard),
+    background-color var(--motion-duration-surface) var(--motion-ease-standard);
+}
+
+/* Every interactive control gets a small, physically legible press/release. */
+:where(button, [role="button"], summary) {
+  transition:
+    transform var(--motion-duration-control) var(--motion-ease-standard),
+    color var(--motion-duration-control) var(--motion-ease-standard),
+    background-color var(--motion-duration-control) var(--motion-ease-standard),
+    border-color var(--motion-duration-control) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-control) var(--motion-ease-standard),
+    opacity var(--motion-duration-control) var(--motion-ease-standard),
+    filter var(--motion-duration-control) var(--motion-ease-standard);
+  transform-origin: center;
+  will-change: transform;
+}
+
+@media (hover: hover) {
+  :where(button, [role="button"]):not(:disabled):not([aria-disabled="true"]):hover {
+    transform: translateY(-1px);
+  }
+}
+
+:where(button, [role="button"]):not(:disabled):active {
+  transform: translateY(0) scale(0.985);
+  transition-duration: var(--motion-duration-instant);
+}
+
+:where(button, [role="button"]):focus-visible,
+summary:focus-visible {
+  outline: none;
+  box-shadow: var(--motion-focus-ring);
+}
+
+:where(input, select, textarea) {
+  transition:
+    border-color var(--motion-duration-control) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-control) var(--motion-ease-standard),
+    background-color var(--motion-duration-control) var(--motion-ease-standard),
+    color var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+:where(input, select, textarea):focus-visible {
+  outline: none;
+  box-shadow: var(--motion-focus-ring);
+}
+
+:where(input[type="checkbox"], input[type="radio"]) {
+  accent-color: #d97706;
+  transition: transform var(--motion-duration-instant) var(--motion-ease-standard), filter var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+:where(input[type="checkbox"], input[type="radio"]):active {
+  transform: scale(0.92);
+}
+
+:where(.motion-dialog, .motion-menu, [role="dialog"], [role="menu"]) {
+  transform-origin: center top;
+}
+
+:where([role="alert"], [role="status"]) {
+  animation: motion-surface-enter var(--motion-duration-surface) var(--motion-ease-standard) both;
+}
+
+.motion-menu {
+  will-change: transform, opacity;
+}
+
+.motion-surface,
+.motion-page article,
+.motion-page [data-testid^="account-card-"],
+.motion-page [data-testid^="credential-"] {
+  animation: motion-surface-enter var(--motion-duration-surface) var(--motion-ease-standard) both;
+  will-change: transform, opacity;
+}
+
+.motion-collapse {
+  min-height: 0;
+  will-change: height, opacity;
+}
+
+.motion-overlay:not(.motion-runtime-overlay),
+.app-sidebar-drawer-backdrop,
+.vibe-session-drawer-backdrop {
+  animation: motion-backdrop-enter var(--motion-duration-surface) var(--motion-ease-standard) both;
+}
+
+.app-sidebar-drawer,
+.vibe-session-drawer {
+  animation: motion-drawer-enter var(--motion-duration-surface) var(--motion-ease-standard) both;
+  transform-origin: left center;
+}
+
+/* Native conditional surfaces still receive a graceful entry even when a local
+   component does not need the full MotionOverlay wrapper. */
+[role="menu"] {
+  animation: motion-menu-enter var(--motion-duration-control) var(--motion-ease-standard) both;
+}
+
+[role="dialog"]:not(.motion-dialog) {
+  animation: motion-dialog-enter var(--motion-duration-surface) var(--motion-ease-standard) both;
+}
+
+@keyframes motion-surface-enter {
+  from { opacity: 0; transform: translateY(6px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes motion-menu-enter {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes motion-dialog-enter {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes motion-backdrop-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes motion-drawer-enter {
+  from { opacity: 0; transform: translateX(-18px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+  }
+
+  :where(button, [role="button"], summary, input, select, textarea) {
+    transition-duration: 0.01ms !important;
+  }
+
+  :where(button, [role="button"]):not(:disabled):hover,
+  :where(button, [role="button"]):not(:disabled):active {
+    transform: none;
+  }
+
+  .motion-page,
+  .vibe-host,
+  .motion-layout,
+  .app-shell,
+  .app-sidebar,
+  .motion-dialog,
+  .motion-menu,
+  .motion-collapse {
+    transition-duration: 0.01ms !important;
+  }
+
+  :where([role="alert"], [role="status"], [role="menu"], [role="dialog"], .app-sidebar-drawer, .app-sidebar-drawer-backdrop, .vibe-session-drawer, .vibe-session-drawer-backdrop),
+  .motion-surface,
+  .motion-page article,
+  .motion-page [data-testid^="account-card-"],
+  .motion-page [data-testid^="credential-"],
+  .vibe-skin *,
+  .vibe-skin::before,
+  .vibe-skin::after,
+  .vibe-skin *::before,
+  .vibe-skin *::after,
+  [data-testid="vibe-body-grid"] *,
+  [data-testid="vibe-body-grid"]::before,
+  [data-testid="vibe-body-grid"]::after,
+  [data-testid="vibe-body-grid"] *::before,
+  [data-testid="vibe-body-grid"] *::after {
+    animation: none !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    animation-play-state: paused !important;
   }
 }

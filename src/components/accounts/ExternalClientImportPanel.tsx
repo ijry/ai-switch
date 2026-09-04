@@ -132,7 +132,7 @@ export function ExternalClientImportPanel({
           <div className="flex items-center gap-1.5">
             <button
               aria-label="选择客户端配置文件"
-              className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-[12px] font-semibold text-blue-900 transition-colors hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-[12px] font-semibold text-blue-900 motion-control hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
               disabled={!desktop}
               onClick={onChooseSourcePath}
               title={desktop ? undefined : "此功能仅桌面端可用。"}
@@ -144,7 +144,7 @@ export function ExternalClientImportPanel({
             {sourcePath ? (
               <button
                 aria-label="改回默认配置位置"
-                className="rounded-xl border border-stone-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50"
+                className="rounded-xl border border-stone-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-stone-700 motion-control hover:bg-stone-50"
                 onClick={onResetSourcePath}
                 type="button"
               >
@@ -153,7 +153,7 @@ export function ExternalClientImportPanel({
             ) : null}
             <button
               aria-label="重新读取客户端账号"
-              className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-stone-700 transition-colors hover:bg-stone-50 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-stone-700 motion-control hover:bg-stone-50 disabled:opacity-50"
               disabled={loading}
               onClick={onRefresh}
               type="button"

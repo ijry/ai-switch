@@ -1,6 +1,8 @@
+import { AnimatePresence } from "motion/react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import type { BatchGroup } from "../../lib/api/types";
+import { MotionCollapse, MotionListItem } from "../motion/MotionPrimitives";
 
 type BatchListProps = {
   groups: BatchGroup[];
@@ -27,6 +29,7 @@ export function BatchList({ groups, search }: BatchListProps) {
 
   return (
     <div className="space-y-3">
+      <AnimatePresence initial={false}>
       {groups.map((group) => {
         const searchMatchesChild =
           normalizedSearch.length > 0 &&
@@ -38,14 +41,12 @@ export function BatchList({ groups, search }: BatchListProps) {
         const isExpanded = expanded[group.batch.id] || searchMatchesChild;
 
         return (
-          <section
-            key={group.batch.id}
-            className="rounded-xl border border-stone-200 bg-white/82 p-3 shadow-sm"
-          >
+          <MotionListItem className="space-y-3" itemKey={group.batch.id} key={group.batch.id}>
+            <section className="rounded-xl border border-stone-200 bg-white/82 p-3 shadow-sm">
             <button
               type="button"
               aria-label={`expand ${group.batch.name}`}
-              className="flex w-full items-center justify-between gap-3 rounded-xl text-left outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-blue-400"
+              className="flex w-full items-center justify-between gap-3 rounded-xl text-left outline-none motion-control duration-150 focus-visible:ring-2 focus-visible:ring-blue-400"
               onClick={() =>
                 setExpanded((current) => ({
                   ...current,
@@ -76,7 +77,7 @@ export function BatchList({ groups, search }: BatchListProps) {
               </span>
             </button>
 
-            {isExpanded && (
+            <MotionCollapse open={isExpanded}>
               <div className="mt-3 divide-y divide-stone-100 overflow-hidden rounded-xl border border-stone-200">
                 {group.children.map((child) => (
                   <div
@@ -93,10 +94,12 @@ export function BatchList({ groups, search }: BatchListProps) {
                   </div>
                 ))}
               </div>
-            )}
+            </MotionCollapse>
           </section>
+          </MotionListItem>
         );
       })}
+      </AnimatePresence>
     </div>
   );
 }

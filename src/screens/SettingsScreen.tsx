@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { motion } from "motion/react";
 import {
   Layers3,
   LockKeyhole,
@@ -13,6 +14,7 @@ import { AutostartSettings } from "../components/settings/autostart-settings";
 import { RouteProxyHttpsSettings } from "../components/settings/route-proxy-https-settings";
 import { WebServiceSettings } from "../components/settings/web-service-settings";
 import { useState } from "react";
+import { MotionPresence } from "../components/motion/MotionPrimitives";
 
 type FeatureEntry = {
   screen?: string;
@@ -112,7 +114,7 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
             const Icon = entry.icon;
             return (
               <button
-                className="rounded-xl border border-stone-200 bg-stone-50/70 px-3 py-2.5 text-left transition-colors hover:border-stone-300 hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                className="rounded-xl border border-stone-200 bg-stone-50/70 px-3 py-2.5 text-left motion-control hover:border-stone-300 hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
                 key={entry.screen ?? entry.section}
                 onClick={() => {
                   if (entry.screen) {
@@ -140,8 +142,29 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
         </div>
       </div>
 
-      {activeSection === "webService" && <WebServiceSettings />}
-      {activeSection === "https" && <RouteProxyHttpsSettings />}
+      <MotionPresence>
+        {activeSection === "webService" ? (
+          <motion.div
+            key="settings-web-service"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <WebServiceSettings />
+          </motion.div>
+        ) : (
+          <motion.div
+            key="settings-https"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <RouteProxyHttpsSettings />
+          </motion.div>
+        )}
+      </MotionPresence>
 
       <div className="space-y-3 rounded-2xl border border-stone-200 bg-white/82 p-4 shadow-sm">
         <h2 className="text-[15px] font-semibold text-stone-950">{t("settings.app.title")}</h2>
@@ -176,7 +199,7 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
           <span>{t("settings.language")}</span>
           <select
             aria-label={t("settings.language")}
-            className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-medium text-stone-900 shadow-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+            className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-medium text-stone-900 shadow-sm outline-none motion-control focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
             disabled={saveMutation.isPending}
             onChange={(event) => handleLanguageChange(event.target.value as Language)}
             value={language}
@@ -190,7 +213,7 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
         </label>
         <button
           type="button"
-          className="w-fit rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white transition-colors duration-150 hover:bg-stone-800"
+          className="w-fit rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white motion-control duration-150 hover:bg-stone-800"
           onClick={() =>
             saveMutation.mutate({
               ...settings,

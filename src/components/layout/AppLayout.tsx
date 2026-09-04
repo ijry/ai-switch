@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { motion } from "motion/react";
 import {
   Menu,
   PlugZap,
@@ -138,7 +139,7 @@ function NavButton({
   onClick: () => void;
   variant?: "primary" | "standard";
 }) {
-  const baseClasses = `group flex w-full items-center rounded-xl border py-2 text-left text-[13px] transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
+  const baseClasses = `group flex w-full items-center rounded-xl border py-2 text-left text-[13px] motion-control duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
     collapsed ? "justify-center px-0" : "justify-between px-3"
   }`;
   const activeClasses =
@@ -154,13 +155,21 @@ function NavButton({
   return (
     <button
       aria-current={active ? "page" : undefined}
-      className={`${baseClasses} ${active ? activeClasses : idleClasses}`}
+      className={`relative ${baseClasses} ${active ? activeClasses : idleClasses}`}
       onClick={onClick}
       title={label}
       type="button"
     >
+      {active ? (
+        <motion.span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-y-1 left-0.5 w-0.5 rounded-full bg-amber-500"
+          layoutId="app-sidebar-active-indicator"
+          transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+        />
+      ) : null}
       <span
-        className={`flex min-w-0 items-center ${collapsed ? "justify-center gap-0" : "gap-2"}`}
+        className={`relative z-10 flex min-w-0 items-center ${collapsed ? "justify-center gap-0" : "gap-2"}`}
       >
         <span
           className={`h-1.5 w-1.5 shrink-0 rounded-full ${collapsed ? "hidden" : ""} ${
@@ -288,7 +297,7 @@ export function AppLayout({
   return (
     <main className="box-border h-screen max-h-[100dvh] overflow-hidden text-stone-950">
       <div
-        className={`box-border grid h-full min-h-0 grid-cols-[56px_minmax(0,1fr)] ${desktopGridClass}`}
+        className={`app-shell box-border grid h-full min-h-0 grid-cols-[56px_minmax(0,1fr)] ${desktopGridClass}`}
         data-testid="app-shell"
         ref={appShellRef}
         style={
@@ -306,7 +315,7 @@ export function AppLayout({
           />
         )}
         <aside
-          className={`${
+          className={`app-sidebar ${
             sidebarDrawerVisible ? "app-sidebar-drawer" : "relative"
           } flex h-full min-h-0 flex-col overflow-hidden border-r border-white/80 bg-gradient-to-br from-slate-50/92 via-emerald-50/74 to-amber-50/70 shadow-xl shadow-stone-900/5 backdrop-blur-2xl ${
             sidebarContentCollapsed ? "p-2" : "p-3"
@@ -345,7 +354,7 @@ export function AppLayout({
                       ? t("layout.expandSidebar")
                       : t("layout.collapseSidebar")
                   }
-                  className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-stone-200 bg-white/70 text-stone-600 shadow-sm transition-colors hover:border-stone-300 hover:bg-white hover:text-stone-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-stone-200 bg-white/70 text-stone-600 shadow-sm motion-control hover:border-stone-300 hover:bg-white hover:text-stone-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
                   onClick={handleToggleSidebar}
                   title={
                     sidebarContentCollapsed
@@ -358,7 +367,7 @@ export function AppLayout({
                 </button>
                 <button
                   aria-label={t("layout.switchToVibe")}
-                  className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-stone-200 bg-white/70 text-stone-600 shadow-sm transition-colors hover:border-stone-300 hover:bg-white hover:text-stone-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-stone-200 bg-white/70 text-stone-600 shadow-sm motion-control hover:border-stone-300 hover:bg-white hover:text-stone-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
                   onClick={handleOpenVibe}
                   title={t("layout.switchToVibe")}
                   type="button"
@@ -376,7 +385,7 @@ export function AppLayout({
               <span>{t("layout.language")}</span>
               <select
                 aria-label={t("layout.language")}
-                className="rounded-lg border border-stone-200 bg-white/80 px-2 py-1 text-[12px] font-medium text-stone-800 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-200"
+                className="rounded-lg border border-stone-200 bg-white/80 px-2 py-1 text-[12px] font-medium text-stone-800 outline-none motion-control focus:border-blue-400 focus:ring-2 focus:ring-blue-200"
                 disabled={languageSaving}
                 onChange={(event) => handleLanguageChange(event.target.value as Language)}
                 value={language}
@@ -452,7 +461,7 @@ export function AppLayout({
               aria-valuemax={SIDEBAR_MAX_WIDTH}
               aria-valuemin={SIDEBAR_MIN_WIDTH}
               aria-valuenow={sidebarWidth}
-              className={`absolute inset-y-0 right-0 z-20 w-1.5 touch-none select-none cursor-col-resize bg-transparent transition-colors hover:bg-stone-300/70 ${
+              className={`absolute inset-y-0 right-0 z-20 w-1.5 touch-none select-none cursor-col-resize bg-transparent motion-control hover:bg-stone-300/70 ${
                 sidebarResizing ? "bg-blue-400/70" : ""
               }`}
               data-testid="sidebar-resize-handle"

@@ -105,7 +105,7 @@ export function CopyRouteCredentialDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-stone-950/45 p-4 backdrop-blur-sm"
+      className="motion-overlay fixed inset-0 z-[80] flex items-center justify-center bg-stone-950/45 p-4 backdrop-blur-sm"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget && !loading) {
           onClose();
@@ -135,7 +135,7 @@ export function CopyRouteCredentialDialog({
           </div>
           <button
             aria-label="关闭复制账号"
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50"
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-500 motion-control hover:bg-stone-100 hover:text-stone-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50"
             disabled={loading}
             onClick={onClose}
             title="关闭"
@@ -152,7 +152,7 @@ export function CopyRouteCredentialDialog({
               <select
                 ref={targetSelectRef}
                 aria-label="复制目标"
-                className="h-10 w-full rounded-md border border-stone-300 bg-white px-3 text-sm font-normal text-stone-900 outline-none transition-colors focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-stone-100 disabled:text-stone-600"
+                className="h-10 w-full rounded-md border border-stone-300 bg-white px-3 text-sm font-normal text-stone-900 outline-none motion-control focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-stone-100 disabled:text-stone-600"
                 disabled={official || loading}
                 onChange={(event) => setTargetPlatform(event.target.value as PlatformId)}
                 value={targetPlatform}
@@ -175,7 +175,7 @@ export function CopyRouteCredentialDialog({
                 <input
                   aria-label="新 API Key（可选）"
                   autoComplete="off"
-                  className="h-10 w-full rounded-md border border-stone-300 bg-white px-3 font-mono text-sm font-normal text-stone-900 outline-none transition-colors placeholder:font-sans placeholder:text-stone-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  className="h-10 w-full rounded-md border border-stone-300 bg-white px-3 font-mono text-sm font-normal text-stone-900 outline-none motion-control placeholder:font-sans placeholder:text-stone-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                   disabled={loading}
                   onChange={(event) => setApiKey(event.target.value)}
                   placeholder="不填则复制原 API Key"
@@ -210,7 +210,7 @@ export function CopyRouteCredentialDialog({
 
           <footer className="flex justify-end gap-2 border-t border-stone-200 bg-stone-50 px-5 py-3">
             <button
-              className="h-9 rounded-md border border-stone-300 bg-white px-4 text-sm font-semibold text-stone-700 transition-colors hover:bg-stone-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50"
+              className="h-9 rounded-md border border-stone-300 bg-white px-4 text-sm font-semibold text-stone-700 motion-control hover:bg-stone-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50"
               disabled={loading}
               onClick={onClose}
               type="button"
@@ -218,7 +218,7 @@ export function CopyRouteCredentialDialog({
               取消
             </button>
             <button
-              className="h-9 rounded-md bg-stone-900 px-4 text-sm font-semibold text-white transition-colors hover:bg-stone-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-wait disabled:opacity-60"
+              className="h-9 rounded-md bg-stone-900 px-4 text-sm font-semibold text-white motion-control hover:bg-stone-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-wait disabled:opacity-60"
               disabled={loading}
               type="submit"
             >

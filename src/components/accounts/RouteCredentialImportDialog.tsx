@@ -449,7 +449,7 @@ export function RouteCredentialImportDialog({ open, onClose, onImported }: Route
   const title = stage === "complete" ? "账号导入完成" : stage === "preview" ? "确认导入账号" : "导入账号";
   return (
     <div
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-stone-950/45 p-3"
+      className="motion-overlay fixed inset-0 z-[80] flex items-center justify-center bg-stone-950/45 p-3"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) handleClose();
       }}
