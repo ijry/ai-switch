@@ -5863,7 +5863,7 @@ export function AccountsScreen({
                   // visible in the rose tone, the icon, and the tooltip.
                   const effectiveRelayBalanceSnapshot =
                     relayBalanceStatus?.snapshot ?? relayBalanceSnapshot;
-                  const relayBalanceTag = effectiveRelayBalanceSnapshot
+                  const relayBalanceTag = effectiveRelayBalanceSnapshot && !effectiveRelayBalanceSnapshot.unlimited
                     ? relayBalanceBadge(effectiveRelayBalanceSnapshot)
                     : null;
                   const isCopyingCredential =

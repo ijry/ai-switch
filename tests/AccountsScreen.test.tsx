@@ -3491,6 +3491,31 @@ describe("AccountsScreen", () => {
     );
   });
 
+  it("keeps an unlimited balance on the wallet action without a duplicate badge", async () => {
+    const relayAccount = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://panel.example.com/v1",
+        interface_format: "openai",
+        model_mappings: [],
+        relay_balance: { provider: "new_api" },
+        relay_balance_snapshot: {
+          provider: "new_api",
+          unlimited: true,
+          source_url: "https://panel.example.com/api/usage/token/",
+          checked_at: "2026-09-02T12:00:00Z",
+        },
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([credentialsFixture[0], relayAccount]);
+    renderScreen();
+
+    expect(await screen.findByRole("button", { name: "查询 API Account 余额（当前 不限）" })).toHaveTextContent(
+      "不限",
+    );
+    expect(screen.queryByTestId(`credential-relay-balance-${relayAccount.id}`)).not.toBeInTheDocument();
+  });
+
   it("keeps a stored balance visible when a batch refresh fails for that account", async () => {
     // A batch refresh writes an `error` for every account whose panel did not
     // answer. Hiding the badge on that signal turned one timed-out panel into
