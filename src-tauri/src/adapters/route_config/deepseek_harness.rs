@@ -91,6 +91,22 @@ impl DeepSeekHarnessAdapter {
         })
     }
 
+    /// One `models[]` entry per advertised model.
+    ///
+    /// `contextWindow` is the harness's own key for a model's capacity
+    /// (`@deepseek-ai/dsh-llm-pi-ai`, `modelFields`), and it is worth writing
+    /// because the harness has no other way to learn it: our route is a
+    /// hand-declared provider, so nothing in its installed catalog describes
+    /// these ids and every model would silently fall back to the route-level
+    /// `defaultContextWindow`. A pool serving 1M would then be compacted at 256K
+    /// here while the Codex CLI, which reads the same numbers from the catalog
+    /// endpoint, used the full window.
+    ///
+    /// `maxTokens` is deliberately left out. It reads like the sibling of
+    /// ZCode's `limit.output`, but the harness treats an explicitly configured
+    /// `maxTokens` as that model's per-request output cap rather than as
+    /// metadata — writing our generic 128K would change what goes out on the
+    /// wire for every relay, including ones that cannot honour it.
     fn model_entries(&self, models: &[ClientModel]) -> Vec<Value> {
         models
             .iter()
@@ -99,6 +115,10 @@ impl DeepSeekHarnessAdapter {
                 entry.insert(
                     Value::String("id".to_string()),
                     Value::String(model.id.clone()),
+                );
+                entry.insert(
+                    Value::String("contextWindow".to_string()),
+                    Value::Number(model.context_window.into()),
                 );
                 Value::Mapping(entry)
             })
@@ -419,6 +439,47 @@ mod tests {
             again["llm-pi-ai"]["providers"]["ai-switch-codex"]["models"][0]["id"],
             "gpt-5.5"
         );
+    }
+
+    #[test]
+    fn render_writes_the_advertised_context_window_per_model() {
+        // The harness ships no catalog entry for a hand-declared route, so an
+        // entry carrying only an id inherits `defaultContextWindow` (256K) for
+        // every model — truncating a 1M pool and over-claiming a 128K one.
+        let models = vec![
+            ClientModel {
+                id: "gpt-5.6-sol".to_string(),
+                context_window: 1_000_000,
+                max_output_tokens: 128_000,
+            },
+            ClientModel {
+                id: "gpt-5.5".to_string(),
+                context_window: 128_000,
+                max_output_tokens: 128_000,
+            },
+        ];
+        let bytes = codex_adapter()
+            .render(
+                Path::new("settings.yaml"),
+                None,
+                &RouteConfigInput {
+                    client_models: models,
+                    ..input(&[])
+                },
+            )
+            .expect("render");
+        let yaml: Value = serde_yaml::from_slice(&bytes).expect("valid YAML");
+        let entries = yaml["llm-pi-ai"]["providers"]["ai-switch-codex"]["models"]
+            .as_sequence()
+            .expect("models");
+
+        assert_eq!(entries[0]["id"], "gpt-5.6-sol");
+        assert_eq!(entries[0]["contextWindow"], 1_000_000);
+        assert_eq!(entries[1]["id"], "gpt-5.5");
+        assert_eq!(entries[1]["contextWindow"], 128_000);
+        // An explicit `maxTokens` would become the model's per-request output
+        // cap rather than metadata, so the pool's generic number stays out of it.
+        assert!(entries[0].get("maxTokens").is_none());
     }
 
     #[test]

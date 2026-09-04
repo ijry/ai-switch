@@ -11,15 +11,26 @@ pub(crate) struct ModelCapability {
 pub(crate) struct AdvertisedModel {
     pub(crate) id: String,
     description: String,
-    /// The model this alias is rewritten to. Needed because the default context
-    /// window is a property of the *upstream* model, not of the alias the client
-    /// asks for. A baseline (wildcard) entry is not rewritten, so its id doubles
-    /// as its upstream name.
+    /// The model this alias is rewritten to. Read per source before the merge,
+    /// because the default context window is a property of the *upstream* model
+    /// rather than of the alias the client asks for. A baseline (wildcard) entry
+    /// is not rewritten, so its id doubles as its upstream name.
+    ///
+    /// On a merged entry this names one of the sources. Which one no longer
+    /// matters to the advertised window: every source's default is resolved into
+    /// `context_window` before the entries are folded together.
     pub(crate) upstream_model: String,
-    /// Per-alias overrides carried over from the mapping that produced this
-    /// entry. `None` keeps the platform default, so a baseline (wildcard) model
-    /// and a pre-existing mapping behave exactly as they did before.
+    /// The window advertised for this alias: the largest window any source in
+    /// the pool claims for it. `None` keeps the platform default, so a baseline
+    /// (wildcard) model and a pre-existing mapping behave exactly as they did
+    /// before.
+    ///
+    /// For Codex this is always filled in, because each source's default is
+    /// resolved before the maximum is taken — see
+    /// [`contribution_context_window`].
     pub(crate) context_window: Option<u32>,
+    /// Efforts advertised for this alias: only the ones every source that
+    /// contributed it offers. `None` keeps the baseline profile for the model id.
     pub(crate) reasoning_levels: Option<Vec<String>>,
 }
 
@@ -411,20 +422,34 @@ pub(crate) fn advertised_model_catalog_entries(
     let mut seen = HashSet::new();
 
     // A fallback-carrying account accepts any model, so it advertises the
-    // platform baseline exactly like an empty-mapping wildcard does.
-    if capabilities.iter().any(|capability| {
-        capability.mappings.is_empty() || capability.mappings.iter().any(is_fallback_mapping)
-    }) {
+    // platform baseline exactly like an empty-mapping wildcard does. Walked per
+    // account rather than once for the pool: two catch-all accounts can rewrite
+    // the same baseline alias to different upstream models, and the merge needs
+    // to see both claims to pick the larger window.
+    for capability in capabilities {
+        let fallback_target = capability
+            .mappings
+            .iter()
+            .find(|mapping| is_fallback_mapping(mapping))
+            .map(|mapping| mapping.to.trim())
+            .filter(|to| !to.is_empty());
+        if !capability.mappings.is_empty() && fallback_target.is_none() {
+            continue;
+        }
         for model in default_client_models(platform) {
-            // A baseline model is forwarded unrewritten, so it is its own
-            // upstream.
             push_unique_model(
+                platform,
                 &mut models,
                 &mut seen,
                 ModelContribution {
                     id: model,
                     description: model,
-                    upstream_model: model,
+                    // A catch-all rewrites every alias to one upstream model, so
+                    // that is what serves this baseline entry and what its
+                    // window has to be read off. An empty-mapping account
+                    // rewrites nothing, so the baseline model is its own
+                    // upstream.
+                    upstream_model: fallback_target.unwrap_or(model),
                     context_window: None,
                     reasoning_levels: None,
                 },
@@ -454,13 +479,14 @@ pub(crate) fn advertised_model_catalog_entries(
                 context_window: mapping.context_window,
                 reasoning_levels: mapping.reasoning_levels.as_deref(),
             };
-            push_unique_model(&mut models, &mut seen, contribution);
+            push_unique_model(platform, &mut models, &mut seen, contribution);
 
             if platform == "claude" && mapping.supports_1m == Some(true) {
                 let base = strip_one_m_suffix_for_route_lookup(&mapping.from);
                 if is_claude_route_model(base) {
                     let one_m = format!("{base}[1m]");
                     push_unique_model(
+                        platform,
                         &mut models,
                         &mut seen,
                         ModelContribution {
@@ -502,7 +528,35 @@ struct ModelContribution<'a> {
     reasoning_levels: Option<&'a [String]>,
 }
 
+/// One source's claim on this alias's window, with the Codex per-upstream
+/// default already filled in.
+///
+/// Resolving the default *before* the maximum is what makes the maximum mean
+/// anything on Codex: two accounts can disagree about an alias without either
+/// declaring a number, because the Codex default is read off the model the alias
+/// is mapped *to* and each account maps it somewhere different. Left to the
+/// single late resolution in the catalog, whichever account happened to put its
+/// `upstream_model` in the entry first decided the window for the whole pool.
+///
+/// Other platforms derive their default from the alias itself (the `[1m]`
+/// suffix), which every source spells the same way, so `None` still means "let
+/// the client's own default apply".
+fn contribution_context_window(
+    platform: &str,
+    contribution: &ModelContribution<'_>,
+) -> Option<u32> {
+    let declared = contribution.context_window.filter(|window| *window > 0);
+    if platform != "codex" {
+        return declared;
+    }
+    Some(codex_effective_context_window(
+        declared,
+        contribution.upstream_model,
+    ))
+}
+
 fn push_unique_model(
+    platform: &str,
     models: &mut Vec<AdvertisedModel>,
     seen: &mut HashSet<String>,
     contribution: ModelContribution<'_>,
@@ -511,13 +565,14 @@ fn push_unique_model(
     if trimmed.is_empty() {
         return;
     }
+    let claimed_window = contribution_context_window(platform, &contribution);
     let key = trimmed.to_ascii_lowercase();
     if seen.insert(key) {
         models.push(AdvertisedModel {
             id: trimmed.to_string(),
             description: contribution.description.to_string(),
             upstream_model: contribution.upstream_model.trim().to_string(),
-            context_window: contribution.context_window,
+            context_window: claimed_window,
             reasoning_levels: contribution.reasoning_levels.map(<[String]>::to_vec),
         });
     } else if let Some(existing) = models
@@ -528,24 +583,24 @@ fn push_unique_model(
             existing.description = contribution.description.to_string();
         }
         // A baseline contribution names itself as its own upstream, because a
-        // baseline model is forwarded unrewritten. That placeholder must give way
-        // to a real mapping: the default context window is derived from the
-        // *upstream* name, so leaving the self-reference in place made one
-        // wildcard account in the pool enough to have every alias sized off its
-        // own id instead of the model that actually serves it.
+        // baseline model is forwarded unrewritten. That placeholder gives way to
+        // a real mapping so the entry names the model that actually serves the
+        // request. The advertised window no longer rides on winning this race:
+        // every contribution resolves its own default before the merge.
         if existing.upstream_model.eq_ignore_ascii_case(&existing.id)
             && !contribution.upstream_model.eq_ignore_ascii_case(trimmed)
         {
             existing.upstream_model = contribution.upstream_model.trim().to_string();
         }
-        // Two accounts can advertise one alias; the baseline contributes it with
-        // no overrides at all. An undeclared field takes the first declared value,
-        // but two accounts that disagree are reconciled toward the *smaller*
-        // claim rather than first-wins: routing alternates between them, so the
-        // catalog has to describe what every account can serve. Over-claiming
-        // sends a turn to the account that cannot honour it and dies on a 400.
-        existing.context_window = match (existing.context_window, contribution.context_window) {
-            (Some(current), Some(incoming)) => Some(current.min(incoming)),
+        // Two accounts can advertise one alias, and routing alternates between
+        // them. When they disagree about the window the *largest* claim wins.
+        // Reconciling downward instead capped the alias at the smallest account
+        // in the pool, so adding one 128K relay silently shrank a 1M model on
+        // every turn — a permanent cost, paid whichever account the request
+        // lands on. Going up costs a turn that overflows the smaller account and
+        // comes back 400, which points at the account whose window needs fixing.
+        existing.context_window = match (existing.context_window, claimed_window) {
+            (Some(current), Some(incoming)) => Some(current.max(incoming)),
             (current, incoming) => current.or(incoming),
         };
         existing.reasoning_levels = match (
@@ -879,11 +934,12 @@ mod tests {
     }
 
     /// Routing alternates between accounts that advertise the same alias, so the
-    /// catalog has to describe what *every* one of them can serve. Taking the
-    /// first claim let a 1M declaration hide a 128K sibling, and the turns that
-    /// landed on the smaller account died on a 400.
+    /// pool has to pick one number for it. It picks the largest: capping the
+    /// alias at the smallest account in the pool made one 128K relay shrink a 1M
+    /// model on every turn, including the turns that landed on an account which
+    /// could have served the full window.
     #[test]
-    fn accounts_disagreeing_about_one_alias_are_reconciled_downward() {
+    fn accounts_disagreeing_about_one_alias_are_reconciled_upward() {
         let generous = parse_model_capability(
             r#"{"model_mappings":[{"from":"gpt-5.5","to":"up-a","context_window":1000000,"reasoning_levels":["low","medium","high","xhigh"]}]}"#,
         );
@@ -901,15 +957,60 @@ mod tests {
                 .find(|entry| entry.id == "gpt-5.5")
                 .expect("gpt-5.5 entry");
 
-            // The smaller window regardless of which account came first.
-            assert_eq!(entry.context_window, Some(128_000));
-            // And only the efforts both accounts offer.
+            // The larger window regardless of which account came first.
+            assert_eq!(entry.context_window, Some(1_000_000));
+            // Reasoning still narrows to what both accounts offer: an effort the
+            // upstream cannot express is silently dropped from the request rather
+            // than reported, so there is nothing for the user to act on.
             let levels = entry.reasoning_levels.clone().expect("levels");
             assert!(levels.contains(&"medium".to_string()));
             assert!(levels.contains(&"high".to_string()));
             assert!(!levels.contains(&"low".to_string()));
             assert!(!levels.contains(&"xhigh".to_string()));
         }
+    }
+
+    /// The Codex default is read off the model an alias is mapped *to*, so two
+    /// accounts can disagree about the window without either declaring one. The
+    /// maximum has to see both defaults, not just both declarations — otherwise
+    /// the account whose `upstream_model` landed in the entry first decided the
+    /// window for the pool.
+    #[test]
+    fn undeclared_accounts_disagreeing_through_their_upstreams_still_take_the_larger() {
+        let one_m =
+            parse_model_capability(r#"{"model_mappings":[{"from":"gpt-5.5","to":"glm-5.3"}]}"#);
+        let generic = parse_model_capability(
+            r#"{"model_mappings":[{"from":"gpt-5.5","to":"some-relay-model"}]}"#,
+        );
+
+        for order in [vec![one_m.clone(), generic.clone()], vec![generic, one_m]] {
+            let entries = advertised_model_catalog_entries("codex", &order);
+            let entry = entries
+                .iter()
+                .find(|entry| entry.id == "gpt-5.5")
+                .expect("gpt-5.5 entry");
+
+            assert_eq!(entry.context_window, Some(CODEX_ONE_M_CONTEXT_WINDOW));
+        }
+    }
+
+    /// A catch-all account rewrites *every* alias to one upstream model, so the
+    /// baseline models it contributes are served by that model — not by the
+    /// gpt id the client asked for. Sizing them off their own id told Codex 128K
+    /// for a pool serving 1M.
+    #[test]
+    fn a_catch_all_account_sizes_the_baseline_off_its_rewrite_target() {
+        let capability = parse_model_capability(&format!(
+            r#"{{"model_mappings":[{{"from":"{FALLBACK_MODEL_ALIAS}","to":"deepseek-v4-flash"}}]}}"#
+        ));
+        let entries = advertised_model_catalog_entries("codex", &[capability]);
+        let entry = entries
+            .iter()
+            .find(|entry| entry.id == "gpt-5.6-sol")
+            .expect("gpt-5.6-sol entry");
+
+        assert_eq!(entry.upstream_model, "deepseek-v4-flash");
+        assert_eq!(entry.context_window, Some(CODEX_ONE_M_CONTEXT_WINDOW));
     }
 
     /// Binds this file's tables to the TypeScript copy in

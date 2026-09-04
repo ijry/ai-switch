@@ -2189,6 +2189,105 @@ command = "npx"
     }
 
     #[tokio::test]
+    async fn deepseek_harness_write_carries_the_advertised_context_window() {
+        let fixture = ServiceFixture::new().await;
+        seed_codex_pool_member(&fixture.pool, "glm-5.3").await;
+
+        RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            BASE_URL,
+            "codex",
+            &fixture.home,
+            Some(&["deepseek_harness".to_string()]),
+        )
+        .await
+        .expect("write");
+
+        let raw = tokio::fs::read(fixture.home.join(".dsh/settings.yaml"))
+            .await
+            .expect("read");
+        let yaml: serde_yaml::Value = serde_yaml::from_slice(&raw).expect("yaml");
+        let model = &yaml["llm-pi-ai"]["providers"]["ai-switch-codex"]["models"][0];
+
+        assert_eq!(model["id"], "glm-5.3");
+        // Without this the harness falls back to its own 256K route default and
+        // compacts a 1M model early — while the CLI, reading the same pool,
+        // does not.
+        assert_eq!(model["contextWindow"], 1_000_000);
+    }
+
+    /// The pool alternates between accounts, so one alias gets one number. Two
+    /// accounts that disagree resolve upward, and every client has to hear the
+    /// same answer: a per-client rule would truncate in one app and not the next.
+    #[tokio::test]
+    async fn accounts_disagreeing_about_a_window_advertise_the_larger_one_to_every_client() {
+        let fixture = ServiceFixture::new().await;
+        for (target, window) in [("up-a", 1_000_000), ("up-b", 128_000)] {
+            seed_codex_pool_member_with_config(
+                &fixture.pool,
+                &serde_json::json!({
+                    "model_mappings": [{
+                        "from": "gpt-5.5",
+                        "to": target,
+                        "context_window": window
+                    }]
+                })
+                .to_string(),
+            )
+            .await;
+        }
+
+        RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            BASE_URL,
+            "codex",
+            &fixture.home,
+            Some(&[
+                "codex".to_string(),
+                "zcode".to_string(),
+                "deepseek_harness".to_string(),
+            ]),
+        )
+        .await
+        .expect("write");
+
+        let catalog: Value = serde_json::from_slice(
+            &tokio::fs::read(codex_model_catalog_path(&fixture.home))
+                .await
+                .expect("read catalog"),
+        )
+        .expect("catalog json");
+        assert_eq!(catalog["models"][0]["slug"], "gpt-5.5");
+        assert_eq!(catalog["models"][0]["context_window"], 1_000_000);
+
+        let zcode: Value = serde_json::from_slice(
+            &tokio::fs::read(fixture.home.join(".zcode/v2/config.json"))
+                .await
+                .expect("read zcode"),
+        )
+        .expect("zcode json");
+        assert_eq!(
+            zcode["provider"]["ai-switch-codex"]["models"]["gpt-5.5"]["limit"]["context"],
+            1_000_000
+        );
+
+        let harness: serde_yaml::Value = serde_yaml::from_slice(
+            &tokio::fs::read(fixture.home.join(".dsh/settings.yaml"))
+                .await
+                .expect("read harness"),
+        )
+        .expect("harness yaml");
+        assert_eq!(
+            harness["llm-pi-ai"]["providers"]["ai-switch-codex"]["models"][0]["contextWindow"],
+            1_000_000
+        );
+    }
+
+    #[tokio::test]
     async fn codex_catalog_on_disk_carries_the_declared_context_and_efforts() {
         let fixture = ServiceFixture::new().await;
         seed_codex_pool_member_with_config(
