@@ -1763,7 +1763,7 @@ describe("AccountsScreen", () => {
     expect(await screen.findByLabelText("复制 Base URL")).toBeInTheDocument();
     expect(screen.getByText("该平台的原生配置写入尚未实现。")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "写入" })).toBeDisabled();
-    await userEvent.click(screen.getByLabelText("关闭选择要写入的客户端"));
+    await userEvent.click(screen.getByLabelText("关闭接入算力池"));
     await userEvent.click(screen.getByLabelText("打开刷新菜单"));
     expect(screen.getByLabelText("刷新官方账号额度")).toBeDisabled();
     await waitFor(() => expect(refreshRouteCredentialsQuota).not.toHaveBeenCalled());
@@ -4013,7 +4013,9 @@ describe("AccountsScreen", () => {
     expect(screen.queryByLabelText("复制 sk")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
-    await screen.findByText("选择要写入的客户端");
+    await screen.findByText("接入算力池");
+    // The parameters live on their own tab so they are not buried below the fold.
+    await userEvent.click(screen.getByRole("tab", { name: "其他 Agent" }));
 
     // Codex appends /responses to the base URL, so the copied address carries /v1.
     await userEvent.click(screen.getByLabelText("复制 Base URL"));
@@ -4465,7 +4467,7 @@ describe("AccountsScreen", () => {
     vi.mocked(routeConfigWriteIsStale).mockResolvedValue(false);
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
     // The button now only opens the dialog; the write happens on confirm.
-    await screen.findByText("选择要写入的客户端");
+    await screen.findByText("接入算力池");
     await userEvent.click(screen.getByRole("button", { name: "写入" }));
     await waitFor(() =>
       expect(screen.queryByText("配置已变更，需重新写入")).not.toBeInTheDocument(),
@@ -4480,7 +4482,7 @@ describe("AccountsScreen", () => {
     expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
-    await screen.findByText("选择要写入的客户端");
+    await screen.findByText("接入算力池");
 
     vi.useFakeTimers();
     fireEvent.click(screen.getByRole("button", { name: "写入" }));
@@ -4513,7 +4515,7 @@ describe("AccountsScreen", () => {
 
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
 
-    expect(await screen.findByText("选择要写入的客户端")).toBeInTheDocument();
+    expect(await screen.findByText("接入算力池")).toBeInTheDocument();
     // The dialog is the confirmation step, so nothing is written yet.
     expect(writeRouteProxyConfigs).not.toHaveBeenCalled();
   });
@@ -4526,7 +4528,7 @@ describe("AccountsScreen", () => {
     expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
-    await screen.findByText("选择要写入的客户端");
+    await screen.findByText("接入算力池");
     await userEvent.click(await screen.findByRole("checkbox", { name: /ZCode/ }));
     await userEvent.click(screen.getByRole("button", { name: "写入" }));
 
@@ -4568,7 +4570,7 @@ describe("AccountsScreen", () => {
     expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
-    await screen.findByText("选择要写入的客户端");
+    await screen.findByText("接入算力池");
     await userEvent.click(screen.getByRole("button", { name: "写入" }));
 
     expect(await screen.findByText("配置写入结果")).toBeInTheDocument();
@@ -4618,7 +4620,7 @@ describe("AccountsScreen", () => {
     expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
-    await screen.findByText("选择要写入的客户端");
+    await screen.findByText("接入算力池");
     await userEvent.click(screen.getByRole("button", { name: "写入" }));
 
     const alert = await screen.findByRole("alert");
@@ -4642,7 +4644,7 @@ describe("AccountsScreen", () => {
     expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
-    await screen.findByText("选择要写入的客户端");
+    await screen.findByText("接入算力池");
     await userEvent.click(screen.getByRole("button", { name: "写入" }));
 
     // The stakes are specific here: a bad parse makes ZCode fall back and lose

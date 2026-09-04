@@ -11,6 +11,11 @@ function stubClipboard() {
   return writeText;
 }
 
+/** The endpoint parameters have their own tab, so they are never on screen first. */
+async function openManualTab(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("tab", { name: "其他 Agent" }));
+}
+
 const clients: ConfigWriteClientStatus[] = [
   {
     client_key: "codex",
@@ -117,13 +122,67 @@ describe("ConfigWriteTargetsDialog", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it("disables every row and the submit button when the platform cannot write config", () => {
+  it("disables every row and the submit button when the platform cannot write config", async () => {
+    const user = userEvent.setup();
     setup({ capabilityDisabledReason: "该平台的原生配置写入尚未实现。" });
 
+    // The reason belongs to the dialog, not to a panel: the tab it explains is
+    // the one a platform that cannot be written gets sent away from.
+    expect(screen.getByText("该平台的原生配置写入尚未实现。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "写入" })).toBeDisabled();
+
+    await user.click(screen.getByRole("tab", { name: "内置支持" }));
     expect(screen.getByRole("checkbox", { name: /Codex CLI/ })).toBeDisabled();
     expect(screen.getByRole("checkbox", { name: /ZCode/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "写入" })).toBeDisabled();
-    expect(screen.getByText("该平台的原生配置写入尚未实现。")).toBeInTheDocument();
+  });
+
+  it("opens on the built-in clients and keeps the endpoint parameters one tab away", async () => {
+    const user = userEvent.setup();
+    setup();
+
+    expect(screen.getByRole("tab", { name: "内置支持" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    // They used to sit below the client list, where nobody who did not scroll
+    // knew they were there.
+    expect(screen.queryByLabelText("Base URL")).not.toBeInTheDocument();
+
+    await openManualTab(user);
+    expect(screen.getByLabelText("Base URL")).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /Codex CLI/ })).not.toBeInTheDocument();
+  });
+
+  it("opens on the endpoint parameters when the platform cannot be written at all", () => {
+    setup({ capabilityDisabledReason: "该平台的原生配置写入尚未实现。" });
+
+    // Every checkbox on the other tab is dead, so the copyable parameters are
+    // the only thing the dialog can still do for this platform.
+    expect(screen.getByRole("tab", { name: "其他 Agent" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByLabelText("Base URL")).toBeInTheDocument();
+  });
+
+  it("keeps a write failure visible from either tab", async () => {
+    const user = userEvent.setup();
+    setup({ error: "写入 ZCode 失败：配置文件无法解析。" });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("写入 ZCode 失败");
+    await openManualTab(user);
+    expect(screen.getByRole("alert")).toHaveTextContent("写入 ZCode 失败");
+  });
+
+  it("moves between tabs with the arrow keys", async () => {
+    const user = userEvent.setup();
+    setup();
+
+    await user.click(screen.getByRole("tab", { name: "内置支持" }));
+    await user.keyboard("{ArrowRight}");
+
+    expect(screen.getByRole("tab", { name: "其他 Agent" })).toHaveFocus();
+    expect(screen.getByLabelText("Base URL")).toBeInTheDocument();
   });
 
   it("closes on Escape when not writing", async () => {
@@ -146,6 +205,7 @@ describe("ConfigWriteTargetsDialog", () => {
     const user = userEvent.setup();
     const writeText = stubClipboard();
     setup();
+    await openManualTab(user);
 
     // Codex reads the base URL as-is and appends /responses, so the endpoint the
     // user copies has to carry /v1 exactly like the written config does.
@@ -160,6 +220,7 @@ describe("ConfigWriteTargetsDialog", () => {
   it("keeps the key masked until the user reveals it, and names the tab it belongs to", async () => {
     const user = userEvent.setup();
     setup();
+    await openManualTab(user);
 
     // Each agent tab has its own key, so the prose has to say which one this is.
     expect(screen.getByText(/每个智能体标签页的算力池端点 API Key 都不一样/)).toBeInTheDocument();
@@ -173,8 +234,10 @@ describe("ConfigWriteTargetsDialog", () => {
     expect(key).toHaveAttribute("type", "password");
   });
 
-  it("cannot copy an endpoint value that has not been read yet", () => {
+  it("cannot copy an endpoint value that has not been read yet", async () => {
+    const user = userEvent.setup();
     setup({ poolApiKey: null });
+    await openManualTab(user);
 
     expect(screen.getByLabelText("复制 API Key")).toBeDisabled();
     expect(screen.getByLabelText("复制 Base URL")).toBeEnabled();
@@ -183,6 +246,7 @@ describe("ConfigWriteTargetsDialog", () => {
   it("does not submit the write when Enter is pressed in an endpoint field", async () => {
     const user = userEvent.setup();
     const { onSubmit } = setup();
+    await openManualTab(user);
 
     await user.click(screen.getByLabelText("Base URL"));
     await user.keyboard("{Enter}");
@@ -196,6 +260,7 @@ describe("ConfigWriteTargetsDialog", () => {
       poolBaseUrl: "http://127.0.0.1:19527",
       poolHttpsBaseUrl: "https://127.0.0.1:19528",
     });
+    await openManualTab(user);
 
     expect(screen.getByLabelText("Base URL")).toHaveValue("http://127.0.0.1:19527/v1");
     expect(screen.getByLabelText("HTTPS Base URL")).toHaveValue("https://127.0.0.1:19528/v1");
@@ -206,24 +271,29 @@ describe("ConfigWriteTargetsDialog", () => {
     expect(screen.getByText(/必须信任本地根证书/)).toBeInTheDocument();
   });
 
-  it("omits the HTTPS row when HTTPS is off", () => {
+  it("omits the HTTPS row when HTTPS is off", async () => {
+    const user = userEvent.setup();
     setup({ poolBaseUrl: "http://127.0.0.1:19527" });
+    await openManualTab(user);
 
     expect(screen.queryByLabelText("HTTPS Base URL")).not.toBeInTheDocument();
     expect(screen.getByText(/可在设置里开启 HTTPS/)).toBeInTheDocument();
   });
 
-  it("says HTTPS failed rather than telling the user to turn it on", () => {
+  it("says HTTPS failed rather than telling the user to turn it on", async () => {
+    const user = userEvent.setup();
     setup({
       poolBaseUrl: "http://127.0.0.1:19527",
       httpsError: "Could not load local route proxy HTTPS certificate (missing-cert.pem)",
     });
+    await openManualTab(user);
 
     expect(screen.getByText(/HTTPS 端点本次未能启动/)).toBeInTheDocument();
     expect(screen.queryByText(/可在设置里开启 HTTPS/)).not.toBeInTheDocument();
   });
 
-  it("leaves a claude endpoint bare", () => {
+  it("leaves a claude endpoint bare", async () => {
+    const user = userEvent.setup();
     setup({
       clients: [
         { ...clients[0], client_key: "claude", display_name: "Claude Code", platform: "claude" },
@@ -231,6 +301,7 @@ describe("ConfigWriteTargetsDialog", () => {
       platform: "claude",
       poolBaseUrl: "http://127.0.0.1:19527",
     });
+    await openManualTab(user);
 
     expect(screen.getByLabelText("Base URL")).toHaveValue("http://127.0.0.1:19527");
   });

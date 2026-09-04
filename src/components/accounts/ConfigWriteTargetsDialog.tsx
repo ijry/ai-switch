@@ -116,6 +116,13 @@ function EndpointRow({ label, value, secret = false }: EndpointRowProps) {
   );
 }
 
+/**
+ * `builtin` writes files for us; `manual` only hands out the parameters. They are
+ * tabs rather than one scrolling column because the endpoint rows used to sit
+ * below the client list, where nobody who did not scroll knew they existed.
+ */
+type ConfigWriteTab = "builtin" | "manual";
+
 type ConfigWriteTargetsDialogProps = {
   platform: string;
   /** Human-readable name of the agent tab, for prose that names it. */
@@ -159,7 +166,13 @@ export function ConfigWriteTargetsDialog({
   // from `clients`. The list arrives from a query after the dialog mounts, so a
   // snapshot taken on the first render would leave nothing checked.
   const [override, setOverride] = useState<string[] | null>(null);
+  // `null` until the user picks a tab, for the same reason: `capabilityDisabledReason`
+  // may only arrive after the capability query settles, and a platform that cannot
+  // be written at all should open on the parameters it can actually use.
+  const [tabOverride, setTabOverride] = useState<ConfigWriteTab | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const builtinTabRef = useRef<HTMLButtonElement>(null);
+  const manualTabRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef(onClose);
   const loadingRef = useRef(loading);
 
@@ -192,6 +205,10 @@ export function ConfigWriteTargetsDialog({
         dialogRef.current.querySelectorAll<HTMLElement>(
           'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
         ),
+      ).filter(
+        // The unselected tab keeps `tabindex="-1"` for roving focus and the browser
+        // skips it, so counting it as a stop would break the wrap-around.
+        (element) => element.tabIndex >= 0,
       );
       if (!focusable.length) {
         return;
@@ -218,6 +235,7 @@ export function ConfigWriteTargetsDialog({
 
   const selected = override ?? initialSelection ?? nativeClientKeys(clients);
   const disabled = Boolean(capabilityDisabledReason);
+  const activeTab = tabOverride ?? (disabled ? "manual" : "builtin");
   // `null` rather than `""` so `EndpointRow` shows its "reading..." placeholder
   // instead of an empty field before the proxy status arrives.
   const httpEndpoint = routeProxyEndpointForPlatform(poolBaseUrl ?? "", platform) || null;
@@ -233,6 +251,30 @@ export function ConfigWriteTargetsDialog({
         ? selected.filter((key) => key !== clientKey)
         : [...selected, clientKey],
     );
+  };
+
+  const handleTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    const tabs = [builtinTabRef.current, manualTabRef.current];
+    const currentIndex = tabs.indexOf(event.currentTarget);
+    let nextIndex: number | null = null;
+
+    if (event.key === "ArrowRight") {
+      nextIndex = (currentIndex + 1) % tabs.length;
+    } else if (event.key === "ArrowLeft") {
+      nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = tabs.length - 1;
+    }
+
+    if (nextIndex === null) {
+      return;
+    }
+
+    event.preventDefault();
+    setTabOverride(nextIndex === 0 ? "builtin" : "manual");
+    tabs[nextIndex]?.focus();
   };
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -262,11 +304,11 @@ export function ConfigWriteTargetsDialog({
         ref={dialogRef}
         aria-labelledby="config-write-targets-title"
         aria-modal="true"
-        className="flex max-h-[calc(100vh-2rem)] w-full max-w-md flex-col overflow-hidden rounded-lg border border-stone-200 bg-white shadow-2xl"
+        className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-stone-200 bg-white shadow-2xl"
         role="dialog"
         tabIndex={-1}
       >
-        <header className="flex items-start justify-between gap-4 border-b border-stone-200 px-5 py-4">
+        <header className="flex items-start justify-between gap-4 border-b border-stone-200 px-6 py-4">
           <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
               {platform}
@@ -276,14 +318,14 @@ export function ConfigWriteTargetsDialog({
               id="config-write-targets-title"
             >
               <Plug aria-hidden="true" className="h-4 w-4 text-stone-500" />
-              选择要写入的客户端
+              接入算力池
             </h2>
             <p className="mt-1 text-xs leading-5 text-stone-500">
-              只写入勾选的客户端，其他客户端的配置文件不会被改动。
+              内置支持的客户端可以直接写入配置；其他 Agent 手动填 Base URL 与 API Key。
             </p>
           </div>
           <button
-            aria-label="关闭选择要写入的客户端"
+            aria-label="关闭接入算力池"
             className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50"
             disabled={loading}
             onClick={onClose}
@@ -295,7 +337,54 @@ export function ConfigWriteTargetsDialog({
         </header>
 
         <form className="flex min-h-0 flex-1 flex-col" onSubmit={submit}>
-          <div className="grid min-h-0 flex-1 gap-3 overflow-y-auto px-5 py-4">
+          <div className="px-6 pt-4">
+            <div
+              aria-label="接入方式"
+              className="flex w-fit rounded-md bg-stone-100 p-1"
+              role="tablist"
+            >
+              <button
+                ref={builtinTabRef}
+                aria-controls="config-write-builtin-panel"
+                aria-selected={activeTab === "builtin"}
+                className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+                  activeTab === "builtin"
+                    ? "bg-stone-900 text-white"
+                    : "text-stone-600 hover:text-stone-950"
+                }`}
+                id="config-write-builtin-tab"
+                onClick={() => setTabOverride("builtin")}
+                onKeyDown={handleTabKeyDown}
+                role="tab"
+                tabIndex={activeTab === "builtin" ? 0 : -1}
+                type="button"
+              >
+                内置支持
+              </button>
+              <button
+                ref={manualTabRef}
+                aria-controls="config-write-manual-panel"
+                aria-selected={activeTab === "manual"}
+                className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+                  activeTab === "manual"
+                    ? "bg-stone-900 text-white"
+                    : "text-stone-600 hover:text-stone-950"
+                }`}
+                id="config-write-manual-tab"
+                onClick={() => setTabOverride("manual")}
+                onKeyDown={handleTabKeyDown}
+                role="tab"
+                tabIndex={activeTab === "manual" ? 0 : -1}
+                type="button"
+              >
+                其他 Agent
+              </button>
+            </div>
+          </div>
+
+          <div className="grid min-h-0 flex-1 gap-3 overflow-y-auto px-6 py-4">
+            {/* Dialog-level, not per tab: it is why 写入 is dead, and the tab it
+                would sit in is the one the user gets sent away from. */}
             {capabilityDisabledReason ? (
               <p
                 className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-950"
@@ -305,99 +394,120 @@ export function ConfigWriteTargetsDialog({
               </p>
             ) : null}
 
-            {clients.length === 0 ? (
-              <p className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2.5 text-xs leading-5 text-stone-600">
-                暂无可写入的客户端。
-              </p>
+            {activeTab === "builtin" ? (
+              <div
+                aria-labelledby="config-write-builtin-tab"
+                className="grid gap-3"
+                id="config-write-builtin-panel"
+                role="tabpanel"
+              >
+                <p className="text-xs leading-5 text-stone-500">
+                  只写入勾选的客户端，其他客户端的配置文件不会被改动。
+                </p>
+
+                {clients.length === 0 ? (
+                  <p className="rounded-md bg-stone-50 px-3.5 py-3 text-xs leading-5 text-stone-600">
+                    暂无可写入的客户端。
+                  </p>
+                ) : (
+                  <ul className="grid list-none gap-2">
+                    {clients.map((client) => (
+                      <li key={client.client_key}>
+                        <label
+                          className={`flex items-start gap-3 rounded-md bg-stone-50 px-3.5 py-3 text-xs text-stone-700 ${
+                            disabled || loading ? "" : "cursor-pointer hover:bg-stone-100"
+                          }`}
+                        >
+                          <input
+                            checked={selected.includes(client.client_key)}
+                            className="mt-0.5 h-4 w-4 shrink-0 accent-stone-900"
+                            disabled={disabled || loading}
+                            onChange={() => toggle(client.client_key)}
+                            type="checkbox"
+                          />
+                          <span className="min-w-0 grid gap-0.5">
+                            <span className="flex items-center gap-2">
+                              <span className="font-semibold text-stone-950">
+                                {client.display_name}
+                              </span>
+                              <span className="text-stone-500">
+                                {fileStatusLabels[client.file_status] ?? client.file_status}
+                              </span>
+                            </span>
+                            {client.config_path ? (
+                              <span
+                                className="truncate font-mono text-[11px] text-stone-500"
+                                title={client.config_path}
+                              >
+                                {client.config_path}
+                              </span>
+                            ) : null}
+                            {client.error_code ? (
+                              <span className="font-mono text-[11px] text-red-700">
+                                {client.error_code}
+                              </span>
+                            ) : null}
+                          </span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {restartClients.length > 0 ? (
+                  <p className="rounded-md border border-amber-200 bg-amber-50 px-3.5 py-3 text-xs leading-5 text-amber-950">
+                    写入后需重启 {restartNames} 才生效（它不监听配置文件变化）。
+                  </p>
+                ) : null}
+              </div>
             ) : (
-              <ul className="grid gap-2">
-                {clients.map((client) => (
-                  <li key={client.client_key}>
-                    <label className="flex items-start gap-2.5 rounded-md border border-stone-200 px-3 py-2.5 text-xs text-stone-700">
-                      <input
-                        checked={selected.includes(client.client_key)}
-                        className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-stone-900"
-                        disabled={disabled || loading}
-                        onChange={() => toggle(client.client_key)}
-                        type="checkbox"
-                      />
-                      <span className="min-w-0 grid gap-0.5">
-                        <span className="flex items-center gap-2">
-                          <span className="font-semibold text-stone-950">
-                            {client.display_name}
-                          </span>
-                          <span className="text-stone-500">
-                            {fileStatusLabels[client.file_status] ?? client.file_status}
-                          </span>
-                        </span>
-                        {client.config_path ? (
-                          <span
-                            className="truncate font-mono text-[11px] text-stone-500"
-                            title={client.config_path}
-                          >
-                            {client.config_path}
-                          </span>
-                        ) : null}
-                        {client.error_code ? (
-                          <span className="font-mono text-[11px] text-red-700">
-                            {client.error_code}
-                          </span>
-                        ) : null}
-                      </span>
-                    </label>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {restartClients.length > 0 ? (
-              <p className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2.5 text-xs leading-5 text-stone-600">
-                写入后需重启 {restartNames} 才生效（它不监听配置文件变化）。
-              </p>
-            ) : null}
-
-            <section className="grid gap-2.5 rounded-md border border-stone-200 bg-stone-50 px-3 py-3">
-              <div className="grid gap-0.5">
-                <h3 className="text-xs font-semibold text-stone-950">在以上客户端之外使用</h3>
+              <div
+                aria-labelledby="config-write-manual-tab"
+                className="grid gap-3"
+                id="config-write-manual-panel"
+                role="tabpanel"
+              >
+                <p className="text-xs leading-5 text-stone-500">
+                  内置支持之外的 Agent 或工具，把下面的参数手动填进它自己的设置里，一样走当前算力池。
+                </p>
+                <div className="grid gap-2.5 rounded-md bg-stone-50 px-3.5 py-3">
+                  <EndpointRow label="Base URL" value={httpEndpoint} />
+                  {/* HTTPS has its own port and is never written into a config:
+                      clients that ship their own CA bundle (curl, Node-based CLIs)
+                      cannot see the local root certificate in the system trust store,
+                      so an https:// address would simply break them. Rendered only
+                      when it exists, so the row never sits empty. */}
+                  {httpsEndpoint ? (
+                    <EndpointRow label="HTTPS Base URL" value={httpsEndpoint} />
+                  ) : null}
+                  <EndpointRow label="API Key" secret value={poolApiKey} />
+                </div>
                 <p className="text-[11px] leading-5 text-stone-500">
-                  如果你需要在以上客户端之外的情况使用当前算力池端点，可以用下面的参数手动配置。
+                  {httpsEndpoint
+                    ? "正常情况用上面的 Base URL（HTTP）即可。HTTPS 端点只给确实需要 TLS 的特殊场景，且客户端必须信任本地根证书。"
+                    : httpsError
+                      ? // Saying "go turn HTTPS on" would be wrong here — they did,
+                        // and it is the listener that failed.
+                        "正常情况用上面的 Base URL（HTTP）即可。HTTPS 端点本次未能启动，原因见设置里的 HTTPS 面板。"
+                      : "正常情况用上面的 Base URL（HTTP）即可。需要 TLS 的特殊场景可在设置里开启 HTTPS，它会另占一个端口。"}
+                </p>
+                <p className="text-[11px] leading-5 text-amber-800">
+                  {`注意：每个智能体标签页的算力池端点 API Key 都不一样。这里给出的是 ${platformLabel ?? platform} 标签页的 Key，别的标签页要各自复制。`}
                 </p>
               </div>
-              <EndpointRow label="Base URL" value={httpEndpoint} />
-              {/* HTTPS has its own port and is never written into a config:
-                  clients that ship their own CA bundle (curl, Node-based CLIs)
-                  cannot see the local root certificate in the system trust store,
-                  so an https:// address would simply break them. Rendered only
-                  when it exists, so the row never sits empty. */}
-              {httpsEndpoint ? (
-                <EndpointRow label="HTTPS Base URL" value={httpsEndpoint} />
-              ) : null}
-              <EndpointRow label="API Key" secret value={poolApiKey} />
-              <p className="text-[11px] leading-5 text-stone-500">
-                {httpsEndpoint
-                  ? "正常情况用上面的 Base URL（HTTP）即可。HTTPS 端点只给确实需要 TLS 的特殊场景，且客户端必须信任本地根证书。"
-                  : httpsError
-                    ? // Saying "go turn HTTPS on" would be wrong here — they did,
-                      // and it is the listener that failed.
-                      "正常情况用上面的 Base URL（HTTP）即可。HTTPS 端点本次未能启动，原因见设置里的 HTTPS 面板。"
-                    : "正常情况用上面的 Base URL（HTTP）即可。需要 TLS 的特殊场景可在设置里开启 HTTPS，它会另占一个端口。"}
-              </p>
-              <p className="text-[11px] leading-5 text-amber-800">
-                {`注意：每个智能体标签页的算力池端点 API Key 都不一样。这里给出的是 ${platformLabel ?? platform} 标签页的 Key，别的标签页要各自复制。`}
-              </p>
-            </section>
-
-            {error ? (
-              <p
-                className="rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-xs leading-5 text-red-800"
-                role="alert"
-              >
-                {error}
-              </p>
-            ) : null}
+            )}
           </div>
 
-          <footer className="flex justify-end gap-2 border-t border-stone-200 bg-stone-50 px-5 py-3">
+          {error ? (
+            <p
+              className="mx-6 mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-xs leading-5 text-red-800"
+              role="alert"
+            >
+              {error}
+            </p>
+          ) : null}
+
+          <footer className="flex justify-end gap-2 border-t border-stone-200 bg-stone-50 px-6 py-3">
             <button
               className="h-9 rounded-md border border-stone-300 bg-white px-4 text-sm font-semibold text-stone-700 transition-colors hover:bg-stone-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50"
               disabled={loading}
