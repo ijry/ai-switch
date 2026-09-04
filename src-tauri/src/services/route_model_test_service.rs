@@ -43,6 +43,18 @@ use uuid::Uuid;
 pub struct RouteModelTestService;
 
 pub const MODEL_TEST_PROMPT: &str = "Reply with exactly: ai-switch-ok";
+/// The prompt a tool-call probe sends instead.
+///
+/// `MODEL_TEST_PROMPT` cannot be reused: "reply with exactly this text" and a
+/// forced tool call are contradictory instructions, and an upstream that treats
+/// `tool_choice` as advisory — which includes the relays this probe exists to
+/// screen — follows the sentence. The answer then comes back as plain
+/// `ai-switch-ok` with no call in it, and the probe can only read that as "this
+/// model does not call tools". The sentence has to ask for the thing being
+/// measured; `tool_choice` stays as the second, stricter lever.
+pub const MODEL_TEST_TOOL_CALL_PROMPT: &str =
+    "Call the tool named ai_switch_test_tool with input \"ai-switch-ok\". \
+     Do not answer with text.";
 pub const MODEL_TEST_RESPONSE_LIMIT: usize = 16 * 1024;
 const DEFAULT_REQUEST_PAGE: i64 = 1;
 const DEFAULT_REQUEST_PAGE_SIZE: i64 = 20;
@@ -867,15 +879,20 @@ pub fn build_model_test_request_with_tool_call(
     }
     let mappings = model_mappings(&config);
     let model = request_model(platform, &interface_format, &mappings, requested_model);
+    let prompt = if test_tool_call {
+        MODEL_TEST_TOOL_CALL_PROMPT
+    } else {
+        MODEL_TEST_PROMPT
+    };
 
     let (request_path, request_body) = match platform {
         "codex" => (
             "/responses".to_string(),
-            codex_probe_body(&model, &credential.id, &interface_format),
+            codex_probe_body(&model, &credential.id, &interface_format, prompt),
         ),
         "claude" => (
             "/v1/messages".to_string(),
-            anthropic_probe_body(&model, &credential.id),
+            anthropic_probe_body(&model, &credential.id, prompt),
         ),
         "gemini" => (
             format!(
@@ -885,7 +902,7 @@ pub fn build_model_test_request_with_tool_call(
             json!({
                 "contents": [{
                     "role": "user",
-                    "parts": [{"text": MODEL_TEST_PROMPT}]
+                    "parts": [{"text": prompt}]
                 }],
                 "generationConfig": {
                     "temperature": 0,
@@ -898,7 +915,7 @@ pub fn build_model_test_request_with_tool_call(
                 "/chat/completions".to_string(),
                 json!({
                     "model": model,
-                    "messages": [{"role": "user", "content": MODEL_TEST_PROMPT}],
+                    "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0,
                     "max_tokens": 16
                 }),
@@ -907,14 +924,14 @@ pub fn build_model_test_request_with_tool_call(
                 "/responses".to_string(),
                 json!({
                     "model": model,
-                    "input": MODEL_TEST_PROMPT,
+                    "input": prompt,
                     "temperature": 0,
                     "max_output_tokens": 16
                 }),
             ),
             "anthropic" => (
                 "/v1/messages".to_string(),
-                anthropic_probe_body(&model, &credential.id),
+                anthropic_probe_body(&model, &credential.id, prompt),
             ),
             "gemini" => (
                 format!(
@@ -924,7 +941,7 @@ pub fn build_model_test_request_with_tool_call(
                 json!({
                     "contents": [{
                         "role": "user",
-                        "parts": [{"text": MODEL_TEST_PROMPT}]
+                        "parts": [{"text": prompt}]
                     }],
                     "generationConfig": {
                         "temperature": 0,
@@ -966,14 +983,14 @@ pub fn build_model_test_request_with_tool_call(
 /// `system` block scoring against Claude Code's own prompt *and* a parseable
 /// `metadata.user_id`, so a probe without both fails with `this group only
 /// allows Claude Code clients` while the same account works from the real CLI.
-fn anthropic_probe_body(model: &str, credential_id: &str) -> Value {
+fn anthropic_probe_body(model: &str, credential_id: &str, prompt: &str) -> Value {
     json!({
         "model": model,
         "system": [{
             "type": "text",
             "text": client_identity::CLAUDE_CODE_SYSTEM_PROMPT
         }],
-        "messages": [{"role": "user", "content": MODEL_TEST_PROMPT}],
+        "messages": [{"role": "user", "content": prompt}],
         "metadata": {
             "user_id": client_identity::claude_code_metadata_user_id(credential_id)
         },
@@ -988,10 +1005,15 @@ fn anthropic_probe_body(model: &str, credential_id: &str) -> Value {
 /// gate as a native Anthropic probe. The bridge derives `system` from
 /// `instructions` and forwards `metadata`, so both are seeded here rather than
 /// patched onto the converted body.
-fn codex_probe_body(model: &str, credential_id: &str, interface_format: &str) -> Value {
+fn codex_probe_body(
+    model: &str,
+    credential_id: &str,
+    interface_format: &str,
+    prompt: &str,
+) -> Value {
     let mut body = json!({
         "model": model,
-        "input": MODEL_TEST_PROMPT,
+        "input": prompt,
         "temperature": 0,
         "max_output_tokens": 16
     });
@@ -2216,6 +2238,54 @@ mod tests {
         assert_eq!(probing["tools"][0]["name"], "ai_switch_test_tool");
     }
 
+    /// A forced `tool_choice` and "reply with exactly this text" are contradictory
+    /// asks, and the probe used to send both: the tool was attached to a request
+    /// whose only user turn still said `Reply with exactly: ai-switch-ok`. Every
+    /// upstream that treats `tool_choice` as advisory — which includes the relays
+    /// this checkbox exists to screen — obeyed the sentence, answered
+    /// `ai-switch-ok` as plain text, and was reported as unable to call tools. A
+    /// probe has to ask for the thing it measures.
+    #[test]
+    fn a_tool_call_probe_asks_for_the_call_instead_of_a_text_reply() {
+        for (platform, dialect, pointer) in [
+            ("codex", "openai-responses", "/input"),
+            ("opencode", "openai", "/messages/0/content"),
+            ("claude", "anthropic", "/messages/0/content"),
+            ("gemini", "gemini", "/contents/0/parts/0/text"),
+        ] {
+            let credential = api_credential(dialect);
+            let probing =
+                build_model_test_request_with_tool_call(&credential, platform, None, None, true)
+                    .expect("tool call request");
+            let probing: Value = serde_json::from_str(&probing.request_body_json).expect("json");
+            let prompt = probing
+                .pointer(pointer)
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| panic!("{platform}: no prompt at {pointer}"));
+
+            assert!(
+                prompt.contains(MODEL_TEST_TOOL_NAME),
+                "{platform} prompt does not name the tool: {prompt}"
+            );
+            assert!(
+                !prompt.contains(MODEL_TEST_PROMPT),
+                "{platform} prompt still asks for a text reply: {prompt}"
+            );
+
+            // A connectivity-only probe is untouched: there its answer *is* the
+            // text, and `response_text` is what the outcome shows.
+            let plain =
+                build_model_test_request_with_tool_call(&credential, platform, None, None, false)
+                    .expect("plain request");
+            let plain: Value = serde_json::from_str(&plain.request_body_json).expect("json");
+            assert_eq!(
+                plain.pointer(pointer).and_then(Value::as_str),
+                Some(MODEL_TEST_PROMPT),
+                "{platform}"
+            );
+        }
+    }
+
     #[test]
     fn claude_model_test_builds_local_messages_body_for_openai_upstream() {
         let credential = api_credential("openai");
@@ -2770,6 +2840,118 @@ mod tests {
             .unwrap_or_default()
             .contains("ai-switch-ok"));
         assert!(!outcome.stats.requests[0].metadata_json.contains("sk-test"));
+    }
+
+    /// The tool the probe attaches has to reach the upstream *in the upstream's
+    /// own dialect*. This account speaks Chat while the Codex probe is built in
+    /// Responses shape, so the tool and the forced choice only arrive if the
+    /// bridge carries them — and a chat-only relay's plain-text answer has to come
+    /// back as a failure that says what was missing, not as a pass.
+    #[tokio::test]
+    async fn a_tool_call_probe_reaches_a_bridged_upstream_and_fails_on_a_text_only_answer() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let base_url = start_json_test_server(
+            axum::http::StatusCode::OK,
+            json!({
+                "choices": [{"finish_reason": "stop", "message": {"content": "ai-switch-ok"}}]
+            }),
+        )
+        .await;
+        let credential_id = create_api_credential(&pool, &base_url).await;
+
+        let outcome = RouteModelTestService::test_model(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "codex".to_string(),
+                account_id: Some(credential_id.clone()),
+                model: None,
+                interface_format: None,
+                test_tool_call: true,
+            },
+        )
+        .await
+        .expect("outcome");
+
+        // `request_body_json` is the post-bridge upstream body.
+        let upstream: Value =
+            serde_json::from_str(&outcome.request_body_json).expect("upstream body");
+        assert_eq!(
+            upstream
+                .pointer("/tools/0/function/name")
+                .and_then(Value::as_str),
+            Some(MODEL_TEST_TOOL_NAME),
+            "{}",
+            outcome.request_body_json
+        );
+        assert_eq!(
+            upstream
+                .pointer("/tool_choice/function/name")
+                .and_then(Value::as_str),
+            Some(MODEL_TEST_TOOL_NAME),
+            "{}",
+            outcome.request_body_json
+        );
+
+        assert!(!outcome.success);
+        assert_eq!(outcome.response_status, Some(200));
+        assert!(
+            outcome
+                .error_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("did not call the test tool"),
+            "{:?}",
+            outcome.error_message
+        );
+    }
+
+    /// The mirror image: a real tool call has to survive the response-side bridge
+    /// back into the local dialect the probe reads. Chat answers with
+    /// `message.tool_calls`, the probe looks for a Responses `function_call` item,
+    /// and only the bridge connects the two.
+    #[tokio::test]
+    async fn a_bridged_tool_call_answer_passes_the_probe() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let base_url = start_json_test_server(
+            axum::http::StatusCode::OK,
+            json!({
+                "choices": [{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": MODEL_TEST_TOOL_NAME,
+                                "arguments": "{\"input\":\"ai-switch-ok\"}"
+                            }
+                        }]
+                    }
+                }]
+            }),
+        )
+        .await;
+        let credential_id = create_api_credential(&pool, &base_url).await;
+
+        let outcome = RouteModelTestService::test_model(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "codex".to_string(),
+                account_id: Some(credential_id.clone()),
+                model: None,
+                interface_format: None,
+                test_tool_call: true,
+            },
+        )
+        .await
+        .expect("outcome");
+
+        assert!(outcome.success, "{:?}", outcome.error_message);
+        assert_eq!(outcome.error_message, None);
     }
 
     #[tokio::test]

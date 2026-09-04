@@ -31,7 +31,24 @@ pub(super) fn anthropic_request_to_gemini(body: &[u8]) -> Result<Vec<u8>, String
         );
     }
     if let Some(tools) = object.get("tools") {
-        result.insert("tools".to_string(), convert_tools(tools)?);
+        let declarations = convert_tools(tools)?;
+        // A forced mode with nothing to call is a 400 on Gemini's side, so the
+        // tool config only travels alongside the declarations.
+        let forced = if declarations.is_empty() {
+            None
+        } else {
+            convert_tool_choice(object.get("tool_choice"))?
+        };
+        result.insert(
+            "tools".to_string(),
+            json!([{"functionDeclarations": declarations}]),
+        );
+        if let Some(config) = forced {
+            result.insert(
+                "toolConfig".to_string(),
+                json!({"functionCallingConfig": config}),
+            );
+        }
     }
 
     serde_json::to_vec(&Value::Object(result))
@@ -242,7 +259,7 @@ fn convert_generation_config(object: &Map<String, Value>) -> Map<String, Value> 
     generation_config
 }
 
-fn convert_tools(tools: &Value) -> Result<Value, String> {
+fn convert_tools(tools: &Value) -> Result<Vec<Value>, String> {
     let tools = tools
         .as_array()
         .ok_or_else(|| "Anthropic tools must be an array".to_string())?;
@@ -260,7 +277,33 @@ fn convert_tools(tools: &Value) -> Result<Value, String> {
             object.get("input_schema"),
         ));
     }
-    Ok(json!([{"functionDeclarations": declarations}]))
+    Ok(declarations)
+}
+
+/// Anthropic states forced tool use per request, Gemini in `toolConfig`.
+///
+/// `none` maps exactly here (`NONE`) instead of having to be dropped the way the
+/// Anthropic-to-Chat direction does. `disable_parallel_tool_use` has no Gemini
+/// equivalent and is dropped: Gemini decides parallelism itself.
+fn convert_tool_choice(tool_choice: Option<&Value>) -> Result<Option<Value>, String> {
+    let object = match tool_choice {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Object(object)) => object,
+        Some(other) => return Err(format!("Unsupported Anthropic tool_choice shape: {other}")),
+    };
+    match object.get("type").and_then(Value::as_str) {
+        // A missing type reads as the default, the same way claude_chat reads it.
+        Some("auto") | None => Ok(Some(json!({"mode": "AUTO"}))),
+        Some("any") => Ok(Some(json!({"mode": "ANY"}))),
+        Some("none") => Ok(Some(json!({"mode": "NONE"}))),
+        Some("tool") => {
+            let name = required_string(object, "name", "tool_choice")?;
+            // Gemini has no single-tool mode: naming one tool is `ANY` narrowed
+            // to that name.
+            Ok(Some(json!({"mode": "ANY", "allowedFunctionNames": [name]})))
+        }
+        Some(other) => Err(format!("Unsupported Anthropic tool_choice type: {other}")),
+    }
 }
 
 fn gemini_json_to_anthropic(body: &[u8]) -> Result<Vec<u8>, String> {
@@ -858,6 +901,67 @@ mod tests {
             !rendered.contains("$schema"),
             "no JSON Schema metadata may reach Gemini: {rendered}"
         );
+    }
+
+    /// Anthropic states forced tool use per request, Gemini in `toolConfig`.
+    /// Dropping it downgrades a forced call to optional, which stalls the agent
+    /// loops that depend on the call and makes a tool-call capability probe report
+    /// a perfectly capable model as text-only.
+    #[test]
+    fn tool_choice_becomes_a_function_calling_config_mode() {
+        let cases = [
+            (json!({"type": "auto"}), "AUTO", None),
+            (json!({"type": "any"}), "ANY", None),
+            (json!({"type": "none"}), "NONE", None),
+            (
+                json!({"type": "tool", "name": "lookup"}),
+                "ANY",
+                Some("lookup"),
+            ),
+            // Anthropic lets the type be implicit; Chat reads that as `auto`.
+            (json!({"disable_parallel_tool_use": true}), "AUTO", None),
+        ];
+
+        for (tool_choice, mode, allowed) in cases {
+            let body = json!({
+                "model": "gemini-2.5-flash",
+                "max_tokens": 64,
+                "messages": [{"role":"user","content":[{"type":"text","text":"Find x"}]}],
+                "tools": [{"name":"lookup","input_schema":{"type":"object","properties":{}}}],
+                "tool_choice": tool_choice
+            });
+
+            let converted: Value = serde_json::from_slice(
+                &anthropic_request_to_gemini(&serde_json::to_vec(&body).unwrap()).unwrap(),
+            )
+            .unwrap();
+            let config = &converted["toolConfig"]["functionCallingConfig"];
+
+            assert_eq!(
+                config["mode"], mode,
+                "tool_choice {tool_choice} -> {config}"
+            );
+            match allowed {
+                // Gemini has no single-tool mode: naming a tool is ANY narrowed
+                // to that name.
+                Some(name) => assert_eq!(config["allowedFunctionNames"], json!([name])),
+                None => assert!(config.get("allowedFunctionNames").is_none(), "{config}"),
+            }
+        }
+
+        // A forced mode with nothing declared is a 400 on Gemini's side, so the
+        // config never travels alone.
+        let no_tools = json!({
+            "model": "gemini-2.5-flash",
+            "max_tokens": 64,
+            "messages": [{"role":"user","content":[{"type":"text","text":"hi"}]}],
+            "tool_choice": {"type": "any"}
+        });
+        let converted: Value = serde_json::from_slice(
+            &anthropic_request_to_gemini(&serde_json::to_vec(&no_tools).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert!(converted.get("toolConfig").is_none(), "{converted}");
     }
 
     #[test]

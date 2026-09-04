@@ -33,6 +33,133 @@ mod tests {
         );
     }
 
+    /// Responses states forced tool use per request, Gemini in `toolConfig`.
+    /// Dropping it downgrades a forced call to optional, which stalls the agent
+    /// loops that depend on the call and makes a tool-call capability probe report
+    /// a perfectly capable model as text-only.
+    #[test]
+    fn tool_choice_becomes_a_function_calling_config_mode() {
+        let cases = [
+            (serde_json::json!("auto"), "AUTO", None),
+            (serde_json::json!("required"), "ANY", None),
+            (serde_json::json!("none"), "NONE", None),
+            (
+                serde_json::json!({"type": "function", "name": "lookup"}),
+                "ANY",
+                Some("lookup"),
+            ),
+            // A `custom` tool is still a named function once flattened.
+            (
+                serde_json::json!({"type": "custom", "name": "lookup"}),
+                "ANY",
+                Some("lookup"),
+            ),
+            // "any of the listed tools" has no narrower Gemini equivalent.
+            (
+                serde_json::json!({"type": "allowed_tools", "tools": [{"type": "function", "name": "lookup"}]}),
+                "ANY",
+                None,
+            ),
+        ];
+
+        for (tool_choice, mode, allowed) in cases {
+            let body = serde_json::json!({
+                "model": "gemini-2.5-flash",
+                "input": [{"role":"user","content":[{"type":"input_text","text":"go"}]}],
+                "tools": [{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}}],
+                "tool_choice": tool_choice
+            });
+
+            let converted: Value = serde_json::from_slice(
+                &responses_request_to_gemini(&serde_json::to_vec(&body).unwrap()).unwrap(),
+            )
+            .unwrap();
+            let config = &converted["toolConfig"]["functionCallingConfig"];
+
+            assert_eq!(
+                config["mode"], mode,
+                "tool_choice {tool_choice} -> {config}"
+            );
+            match allowed {
+                // Gemini has no single-tool mode: naming a function is ANY
+                // narrowed to that name.
+                Some(name) => {
+                    assert_eq!(config["allowedFunctionNames"], serde_json::json!([name]))
+                }
+                None => assert!(config.get("allowedFunctionNames").is_none(), "{config}"),
+            }
+        }
+
+        // A forced mode with nothing declared is a 400 on Gemini's side, so the
+        // config never travels alone.
+        let no_tools = serde_json::json!({
+            "model": "gemini-2.5-flash",
+            "input": "go",
+            "tool_choice": "required"
+        });
+        let converted: Value = serde_json::from_slice(
+            &responses_request_to_gemini(&serde_json::to_vec(&no_tools).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert!(converted.get("toolConfig").is_none(), "{converted}");
+    }
+
+    /// `allowedFunctionNames` has to match the declaration, and a namespaced tool
+    /// is declared under its flattened `namespace__name`. Forwarding the name the
+    /// client wrote would force a function Gemini was never given.
+    #[test]
+    fn a_forced_namespaced_tool_names_the_flattened_declaration() {
+        let body = serde_json::json!({
+            "model": "gemini-2.5-flash",
+            "input": "go",
+            "tools": [{
+                "type": "namespace",
+                "name": "database",
+                "tools": [{
+                    "type": "function",
+                    "name": "lookup",
+                    "parameters": {"type": "object", "properties": {}}
+                }]
+            }],
+            "tool_choice": {"type": "function", "name": "lookup"}
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &responses_request_to_gemini(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            converted["tools"][0]["functionDeclarations"][0]["name"],
+            "database__lookup"
+        );
+        assert_eq!(
+            converted["toolConfig"]["functionCallingConfig"]["allowedFunctionNames"],
+            serde_json::json!(["database__lookup"])
+        );
+    }
+
+    /// Hosted tools are dropped on the way to Gemini, so a request that asked only
+    /// for those has nothing left to declare — and an empty declaration list plus a
+    /// forced mode is exactly the 400 the gate above avoids.
+    #[test]
+    fn builtin_only_tools_leave_no_declarations_and_no_forced_mode() {
+        let body = serde_json::json!({
+            "model": "gemini-2.5-flash",
+            "input": "go",
+            "tools": [{"type": "web_search"}],
+            "tool_choice": {"type": "web_search"}
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &responses_request_to_gemini(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        assert!(converted.get("tools").is_none(), "{converted}");
+        assert!(converted.get("toolConfig").is_none(), "{converted}");
+    }
+
     /// Same guard as the Claude direction: Codex/MCP tool schemas carry JSON
     /// Schema keywords that Gemini's restricted `parameters` channel rejects.
     #[test]
@@ -201,12 +328,22 @@ pub(super) fn responses_request_to_gemini(body: &[u8]) -> Result<Vec<u8>, String
             .insert("thinkingConfig".to_string(), thinking_config);
     }
     if let Some(tools) = object.get("tools") {
-        let converted_tools = convert_tools(tools)?;
-        if converted_tools
-            .as_array()
-            .is_some_and(|tools| !tools.is_empty())
-        {
-            result.insert("tools".to_string(), converted_tools);
+        let declarations = convert_tools(tools)?;
+        // Hosted tools are dropped on the way here, so a request can arrive with
+        // tools and leave with nothing to declare. A forced mode with nothing to
+        // call is a 400 on Gemini's side, so both keys hang off the declarations.
+        if !declarations.is_empty() {
+            let forced = convert_tool_choice(object.get("tool_choice"), &declarations);
+            result.insert(
+                "tools".to_string(),
+                json!([{"functionDeclarations": declarations}]),
+            );
+            if let Some(config) = forced {
+                result.insert(
+                    "toolConfig".to_string(),
+                    json!({"functionCallingConfig": config}),
+                );
+            }
         }
     }
 
@@ -506,7 +643,7 @@ fn convert_function_result(
     }))
 }
 
-fn convert_tools(tools: &Value) -> Result<Value, String> {
+fn convert_tools(tools: &Value) -> Result<Vec<Value>, String> {
     let tools = flatten_responses_function_tools(tools)?;
     let mut declarations = Vec::with_capacity(tools.len());
     for object in tools {
@@ -523,7 +660,77 @@ fn convert_tools(tools: &Value) -> Result<Value, String> {
             schema,
         ));
     }
-    Ok(json!([{"functionDeclarations": declarations}]))
+    Ok(declarations)
+}
+
+/// Responses states forced tool use per request, Gemini in `toolConfig`.
+///
+/// Unrecognized choices are dropped rather than rejected: `tool_choice` also
+/// names hosted tools that never reach Gemini, and failing the whole request over
+/// one Gemini cannot express is worse than letting the model decide.
+fn convert_tool_choice(tool_choice: Option<&Value>, declarations: &[Value]) -> Option<Value> {
+    let forced_name = |value: &Map<String, Value>| {
+        value
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(|name| match declared_function_name(declarations, name) {
+                // Gemini has no single-tool mode: naming a function is `ANY`
+                // narrowed to that name.
+                Some(declared) => json!({"mode": "ANY", "allowedFunctionNames": [declared]}),
+                // Forcing a name Gemini was never given is a 400, so an
+                // unresolvable name keeps the "must call something" intent only.
+                None => json!({"mode": "ANY"}),
+            })
+    };
+    match tool_choice? {
+        Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(json!({"mode": "AUTO"})),
+            "required" | "any" => Some(json!({"mode": "ANY"})),
+            "none" => Some(json!({"mode": "NONE"})),
+            _ => None,
+        },
+        Value::Object(value) => match value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+        {
+            // Responses names a forced tool via {type:"function",name:"x"}.
+            "function" | "tool" | "custom" => forced_name(value),
+            "allowed_tools" => Some(json!({"mode": "ANY"})),
+            "auto" => Some(json!({"mode": "AUTO"})),
+            "required" | "any" => Some(json!({"mode": "ANY"})),
+            "none" => Some(json!({"mode": "NONE"})),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Matches a `tool_choice` name against the declarations actually sent.
+///
+/// A namespaced Responses tool is declared under its flattened
+/// `namespace__name`, while `tool_choice` carries the bare name the client wrote,
+/// so the two only line up after this lookup.
+fn declared_function_name<'a>(declarations: &'a [Value], name: &str) -> Option<&'a str> {
+    let declared = |declaration: &'a Value| declaration.get("name").and_then(Value::as_str);
+    if let Some(exact) = declarations
+        .iter()
+        .filter_map(declared)
+        .find(|candidate| *candidate == name)
+    {
+        return Some(exact);
+    }
+    let suffix = format!("__{name}");
+    let mut namespaced = declarations
+        .iter()
+        .filter_map(declared)
+        .filter(|candidate| candidate.ends_with(&suffix));
+    let first = namespaced.next()?;
+    // Two namespaces exposing the same tool name cannot be told apart from the
+    // bare name alone; forcing the wrong one is worse than not narrowing.
+    namespaced.next().is_none().then_some(first)
 }
 
 fn gemini_parts_to_responses_output(
