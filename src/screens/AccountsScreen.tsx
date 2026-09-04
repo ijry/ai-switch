@@ -6477,6 +6477,13 @@ export function AccountsScreen({
               {formatApiError(restoreMutation.error, "恢复账号失败。")}
             </p>
           ) : null}
+          {/* A rejected reorder only snaps the row back, which reads as a dead
+              drag handle. Say why instead. */}
+          {reorderMutation.error ? (
+            <p className="rounded-xl bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700" role="alert">
+              {formatApiError(reorderMutation.error, "保存账号顺序失败。")}
+            </p>
+          ) : null}
         </div>
       </section>
       )}

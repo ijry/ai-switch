@@ -2,7 +2,6 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import {
-  displayMappingTitle,
   expandDisplayModelMappings,
   ModelMappingSummary,
 } from "../src/components/accounts/ModelMappingSummary";
@@ -70,45 +69,57 @@ describe("ModelMappingSummary", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("shows Claude role names, keeping the internal alias in the tooltip", async () => {
+  it("shows the Claude upstream models rather than the shared role names", async () => {
     const user = userEvent.setup();
     render(
       <ModelMappingSummary
         platform="claude"
         mappings={[
-          { from: "claude-sonnet-alias", to: "claude-opus-5", label: "Sonnet" },
-          { from: "claude-opus-alias", to: "claude-opus-5", label: "Opus" },
-          { from: "claude-subagent", to: "claude-opus-5" },
-          { from: "claude-model", to: "claude-opus-5" },
+          { from: "claude-sonnet-alias", to: "glm-5.2", label: "Sonnet" },
+          { from: "claude-opus-alias", to: "glm-5.2", label: "Opus" },
+          { from: "claude-haiku-alias", to: "glm-5.2-air" },
+          { from: "claude-subagent", to: "glm-5.2-air" },
+          { from: "claude-model", to: "kimi-k3" },
         ]}
       />,
     );
 
-    // The role name is the title; `claude-opus-alias → claude-opus-5` read as a
-    // misconfiguration.
-    const sonnet = screen.getByText("Sonnet");
-    expect(sonnet).toBeInTheDocument();
-    expect(sonnet).toHaveAttribute("title", "claude-sonnet-alias → claude-opus-5 · Sonnet");
-    expect(screen.queryByText("claude-sonnet-alias")).not.toBeInTheDocument();
+    // Every Claude account fills the same role set, so role names made all cards
+    // identical. The upstream target is what tells them apart.
+    expect(screen.queryByText("Sonnet")).not.toBeInTheDocument();
+    const primary = screen.getByText("glm-5.2");
+    expect(primary).toHaveAttribute("title", "Sonnet、Opus → glm-5.2");
+    // Roles sharing one upstream model collapse into a single tag.
+    expect(screen.getByText("glm-5.2-air")).toHaveAttribute(
+      "title",
+      "Haiku、Subagent → glm-5.2-air",
+    );
+    expect(screen.getByText("kimi-k3")).toHaveAttribute("title", "默认兜底模型 → kimi-k3");
+    expect(screen.queryByRole("button", { name: /^\+/ })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "+1" }));
-    expect(screen.getByText("默认兜底模型 → claude-opus-5")).toBeInTheDocument();
+    await user.hover(primary);
   });
 
-  it("titles a hand-written alias verbatim and marks the 1M variant", () => {
-    expect(
-      displayMappingTitle({ alias: "claude-opus-alias", target: "x", oneM: false }),
-    ).toBe("Opus");
-    expect(displayMappingTitle({ alias: "claude-opus-alias", target: "x", oneM: true })).toBe(
-      "Opus · 1M",
+  it("collapses the Claude 1M variant into its upstream model and marks it", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelMappingSummary
+        platform="claude"
+        mappings={[
+          { from: "claude-sonnet-alias", to: "up-a", supports_1m: true },
+          { from: "claude-opus-alias", to: "up-b" },
+          { from: "claude-fable-alias", to: "up-c" },
+          { from: "claude-haiku-alias", to: "up-d" },
+        ]}
+      />,
     );
-    expect(
-      displayMappingTitle({ alias: "claude-opus-alias[1m]", target: "x", oneM: false }),
-    ).toBe("Opus · 1M");
-    // No role: showing what the user typed is correct.
-    expect(displayMappingTitle({ alias: "my-own-alias", target: "x", oneM: false })).toBe(
-      "my-own-alias",
-    );
+
+    // The `[1m]` clone shares the target, so it adds a marker, not a tag.
+    expect(screen.getByText("up-a")).toHaveAttribute("title", "Sonnet → up-a · 1M");
+    expect(screen.getAllByTitle(/→ up-/)).toHaveLength(3);
+
+    await user.click(screen.getByRole("button", { name: "+1" }));
+    expect(screen.getByText("Haiku → up-d")).toBeInTheDocument();
   });
 
   it("expands Claude 1M mappings without duplicating an existing suffix", () => {

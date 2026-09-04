@@ -1196,6 +1196,28 @@ describe("AccountsScreen", () => {
     );
   });
 
+  it("reports a rejected reorder instead of silently snapping the row back", async () => {
+    vi.mocked(reorderRouteCredentials).mockRejectedValueOnce({
+      code: "validation.route_credential_reorder",
+      message: "Route credential neighbors are not adjacent",
+    });
+    renderScreen();
+
+    const dragHandle = await screen.findByLabelText("拖动 API Account");
+    stubAccountRowGeometry([
+      screen.getByLabelText("放置在 Team Account 前"),
+      screen.getByLabelText("放置在 API Account 前"),
+    ]);
+
+    dispatchPointerEvent(dragHandle, "pointerdown", { clientY: 60 });
+    dispatchPointerEvent(document, "pointermove", { clientY: 8 });
+    dispatchPointerEvent(document, "pointerup", { clientY: 8 });
+
+    expect(
+      await screen.findByText("Route credential neighbors are not adjacent"),
+    ).toHaveAttribute("role", "alert");
+  });
+
   it("leaves the order alone when a drag is released where it started", async () => {
     renderScreen();
 

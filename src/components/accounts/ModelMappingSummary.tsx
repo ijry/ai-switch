@@ -39,20 +39,6 @@ function baseAlias(alias: string) {
   return hasOneMSuffix(alias) ? alias.slice(0, -"[1m]".length) : alias;
 }
 
-/**
- * Human-facing title for one mapping row.
- *
- * Shows the role name rather than the internal alias. The alias is an
- * implementation detail, and pairing it with the upstream model produced lines
- * like `claude-opus-alias → claude-opus-5` that read as a misconfiguration. A
- * hand-written alias has no role and is shown verbatim — that is what the user
- * typed.
- */
-export function displayMappingTitle(mapping: DisplayModelMapping) {
-  const role = claudeRoleLabel(baseAlias(mapping.alias));
-  return hasOneMSuffix(mapping.alias) || mapping.oneM ? `${role} · 1M` : role;
-}
-
 export function expandDisplayModelMappings(
   platform: string,
   mappings: ModelMapping[],
@@ -106,6 +92,61 @@ function mappingDetail(mapping: DisplayModelMapping) {
   }`;
 }
 
+/** One tag in the summary row, plus the longer line its popover shows. */
+type ModelSummaryEntry = {
+  key: string;
+  /** Tag text. */
+  text: string;
+  /** `title` tooltip for the tag. */
+  detail: string;
+  /** Row text inside the 完整模型映射 popover. */
+  popoverText: string;
+};
+
+/**
+ * Claude tags are keyed by upstream model, not by role.
+ *
+ * Every Claude account fills the same fixed role set, so role-named tags render
+ * identically on every card — eight tags that say nothing about which account
+ * serves what. The mapping *target* is the part that actually differs between a
+ * relay and an official account, so the tag shows `to` and the roles move into
+ * the tooltip. Targets are deduped case-insensitively because several roles
+ * usually share one upstream model.
+ */
+function claudeUpstreamEntries(displayMappings: DisplayModelMapping[]): ModelSummaryEntry[] {
+  const groups = new Map<string, { target: string; roles: string[]; oneM: boolean }>();
+  for (const mapping of displayMappings) {
+    const key = mapping.target.toLowerCase();
+    const group = groups.get(key) ?? { target: mapping.target, roles: [], oneM: false };
+    const role = mapping.label?.trim() || claudeRoleLabel(baseAlias(mapping.alias));
+    if (!group.roles.includes(role)) {
+      group.roles.push(role);
+    }
+    group.oneM = group.oneM || mapping.oneM || hasOneMSuffix(mapping.alias);
+    groups.set(key, group);
+  }
+
+  return Array.from(groups.values()).map((group) => {
+    const detail = `${group.roles.join("、")} → ${group.target}${group.oneM ? " · 1M" : ""}`;
+    return { key: group.target, text: group.target, detail, popoverText: detail };
+  });
+}
+
+function modelSummaryEntries(platform: string, mappings: ModelMapping[]): ModelSummaryEntry[] {
+  const displayMappings = expandDisplayModelMappings(platform, mappings);
+  if (platform.trim().toLowerCase() === "claude") {
+    return claudeUpstreamEntries(displayMappings);
+  }
+  // Everywhere else the alias *is* the client-facing model name, so it is both
+  // what the user typed and what distinguishes one account from another.
+  return displayMappings.map((mapping, index) => ({
+    key: `${mapping.alias}-${mapping.target}-${index}`,
+    text: mapping.alias,
+    detail: mappingDetail(mapping),
+    popoverText: `${mapping.alias} → ${mapping.target}`,
+  }));
+}
+
 export function ModelMappingSummary({
   platform,
   mappings,
@@ -113,7 +154,7 @@ export function ModelMappingSummary({
   platform: string;
   mappings: ModelMapping[];
 }): JSX.Element {
-  const displayMappings = expandDisplayModelMappings(platform, mappings);
+  const entries = modelSummaryEntries(platform, mappings);
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const baselineTooltipId = useId();
@@ -142,7 +183,7 @@ export function ModelMappingSummary({
     };
   }, [open]);
 
-  if (displayMappings.length === 0) {
+  if (entries.length === 0) {
     const baselineModels = baselineModelsForPlatform(platform).map((alias) =>
       claudeRoleLabel(alias),
     );
@@ -167,18 +208,18 @@ export function ModelMappingSummary({
     );
   }
 
-  const visibleMappings = displayMappings.slice(0, 3);
-  const remainingCount = displayMappings.length - visibleMappings.length;
+  const visibleEntries = entries.slice(0, 3);
+  const remainingCount = entries.length - visibleEntries.length;
 
   return (
     <div ref={containerRef} className="relative flex min-w-0 flex-wrap items-center gap-1">
-      {visibleMappings.map((mapping) => (
+      {visibleEntries.map((entry) => (
         <span
           className="inline-flex max-w-48 truncate rounded-full bg-sky-50 px-2 py-0.5 font-mono text-[10px] font-semibold text-sky-800"
-          key={`${mapping.alias}-${mapping.target}`}
-          title={mappingDetail(mapping)}
+          key={entry.key}
+          title={entry.detail}
         >
-          {displayMappingTitle(mapping)}
+          {entry.text}
         </span>
       ))}
       {remainingCount > 0 ? (
@@ -201,13 +242,13 @@ export function ModelMappingSummary({
         >
           <p className="font-semibold text-stone-700">完整模型映射</p>
           <div className="grid gap-1.5">
-            {displayMappings.map((mapping, index) => (
+            {entries.map((entry) => (
               <p
                 className="truncate rounded-lg bg-stone-50 px-2 py-1 font-mono text-stone-700"
-                key={`${mapping.alias}-${mapping.target}-${index}`}
-                title={mappingDetail(mapping)}
+                key={entry.key}
+                title={entry.detail}
               >
-                {displayMappingTitle(mapping)} → {mapping.target}
+                {entry.popoverText}
               </p>
             ))}
           </div>

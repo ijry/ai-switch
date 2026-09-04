@@ -1122,7 +1122,14 @@ impl RouteCredentialRepository {
         }
         let insert_at = if let Some(next) = next_account_id {
             let index = remaining.iter().position(|id| id == next).unwrap();
-            if previous_account_id != remaining.get(index.saturating_sub(1)).map(String::as_str) {
+            // `index == 0` means nothing precedes `next`, so the caller must have
+            // sent no previous neighbor. `saturating_sub` folded that case into
+            // `remaining[0]` and rejected every drop onto the first slot.
+            let expected_previous = index
+                .checked_sub(1)
+                .and_then(|before| remaining.get(before))
+                .map(String::as_str);
+            if previous_account_id != expected_previous {
                 return Err(reorder_validation_error(
                     "Route credential neighbors are not adjacent",
                 ));
@@ -3132,6 +3139,89 @@ mod tests {
                 .map(|item| item.id.as_str())
                 .collect::<Vec<_>>(),
             vec![member_ids[19].as_str(), member_ids[21].as_str()]
+        );
+    }
+
+    #[tokio::test]
+    async fn reorder_accepts_a_drop_onto_the_first_slot() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let mut ids = Vec::new();
+        for index in 0..3 {
+            ids.push(
+                create_api_credential(&pool, "codex", &format!("Account {index}"))
+                    .await
+                    .id,
+            );
+        }
+
+        // Dragging the last row to the top sends no previous neighbor, which the
+        // adjacency check used to compare against `remaining[0]` and reject.
+        let reordered_page = RouteCredentialRepository::reorder(
+            &pool,
+            ReorderRouteCredentialInput {
+                platform: "codex".to_string(),
+                moved_account_id: ids[2].clone(),
+                previous_account_id: None,
+                next_account_id: Some(ids[0].clone()),
+                filters: Vec::new(),
+                pool_scope: RouteCredentialPoolScope::OutOfPool,
+                page_size: 20,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            reordered_page
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![ids[2].as_str(), ids[0].as_str(), ids[1].as_str()]
+        );
+    }
+
+    #[tokio::test]
+    async fn reorder_rejects_a_first_slot_drop_with_a_stale_next_neighbor() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let mut ids = Vec::new();
+        for index in 0..3 {
+            ids.push(
+                create_api_credential(&pool, "codex", &format!("Account {index}"))
+                    .await
+                    .id,
+            );
+        }
+
+        // Only the real head may pair with an absent previous neighbor; the
+        // adjacency check still has to catch a stale middle row.
+        let error = RouteCredentialRepository::reorder(
+            &pool,
+            ReorderRouteCredentialInput {
+                platform: "codex".to_string(),
+                moved_account_id: ids[2].clone(),
+                previous_account_id: None,
+                next_account_id: Some(ids[1].clone()),
+                filters: Vec::new(),
+                pool_scope: RouteCredentialPoolScope::OutOfPool,
+                page_size: 20,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&error, AppError::Validation { code, .. } if *code == "validation.route_credential_reorder"),
+            "unexpected error: {error:?}"
+        );
+
+        let all = RouteCredentialRepository::list_by_platform(&pool, "codex")
+            .await
+            .unwrap();
+        assert_eq!(
+            all.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            vec![ids[0].as_str(), ids[1].as_str(), ids[2].as_str()]
         );
     }
 
