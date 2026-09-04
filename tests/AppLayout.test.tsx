@@ -55,18 +55,18 @@ describe("AppLayout", () => {
       </I18nProvider>,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: /加解密/ }));
-    await userEvent.click(screen.getByRole("button", { name: /OCR识别/ }));
+    await userEvent.click(screen.getByRole("button", { name: /MCP/ }));
+    await userEvent.click(screen.getByRole("button", { name: /技能/ }));
 
-    expect(onNavigate).toHaveBeenCalledWith("CryptoTools");
-    expect(onNavigate).toHaveBeenCalledWith("OCR");
+    expect(onNavigate).toHaveBeenCalledWith("MCP");
+    expect(onNavigate).toHaveBeenCalledWith("Skills");
   });
 
   it("only highlights the active system utility entry", () => {
     render(
       <I18nProvider initialLanguage="zh-CN">
         <AppLayout
-          activeScreen="OCR"
+          activeScreen="MCP"
           onNavigate={vi.fn()}
           onToggleSidebar={vi.fn()}
           sidebarCollapsed={false}
@@ -76,7 +76,7 @@ describe("AppLayout", () => {
       </I18nProvider>,
     );
 
-    expect(screen.getByRole("button", { name: /OCR识别/ })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: /MCP/ })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("button", { name: /设置/ })).not.toHaveAttribute("aria-current");
   });
 
@@ -167,8 +167,8 @@ describe("AppLayout", () => {
     expect(sidebar).not.toHaveClass("app-sidebar-drawer");
 
     await userEvent.click(screen.getByRole("button", { name: "展开侧栏" }));
-    await userEvent.click(screen.getByRole("button", { name: /OCR识别/ }));
-    expect(onNavigate).toHaveBeenCalledWith("OCR");
+    await userEvent.click(screen.getByRole("button", { name: /MCP/ }));
+    expect(onNavigate).toHaveBeenCalledWith("MCP");
     expect(sidebar).not.toHaveClass("app-sidebar-drawer");
   });
 

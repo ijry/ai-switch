@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
-  KeyRound,
   Menu,
   PlugZap,
-  ScanText,
   Settings2,
   Sparkles,
   TerminalSquare,
@@ -423,20 +421,6 @@ export function AppLayout({
                 >
                   {t("layout.system")}
                 </p>
-                <NavButton
-                  active={activeScreen === "CryptoTools"}
-                  collapsed={sidebarContentCollapsed}
-                  icon={KeyRound}
-                  label={t("nav.cryptoTools")}
-                  onClick={() => handleNavigate("CryptoTools")}
-                />
-                <NavButton
-                  active={activeScreen === "OCR"}
-                  collapsed={sidebarContentCollapsed}
-                  icon={ScanText}
-                  label={t("nav.ocr")}
-                  onClick={() => handleNavigate("OCR")}
-                />
                 <NavButton
                   active={activeScreen === "MCP"}
                   collapsed={sidebarContentCollapsed}
