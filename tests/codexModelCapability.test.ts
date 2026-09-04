@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   codexBaselineReasoningLevels,
@@ -143,5 +145,36 @@ describe("codexModelCapability", () => {
     // the labeller cannot name would show up as raw digits.
     expect(codexContextWindowLabel(codexDefaultContextWindow("gpt-5.5"))).toBe("128K");
     expect(codexContextWindowLabel(codexDefaultContextWindow("glm-5.3"))).toBe("1M");
+  });
+
+  it("matches the shared fixture the Rust catalog is also checked against", () => {
+    // These ladders exist twice: the editor needs them to preselect and label
+    // efforts before an account is saved, and the catalog needs them to decide
+    // what to advertise. They were consistent by luck — nothing failed when one
+    // side moved, and a drift is not cosmetic: the editor would offer an effort
+    // the catalog filters out, or read "default" for a window it sizes
+    // differently. route_model_capability.rs has the mirror of this test.
+    const fixture = JSON.parse(
+      readFileSync(resolve(__dirname, "../fixtures/codex-model-capability.json"), "utf8"),
+    ) as {
+      recognised_reasoning_efforts: string[];
+      baseline_reasoning_profiles: Record<string, string[]>;
+      default_reasoning_levels: string[];
+      one_m_upstream_prefixes: string[];
+      default_context_window: number;
+      one_m_context_window: number;
+    };
+
+    expect([...CODEX_REASONING_LEVEL_OPTIONS]).toEqual(fixture.recognised_reasoning_efforts);
+    for (const [model, levels] of Object.entries(fixture.baseline_reasoning_profiles)) {
+      expect([...codexBaselineReasoningLevels(model)]).toEqual(levels);
+    }
+    expect([...codexBaselineReasoningLevels("some-relay-model")]).toEqual(
+      fixture.default_reasoning_levels,
+    );
+    expect(codexDefaultContextWindow("some-relay-model")).toBe(fixture.default_context_window);
+    for (const prefix of fixture.one_m_upstream_prefixes) {
+      expect(codexDefaultContextWindow(prefix)).toBe(fixture.one_m_context_window);
+    }
   });
 });

@@ -4698,4 +4698,13 @@ describe("route proxy status polling", () => {
     expect(routeProxyPollInterval({ running: false }, 3)).toBe(8000);
     expect(routeProxyPollInterval({ running: false }, 50)).toBe(15000);
   });
+
+  it("starts over at 1s when the proxy has only just stopped", () => {
+    // The caller counts *consecutive* stopped polls. Feeding it a cumulative
+    // update count meant the first poll after the user stopped the proxy already
+    // waited 8 or 15 seconds, and a state change made in another tab took that
+    // long to appear even though it had just happened.
+    expect(routeProxyPollInterval({ running: false }, 0)).toBe(1000);
+    expect(routeProxyPollInterval({ running: false }, 1)).toBe(2000);
+  });
 });

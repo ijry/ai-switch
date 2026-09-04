@@ -2954,11 +2954,24 @@ export function AccountsScreen({
     queryFn: () => getRoutePool(activePlatform, null, null, null),
     placeholderData: keepPreviousData,
   });
+  // Counts *consecutive* stopped polls, not total updates. `dataUpdateCount` is
+  // cumulative over the query's whole life and includes every `setQueryData`, so
+  // it never resets: by the time the user stopped the proxy the count was already
+  // high and the very first poll waited 8 or 15 seconds instead of 1. Worse, a
+  // state change made elsewhere — another tab, a crash, the standalone server —
+  // then took up to 15s to show up even though the proxy had only just stopped.
+  const stoppedPollsRef = useRef(0);
   const routeProxyQuery = useQuery({
     queryKey: ["route-proxy-status"],
     queryFn: getRouteProxyStatus,
-    refetchInterval: (query) =>
-      routeProxyPollInterval(query.state.data, query.state.dataUpdateCount),
+    refetchInterval: (query) => {
+      if (query.state.data?.running) {
+        stoppedPollsRef.current = 0;
+      } else {
+        stoppedPollsRef.current += 1;
+      }
+      return routeProxyPollInterval(query.state.data, stoppedPollsRef.current - 1);
+    },
   });
 
   useEffect(() => {

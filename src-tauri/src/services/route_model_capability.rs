@@ -631,6 +631,7 @@ mod tests {
         CODEX_ONE_M_CONTEXT_WINDOW,
     };
     use crate::models::route_credential::{ModelMapping, FALLBACK_MODEL_ALIAS};
+    use serde_json::Value;
 
     #[test]
     fn codex_baseline_models_use_distinct_reasoning_profiles() {
@@ -908,6 +909,66 @@ mod tests {
             assert!(levels.contains(&"high".to_string()));
             assert!(!levels.contains(&"low".to_string()));
             assert!(!levels.contains(&"xhigh".to_string()));
+        }
+    }
+
+    /// Binds this file's tables to the TypeScript copy in
+    /// `src/lib/codexModelCapability.ts` through a checked-in fixture.
+    ///
+    /// The editor has to know the same ladders in order to preselect and label
+    /// them before the account is saved, so the two exist in parallel. They were
+    /// consistent by luck: nothing failed when one moved. A drift is not cosmetic
+    /// either — the editor would offer an effort the catalog then filters out, or
+    /// show "default" for a window the catalog sizes differently.
+    #[test]
+    fn the_capability_tables_match_the_shared_fixture() {
+        let raw = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("fixtures")
+                .join("codex-model-capability.json"),
+        )
+        .expect("read fixture");
+        let fixture: Value = serde_json::from_str(&raw).expect("fixture json");
+        let as_json = |value: &[&str]| Value::from(value.to_vec());
+
+        assert_eq!(
+            fixture["recognised_reasoning_efforts"],
+            as_json(crate::services::route_protocol_bridge::RECOGNISED_REASONING_EFFORTS)
+        );
+        for (model, levels) in fixture["baseline_reasoning_profiles"]
+            .as_object()
+            .expect("profiles")
+        {
+            assert_eq!(
+                as_json(codex_reasoning_profile(model).levels),
+                *levels,
+                "{model}"
+            );
+        }
+        // A model the profile table does not name falls back to this ladder.
+        assert_eq!(
+            as_json(codex_reasoning_profile("some-relay-model").levels),
+            fixture["default_reasoning_levels"]
+        );
+        assert_eq!(
+            fixture["default_context_window"],
+            Value::from(super::CODEX_DEFAULT_CONTEXT_WINDOW)
+        );
+        assert_eq!(
+            fixture["one_m_context_window"],
+            Value::from(CODEX_ONE_M_CONTEXT_WINDOW)
+        );
+        for prefix in fixture["one_m_upstream_prefixes"]
+            .as_array()
+            .expect("prefixes")
+        {
+            let prefix: &str = prefix.as_str().expect("prefix string");
+            assert_eq!(
+                codex_default_context_window(prefix),
+                CODEX_ONE_M_CONTEXT_WINDOW,
+                "{prefix}"
+            );
         }
     }
 

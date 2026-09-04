@@ -115,7 +115,19 @@ export class WebTransport implements Transport {
     this.ensureSocket();
 
     return () => {
-      this.handlers.get(event)?.delete(wrapped);
+      const handlers = this.handlers.get(event);
+      if (!handlers) {
+        return;
+      }
+      handlers.delete(wrapped);
+      // Drop the key, not just the callback. `scheduleReconnect` refuses to
+      // reconnect once `handlers.size` reaches zero, and leaving empty Sets
+      // behind made that guard unreachable: after every subscriber unmounted the
+      // module-level singleton still rebuilt a socket every 15s forever, with no
+      // attempt cap and nothing to show the user.
+      if (handlers.size === 0) {
+        this.handlers.delete(event);
+      }
     };
   }
 

@@ -1,0 +1,14 @@
+{
+  "_comment": "Shared source of truth for the Codex model-capability tables that both src-tauri/src/services/route_model_capability.rs and src/lib/codexModelCapability.ts implement. Each side has a test that compares its own constants to this file, so changing one without the other fails there rather than silently drifting until a client is told something the catalog will not honour. Update this file first, then both sides.",
+  "recognised_reasoning_efforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
+  "baseline_reasoning_profiles": {
+    "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
+    "gpt-5.6-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
+    "gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],
+    "gpt-5.5": ["low", "medium", "high", "xhigh"]
+  },
+  "default_reasoning_levels": ["low", "medium", "high"],
+  "one_m_upstream_prefixes": ["deepseek-v4", "glm-5.2", "glm-5.3", "qwen-3.8", "kimi-k3"],
+  "default_context_window": 128000,
+  "one_m_context_window": 1000000
+}

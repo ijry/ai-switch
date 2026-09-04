@@ -277,6 +277,27 @@ describe("transport", () => {
     vi.useRealTimers();
   });
 
+  it("stops reconnecting once the last subscriber has unsubscribed", async () => {
+    // `scheduleReconnect` bails when no channel has handlers. That guard was
+    // unreachable while unsubscribe only emptied the Set and left the key behind,
+    // so a screen the user had navigated away from kept the singleton rebuilding
+    // a socket every 15s forever — no attempt cap, nothing shown.
+    vi.useFakeTimers();
+    const sockets = stubWebSocket();
+    const transport = new WebTransport("http://127.0.0.1:3090");
+
+    const unsubscribe = await transport.subscribe("route-credential-status", () => {});
+    expect(sockets).toHaveLength(1);
+
+    unsubscribe();
+    sockets[0].onclose?.();
+    await vi.advanceTimersByTimeAsync(60000);
+
+    expect(sockets).toHaveLength(1);
+    transport.destroy();
+    vi.useRealTimers();
+  });
+
   it("ignores a frame that is not JSON instead of throwing", async () => {
     const sockets = stubWebSocket();
     const transport = new WebTransport("http://127.0.0.1:3090");

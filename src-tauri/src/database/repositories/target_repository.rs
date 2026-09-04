@@ -70,14 +70,25 @@ impl TargetRepository {
                 })?;
             } else {
                 let now = Utc::now().to_rfc3339();
+                // `sort_order` is realigned to this array too, not just the
+                // platform. It is derived from the array index, so inserting a new
+                // target shifts every one after it — and an upgraded install kept
+                // the numbers it was first given, leaving the pre-existing
+                // opencode/openclaw/hermes rows colliding with the newly inserted
+                // ones. `list_targets` orders by this column, so ties made the
+                // client list order arbitrary and unstable between machines.
+                // Nothing else writes it (no user-facing reordering), so this
+                // array is the single source of truth.
                 sqlx::query(
-                    "UPDATE target_apps SET platform = ?, updated_at = ?
-                     WHERE key = ? AND (platform IS NULL OR platform <> ?)",
+                    "UPDATE target_apps SET platform = ?, sort_order = ?, updated_at = ?
+                     WHERE key = ? AND (platform IS NULL OR platform <> ? OR sort_order <> ?)",
                 )
                 .bind(platform)
+                .bind(index as i64)
                 .bind(&now)
                 .bind(key)
                 .bind(platform)
+                .bind(index as i64)
                 .execute(pool)
                 .await
                 .map_err(|err| AppError::Database {
@@ -143,6 +154,41 @@ impl TargetRepository {
 mod tests {
     use super::TargetRepository;
     use crate::database::{create_memory_pool, run_migrations};
+
+    /// An upgraded install used to keep whatever `sort_order` it was first given,
+    /// so rows added later collided with the pre-existing opencode/openclaw/hermes
+    /// ones. `list_targets` orders by that column, so ties left the client list in
+    /// an arbitrary order that differed between machines.
+    #[tokio::test]
+    async fn ensure_defaults_realigns_sort_order_for_an_upgraded_install() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        TargetRepository::ensure_defaults(&pool)
+            .await
+            .expect("seed");
+
+        // Simulate the older numbering: everything piled onto one value.
+        sqlx::query("UPDATE target_apps SET sort_order = 7")
+            .execute(&pool)
+            .await
+            .expect("collide");
+
+        let targets = TargetRepository::ensure_defaults(&pool)
+            .await
+            .expect("reseed");
+
+        let orders: Vec<i64> = targets.iter().map(|target| target.sort_order).collect();
+        let mut unique = orders.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            orders.len(),
+            unique.len(),
+            "sort_order must be unique after a reseed: {orders:?}"
+        );
+        // And it is the seed array's order, ascending from zero.
+        assert_eq!(orders, (0..orders.len() as i64).collect::<Vec<_>>());
+    }
 
     #[tokio::test]
     async fn ensure_defaults_inserts_grok_target() {
