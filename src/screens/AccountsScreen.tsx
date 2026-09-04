@@ -5863,9 +5863,11 @@ export function AccountsScreen({
                   // visible in the rose tone, the icon, and the tooltip.
                   const effectiveRelayBalanceSnapshot =
                     relayBalanceStatus?.snapshot ?? relayBalanceSnapshot;
-                  const relayBalanceTag = effectiveRelayBalanceSnapshot && !effectiveRelayBalanceSnapshot.unlimited
+                  const relayBalanceTag = effectiveRelayBalanceSnapshot
                     ? relayBalanceBadge(effectiveRelayBalanceSnapshot)
                     : null;
+                  const hideRelayBalanceTag =
+                    effectiveRelayBalanceSnapshot?.unlimited === true && !cardLayout;
                   const isCopyingCredential =
                     copyCredentialMutation.isPending &&
                     copyCredentialMutation.variables?.credential.id === credential.id;
@@ -5908,6 +5910,7 @@ export function AccountsScreen({
                         : "查余额",
                       title:
                         relayBalanceStatus?.error ??
+                        (hideRelayBalanceTag ? relayBalanceTag?.title : undefined) ??
                         `查询 ${credential.display_name} 的中转站余额`,
                       disabled:
                         relayBalanceMutation.isPending || relayBalancePlatformMutation.isPending,
@@ -6197,7 +6200,7 @@ export function AccountsScreen({
                             重置 {latestReset}
                           </span>
                         )}
-                        {relayBalanceTag && (
+                        {relayBalanceTag && !hideRelayBalanceTag && (
                           <span
                             className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${relayBalanceTag.toneClass}`}
                             data-testid={`credential-relay-balance-${credential.id}`}

@@ -3510,10 +3510,45 @@ describe("AccountsScreen", () => {
     vi.mocked(listRouteCredentials).mockResolvedValue([credentialsFixture[0], relayAccount]);
     renderScreen();
 
-    expect(await screen.findByRole("button", { name: "查询 API Account 余额（当前 不限）" })).toHaveTextContent(
-      "不限",
+    const walletButton = await screen.findByRole("button", {
+      name: "查询 API Account 余额（当前 不限）",
+    });
+    expect(walletButton).toHaveTextContent("不限");
+    expect(walletButton).toHaveAttribute(
+      "title",
+      expect.stringContaining("来源 https://panel.example.com/api/usage/token/"),
     );
     expect(screen.queryByTestId(`credential-relay-balance-${relayAccount.id}`)).not.toBeInTheDocument();
+  });
+
+  it("keeps an unlimited balance badge on account cards", async () => {
+    const relayAccount = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://panel.example.com/v1",
+        interface_format: "openai",
+        model_mappings: [],
+        relay_balance: { provider: "new_api" },
+        relay_balance_snapshot: {
+          provider: "new_api",
+          unlimited: true,
+          source_url: "https://panel.example.com/api/usage/token/",
+          checked_at: "2026-09-02T12:00:00Z",
+        },
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([credentialsFixture[0], relayAccount]);
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "卡片模式" }));
+
+    const card = await screen.findByTestId(`account-card-${relayAccount.id}`);
+    const badge = within(card).getByTestId(`credential-relay-balance-${relayAccount.id}`);
+    expect(badge).toHaveTextContent("余额 不限");
+    expect(badge).toHaveAttribute(
+      "title",
+      expect.stringContaining("来源 https://panel.example.com/api/usage/token/"),
+    );
   });
 
   it("keeps a stored balance visible when a batch refresh fails for that account", async () => {
