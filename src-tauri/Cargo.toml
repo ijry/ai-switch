@@ -64,5 +64,9 @@ tauri-plugin-single-instance = "2"
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 winreg = "0.52"
 
+# `statvfs`, for reading free space on the volumes the app writes to.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 assert_fs = "1"

@@ -28,6 +28,7 @@ use commands::batch_commands::{
     create_batch, create_official_account, create_provider, get_official_account,
     list_batch_groups, update_official_account,
 };
+use commands::disk_space_commands::get_disk_space_status;
 use commands::external_client_import_commands::{
     import_external_client_accounts, preview_external_client_import,
 };
@@ -468,6 +469,7 @@ pub fn run() {
             get_official_account,
             update_official_account,
             list_platform_capabilities,
+            get_disk_space_status,
             list_route_credentials,
             list_route_credentials_page,
             reorder_route_credentials,

@@ -72,6 +72,27 @@ export type PlatformCapability = {
   operations: PlatformOperations;
 };
 
+/** Free space on one volume the app writes to. */
+export type DiskVolumeSpace = {
+  /** `C:` on Windows, the mount point on Unix. */
+  label: string;
+  /** The directory that was probed. */
+  path: string;
+  total_bytes: number;
+  available_bytes: number;
+  low: boolean;
+};
+
+/**
+ * Free space across the system drive and the volume holding `~/.ai-switch`.
+ * `volumes` is empty when nothing could be probed, which reads as "not low".
+ */
+export type DiskSpaceStatus = {
+  threshold_bytes: number;
+  low: boolean;
+  volumes: DiskVolumeSpace[];
+};
+
 export type InterfaceFormat =
   | "openai"
   | "openai-responses"

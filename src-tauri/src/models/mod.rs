@@ -1,6 +1,7 @@
 pub mod account;
 pub mod batch;
 pub mod config_snapshot;
+pub mod disk_space;
 pub mod external_client_import;
 pub mod import_job;
 pub mod platform;

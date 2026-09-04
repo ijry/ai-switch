@@ -1,6 +1,7 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { useCallback, useEffect, useState } from "react";
 import { DeepLinkImportDialog } from "./components/deeplink/DeepLinkImportDialog";
+import { LowDiskSpaceBanner } from "./components/system/LowDiskSpaceBanner";
 import { AutoUpdatePrompt } from "./components/updates/AutoUpdatePrompt";
 import {
   AppLayout,
@@ -133,6 +134,8 @@ export function App() {
       <I18nProvider>
         <DeepLinkImportDialog onImported={handleDeepLinkImported} />
         <AutoUpdatePrompt />
+        {/* Gated on `webReady` so the poll never runs before the web token exists. */}
+        {webReady && <LowDiskSpaceBanner />}
         {!webReady ? (
           <WebAuthGate onAuthenticated={handleWebAuthenticated} />
         ) : (

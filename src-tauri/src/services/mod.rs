@@ -9,6 +9,7 @@ pub mod cpa_export_service;
 pub mod cpa_import_service;
 pub mod deeplink_protocol_service;
 pub mod deeplink_service;
+pub mod disk_space_service;
 pub mod external_client_import_service;
 pub mod http_client;
 pub mod import_service;

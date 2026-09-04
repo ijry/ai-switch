@@ -31,6 +31,7 @@ dependencies = [
  "ed25519-dalek",
  "futures-util",
  "keyring",
+ "libc",
  "portable-pty",
  "rcgen",
  "reqwest 0.12.28",

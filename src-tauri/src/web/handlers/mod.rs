@@ -39,6 +39,7 @@ use crate::models::settings::AppSettings;
 use crate::services::agent_launch_service::AgentLaunchService;
 use crate::services::batch_service::BatchService;
 use crate::services::config_write_service::ConfigWriteCoordinator;
+use crate::services::disk_space_service::DiskSpaceService;
 use crate::services::external_client_import_service;
 use crate::services::import_service::{ExampleJsonImportRequest, ImportService};
 use crate::services::model_pricing::ModelPriceConfig;
@@ -325,6 +326,7 @@ pub async fn dispatch_command(
             )
         }
         "list_platform_capabilities" => to_value(PlatformCapabilityService::list()),
+        "get_disk_space_status" => to_value(DiskSpaceService::status(&state.paths.data_dir)),
         "list_target_apps" => to_value(
             TargetService::list_targets(&state.pool)
                 .await
@@ -1694,6 +1696,36 @@ mod tests {
         RouteProxyService::stop(&fixture.state.route_proxy)
             .await
             .expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn dispatch_get_disk_space_status_reports_the_shipped_threshold() {
+        let fixture = test_state().await;
+        let result = dispatch_command(fixture.state, "get_disk_space_status", json!({}))
+            .await
+            .expect("disk space response");
+
+        assert_eq!(
+            result.get("threshold_bytes").and_then(Value::as_u64),
+            Some(crate::models::disk_space::LOW_DISK_SPACE_THRESHOLD_BYTES)
+        );
+        let volumes = result.get("volumes").and_then(Value::as_array).cloned();
+        let volumes = volumes.expect("volume rows");
+        assert!(!volumes.is_empty(), "{result}");
+        for volume in &volumes {
+            assert!(
+                volume
+                    .get("total_bytes")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    > 0,
+                "{volume}"
+            );
+            assert!(
+                volume.get("label").and_then(Value::as_str).is_some(),
+                "{volume}"
+            );
+        }
     }
 
     #[tokio::test]

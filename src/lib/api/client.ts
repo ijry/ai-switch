@@ -10,6 +10,7 @@ import type {
   ConfigWriteClientStatus,
   ConfigWriteOutcome,
   CopyRouteCredentialInput,
+  DiskSpaceStatus,
   ExternalClientImportOutcome,
   ExternalClientImportPreview,
   FetchedRouteModel,
@@ -147,6 +148,10 @@ export function rollbackConfigSnapshot(id: string): Promise<ConfigWriteOutcome> 
 
 export function listPlatformCapabilities(): Promise<PlatformCapability[]> {
   return invoke("list_platform_capabilities");
+}
+
+export function getDiskSpaceStatus(): Promise<DiskSpaceStatus> {
+  return invoke("get_disk_space_status");
 }
 
 export function getRoutePool(

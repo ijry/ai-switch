@@ -59,6 +59,12 @@ vi.mock("../src/screens/AccountsScreen", () => ({
 
 vi.mock("../src/lib/api/client", () => ({
   createTerminalSession: vi.fn(),
+  // App mounts the global low-disk warning, which polls this on every render.
+  getDiskSpaceStatus: vi.fn(async () => ({
+    threshold_bytes: 1024 * 1024 * 1024,
+    low: false,
+    volumes: [],
+  })),
   killTerminalSession: vi.fn(),
   listAgentLaunchOptions: vi.fn(),
   listSessions: vi.fn(),
