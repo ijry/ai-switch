@@ -353,7 +353,7 @@ test("writes the cask and a summary the workflow can read back", async () => {
     });
 
     assert.equal(summary.version, "0.8.0");
-    assert.equal(summary.winget.identifier, "ijry.AISwitch");
+    assert.equal(summary.winget.identifier, "Lingyun.AISwitch");
     assert.equal(
       summary.winget.installerName,
       "ai-switch_v0.8.0_windows-x86_64_AI-Switch_0.8.0_x64-setup.exe",

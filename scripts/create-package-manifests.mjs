@@ -40,7 +40,7 @@ const NON_INSTALLER_PATTERNS = [
 export const PACKAGE = {
   caskToken: "ai-switch",
   appBundle: "AI Switch.app",
-  wingetIdentifier: "ijry.AISwitch",
+  wingetIdentifier: "Lingyun.AISwitch",
   name: "AI Switch",
   desc: "Switch provider accounts and API routes for AI coding CLIs",
   homepage: "https://ijry.github.io/ai-switch/",

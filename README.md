@@ -112,7 +112,7 @@ Both paths write to another repository and need a secret. A missing secret logs 
 - `HOMEBREW_TAP_TOKEN` — PAT with `contents: write` on the tap repository (`HOMEBREW_TAP_REPO`, default `ijry/homebrew-ai-switch`)
 - `WINGET_TOKEN` — classic PAT with the `public_repo` scope, plus a fork of `microsoft/winget-pkgs` under `WINGET_FORK_USER`
 
-Two one-time steps are not automatable: create the public `homebrew-` tap repository, and submit the first `ijry.AISwitch` version to winget-pkgs by hand — the action only bumps a package that already exists there. See [Release Process](https://ijry.github.io/ai-switch/en/dev/release) for the full setup.
+Two one-time steps are not automatable: create the public `homebrew-` tap repository, and submit the first `Lingyun.AISwitch` version to winget-pkgs by hand — the action only bumps a package that already exists there. See [Release Process](https://ijry.github.io/ai-switch/en/dev/release) for the full setup.
 
 ## Web Service And Server Mode
 

@@ -279,14 +279,14 @@ The cask also declares `auto_updates true` (the app's own updater replaces the b
 The automation can only do **version bumps**, never the initial listing. `winget-releaser`'s very first step checks whether the package exists in `microsoft/winget-pkgs` and errors out if it does not:
 
 ```text
-::error::Package ijry.AISwitch does not exist in the winget-pkgs repository.
+::error::Package Lingyun.AISwitch does not exist in the winget-pkgs repository.
 Please add atleast one version of the package before using this action.
 ```
 
 So the one-time setup is three steps:
 
 1. Fork `microsoft/winget-pkgs` under `ijry` — the tooling will not create the fork for you.
-2. Submit the first version of `ijry.AISwitch` by hand with [Komac](https://github.com/russellbanks/Komac) or [wingetcreate](https://github.com/microsoft/winget-create) and wait for a winget maintainer to merge it. The identifier is case-sensitive and has to match its directory path exactly (`manifests/i/ijry/AISwitch/<version>/`).
+2. Submit the first version of `Lingyun.AISwitch` by hand with [Komac](https://github.com/russellbanks/Komac) or [wingetcreate](https://github.com/microsoft/winget-create) and wait for a winget maintainer to merge it. The identifier is case-sensitive and has to match its directory path exactly (`manifests/l/Lingyun/AISwitch/<version>/`).
 3. Generate a classic PAT (`public_repo`) and store it as `WINGET_TOKEN`.
 
 Each release then opens a pull request against `microsoft/winget-pkgs`. **A Microsoft maintainer has to merge it before the version reaches users**, and that step is outside our control.
@@ -309,7 +309,7 @@ brew install --cask ai-switch
 
 ```powershell
 # Windows
-winget install ijry.AISwitch
+winget install Lingyun.AISwitch
 ```
 
 Until then neither command finds the package, which is why [installation](/en/guide/installation) still only documents downloading from Releases.
