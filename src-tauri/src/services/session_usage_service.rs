@@ -16,7 +16,9 @@
 //! * **Codex CLI** (`~/.codex/sessions/**/*.jsonl`) — `token_count` events whose
 //!   `total_token_usage` is **cumulative for the session**, not per-turn. Only
 //!   the last event in a file may be counted. Summing them overstated one real
-//!   file by 350x (28.1B tokens against an actual 80.5M).
+//!   file by 350x (28.1B tokens against an actual 80.5M). A forked rollout also
+//!   opens with the parent's history replayed, which is the parent's spend and
+//!   must not be counted again.
 
 use crate::services::model_pricing::{self, TokenUsage};
 use serde::{Deserialize, Serialize};
@@ -575,6 +577,9 @@ fn claude_token_usage(usage: &Value) -> TokenUsage {
 /// only 12 of 58 comparable files had `Σ(last)` equal the final cumulative
 /// total — forked sessions re-report the parent's history. Diffing matched on
 /// 76 of 77.
+///
+/// A forked rollout replays that parent history at the head of the file, which
+/// [`replays_parent_history`] skips past.
 fn parse_codex_file(path: &Path) -> ParsedFile {
     let Some(lines) = read_lines(path) else {
         return ParsedFile::default();
@@ -584,13 +589,24 @@ fn parse_codex_file(path: &Path) -> ParsedFile {
     let mut previous: Option<CodexCumulative> = None;
     let mut pending_response_id: Option<String> = None;
     let mut entries = Vec::new();
+    // Set from `session_meta`, cleared at the first `turn_context`: see
+    // [`replays_parent_history`].
+    let mut replaying_parent = false;
 
-    for line in lines {
+    for (index, line) in lines.enumerate() {
+        // `session_meta` is always the first line, so the fork marker is read
+        // there rather than by testing every line for it.
+        if index == 0 {
+            replaying_parent = replays_parent_history(&line);
+        }
         // Cheap pre-filter: only `turn_context` (the model), `response_item`
-        // (the response id), and `token_count` events matter.
+        // (the response id), and `token_count` events matter. The fourth test
+        // finds a `turn_context` that names no model, which would otherwise
+        // leave a replayed prefix open; it is only paid for while one is.
         if !line.contains("token_count")
             && !line.contains("\"model\"")
             && !line.contains("response_item")
+            && !(replaying_parent && line.contains("turn_context"))
         {
             continue;
         }
@@ -598,6 +614,15 @@ fn parse_codex_file(path: &Path) -> ParsedFile {
             continue;
         };
         let payload = entry.get("payload").unwrap_or(&Value::Null);
+
+        // This thread's first turn begins here, so the replay is over. The
+        // response id left pending by the last replayed item belongs to the
+        // parent's own entry — attaching it to a turn recorded below would have
+        // two entries claim one proxy row.
+        if replaying_parent && entry.get("type").and_then(Value::as_str) == Some("turn_context") {
+            replaying_parent = false;
+            pending_response_id = None;
+        }
 
         if let Some(found) = payload
             .get("model")
@@ -629,6 +654,14 @@ fn parse_codex_file(path: &Path) -> ParsedFile {
         // A negative delta means the session counter reset (fork or resume), so
         // the event starts a fresh running total instead of being diffed.
         let usage = delta.unwrap_or_else(|| current.usage());
+        previous = Some(current);
+
+        // Advancing the running total is all a replayed event is good for: the
+        // parent's own rollout already counts this spend, and the prefix never
+        // states which model produced it.
+        if replaying_parent {
+            continue;
+        }
 
         entries.push(UsageEntry {
             provider: "codex",
@@ -643,10 +676,43 @@ fn parse_codex_file(path: &Path) -> ParsedFile {
             timestamp_ms: entry_timestamp_ms(&entry),
             usage,
         });
-        previous = Some(current);
     }
 
     ParsedFile { entries }
+}
+
+/// True when a rollout opens with its parent thread's history replayed.
+///
+/// Codex writes a fresh file for every subagent spawn and every fork, and some of
+/// them begin by dumping the parent's transcript verbatim at the fork instant;
+/// only the events after this thread's first `turn_context` are its own work.
+/// Counting the prefix charges the parent's spend twice, and because it precedes
+/// the `turn_context` that names the model it all lands under `unknown` — on a
+/// real corpus that was 413M phantom tokens (6.5% of all Codex tokens) from 8 of
+/// 1100 files, every one of whose replayed `token_count` events was found
+/// verbatim in the parent's rollout. No unforked file had any usage before its
+/// first `turn_context`, so this cannot drop a real turn from one.
+fn replays_parent_history(session_meta_line: &str) -> bool {
+    // Substring first: the marker keys are absent from most first lines, and a
+    // `session_meta` payload is large enough that parsing it is not free.
+    if !session_meta_line.contains("forked_from_id")
+        && !session_meta_line.contains("parent_thread_id")
+    {
+        return false;
+    }
+    let Ok(entry) = serde_json::from_str::<Value>(session_meta_line) else {
+        return false;
+    };
+    if entry.get("type").and_then(Value::as_str) != Some("session_meta") {
+        return false;
+    }
+    let payload = entry.get("payload").unwrap_or(&Value::Null);
+    ["forked_from_id", "parent_thread_id"].iter().any(|key| {
+        payload
+            .get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    })
 }
 
 /// Cumulative token counts as Codex reports them, before cache adjustment.
@@ -1113,6 +1179,65 @@ mod tests {
         assert_eq!(stats.totals.cache_read_tokens, 200);
         assert_eq!(stats.totals.output_tokens, 50);
         assert_eq!(stats.by_model[0].model, "gpt-5.6-sol");
+    }
+
+    /// A subagent spawn or fork replays the parent's transcript at the head of
+    /// the new file. Counting it charged the parent's spend twice, and since the
+    /// replay precedes the file's only `turn_context` it landed under `unknown` —
+    /// 413M tokens on the author's corpus.
+    #[test]
+    fn codex_forked_rollout_skips_the_replayed_parent_prefix() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_jsonl(
+            dir.path(),
+            "rollout.jsonl",
+            &[
+                r#"{"timestamp":"2026-08-19T03:41:50.400Z","type":"session_meta","payload":{"id":"019fd099","forked_from_id":"019fcbb9","parent_thread_id":"019fcbb9"}}"#,
+                // The parent's history, dumped at the fork instant.
+                r#"{"timestamp":"2026-08-19T03:41:50.410Z","type":"response_item","payload":{"type":"reasoning","id":"rs_parent-turn"}}"#,
+                &codex_token_count("2026-08-19T03:41:50.410Z", 1_000, 200, 100),
+                &codex_token_count("2026-08-19T03:41:50.411Z", 1_600, 400, 160),
+                // This thread's own work starts here.
+                r#"{"timestamp":"2026-08-19T03:41:50.500Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+                &codex_token_count("2026-08-19T03:42:00.000Z", 1_900, 500, 200),
+            ],
+        );
+
+        let parsed = parse_codex_file(&path);
+
+        // One turn, and its tokens are the delta from the inherited running
+        // total (300 input of which 100 cached, 40 output) — not the 1900 the
+        // cumulative figure would have charged.
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(parsed.entries[0].model, "gpt-5.6-sol");
+        assert_eq!(parsed.entries[0].usage.input_tokens, 200);
+        assert_eq!(parsed.entries[0].usage.cache_read_tokens, 100);
+        assert_eq!(parsed.entries[0].usage.output_tokens, 40);
+        // The parent's trailing response id stays with the parent's entry.
+        assert_eq!(parsed.entries[0].response_id, None);
+    }
+
+    #[test]
+    fn codex_unforked_rollout_counts_usage_before_its_turn_context() {
+        // The skip above keys off the fork marker, not off `turn_context`
+        // ordering: a plain session that reports usage first is still real spend.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_jsonl(
+            dir.path(),
+            "rollout.jsonl",
+            &[
+                r#"{"timestamp":"2026-08-19T03:41:50.400Z","type":"session_meta","payload":{"id":"019fd099"}}"#,
+                &codex_token_count("2026-08-19T03:42:00.000Z", 100, 0, 10),
+                r#"{"timestamp":"2026-08-19T03:42:30.000Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+                &codex_token_count("2026-08-19T03:43:00.000Z", 300, 0, 30),
+            ],
+        );
+
+        let stats = aggregate_codex(&path);
+
+        assert_eq!(stats.totals.request_count, 2);
+        assert_eq!(stats.totals.input_tokens, 300);
+        assert_eq!(stats.totals.output_tokens, 30);
     }
 
     #[test]
