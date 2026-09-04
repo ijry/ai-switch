@@ -164,8 +164,11 @@ cask ${rubyString(token)} do
   auto_updates true
   # Only Apple Silicon is built. No macos: floor is declared on purpose — every
   # arm64 Mac is already past it, and the version symbols Homebrew accepts get
-  # pruned as releases go EOL.
-  depends_on arch: :arm64
+  # pruned as releases go EOL. The bare :macos marks the cask macOS-only without
+  # a floor: casks can target Linux now, so brew style's Homebrew/OSDependsOn
+  # wants the OS said out loud. Both go in one stanza because the DSL takes the
+  # OS positionally alongside the keyword arguments.
+  depends_on :macos, arch: :arm64
 
   app ${rubyString(PACKAGE.appBundle)}
 
@@ -179,9 +182,12 @@ cask ${rubyString(token)} do
   # must_succeed: false because xattr exits non-zero when the attribute is
   # already gone, and a Homebrew that did not quarantine the download must not
   # turn into a failed install.
+  #
+  # The padding after args: is what brew style wants: its Layout/HashAlignment is
+  # configured for table style, so the values line up rather than the keys.
   postflight do
     system_command "/usr/bin/xattr",
-                   args: ["-dr", "com.apple.quarantine", "#{appdir}/${PACKAGE.appBundle}"],
+                   args:         ["-dr", "com.apple.quarantine", "#{appdir}/${PACKAGE.appBundle}"],
                    must_succeed: false
   end
 

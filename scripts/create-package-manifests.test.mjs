@@ -153,10 +153,14 @@ test("renders a cask whose stanzas match the release it was built from", () => {
   assert.match(cask, /^ {6}verified: "github\.com\/ijry\/ai-switch\/"$/m);
   assert.match(cask, /^ {2}app "AI Switch\.app"$/m);
   // Only Apple Silicon is built, so an Intel Mac must be told rather than
-  // handed an arm64 bundle.
-  assert.match(cask, /^ {2}depends_on arch: :arm64$/m);
+  // handed an arm64 bundle. The bare :macos is what brew style's
+  // Homebrew/OSDependsOn asks for now that casks can also target Linux.
+  assert.match(cask, /^ {2}depends_on :macos, arch: :arm64$/m);
   assert.match(cask, /^ {2}auto_updates true$/m);
   assert.match(cask, /com\.apple\.quarantine/);
+  // brew style runs Layout/HashAlignment in table style, so the values of a
+  // multi-line hash have to line up, not the keys.
+  assert.match(cask, /^ {19}args: {9}\["-dr", "com\.apple\.quarantine", "#\{appdir\}\/AI Switch\.app"\],\n {19}must_succeed: false$/m);
   assert.match(cask, /"~\/\.ai-switch",/);
   assert.equal(cask.endsWith("end\n"), true);
 });
@@ -178,7 +182,7 @@ test("keeps the cask stanzas in the order brew style expects", () => {
     "homepage ",
     "livecheck do",
     "auto_updates ",
-    "depends_on arch",
+    "depends_on :macos",
     "app ",
     "postflight do",
     "zap ",
