@@ -156,10 +156,12 @@ OpenCode、OpenClaw、Hermes 不支持原生配置写入，或者你想自己控
 
 需要两个值，都在 **🔌 按钮**（提示文字「写入路由配置文件」）弹出的窗口里，最下面的「在以上客户端之外使用」区域：
 
-- **Base URL** —— 当前代理地址，比如 `http://127.0.0.1:19527`
+- **Base URL** —— 当前代理地址，比如 `http://127.0.0.1:19527`（Codex 标签页会带上 `/v1`，因为 Codex 拿 base URL 直接拼 `/responses`）
 - **API Key** —— 本地代理 key，形如 `sk-ai-switch-<uuid>`
 
 两个值都有一键复制按钮。API Key 默认打码，点眼睛图标才显示明文。
+
+开启了本地 HTTPS 的话，同一区域还会多出一个 **HTTPS Base URL**（比如 `https://127.0.0.1:19528`）。**正常情况用 HTTP 的那个就行**；HTTPS 端点只给确实要求 TLS 的客户端，而且它必须信任本地根证书。详见 [本地算力池 HTTPS](/deploy/remote-access#本地算力池-https)。
 
 代理 key 是**每个智能体标签页一个**，切到别的标签页要重新复制。
 

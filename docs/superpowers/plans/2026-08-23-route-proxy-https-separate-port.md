@@ -1,5 +1,12 @@
 # 本地算力池 HTTPS 独立端口实施计划
 
+> **已作废（2026-09-04）**：功能已实现，但**不是按这份计划**。用户要求「HTTPS 不与
+> HTTP 共用端口，开启后自动使用新端口」，也就是没有开关、没有替换模式，所以 Task 1
+> （`separate_port` 配置字段与迁移）、Task 5 的 `set_separate_port` 命令、Task 6 的
+> 复选框全部不再需要。实际落地的是两态 `RouteProxyTransport { HttpOnly, HttpAndHttps }`
+> 加双监听器，以及在「写入配置」弹窗里显示 HTTP/HTTPS 双端点。这份文件只作为当时的
+> 推理留档，**不要照它继续实施**。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 为本地算力池 HTTPS 增加「启用独立端口」复选框，让 HTTPS 监听 `HTTP 端口 + 1` 并与 HTTP 并存，客户端配置继续写 HTTP，从而使读不到本地根证书的客户端（macOS/Linux 的 curl、Node 版 Claude Code）保持可用。

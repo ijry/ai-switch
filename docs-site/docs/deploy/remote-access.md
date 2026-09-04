@@ -90,13 +90,15 @@ Funnel 模式默认走 443 端口（443 / 8443 / 10000 这几个 Funnel 支持�
 
 ## 本地算力池 HTTPS
 
-这部分和远程访问无关，解决的是另一个问题：**某些客户端只接受 `https://` 的上游地址**，而 AI Switch 的本地路由代理默认是 `http://127.0.0.1:19527`。为此应用可以生成一套自签证书，让本地代理以 HTTPS 提供服务。
+这部分和远程访问无关，解决的是另一个问题：**某些客户端只接受 `https://` 的上游地址**，而 AI Switch 的本地路由代理默认是 `http://127.0.0.1:19527`。为此应用可以生成一套自签证书，让本地代理**额外**以 HTTPS 提供服务。
+
+HTTPS 不会取代 HTTP，而是独占自己的端口：HTTP 继续在原端口服务，HTTPS 从「HTTP 端口 + 1」起绑定，常态即 `http://127.0.0.1:19527` 与 `https://127.0.0.1:19528`。写入客户端配置的一直是 HTTP 地址，因为自带 CA bundle 的客户端（macOS/Linux 的 curl、Node 版 CLI）读不到装进系统信任库的根证书，把它们指向 `https://` 只会换来证书校验失败。所以：**正常情况用 HTTP 端点即可，HTTPS 端点留给确实要求 TLS 的客户端手动填写。** 两个地址都能在「写入配置」弹窗和 HTTPS 面板里看到。
 
 ### 默认是关闭的
 
 `route-proxy-https.json` 的默认值是 `enabled: false`、`autoStart: false`。也就是说：**除非你主动去开，本地 HTTPS 不会启用，证书也不会生成**。安装应用不会往你的系统信任库里写任何东西。
 
-代理本身始终只绑定 `127.0.0.1`，端口从 `19527` 起，被占用时向上寻找下一个可用端口。启用 HTTPS 不会让它监听外部地址。
+代理本身始终只绑定 `127.0.0.1`，端口从 `19527` 起，被占用时向上寻找下一个可用端口。启用 HTTPS 不会让它监听外部地址；HTTPS 那个监听器同样只在回环上，并且它起不来时只记录原因，HTTP 继续服务。
 
 ### 证书存在哪里
 
@@ -169,6 +171,19 @@ certutil -A -d <nss-db-path> -n "AI Switch Route Proxy Root CA" -t C,, \
 NSS 库里的昵称必须与根证书 CN 一致，也就是 `AI Switch Route Proxy Root CA`，卸载时按这个名字查找。
 
 面板给出的手动步骤里路径是根据你机器上的实际位置生成的，直接照抄面板上的命令比照抄本页更可靠。
+
+### 手工验证 HTTPS 端点
+
+想确认 HTTPS 端点通不通，直接拿系统 curl 打就行——注意 Windows 上要加 `--ssl-no-revoke`：
+
+```powershell
+curl.exe --ssl-no-revoke --cacert "$HOME\.ai-switch\certs\route-proxy\root-ca.pem" `
+  -H "Authorization: Bearer <代理 key>" https://127.0.0.1:19528/v1/models
+```
+
+Windows 的 curl 走 Schannel，会去查根证书的吊销状态；自签根证书没有 CRL/OCSP 分发点，不加这个开关会得到 `curl: (60) schannel: the revocation status is unknown`，看起来像证书无效，其实只是查不到吊销信息。加上之后返回 200，与打 HTTP 端点的结果一致。
+
+同一时刻打 HTTP 端点（`http://127.0.0.1:19527/v1/models`）应当同样返回 200 且不需要任何证书参数——这正是两个端口并存要保证的事。反过来，用明文 HTTP 去打 HTTPS 那个端口会得到 `curl: (1) Received HTTP/0.9 when not allowed`，因为那个监听器只说 TLS。
 
 ### 私钥不会外泄到界面
 

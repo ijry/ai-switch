@@ -76,13 +76,18 @@ const httpsOutcomeFixture = {
     trustStatus: "systemTrusted" as const,
     rootFingerprint: "a".repeat(64),
     expiresAt: "2027-07-25T00:00:00Z",
-    proxyBaseUrl: "https://127.0.0.1:8317",
+    proxyBaseUrl: "https://127.0.0.1:19528",
   },
+  // HTTPS takes its own port; HTTP keeps serving on the one clients were told to
+  // use, so both endpoints are reported at once.
   routeProxy: {
     running: true,
     bind_host: "127.0.0.1",
-    port: 8317,
-    base_url: "https://127.0.0.1:8317",
+    port: 19527,
+    base_url: "http://127.0.0.1:19527",
+    https_port: 19528,
+    https_base_url: "https://127.0.0.1:19528",
+    https_error: null,
   },
   configWrites: [],
 };
@@ -285,7 +290,10 @@ describe("SettingsScreen", () => {
     await userEvent.click(screen.getByRole("checkbox", { name: "为本地算力池启用 HTTPS" }));
 
     await waitFor(() => expect(enableRouteProxyHttps).toHaveBeenCalledTimes(1));
-    expect(await screen.findByText("https://127.0.0.1:8317")).toBeInTheDocument();
+    // Both endpoints are listed: only the HTTP one goes into client configs, so
+    // the user has to be able to tell which is which.
+    expect(await screen.findByText("https://127.0.0.1:19528")).toBeInTheDocument();
+    expect(screen.getByText("http://127.0.0.1:19527")).toBeInTheDocument();
   });
 
   it("shows untrusted guidance without blocking HTTPS controls", async () => {

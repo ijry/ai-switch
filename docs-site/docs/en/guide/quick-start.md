@@ -160,10 +160,12 @@ OpenCode, OpenClaw, and Hermes don't support native config writing, and you may 
 
 You need two values, both in the dialog opened by the **🔌 button** (tooltip 写入路由配置文件, "write route config files"), under 「在以上客户端之外使用」 ("use outside the clients above"):
 
-- **Base URL** — the current proxy address, e.g. `http://127.0.0.1:19527`
+- **Base URL** — the current proxy address, e.g. `http://127.0.0.1:19527` (the Codex tab appends `/v1`, because Codex joins `/responses` onto the base URL as-is)
 - **API Key** — the local proxy key, shaped like `sk-ai-switch-<uuid>`
 
 Both have a one-click copy button. The API Key is masked by default; click the eye icon to reveal it.
+
+With local HTTPS turned on, the same area also lists an **HTTPS Base URL** (e.g. `https://127.0.0.1:19528`). **Use the HTTP one unless you have a reason not to** — the HTTPS endpoint is for clients that genuinely require TLS, and they must trust the local root certificate. See [Local pool HTTPS](/en/deploy/remote-access#local-pool-https).
 
 The proxy key is **one per agent tab**, so switching tabs means copying a different key.
 

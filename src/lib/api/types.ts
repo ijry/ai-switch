@@ -807,7 +807,13 @@ export type RouteProxyStatus = {
   running: boolean;
   bind_host: string;
   port?: number | null;
+  /** The address clients should use, and always the HTTP one. */
   base_url?: string | null;
+  https_port?: number | null;
+  /** HTTPS endpoint on its own port; null when HTTPS is off or failed to start. */
+  https_base_url?: string | null;
+  /** Why HTTPS is absent. HTTP keeps serving when this is set. */
+  https_error?: string | null;
 };
 
 export type RouteProxyTrustStatus =

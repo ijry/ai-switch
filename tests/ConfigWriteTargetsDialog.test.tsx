@@ -147,9 +147,11 @@ describe("ConfigWriteTargetsDialog", () => {
     const writeText = stubClipboard();
     setup();
 
-    expect(screen.getByLabelText("Base URL")).toHaveValue("http://127.0.0.1:43111");
+    // Codex reads the base URL as-is and appends /responses, so the endpoint the
+    // user copies has to carry /v1 exactly like the written config does.
+    expect(screen.getByLabelText("Base URL")).toHaveValue("http://127.0.0.1:43111/v1");
     await user.click(screen.getByLabelText("复制 Base URL"));
-    expect(writeText).toHaveBeenLastCalledWith("http://127.0.0.1:43111");
+    expect(writeText).toHaveBeenLastCalledWith("http://127.0.0.1:43111/v1");
 
     await user.click(screen.getByLabelText("复制 API Key"));
     expect(writeText).toHaveBeenLastCalledWith("sk-ai-switch-codex-key");
@@ -185,5 +187,51 @@ describe("ConfigWriteTargetsDialog", () => {
     await user.click(screen.getByLabelText("Base URL"));
     await user.keyboard("{Enter}");
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("lists the HTTPS endpoint beside the HTTP one, both carrying /v1 for codex", async () => {
+    const user = userEvent.setup();
+    const writeText = stubClipboard();
+    setup({
+      poolBaseUrl: "http://127.0.0.1:19527",
+      poolHttpsBaseUrl: "https://127.0.0.1:19528",
+    });
+
+    expect(screen.getByLabelText("Base URL")).toHaveValue("http://127.0.0.1:19527/v1");
+    expect(screen.getByLabelText("HTTPS Base URL")).toHaveValue("https://127.0.0.1:19528/v1");
+    await user.click(screen.getByLabelText("复制 HTTPS Base URL"));
+    expect(writeText).toHaveBeenLastCalledWith("https://127.0.0.1:19528/v1");
+
+    expect(screen.getByText(/正常情况用上面的 Base URL（HTTP）即可/)).toBeInTheDocument();
+    expect(screen.getByText(/必须信任本地根证书/)).toBeInTheDocument();
+  });
+
+  it("omits the HTTPS row when HTTPS is off", () => {
+    setup({ poolBaseUrl: "http://127.0.0.1:19527" });
+
+    expect(screen.queryByLabelText("HTTPS Base URL")).not.toBeInTheDocument();
+    expect(screen.getByText(/可在设置里开启 HTTPS/)).toBeInTheDocument();
+  });
+
+  it("says HTTPS failed rather than telling the user to turn it on", () => {
+    setup({
+      poolBaseUrl: "http://127.0.0.1:19527",
+      httpsError: "Could not load local route proxy HTTPS certificate (missing-cert.pem)",
+    });
+
+    expect(screen.getByText(/HTTPS 端点本次未能启动/)).toBeInTheDocument();
+    expect(screen.queryByText(/可在设置里开启 HTTPS/)).not.toBeInTheDocument();
+  });
+
+  it("leaves a claude endpoint bare", () => {
+    setup({
+      clients: [
+        { ...clients[0], client_key: "claude", display_name: "Claude Code", platform: "claude" },
+      ],
+      platform: "claude",
+      poolBaseUrl: "http://127.0.0.1:19527",
+    });
+
+    expect(screen.getByLabelText("Base URL")).toHaveValue("http://127.0.0.1:19527");
   });
 });

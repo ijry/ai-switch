@@ -3000,10 +3000,13 @@ mod tests {
         .expect("members");
 
         let route_proxy_state = RouteProxyRuntimeState::default();
-        let proxy_status =
-            RouteProxyService::start(&route_proxy_state, pool.clone(), RouteProxyTransport::Http)
-                .await
-                .expect("proxy start");
+        let proxy_status = RouteProxyService::start(
+            &route_proxy_state,
+            pool.clone(),
+            RouteProxyTransport::HttpOnly,
+        )
+        .await
+        .expect("proxy start");
         let proxy_base_url = proxy_status.base_url.expect("proxy base url");
 
         let outcome = RouteModelTestService::test_model_through_proxy(
@@ -3089,14 +3092,16 @@ mod tests {
         let proxy_status = RouteProxyService::start(
             &route_proxy_state,
             pool.clone(),
-            RouteProxyTransport::Https {
+            RouteProxyTransport::HttpAndHttps {
                 certificate_pem_path: material.server_certificate_pem,
                 private_key_pem_path: material.server_private_key_pem,
             },
         )
         .await
         .expect("proxy start");
-        let proxy_base_url = proxy_status.base_url.expect("proxy base url");
+        // The HTTPS listener sits on its own port; the plain HTTP one would not
+        // exercise the root-certificate path this test is about.
+        let proxy_base_url = proxy_status.https_base_url.expect("proxy HTTPS base url");
 
         let outcome = RouteModelTestService::test_model_through_proxy_with_root_certificate(
             &pool,

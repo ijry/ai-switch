@@ -136,10 +136,13 @@ impl RouteProxyHttpsService {
         Ok(tokio::fs::read(&material.root_certificate_pem).await?)
     }
 
+    /// Which listeners the proxy should open for the saved preference. HTTPS never
+    /// takes HTTP's place — it gets its own port — so this only decides whether a
+    /// TLS listener joins the HTTP one.
     pub async fn transport(paths: &AppPaths) -> Result<RouteProxyTransport, AppError> {
         let config = Self::load_config(paths).await?;
         if !config.enabled {
-            return Ok(RouteProxyTransport::Http);
+            return Ok(RouteProxyTransport::HttpOnly);
         }
 
         let material = Self::ensure_material(paths).await?;
@@ -165,11 +168,11 @@ impl RouteProxyHttpsService {
     }
 
     pub async fn status_for_state(state: &AppState) -> Result<RouteProxyHttpsStatus, AppError> {
-        Self::status(
-            &state.paths,
-            RouteProxyService::status(&state.route_proxy).await.base_url,
-        )
-        .await
+        let proxy = RouteProxyService::status(&state.route_proxy).await;
+        // The HTTPS panel reports the HTTPS endpoint. HTTP lives on its own port
+        // and is read from `RouteProxyStatus` directly, so it is not duplicated
+        // here.
+        Self::status(&state.paths, proxy.https_base_url).await
     }
 
     pub async fn enable(state: &AppState) -> Result<RouteProxyHttpsOperationOutcome, AppError> {
@@ -203,7 +206,7 @@ impl RouteProxyHttpsService {
                     let _ = RouteProxyService::start(
                         &state.route_proxy,
                         state.pool.clone(),
-                        RouteProxyTransport::Http,
+                        RouteProxyTransport::HttpOnly,
                     )
                     .await;
                 }
@@ -227,9 +230,12 @@ impl RouteProxyHttpsService {
             },
         )
         .await?;
-        let https =
-            Self::status_with_trust(&state.paths, route_proxy.base_url.clone(), trust_executor)
-                .await?;
+        let https = Self::status_with_trust(
+            &state.paths,
+            route_proxy.https_base_url.clone(),
+            trust_executor,
+        )
+        .await?;
 
         Ok(RouteProxyHttpsOperationOutcome {
             https,
@@ -255,7 +261,7 @@ impl RouteProxyHttpsService {
         let route_proxy = RouteProxyService::start(
             &state.route_proxy,
             state.pool.clone(),
-            RouteProxyTransport::Http,
+            RouteProxyTransport::HttpOnly,
         )
         .await?;
         let https = Self::status_for_state(state).await?;
@@ -281,9 +287,12 @@ impl RouteProxyHttpsService {
         let trust = trust_executor.install(&material).await;
         Self::save_trust_outcome(&state.paths, trust).await?;
         let route_proxy = RouteProxyService::status(&state.route_proxy).await;
-        let https =
-            Self::status_with_trust(&state.paths, route_proxy.base_url.clone(), trust_executor)
-                .await?;
+        let https = Self::status_with_trust(
+            &state.paths,
+            route_proxy.https_base_url.clone(),
+            trust_executor,
+        )
+        .await?;
 
         Ok(RouteProxyHttpsOperationOutcome {
             https,
@@ -343,15 +352,18 @@ impl RouteProxyHttpsService {
             RouteProxyService::start(
                 &state.route_proxy,
                 state.pool.clone(),
-                RouteProxyTransport::Http,
+                RouteProxyTransport::HttpOnly,
             )
             .await?
         } else {
             RouteProxyService::status(&state.route_proxy).await
         };
-        let https =
-            Self::status_with_trust(&state.paths, route_proxy.base_url.clone(), trust_executor)
-                .await?;
+        let https = Self::status_with_trust(
+            &state.paths,
+            route_proxy.https_base_url.clone(),
+            trust_executor,
+        )
+        .await?;
 
         Ok(RouteProxyHttpsOperationOutcome {
             https,
@@ -375,7 +387,10 @@ impl RouteProxyHttpsService {
         let old_trust = trust_executor.inspect(&old_material).await;
         let old_was_trusted = is_trusted(&old_trust.status);
         let previous = RouteProxyService::status(&state.route_proxy).await;
-        let was_tls = previous.running && status_uses_https(&previous);
+        // Restart whenever the running proxy is meant to serve TLS, not only when
+        // a TLS listener is actually up: HTTPS failing to bind no longer takes the
+        // proxy down, and that state still has to pick up the new material.
+        let was_tls = previous.running && config.enabled;
 
         if was_tls {
             RouteProxyService::stop(&state.route_proxy).await?;
@@ -436,9 +451,12 @@ impl RouteProxyHttpsService {
         };
 
         let _ = tokio::fs::remove_dir_all(&backup_dir).await;
-        let https =
-            Self::status_with_trust(&state.paths, route_proxy.base_url.clone(), trust_executor)
-                .await?;
+        let https = Self::status_with_trust(
+            &state.paths,
+            route_proxy.https_base_url.clone(),
+            trust_executor,
+        )
+        .await?;
 
         Ok(RouteProxyHttpsOperationOutcome {
             https,
@@ -479,11 +497,11 @@ impl RouteProxyHttpsService {
             }
         }
         Self::delete_material(&state.paths).await?;
-        Self::status_with_trust(&state.paths, route_proxy.base_url, trust_executor).await
+        Self::status_with_trust(&state.paths, route_proxy.https_base_url, trust_executor).await
     }
 
     fn tls_transport(material: &RouteProxyHttpsMaterial) -> RouteProxyTransport {
-        RouteProxyTransport::Https {
+        RouteProxyTransport::HttpAndHttps {
             certificate_pem_path: material.server_certificate_pem.clone(),
             private_key_pem_path: material.server_private_key_pem.clone(),
         }
@@ -1223,11 +1241,11 @@ fn parse_expiry(expires_at: &str) -> Result<OffsetDateTime, AppError> {
     )
 }
 
+/// Whether a TLS listener is up. HTTPS has its own port, so this is about the
+/// presence of that endpoint rather than about the scheme of `base_url` — the
+/// latter is always the HTTP one now.
 fn status_uses_https(status: &RouteProxyStatus) -> bool {
-    status
-        .base_url
-        .as_deref()
-        .is_some_and(|base_url| base_url.starts_with("https://"))
+    status.https_base_url.is_some()
 }
 
 fn is_trusted(status: &RouteProxyTrustStatus) -> bool {
@@ -1771,7 +1789,7 @@ mod tests {
         let initial = RouteProxyService::start(
             &fixture.state.route_proxy,
             fixture.state.pool.clone(),
-            RouteProxyTransport::Http,
+            RouteProxyTransport::HttpOnly,
         )
         .await
         .expect("start HTTP proxy");
@@ -1785,11 +1803,19 @@ mod tests {
             .expect("enable HTTPS");
 
         assert!(outcome.route_proxy.running);
+        // HTTPS is additive: the HTTP endpoint clients were told to use stays
+        // exactly where it was, and HTTPS shows up next to it on its own port.
         assert!(outcome
             .route_proxy
             .base_url
             .as_deref()
+            .is_some_and(|url| url.starts_with("http://")));
+        assert!(outcome
+            .route_proxy
+            .https_base_url
+            .as_deref()
             .is_some_and(|url| url.starts_with("https://")));
+        assert_eq!(outcome.route_proxy.https_error, None);
         assert!(outcome.https.enabled);
         assert!(outcome.config_writes.is_empty());
         assert!(
@@ -1824,7 +1850,7 @@ mod tests {
         let status = RouteProxyService::status(&fixture.state.route_proxy).await;
         assert!(status.running);
         assert!(status
-            .base_url
+            .https_base_url
             .as_deref()
             .is_some_and(|url| url.starts_with("https://")));
         assert!(

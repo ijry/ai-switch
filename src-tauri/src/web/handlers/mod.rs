@@ -1654,6 +1654,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatch_get_route_proxy_status_reports_both_endpoints_in_snake_case() {
+        let fixture = test_state().await;
+        let material =
+            crate::services::route_proxy_https_service::RouteProxyHttpsService::ensure_material(
+                &fixture.state.paths,
+            )
+            .await
+            .expect("certificate material");
+        RouteProxyService::start(
+            &fixture.state.route_proxy,
+            fixture.state.pool.clone(),
+            crate::services::route_proxy_service::RouteProxyTransport::HttpAndHttps {
+                certificate_pem_path: material.server_certificate_pem,
+                private_key_pem_path: material.server_private_key_pem,
+            },
+        )
+        .await
+        .expect("start proxy");
+
+        let result = dispatch_command(fixture.state.clone(), "get_route_proxy_status", json!({}))
+            .await
+            .expect("route proxy status response");
+
+        // `RouteProxyStatus` has no `rename_all`, unlike its HTTPS sibling above, so
+        // the new fields stay snake_case. The frontend types are written against
+        // exactly these names.
+        assert!(result
+            .get("base_url")
+            .and_then(Value::as_str)
+            .is_some_and(|url| url.starts_with("http://")));
+        assert!(result
+            .get("https_base_url")
+            .and_then(Value::as_str)
+            .is_some_and(|url| url.starts_with("https://")));
+        assert!(result.get("https_port").and_then(Value::as_u64).is_some());
+        assert!(result.get("https_error").is_some_and(Value::is_null));
+
+        RouteProxyService::stop(&fixture.state.route_proxy)
+            .await
+            .expect("stop proxy");
+    }
+
+    #[tokio::test]
     async fn dispatch_list_platform_capabilities_returns_phase_a_matrix() {
         let fixture = test_state().await;
         let result = dispatch_command(fixture.state, "list_platform_capabilities", json!({}))

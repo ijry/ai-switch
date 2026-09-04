@@ -2298,6 +2298,64 @@ command = "npx"
     }
 
     #[tokio::test]
+    async fn a_previously_written_https_address_reads_as_stale_against_the_http_endpoint() {
+        // HTTPS moved to its own port, so `base_url` is the HTTP one again. Users
+        // who had HTTPS on are carrying an https:// address in their client config,
+        // and this nudge is the only thing that tells them to write it again.
+        let fixture = ServiceFixture::new().await;
+        seed_codex_pool_member(&fixture.pool, "gpt-5.6-sol").await;
+        let clients = vec!["codex".to_string()];
+
+        RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            "https://127.0.0.1:19527",
+            "codex",
+            &fixture.home,
+            Some(&clients),
+        )
+        .await
+        .expect("write the pre-change HTTPS address");
+
+        assert!(
+            RouteConfigService::config_write_is_stale_for_home(
+                &fixture.paths,
+                &fixture.pool,
+                "http://127.0.0.1:19527",
+                "codex",
+                &fixture.home,
+                Some(&clients),
+            )
+            .await
+        );
+
+        // And writing once clears it, so the nudge is actionable rather than sticky.
+        RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            "http://127.0.0.1:19527",
+            "codex",
+            &fixture.home,
+            Some(&clients),
+        )
+        .await
+        .expect("rewrite with the HTTP address");
+        assert!(
+            !RouteConfigService::config_write_is_stale_for_home(
+                &fixture.paths,
+                &fixture.pool,
+                "http://127.0.0.1:19527",
+                "codex",
+                &fixture.home,
+                Some(&clients),
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
     async fn a_pool_mapping_change_marks_the_zcode_config_stale() {
         let fixture = ServiceFixture::new().await;
         seed_codex_pool_member(&fixture.pool, "gpt-5.6-sol").await;

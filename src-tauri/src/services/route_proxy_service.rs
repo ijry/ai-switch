@@ -145,13 +145,30 @@ pub struct RouteProxyStatus {
     pub running: bool,
     pub bind_host: String,
     pub port: Option<u16>,
+    /// The address clients should use, and always the HTTP one. Writing client
+    /// configs, model connectivity tests and the stale-config nudge all read this
+    /// field, so it has to mean "which endpoint a client should point at" rather
+    /// than "which protocol is running" — a client that cannot read the local root
+    /// CA must keep working after HTTPS is switched on.
     pub base_url: Option<String>,
+    pub https_port: Option<u16>,
+    /// The HTTPS endpoint, on its own port next to the HTTP one. `None` when HTTPS
+    /// is off or could not start.
+    pub https_base_url: Option<String>,
+    /// Why HTTPS could not start. HTTP keeps serving when this has a value.
+    pub https_error: Option<String>,
 }
 
+/// Which listeners the proxy should open.
+///
+/// HTTPS is always additive: it gets its own port and HTTP keeps serving on
+/// its own, so enabling it cannot break clients that ship their own CA bundle
+/// (curl on macOS/Linux, Node-based CLIs) and therefore never see the local root
+/// certificate.
 #[derive(Debug, Clone)]
 pub enum RouteProxyTransport {
-    Http,
-    Https {
+    HttpOnly,
+    HttpAndHttps {
         certificate_pem_path: std::path::PathBuf,
         private_key_pem_path: std::path::PathBuf,
     },
@@ -164,13 +181,51 @@ pub struct RouteProxyRuntimeState {
     live_log: RouteProxyLiveLog,
 }
 
+/// A started listener together with the handle that stops it.
+struct ProxyListener {
+    port: u16,
+    base_url: String,
+    shutdown: oneshot::Sender<()>,
+    join_handle: JoinHandle<()>,
+}
+
 #[derive(Default)]
 struct RouteProxyInner {
-    running: bool,
-    port: Option<u16>,
-    base_url: Option<String>,
-    shutdown: Option<oneshot::Sender<()>>,
-    join_handle: Option<JoinHandle<()>>,
+    http: Option<ProxyListener>,
+    https: Option<ProxyListener>,
+    /// Why the HTTPS listener is absent while HTTP serves on.
+    https_error: Option<String>,
+}
+
+impl RouteProxyInner {
+    /// Derived from whether a listener actually exists rather than kept as its own
+    /// bool, which could disagree with reality.
+    fn running(&self) -> bool {
+        self.http.is_some() || self.https.is_some()
+    }
+
+    fn status(&self) -> RouteProxyStatus {
+        RouteProxyStatus {
+            running: self.running(),
+            bind_host: BIND_HOST.to_string(),
+            port: self.http.as_ref().map(|listener| listener.port),
+            base_url: self.http.as_ref().map(|listener| listener.base_url.clone()),
+            https_port: self.https.as_ref().map(|listener| listener.port),
+            https_base_url: self
+                .https
+                .as_ref()
+                .map(|listener| listener.base_url.clone()),
+            https_error: self.https_error.clone(),
+        }
+    }
+
+    async fn shutdown_all(&mut self) {
+        for listener in [self.http.take(), self.https.take()].into_iter().flatten() {
+            let _ = listener.shutdown.send(());
+            let _ = listener.join_handle.await;
+        }
+        self.https_error = None;
+    }
 }
 
 #[derive(Clone)]
@@ -283,13 +338,7 @@ impl RouteProxyService {
     }
 
     pub async fn status(state: &RouteProxyRuntimeState) -> RouteProxyStatus {
-        let inner = state.inner.lock().await;
-        RouteProxyStatus {
-            running: inner.running,
-            bind_host: BIND_HOST.to_string(),
-            port: inner.port,
-            base_url: inner.base_url.clone(),
-        }
+        state.inner.lock().await.status()
     }
 
     pub async fn start(
@@ -325,28 +374,9 @@ impl RouteProxyService {
         upstream_timeouts: OutboundTimeouts,
     ) -> Result<RouteProxyStatus, AppError> {
         let mut inner = state.inner.lock().await;
-        if inner.running {
-            return Ok(RouteProxyStatus {
-                running: true,
-                bind_host: BIND_HOST.to_string(),
-                port: inner.port,
-                base_url: inner.base_url.clone(),
-            });
+        if inner.running() {
+            return Ok(inner.status());
         }
-
-        let listener = bind_route_proxy_listener().await?;
-        let addr = listener.local_addr().map_err(|err| AppError::Filesystem {
-            code: "filesystem.route_proxy_addr",
-            message: "Could not resolve route proxy address".to_string(),
-            details: Some(err.to_string()),
-            recoverable: true,
-        })?;
-        let port = addr.port();
-        let scheme = match &transport {
-            RouteProxyTransport::Http => "http",
-            RouteProxyTransport::Https { .. } => "https",
-        };
-        let base_url = format!("{scheme}://{BIND_HOST}:{port}");
 
         let app_state = ProxyAppState {
             pool,
@@ -360,100 +390,136 @@ impl RouteProxyService {
             .fallback(any(proxy_handler))
             .with_state(app_state);
 
-        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        let join_handle = match transport {
-            RouteProxyTransport::Http => tokio::spawn(async move {
-                let server = axum::serve(
-                    listener,
-                    app.into_make_service_with_connect_info::<SocketAddr>(),
-                )
-                .with_graceful_shutdown(async {
-                    let _ = shutdown_rx.await;
-                });
+        let http_listener = bind_route_proxy_listener().await?;
+        let http = spawn_listener(http_listener, app.clone(), None).await?;
+        let http_port = http.port;
+        inner.http = Some(http);
 
-                if let Err(err) = server.await {
-                    eprintln!("route proxy server error: {err}");
-                }
-            }),
-            RouteProxyTransport::Https {
-                certificate_pem_path,
-                private_key_pem_path,
-            } => {
-                let rustls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
-                    &certificate_pem_path,
-                    &private_key_pem_path,
-                )
-                .await
-                .map_err(|error| AppError::Validation {
-                    code: "validation.route_proxy_https_certificate",
-                    message: "Could not load local route proxy HTTPS certificate".to_string(),
-                    details: Some(error.to_string()),
-                    recoverable: true,
-                })?;
-                let std_listener = listener.into_std().map_err(|error| AppError::Filesystem {
-                    code: "filesystem.route_proxy_tls_listener",
-                    message: "Could not prepare local HTTPS listener".to_string(),
-                    details: Some(error.to_string()),
-                    recoverable: true,
-                })?;
-                let handle = axum_server::Handle::new();
-
-                tokio::spawn(async move {
-                    let server = axum_server::from_tcp_rustls(std_listener, rustls_config)
-                        .handle(handle.clone())
-                        .serve(app.into_make_service_with_connect_info::<SocketAddr>());
-                    tokio::pin!(server);
-
-                    tokio::select! {
-                        result = &mut server => {
-                            if let Err(error) = result {
-                                eprintln!("route proxy HTTPS server error: {error}");
-                            }
-                        }
-                        _ = shutdown_rx => {
-                            handle.graceful_shutdown(Some(Duration::from_secs(5)));
-                            if let Err(error) = server.await {
-                                eprintln!("route proxy HTTPS shutdown error: {error}");
-                            }
-                        }
-                    }
-                })
+        if let RouteProxyTransport::HttpAndHttps {
+            certificate_pem_path,
+            private_key_pem_path,
+        } = &transport
+        {
+            // HTTPS sits on the next free port up from HTTP, so the two never
+            // contend for one listener. A certificate or port problem here only
+            // records a reason — HTTP has to keep serving, otherwise the switch
+            // would take down the one path every client can use.
+            let tls = Some((
+                certificate_pem_path.as_path(),
+                private_key_pem_path.as_path(),
+            ));
+            match bind_route_proxy_listener_from(http_port.saturating_add(1)).await {
+                Ok(https_listener) => match spawn_listener(https_listener, app, tls).await {
+                    Ok(https) => inner.https = Some(https),
+                    Err(error) => inner.https_error = Some(describe_https_failure(&error)),
+                },
+                Err(error) => inner.https_error = Some(describe_https_failure(&error)),
             }
-        };
+        }
 
-        inner.running = true;
-        inner.port = Some(port);
-        inner.base_url = Some(base_url);
-        inner.shutdown = Some(shutdown_tx);
-        inner.join_handle = Some(join_handle);
-
-        Ok(RouteProxyStatus {
-            running: true,
-            bind_host: BIND_HOST.to_string(),
-            port: Some(port),
-            base_url: inner.base_url.clone(),
-        })
+        Ok(inner.status())
     }
 
     pub async fn stop(state: &RouteProxyRuntimeState) -> Result<RouteProxyStatus, AppError> {
         let mut inner = state.inner.lock().await;
-        if let Some(shutdown) = inner.shutdown.take() {
-            let _ = shutdown.send(());
-        }
-        if let Some(handle) = inner.join_handle.take() {
-            let _ = handle.await;
-        }
-        inner.running = false;
-        inner.port = None;
-        inner.base_url = None;
-
-        Ok(RouteProxyStatus {
-            running: false,
-            bind_host: BIND_HOST.to_string(),
-            port: None,
-            base_url: None,
-        })
+        inner.shutdown_all().await;
+        Ok(inner.status())
     }
+}
+
+/// Folds an HTTPS start failure into the single string the status carries.
+/// `Display` is only the message, and for these two errors the message is generic
+/// ("Could not load local route proxy HTTPS certificate") while the detail names
+/// the file and what the OS said. Dropping it leaves the settings panel saying
+/// HTTPS did not start with nothing to act on.
+fn describe_https_failure(error: &AppError) -> String {
+    match error.details() {
+        Some(details) => format!("{error} ({details})"),
+        None => error.to_string(),
+    }
+}
+
+/// Serve `app` on `listener`. `tls` carries the certificate/key pair when the
+/// listener should speak HTTPS.
+async fn spawn_listener(
+    listener: TcpListener,
+    app: Router,
+    tls: Option<(&std::path::Path, &std::path::Path)>,
+) -> Result<ProxyListener, AppError> {
+    let addr = listener.local_addr().map_err(|err| AppError::Filesystem {
+        code: "filesystem.route_proxy_addr",
+        message: "Could not resolve route proxy address".to_string(),
+        details: Some(err.to_string()),
+        recoverable: true,
+    })?;
+    let port = addr.port();
+    let scheme = if tls.is_some() { "https" } else { "http" };
+    let base_url = format!("{scheme}://{BIND_HOST}:{port}");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let join_handle = match tls {
+        None => tokio::spawn(async move {
+            let server = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            });
+
+            if let Err(err) = server.await {
+                eprintln!("route proxy server error: {err}");
+            }
+        }),
+        Some((certificate_pem_path, private_key_pem_path)) => {
+            let rustls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+                certificate_pem_path,
+                private_key_pem_path,
+            )
+            .await
+            .map_err(|error| AppError::Validation {
+                code: "validation.route_proxy_https_certificate",
+                message: "Could not load local route proxy HTTPS certificate".to_string(),
+                details: Some(error.to_string()),
+                recoverable: true,
+            })?;
+            let std_listener = listener.into_std().map_err(|error| AppError::Filesystem {
+                code: "filesystem.route_proxy_tls_listener",
+                message: "Could not prepare local HTTPS listener".to_string(),
+                details: Some(error.to_string()),
+                recoverable: true,
+            })?;
+            let handle = axum_server::Handle::new();
+
+            tokio::spawn(async move {
+                let server = axum_server::from_tcp_rustls(std_listener, rustls_config)
+                    .handle(handle.clone())
+                    .serve(app.into_make_service_with_connect_info::<SocketAddr>());
+                tokio::pin!(server);
+
+                tokio::select! {
+                    result = &mut server => {
+                        if let Err(error) = result {
+                            eprintln!("route proxy HTTPS server error: {error}");
+                        }
+                    }
+                    _ = shutdown_rx => {
+                        handle.graceful_shutdown(Some(Duration::from_secs(5)));
+                        if let Err(error) = server.await {
+                            eprintln!("route proxy HTTPS shutdown error: {error}");
+                        }
+                    }
+                }
+            })
+        }
+    };
+
+    Ok(ProxyListener {
+        port,
+        base_url,
+        shutdown: shutdown_tx,
+        join_handle,
+    })
 }
 
 async fn proxy_handler(
@@ -5938,7 +6004,7 @@ mod tests {
         run_migrations(&pool).await.expect("migrations");
         let runtime = RouteProxyRuntimeState::default();
 
-        let status = RouteProxyService::start(&runtime, pool, RouteProxyTransport::Http)
+        let status = RouteProxyService::start(&runtime, pool, RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
         let port = status.port.expect("port");
@@ -5953,7 +6019,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn https_transport_serves_the_existing_route_proxy_handler_and_rejects_plain_http() {
+    async fn https_serves_on_its_own_port_beside_a_still_working_http_listener() {
         use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
         use crate::database::{create_memory_pool, run_migrations};
         use crate::paths::AppPaths;
@@ -5974,13 +6040,13 @@ mod tests {
         let status = RouteProxyService::start(
             &runtime,
             pool,
-            RouteProxyTransport::Https {
+            RouteProxyTransport::HttpAndHttps {
                 certificate_pem_path: material.server_certificate_pem.clone(),
                 private_key_pem_path: material.server_private_key_pem.clone(),
             },
         )
         .await
-        .expect("start tls");
+        .expect("start http and tls");
         let root = reqwest::Certificate::from_pem(
             &tokio::fs::read(&material.root_certificate_pem)
                 .await
@@ -5991,31 +6057,102 @@ mod tests {
             .add_root_certificate(root)
             .build()
             .expect("client");
-        let tls_response = client
-            .get(format!(
-                "{}/v1/models",
-                status.base_url.as_deref().expect("base url")
-            ))
-            .bearer_auth(key)
-            .send()
-            .await
-            .expect("tls request");
 
+        // Two endpoints, two ports. `base_url` stays the HTTP one because that is
+        // what gets written into client configs.
         assert_eq!(
             status
                 .base_url
                 .as_deref()
+                .map(|value| value.starts_with("http://")),
+            Some(true)
+        );
+        assert_eq!(
+            status
+                .https_base_url
+                .as_deref()
                 .map(|value| value.starts_with("https://")),
             Some(true)
         );
+        assert_eq!(status.https_error, None);
+        assert_ne!(status.port, status.https_port);
+
+        let tls_response = client
+            .get(format!(
+                "{}/v1/models",
+                status.https_base_url.as_deref().expect("https base url")
+            ))
+            .bearer_auth(&key)
+            .send()
+            .await
+            .expect("tls request");
         assert_eq!(tls_response.status(), reqwest::StatusCode::OK);
+
+        // The whole point of the split: HTTP keeps answering, so a client that
+        // cannot read the local root CA is unaffected by the HTTPS switch.
+        let plain_response = client
+            .get(format!(
+                "{}/v1/models",
+                status.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(&key)
+            .send()
+            .await
+            .expect("plain request");
+        assert_eq!(plain_response.status(), reqwest::StatusCode::OK);
+
+        // Only the TLS port refuses plain HTTP.
         let plain_error = reqwest::get(format!(
             "http://127.0.0.1:{}/v1/models",
-            status.port.expect("port")
+            status.https_port.expect("https port")
         ))
         .await
         .expect_err("plain HTTP must not be served by the TLS listener");
         assert!(plain_error.is_request() || plain_error.is_connect() || plain_error.is_decode());
+
+        RouteProxyService::stop(&runtime).await.expect("stop");
+    }
+
+    #[tokio::test]
+    async fn a_broken_certificate_leaves_http_serving() {
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let runtime = RouteProxyRuntimeState::default();
+
+        // Certificate material that cannot be loaded must not take down the one
+        // endpoint every client can use.
+        let status = RouteProxyService::start(
+            &runtime,
+            pool,
+            RouteProxyTransport::HttpAndHttps {
+                certificate_pem_path: temp.path().join("missing-cert.pem"),
+                private_key_pem_path: temp.path().join("missing-key.pem"),
+            },
+        )
+        .await
+        .expect("a certificate problem must not fail the start");
+
+        assert!(status.running);
+        assert_eq!(
+            status
+                .base_url
+                .as_deref()
+                .map(|value| value.starts_with("http://")),
+            Some(true)
+        );
+        assert_eq!(status.https_base_url, None);
+        // The reason has to name the file, not just say "certificate": the panel
+        // shows this string verbatim and it is the user's only clue.
+        let reason = status
+            .https_error
+            .expect("a reason for the missing listener");
+        assert!(
+            reason.contains("missing-cert.pem"),
+            "the failure has to keep its detail: {reason}"
+        );
 
         RouteProxyService::stop(&runtime).await.expect("stop");
     }
@@ -6028,7 +6165,7 @@ mod tests {
         run_migrations(&pool).await.expect("migrations");
         let runtime = RouteProxyRuntimeState::default();
 
-        let status = RouteProxyService::start(&runtime, pool, RouteProxyTransport::Http)
+        let status = RouteProxyService::start(&runtime, pool, RouteProxyTransport::HttpOnly)
             .await
             .expect("start http");
 
@@ -6087,7 +6224,7 @@ mod tests {
             .try_acquire("codex", &first_id, 1)
             .await
             .expect("hold first account concurrency slot");
-        let proxy = RouteProxyService::start(&runtime, pool, RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool, RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
         let client = reqwest::Client::new();
@@ -6135,7 +6272,7 @@ mod tests {
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
         let runtime = RouteProxyRuntimeState::default();
-        let status = RouteProxyService::start(&runtime, pool, RouteProxyTransport::Http)
+        let status = RouteProxyService::start(&runtime, pool, RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
 
@@ -6202,7 +6339,7 @@ mod tests {
         .await
         .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
         let client = reqwest::Client::new();
@@ -6344,7 +6481,7 @@ mod tests {
                 .await
                 .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
 
@@ -6466,7 +6603,7 @@ mod tests {
         let proxy = RouteProxyService::start_with_test_upstream_timeouts(
             &runtime,
             pool.clone(),
-            RouteProxyTransport::Http,
+            RouteProxyTransport::HttpOnly,
             OutboundTimeouts {
                 connect: Some(Duration::from_millis(500)),
                 read: Some(Duration::from_millis(300)),
@@ -6543,7 +6680,7 @@ mod tests {
         let proxy = RouteProxyService::start_with_test_upstream_timeouts(
             &runtime,
             pool.clone(),
-            RouteProxyTransport::Http,
+            RouteProxyTransport::HttpOnly,
             OutboundTimeouts {
                 connect: Some(Duration::from_millis(500)),
                 read: Some(Duration::from_millis(200)),
@@ -6614,7 +6751,7 @@ mod tests {
                 .await
                 .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
 
@@ -6677,7 +6814,7 @@ mod tests {
                 .await
                 .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
 
@@ -6735,7 +6872,7 @@ mod tests {
                 .await
                 .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
 
@@ -6803,7 +6940,7 @@ mod tests {
                 .await
                 .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
 
@@ -6958,7 +7095,7 @@ mod tests {
                 .await
                 .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
 
@@ -7013,7 +7150,7 @@ mod tests {
                 .await
                 .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
 
@@ -7078,7 +7215,7 @@ mod tests {
                 .await
                 .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
 
@@ -7133,7 +7270,7 @@ mod tests {
                 .await
                 .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
 
@@ -7188,7 +7325,7 @@ mod tests {
                 .await
                 .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
 
@@ -7247,7 +7384,7 @@ mod tests {
                 .await
                 .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
 
@@ -7293,7 +7430,7 @@ mod tests {
                 .await
                 .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
 
@@ -7345,7 +7482,7 @@ mod tests {
                 .await
                 .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
 
@@ -7416,7 +7553,7 @@ mod tests {
                 .await
                 .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool, RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool, RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
 
@@ -10392,7 +10529,7 @@ data: [DONE]\n\n";
                 .await
                 .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
         let endpoint = format!(
@@ -10489,7 +10626,7 @@ data: [DONE]\n\n";
         .await
         .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
         let endpoint = format!(
@@ -10560,7 +10697,7 @@ data: [DONE]\n\n";
                 .await
                 .expect("route key");
         let runtime = RouteProxyRuntimeState::default();
-        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::Http)
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
             .await
             .expect("start proxy");
         let endpoint = format!(

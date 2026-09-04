@@ -6957,6 +6957,7 @@ export function AccountsScreen({
           capabilityDisabledReason={configWriteEnabled ? undefined : configWriteReason}
           clients={configWriteClientsQuery.data ?? []}
           error={configWriteError}
+          httpsError={routeProxyQuery.data?.https_error ?? null}
           initialSelection={storedClientSelection}
           loading={writeConfigsMutation.isPending}
           onClose={() => {
@@ -6970,6 +6971,9 @@ export function AccountsScreen({
           poolApiKey={routeProxyKeyQuery.data ?? null}
           poolBaseUrl={
             routeProxyQuery.data?.running ? routeProxyQuery.data.base_url ?? null : null
+          }
+          poolHttpsBaseUrl={
+            routeProxyQuery.data?.running ? routeProxyQuery.data.https_base_url ?? null : null
           }
         />
       ) : null}

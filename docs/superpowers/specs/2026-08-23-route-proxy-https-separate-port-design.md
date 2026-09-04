@@ -1,5 +1,13 @@
 # 本地算力池 HTTPS 独立端口设计
 
+> **实施说明（2026-09-04）**：已实施，但按用户要求**去掉了「启用独立端口」开关**——
+> HTTPS 一律独占端口、与 HTTP 并存，没有替换模式。因此下文的
+> `RouteProxyHttpsConfig.separate_port` 字段、三态 `RouteProxyTransportPlan`、
+> `set_route_proxy_https_separate_port` 命令与那个复选框都**未落地**；实际实现是两态
+> `RouteProxyTransport { HttpOnly, HttpAndHttps }`。其余内容（双监听器结构、
+> `base_url` 恒为 HTTP 的不变量、HTTPS 非致命、相邻端口规则）与代码一致。
+> 老用户配置里已写入的 `https://` 地址会因此失配，靠既有的「配置已变更」提示引导重写。
+
 ## 背景
 
 现在启用本地算力池 HTTPS 是**把唯一那个监听端口从 HTTP 换成 HTTPS**，客户端配置里写入的

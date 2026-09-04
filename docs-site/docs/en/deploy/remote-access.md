@@ -90,13 +90,15 @@ Both paths must be supplied together; only one fails with `web.tls_paths_incompl
 
 ## Local pool HTTPS
 
-This has nothing to do with remote access. It solves a different problem: **some clients only accept `https://` upstream URLs**, while the AI Switch local routing proxy defaults to `http://127.0.0.1:19527`. To bridge that, the app can generate a self-signed certificate chain so the local proxy serves HTTPS.
+This has nothing to do with remote access. It solves a different problem: **some clients only accept `https://` upstream URLs**, while the AI Switch local routing proxy defaults to `http://127.0.0.1:19527`. To bridge that, the app can generate a self-signed certificate chain so the local proxy serves HTTPS **in addition to** HTTP.
+
+HTTPS does not replace HTTP — it takes a port of its own. HTTP keeps serving where it was and HTTPS binds the next free port up from it, normally `http://127.0.0.1:19527` alongside `https://127.0.0.1:19528`. Client configs always receive the HTTP address, because clients that ship their own CA bundle (curl on macOS/Linux, Node-based CLIs) never see the root certificate in the system trust store and would only fail certificate validation. So: **use the HTTP endpoint unless a client genuinely demands TLS, and paste the HTTPS one by hand when it does.** Both addresses are shown in the config-write dialog and in the HTTPS panel.
 
 ### It is off by default
 
 The defaults in `route-proxy-https.json` are `enabled: false` and `autoStart: false`. Meaning: **unless you turn it on yourself, local HTTPS stays off and no certificate is generated**. Installing the app writes nothing to your system trust store.
 
-The proxy itself always binds `127.0.0.1`, starting at port `19527` and walking up to the next free port if that one is taken. Enabling HTTPS does not make it listen on an external address.
+The proxy itself always binds `127.0.0.1`, starting at port `19527` and walking up to the next free port if that one is taken. Enabling HTTPS does not make it listen on an external address; the TLS listener is loopback-only too, and if it cannot start the reason is recorded while HTTP keeps serving.
 
 ### Where the certificates live
 
@@ -169,6 +171,19 @@ certutil -A -d <nss-db-path> -n "AI Switch Route Proxy Root CA" -t C,, \
 The NSS nickname must match the root CN — `AI Switch Route Proxy Root CA` — because uninstall looks the certificate up by that name.
 
 The manual steps in the panel are generated from the real paths on your machine, so copying the commands from the panel is more reliable than copying them from this page.
+
+### Checking the HTTPS endpoint by hand
+
+System curl is enough to see whether the HTTPS endpoint answers — on Windows, add `--ssl-no-revoke`:
+
+```powershell
+curl.exe --ssl-no-revoke --cacert "$HOME\.ai-switch\certs\route-proxy\root-ca.pem" `
+  -H "Authorization: Bearer <proxy key>" https://127.0.0.1:19528/v1/models
+```
+
+curl on Windows uses Schannel, which looks up the root certificate's revocation status. A self-signed root has no CRL or OCSP distribution point, so without that flag you get `curl: (60) schannel: the revocation status is unknown` — which reads like an invalid certificate but only means the revocation status could not be fetched. With the flag it returns 200, matching what the HTTP endpoint returns.
+
+Hitting the HTTP endpoint at the same time (`http://127.0.0.1:19527/v1/models`) should also return 200 and needs no certificate arguments at all — that is exactly what running both ports is meant to guarantee. Conversely, plain HTTP against the HTTPS port yields `curl: (1) Received HTTP/0.9 when not allowed`, because that listener only speaks TLS.
 
 ### Private keys never reach the UI
 

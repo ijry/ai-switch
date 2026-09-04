@@ -18,7 +18,9 @@ const BIND_HOST: &str = "127.0.0.1";
 const DEFAULT_ROUTE_PROXY_PORT: u16 = 19527;
 ```
 
-Default port **19527**. If that port is taken, the bind logic scans upward from 19527 until it finds a free one, so the authoritative port is the `base_url` in runtime state, not the constant. The transport can be HTTP or local HTTPS (loading a local certificate, for clients that insist on https).
+Default port **19527**. If that port is taken, the bind logic scans upward from 19527 until it finds a free one, so the authoritative port is the `base_url` in runtime state, not the constant.
+
+When local HTTPS is on, HTTPS **does not share the HTTP port**: HTTP keeps serving where it was, and HTTPS binds the next free port up from it (normally 19527/19528). Both listeners share the same routing logic and credential pool. Client configs always receive the HTTP address — clients that ship their own CA bundle (curl on macOS/Linux, Node-based CLIs) cannot see the root certificate in the system trust store, so writing `https://` would break them outright. The HTTPS address (`https_base_url` in runtime state) is there to be pasted by hand when a client genuinely requires TLS. If HTTPS cannot start, the reason is recorded and HTTP is unaffected.
 
 ### Platform identification
 

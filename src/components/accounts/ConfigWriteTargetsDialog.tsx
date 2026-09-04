@@ -2,6 +2,7 @@ import { Check, Copy, Eye, EyeOff, Plug, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { ConfigWriteClientStatus } from "../../lib/api/types";
 import { copySensitiveText } from "../../lib/routeCredentialTransfer";
+import { routeProxyEndpointForPlatform } from "../../lib/routeProxyEndpoint";
 
 const fileStatusLabels: Record<string, string> = {
   missing: "未建立",
@@ -125,6 +126,13 @@ type ConfigWriteTargetsDialogProps = {
   capabilityDisabledReason?: string;
   /** Pool endpoint for clients this dialog cannot write; `null` until it is read. */
   poolBaseUrl?: string | null;
+  /**
+   * The HTTPS endpoint, on its own port beside the HTTP one. `null` when HTTPS is
+   * off or could not start. Never written into a config — only pasted by hand.
+   */
+  poolHttpsBaseUrl?: string | null;
+  /** Why HTTPS is absent even though it was turned on. */
+  httpsError?: string | null;
   poolApiKey?: string | null;
   loading: boolean;
   error: string | null;
@@ -139,6 +147,8 @@ export function ConfigWriteTargetsDialog({
   initialSelection,
   capabilityDisabledReason,
   poolBaseUrl = null,
+  poolHttpsBaseUrl = null,
+  httpsError = null,
   poolApiKey = null,
   loading,
   error,
@@ -208,6 +218,10 @@ export function ConfigWriteTargetsDialog({
 
   const selected = override ?? initialSelection ?? nativeClientKeys(clients);
   const disabled = Boolean(capabilityDisabledReason);
+  // `null` rather than `""` so `EndpointRow` shows its "reading..." placeholder
+  // instead of an empty field before the proxy status arrives.
+  const httpEndpoint = routeProxyEndpointForPlatform(poolBaseUrl ?? "", platform) || null;
+  const httpsEndpoint = routeProxyEndpointForPlatform(poolHttpsBaseUrl ?? "", platform) || null;
   const restartClients = clients.filter(
     (client) => client.restart_required && selected.includes(client.client_key),
   );
@@ -349,8 +363,25 @@ export function ConfigWriteTargetsDialog({
                   如果你需要在以上客户端之外的情况使用当前算力池端点，可以用下面的参数手动配置。
                 </p>
               </div>
-              <EndpointRow label="Base URL" value={poolBaseUrl} />
+              <EndpointRow label="Base URL" value={httpEndpoint} />
+              {/* HTTPS has its own port and is never written into a config:
+                  clients that ship their own CA bundle (curl, Node-based CLIs)
+                  cannot see the local root certificate in the system trust store,
+                  so an https:// address would simply break them. Rendered only
+                  when it exists, so the row never sits empty. */}
+              {httpsEndpoint ? (
+                <EndpointRow label="HTTPS Base URL" value={httpsEndpoint} />
+              ) : null}
               <EndpointRow label="API Key" secret value={poolApiKey} />
+              <p className="text-[11px] leading-5 text-stone-500">
+                {httpsEndpoint
+                  ? "正常情况用上面的 Base URL（HTTP）即可。HTTPS 端点只给确实需要 TLS 的特殊场景，且客户端必须信任本地根证书。"
+                  : httpsError
+                    ? // Saying "go turn HTTPS on" would be wrong here — they did,
+                      // and it is the listener that failed.
+                      "正常情况用上面的 Base URL（HTTP）即可。HTTPS 端点本次未能启动，原因见设置里的 HTTPS 面板。"
+                    : "正常情况用上面的 Base URL（HTTP）即可。需要 TLS 的特殊场景可在设置里开启 HTTPS，它会另占一个端口。"}
+              </p>
               <p className="text-[11px] leading-5 text-amber-800">
                 {`注意：每个智能体标签页的算力池端点 API Key 都不一样。这里给出的是 ${platformLabel ?? platform} 标签页的 Key，别的标签页要各自复制。`}
               </p>

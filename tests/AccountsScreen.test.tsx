@@ -3858,7 +3858,10 @@ describe("AccountsScreen", () => {
       running: true,
       bind_host: "127.0.0.1",
       port: 43111,
-      base_url: "https://127.0.0.1:43111",
+      base_url: "http://127.0.0.1:43111",
+      https_port: 43112,
+      https_base_url: "https://127.0.0.1:43112",
+      https_error: null,
     });
     poolStateByPlatform.set("codex", ["cred-official-1"]);
     renderScreen("codex", "out_of_pool");
@@ -3872,8 +3875,13 @@ describe("AccountsScreen", () => {
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
     await screen.findByText("选择要写入的客户端");
 
+    // Codex appends /responses to the base URL, so the copied address carries /v1.
     await userEvent.click(screen.getByLabelText("复制 Base URL"));
-    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("https://127.0.0.1:43111");
+    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("http://127.0.0.1:43111/v1");
+
+    // HTTPS lives on its own port, so it shows up as a second address rather than
+    // replacing the first.
+    expect(screen.getByLabelText("HTTPS Base URL")).toHaveValue("https://127.0.0.1:43112/v1");
 
     // The key is per platform, so the dialog reads the active tab's own key.
     await waitFor(() =>
