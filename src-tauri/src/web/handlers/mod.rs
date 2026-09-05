@@ -643,6 +643,24 @@ pub async fn dispatch_command(
                     .map_err(to_error)?,
             )
         }
+        "set_route_credential_cooldown" => {
+            let id = required_string_arg(&args, "id")?;
+            let seconds =
+                optional_i64_arg(&args, "seconds")?.ok_or_else(|| missing_argument("seconds"))?;
+            to_value(
+                RouteCredentialService::set_cooldown(&state.pool, id, seconds)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "clear_route_credential_failure_state" => {
+            let id = required_string_arg(&args, "id")?;
+            to_value(
+                RouteCredentialService::clear_failure_state(&state.pool, id)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
         "delete_route_credential" => {
             let id = required_string_arg(&args, "id")?;
             RouteCredentialService::delete(&state.pool, id)

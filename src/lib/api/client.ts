@@ -445,6 +445,18 @@ export function clearRouteCredentialModelState(
   return invoke("clear_route_credential_model_state", { id, model_key: modelKey });
 }
 
+/** `seconds = 0` lifts the account's backoff without clearing its failure count. */
+export function setRouteCredentialCooldown(
+  id: string,
+  seconds: number,
+): Promise<RouteCredential> {
+  return invoke("set_route_credential_cooldown", { id, seconds });
+}
+
+export function clearRouteCredentialFailureState(id: string): Promise<RouteCredential> {
+  return invoke("clear_route_credential_failure_state", { id });
+}
+
 export function deleteRouteCredential(id: string): Promise<void> {
   return invoke("delete_route_credential", { id });
 }

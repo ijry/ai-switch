@@ -1787,6 +1787,51 @@ impl RouteCredentialRepository {
         Ok(model_cleared)
     }
 
+    /// Overwrite the account-level backoff deadline, or lift it with `None`.
+    ///
+    /// Only the two timestamps move. The failure count, the semantic streak and
+    /// the last-failure details stay put on purpose: shortening a wait is a
+    /// scheduling decision, not evidence the account recovered, and `错误 N 次`
+    /// plus the hover detail are how the user judges whether to shorten it again.
+    /// Callers that do want the whole record gone use `clear_transient_failure`.
+    ///
+    /// Both columns get the same value because every writer sets them together —
+    /// selection treats the later of the two as the single deadline.
+    pub async fn set_cooldown_until(
+        pool: &SqlitePool,
+        id: &str,
+        cooldown_until: Option<&str>,
+    ) -> Result<(), AppError> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE route_credentials
+             SET next_retry_at = ?, cooldown_until = ?, updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(cooldown_until)
+        .bind(cooldown_until)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|err| {
+            database_error(
+                "database.route_credential_cooldown_update",
+                "Could not update route credential cooldown",
+                err,
+            )
+        })?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::Validation {
+                code: "validation.route_credential_not_found",
+                message: "Route credential does not exist".to_string(),
+                details: Some(id.to_string()),
+                recoverable: true,
+            });
+        }
+        Ok(())
+    }
+
     pub async fn record_semantic_failure_with_status(
         pool: &SqlitePool,
         id: &str,
@@ -2292,7 +2337,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn external_source_pair_is_unique_and_looked_up_by_source_id() {        let pool = crate::database::create_memory_pool().await.unwrap();
+    async fn external_source_pair_is_unique_and_looked_up_by_source_id() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
         crate::database::run_migrations(&pool).await.unwrap();
 
         let mut tx = pool.begin().await.unwrap();
@@ -4152,5 +4198,93 @@ mod tests {
             .await
             .expect("candidates");
         assert_eq!(candidates[0].has_model_failures, 1);
+    }
+
+    #[tokio::test]
+    async fn setting_a_cooldown_moves_both_timestamps_and_keeps_the_failure_record() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let created = create_api_credential(&pool, "codex", "Cooldown").await;
+        RouteCredentialRepository::record_transient_failure(
+            &pool,
+            &created.id,
+            "transport",
+            "connection reset",
+            None,
+            FailureScope::Account,
+        )
+        .await
+        .expect("record failure");
+
+        RouteCredentialRepository::set_cooldown_until(
+            &pool,
+            &created.id,
+            Some("2099-01-01T00:00:00+00:00"),
+        )
+        .await
+        .expect("set cooldown");
+
+        let stored = RouteCredentialRepository::get(&pool, &created.id)
+            .await
+            .expect("row");
+        // Selection reads the later of the two, so a caller that moved only one
+        // would leave the account parked by the stale column.
+        assert_eq!(
+            stored.next_retry_at.as_deref(),
+            Some("2099-01-01T00:00:00+00:00")
+        );
+        assert_eq!(
+            stored.cooldown_until.as_deref(),
+            Some("2099-01-01T00:00:00+00:00")
+        );
+        // Waiting less is a scheduling call, not proof the account is healthy.
+        assert_eq!(stored.transient_failure_count, 1);
+        assert_eq!(stored.last_failure_kind.as_deref(), Some("transport"));
+    }
+
+    #[tokio::test]
+    async fn lifting_a_cooldown_clears_both_timestamps_without_touching_the_count() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let created = create_api_credential(&pool, "codex", "Lift").await;
+        sqlx::query(
+            "UPDATE route_credentials
+             SET transient_failure_count = 3, next_retry_at = ?, cooldown_until = ?
+             WHERE id = ?",
+        )
+        .bind("2099-01-01T00:00:00+00:00")
+        .bind("2099-01-01T00:00:00+00:00")
+        .bind(&created.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        RouteCredentialRepository::set_cooldown_until(&pool, &created.id, None)
+            .await
+            .expect("lift cooldown");
+
+        let stored = RouteCredentialRepository::get(&pool, &created.id)
+            .await
+            .expect("row");
+        assert!(stored.next_retry_at.is_none());
+        assert!(stored.cooldown_until.is_none());
+        assert_eq!(stored.transient_failure_count, 3);
+    }
+
+    #[tokio::test]
+    async fn setting_a_cooldown_on_a_missing_account_is_a_validation_error() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+
+        let error = RouteCredentialRepository::set_cooldown_until(&pool, "nope", None)
+            .await
+            .expect_err("missing account");
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "validation.route_credential_not_found",
+                ..
+            }
+        ));
     }
 }

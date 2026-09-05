@@ -155,6 +155,41 @@ pub async fn clear_route_credential_model_state(
     Ok(credential)
 }
 
+/// Hand-set the account's remaining backoff. `seconds = 0` lifts it, which is
+/// what the account list's cooldown badge offers as 解除.
+#[tauri::command]
+pub async fn set_route_credential_cooldown(
+    state: State<'_, AppState>,
+    id: String,
+    seconds: i64,
+) -> Result<RouteCredential, ApiError> {
+    let credential = RouteCredentialService::set_cooldown(&state.pool, id, seconds)
+        .await
+        .map_err(ApiError::from)?;
+    // Availability changed, so the account screen has to refetch: without this the
+    // row keeps counting down against a deadline the database no longer holds.
+    state
+        .route_proxy
+        .activity()
+        .notify_status_change(&credential.platform, &credential.id);
+    Ok(credential)
+}
+
+#[tauri::command]
+pub async fn clear_route_credential_failure_state(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<RouteCredential, ApiError> {
+    let credential = RouteCredentialService::clear_failure_state(&state.pool, id)
+        .await
+        .map_err(ApiError::from)?;
+    state
+        .route_proxy
+        .activity()
+        .notify_status_change(&credential.platform, &credential.id);
+    Ok(credential)
+}
+
 #[tauri::command]
 pub async fn delete_route_credential(
     state: State<'_, AppState>,

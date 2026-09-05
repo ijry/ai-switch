@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   archiveRouteCredentials,
+  clearRouteCredentialFailureState,
   clearRouteCredentialModelState,
   createBatch,
   copyRouteCredential,
@@ -32,6 +33,7 @@ import {
   saveSettings,
   setRouteCredentialRecovery,
   setRouteCredentialModelStatus,
+  setRouteCredentialCooldown,
   setRouteCredentialStatuses,
   setRoutePoolMembers,
   startRouteProxy,
@@ -76,6 +78,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 vi.mock("../src/lib/api/client", () => ({
   archiveRouteCredentials: vi.fn(),
+  clearRouteCredentialFailureState: vi.fn(),
   clearRouteCredentialModelState: vi.fn(),
   createBatch: vi.fn(),
   copyRouteCredential: vi.fn(),
@@ -103,6 +106,7 @@ vi.mock("../src/lib/api/client", () => ({
   saveSettings: vi.fn(),
   setRouteCredentialRecovery: vi.fn(),
   setRouteCredentialModelStatus: vi.fn(),
+  setRouteCredentialCooldown: vi.fn(),
   setRouteCredentialStatuses: vi.fn(),
   setRoutePoolMembers: vi.fn(),
   startRouteProxy: vi.fn(),
@@ -505,6 +509,8 @@ describe("AccountsScreen", () => {
     vi.mocked(setRouteCredentialRecovery).mockReset();
     vi.mocked(setRouteCredentialModelStatus).mockReset();
     vi.mocked(clearRouteCredentialModelState).mockReset();
+    vi.mocked(setRouteCredentialCooldown).mockReset();
+    vi.mocked(clearRouteCredentialFailureState).mockReset();
     transportTestState.activityHandler = null;
     transportTestState.statusHandler = null;
     transportTestState.liveLogHandler = null;
@@ -5569,6 +5575,80 @@ describe("AccountsScreen", () => {
     // The account itself is dead; per-model detail would only add noise.
     expect(await screen.findByText("API Account")).toBeInTheDocument();
     expect(screen.queryByTestId("credential-model-issues-cred-api-1")).toBeNull();
+  });
+
+  // Account-level cooldown had no manual exit at all: it could only be waited
+  // out, while every model under it already had 解除.
+  function coolingCredentials(secondsFromNow = 45) {
+    return credentialsFixture.map((credential) =>
+      credential.id === "cred-api-1"
+        ? {
+            ...credential,
+            cooldown_until: new Date(Date.now() + secondsFromNow * 1000).toISOString(),
+            next_retry_at: new Date(Date.now() + secondsFromNow * 1000).toISOString(),
+            transient_failure_count: 3,
+          }
+        : credential,
+    );
+  }
+
+  async function openCooldownDialog(secondsFromNow = 45) {
+    renderPoolWithModelStates(coolingCredentials(secondsFromNow));
+    await userEvent.click(await screen.findByTestId("credential-cooldown-cred-api-1"));
+    return screen.findByLabelText("剩余冷却秒数");
+  }
+
+  it("点击账号冷却徽章会打开冷却弹窗", async () => {
+    const field = await openCooldownDialog();
+
+    expect(screen.getByRole("dialog")).toHaveTextContent("账号冷却");
+    // Seeded from what is actually left, so 保存 without touching anything cannot
+    // silently extend the wait.
+    expect(Number((field as HTMLInputElement).value)).toBeGreaterThan(0);
+    expect(screen.getByRole("dialog")).toHaveTextContent("已累计错误 3 次");
+  });
+
+  it("可在弹窗里延长账号的剩余冷却", async () => {
+    vi.mocked(setRouteCredentialCooldown).mockResolvedValue(coolingCredentials()[1]);
+    const field = await openCooldownDialog();
+
+    await userEvent.clear(field);
+    await userEvent.type(field, "120");
+    await userEvent.click(screen.getByLabelText("延长冷却 1 分"));
+    expect(field).toHaveValue(180);
+
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    expect(setRouteCredentialCooldown).toHaveBeenCalledWith("cred-api-1", 180);
+  });
+
+  it("缩短到 0 以下时停在 1 秒而不是发出非法值", async () => {
+    vi.mocked(setRouteCredentialCooldown).mockResolvedValue(coolingCredentials()[1]);
+    const field = await openCooldownDialog();
+
+    await userEvent.clear(field);
+    await userEvent.type(field, "30");
+    await userEvent.click(screen.getByLabelText("缩短冷却 1 分"));
+    // 1 秒是「几乎立刻」的合法写法；真正的归零走「立即解除冷却」。
+    expect(field).toHaveValue(1);
+  });
+
+  it("可一键解除账号冷却", async () => {
+    vi.mocked(clearRouteCredentialFailureState).mockResolvedValue(coolingCredentials()[1]);
+    await openCooldownDialog();
+
+    await userEvent.click(screen.getByLabelText("解除账号冷却"));
+    expect(clearRouteCredentialFailureState).toHaveBeenCalledWith("cred-api-1");
+  });
+
+  it("超出上限的冷却秒数不会发出请求", async () => {
+    const field = await openCooldownDialog();
+
+    await userEvent.clear(field);
+    await userEvent.type(field, "86401");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("剩余冷却需在 1 到 86400 秒之间");
+    expect(setRouteCredentialCooldown).not.toHaveBeenCalled();
   });
 });
 

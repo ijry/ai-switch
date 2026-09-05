@@ -11,7 +11,7 @@ use crate::models::route_credential::{
     CreateApiRouteCredentialInput, ImportOfficialFilesInput, ImportOfficialTextInput, ModelMapping,
     ReorderRouteCredentialInput, RouteCredential, RouteCredentialFailurePolicy,
     RouteCredentialImportFailure, RouteCredentialImportResult, RouteCredentialPage,
-    RouteCredentialPageRequest, UpdateRouteCredentialInput,
+    RouteCredentialPageRequest, UpdateRouteCredentialInput, MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS,
 };
 use crate::models::route_credential_model::{
     RouteCredentialModelState, MODEL_STATUS_OK, MODEL_STATUS_PAUSED,
@@ -440,6 +440,51 @@ impl RouteCredentialService {
         model_key: String,
     ) -> Result<RouteCredential, AppError> {
         RouteCredentialModelRepository::clear(pool, &id, &model_key).await?;
+        Self::get(pool, id).await
+    }
+
+    /// Move the account-level cooldown deadline to `seconds` from now, or lift it
+    /// when `seconds` is `0`.
+    ///
+    /// Only the deadline changes — see `set_cooldown_until`. The user is telling
+    /// the scheduler how long to keep waiting, which is a different claim from
+    /// "this account is fine now"; that one is `clear_failure_state`.
+    pub async fn set_cooldown(
+        pool: &SqlitePool,
+        id: String,
+        seconds: i64,
+    ) -> Result<RouteCredential, AppError> {
+        // The ceiling matches `cooldown_seconds` so a hand-set window can never
+        // outlast what the policy itself is allowed to write.
+        if seconds < 0 || seconds > i64::from(MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS) {
+            return Err(AppError::Validation {
+                code: "validation.route_credential_cooldown_seconds",
+                message: format!(
+                    "Cooldown seconds must be between 0 and {MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS}"
+                ),
+                details: Some(seconds.to_string()),
+                recoverable: true,
+            });
+        }
+        let cooldown_until =
+            (seconds > 0).then(|| (Utc::now() + chrono::Duration::seconds(seconds)).to_rfc3339());
+        RouteCredentialRepository::set_cooldown_until(pool, &id, cooldown_until.as_deref()).await?;
+        Self::get(pool, id).await
+    }
+
+    /// Forget the account's automatic failure bookkeeping: the cooldown, the
+    /// failure count behind `错误 N 次`, the semantic streak and the last-failure
+    /// details. Same reset a successful request performs, which is what makes it
+    /// the account-level twin of the per-model `解除`.
+    ///
+    /// Per-model rows are deliberately untouched: they have their own 解除, and a
+    /// user clearing the account's backoff is not claiming a model that answered
+    /// 429 an hour ago is healthy again.
+    pub async fn clear_failure_state(
+        pool: &SqlitePool,
+        id: String,
+    ) -> Result<RouteCredential, AppError> {
+        RouteCredentialRepository::clear_transient_failure(pool, &id, None).await?;
         Self::get(pool, id).await
     }
 }
@@ -1130,6 +1175,7 @@ mod tests {
     use crate::database::repositories::route_credential_model_repository::RouteCredentialModelRepository;
     use crate::database::{create_memory_pool, run_migrations};
     use crate::models::route_credential_model::MODEL_STATUS_ERROR;
+    use chrono::DateTime;
 
     async fn dual_model_credential(pool: &SqlitePool) -> String {
         RouteCredentialRepository::create(
@@ -2555,5 +2601,128 @@ mod tests {
                 }
             ));
         }
+    }
+
+    async fn cooling_credential(pool: &SqlitePool) -> String {
+        let id = dual_model_credential(pool).await;
+        RouteCredentialRepository::record_transient_failure(
+            pool,
+            &id,
+            "transport",
+            "connection reset",
+            None,
+            crate::models::route_credential_model::FailureScope::Account,
+        )
+        .await
+        .expect("record failure");
+        RouteCredentialRepository::set_cooldown_until(pool, &id, Some("2099-01-01T00:00:00+00:00"))
+            .await
+            .expect("park");
+        id
+    }
+
+    #[tokio::test]
+    async fn setting_a_shorter_cooldown_keeps_the_failure_count_visible() {
+        let pool = create_memory_pool().await.unwrap();
+        run_migrations(&pool).await.unwrap();
+        let id = cooling_credential(&pool).await;
+
+        let updated = RouteCredentialService::set_cooldown(&pool, id, 60)
+            .await
+            .expect("set cooldown");
+
+        let deadline = DateTime::parse_from_rfc3339(
+            updated
+                .cooldown_until
+                .as_deref()
+                .expect("cooldown deadline"),
+        )
+        .expect("rfc3339");
+        let remaining = deadline.with_timezone(&Utc) - Utc::now();
+        assert!(
+            remaining.num_seconds() > 50 && remaining.num_seconds() <= 60,
+            "expected ~60s left, got {remaining}"
+        );
+        assert_eq!(updated.next_retry_at, updated.cooldown_until);
+        assert_eq!(updated.transient_failure_count, 1);
+    }
+
+    #[tokio::test]
+    async fn a_zero_second_cooldown_lifts_the_wait_but_keeps_the_record() {
+        let pool = create_memory_pool().await.unwrap();
+        run_migrations(&pool).await.unwrap();
+        let id = cooling_credential(&pool).await;
+
+        let updated = RouteCredentialService::set_cooldown(&pool, id, 0)
+            .await
+            .expect("lift cooldown");
+
+        assert!(updated.cooldown_until.is_none());
+        assert!(updated.next_retry_at.is_none());
+        // The row still reports 错误 1 次 — the account is selectable again, but
+        // nothing has proved it healthy.
+        assert_eq!(updated.transient_failure_count, 1);
+        assert_eq!(updated.last_failure_kind.as_deref(), Some("transport"));
+    }
+
+    #[tokio::test]
+    async fn out_of_range_cooldown_seconds_are_rejected() {
+        let pool = create_memory_pool().await.unwrap();
+        run_migrations(&pool).await.unwrap();
+        let id = dual_model_credential(&pool).await;
+
+        for seconds in [-1, i64::from(MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS) + 1] {
+            let error = RouteCredentialService::set_cooldown(&pool, id.clone(), seconds)
+                .await
+                .expect_err("out of range");
+            assert!(matches!(
+                error,
+                AppError::Validation {
+                    code: "validation.route_credential_cooldown_seconds",
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn clearing_the_failure_state_resets_the_account_but_not_its_models() {
+        let pool = create_memory_pool().await.unwrap();
+        run_migrations(&pool).await.unwrap();
+        let id = cooling_credential(&pool).await;
+        let mut conn = pool.acquire().await.expect("conn");
+        RouteCredentialModelRepository::record_transient_failure(
+            &mut conn,
+            &id,
+            "upstream-sol",
+            "upstream_status",
+            "rate limited",
+            None,
+            Some(600),
+            Some(429),
+            10,
+            true,
+        )
+        .await
+        .expect("park model");
+        drop(conn);
+
+        let updated = RouteCredentialService::clear_failure_state(&pool, id)
+            .await
+            .expect("clear");
+
+        assert!(updated.cooldown_until.is_none());
+        assert!(updated.next_retry_at.is_none());
+        assert_eq!(updated.transient_failure_count, 0);
+        assert!(updated.last_failure_kind.is_none());
+        assert!(updated.last_failure_message.is_none());
+        // The per-model row has its own 解除; the account button must not reach
+        // across and vouch for a model that failed on its own.
+        let parked = updated
+            .model_states
+            .iter()
+            .find(|state| state.model_key == "upstream-sol")
+            .expect("model row");
+        assert!(parked.cooldown_until.is_some());
     }
 }

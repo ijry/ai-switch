@@ -125,6 +125,8 @@ The database default is `ok`. Three classes of event drive transitions:
 
 **Beyond account status there is a second layer of model status.** Every model on an account has its own `ok` / `error` / `paused` state and its own cooldown window, stored in `route_credential_models`. An account-level `paused` takes the whole account out of scheduling; a model-level `paused` takes out only that one model. The two are independent. The edit drawer's 模型状态 ("model status") section, under the 故障处理 ("failure handling") tab, pauses, resumes, or clears the cooldown of each model individually.
 
+**The account-level cooldown is editable straight from the list.** The row's 冷却 N 秒 badge is a button: it opens a dialog that steps the remaining seconds up or down, or lifts the backoff outright with 立即解除冷却 ("lift the cooldown now"), which clears the error count along with it.
+
 Full failure classification, backoff durations, and thresholds live in [Reliability and Auto Recovery](/en/guide/reliability).
 
 ## Priority and concurrency limit

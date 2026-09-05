@@ -317,6 +317,19 @@ Whenever the account's `transient_failure_count` is above 0, its status tag rend
 
 The row's 冷却 N 秒 ("cooling for N seconds") badge now explicitly means an **account-level** cooldown. When models are unavailable, an extra orange badge 模型 N 不可用 ("N models unavailable") appears; the count is "cooling and not yet expired" plus `error` plus `paused`. The two badges do not overlap in meaning: one says "the whole account is backing off", the other "some models are unavailable". Hovering 模型 N 不可用 expands a per-model detail panel: the upstream model name, the client-facing aliases in parentheses (rows whose mapping was deleted show 已移除映射, "mapping removed"), the reason and remaining time, and the most recent failure message.
 
+### Clicking the cooldown badge adjusts or lifts it
+
+The 冷却 N 秒 badge is a button. Clicking it opens the 账号冷却 ("account cooldown") dialog:
+
+- **剩余冷却（秒）** ("remaining cooldown, seconds") is seeded with what the database actually has left, so saving without touching anything cannot silently extend the wait. Five one-click steps sit beside it — `−5 分` `−1 分` `+1 分` `+5 分` `+30 分` — and a result out of range is clamped back into 1…86,400 seconds. Saving writes `now + that many seconds` into both `next_retry_at` and `cooldown_until` and **leaves the failure count and the last-failure details alone**: "wait less" is a scheduling decision, not a claim that the account recovered.
+- **立即解除冷却** ("lift the cooldown now") performs the same reset a successful request does — the timestamps, the count behind 错误 N 次, the semantic streak and the last-failure details are all cleared and the account rejoins the rotation immediately. It is the account-level twin of the per-model 解除.
+
+Neither action touches model rows: per-model cooldown and error state have their own 解除, and clearing the account's backoff says nothing about a model that answered 429 an hour ago. Cooldown state lives only in SQLite with no in-memory cache, so the very next request can pick the account up again.
+
+::: tip The badge only exists while the account is cooling
+Once the cooldown expires the badge disappears on its own and there is nothing left to lift; the remaining 错误 N 次 clears itself on the next successful request. To drop that counter too, use 立即解除冷却 while the cooldown is still running.
+:::
+
 The edit drawer's 故障处理 ("failure handling") tab has a 模型状态 ("model status") section listing every known model — including ones that have never failed, so a healthy model can be paused pre-emptively. Each row carries two actions: a 暂停 / 恢复 ("pause" / "resume") toggle, and 解除 ("clear") to drop that model's cooldown and error state. The section header's 全部解除 ("clear all") only issues requests for models that actually have something to clear: it skips `paused` ones (that is the user's own decision) and skips healthy models with no cooldown and no failure counts.
 
 ### The sensitive-word reminder
@@ -569,7 +582,7 @@ That distinction is deliberate. If explicit-test recovery also wiped every model
 | You want full manual control | `off`, and click test when you need to |
 
 ::: tip Manual testing is the fastest recovery there is
-Click one model connectivity test on a single account; success performs full recovery. `paused` accounts can be tested too — the code comments on this explicitly: an explicit test is exactly how a user determines whether a paused account has come back. To clear one model's cooldown or error, 解除 ("clear") in the 模型状态 section under the edit drawer's 故障处理 tab is more direct and costs no quota.
+Click one model connectivity test on a single account; success performs full recovery. `paused` accounts can be tested too — the code comments on this explicitly: an explicit test is exactly how a user determines whether a paused account has come back. To clear one model's cooldown or error, 解除 ("clear") in the 模型状态 section under the edit drawer's 故障处理 tab is more direct and costs no quota. To lift an **account-level** cooldown, click the row's 冷却 N 秒 badge and pick 立即解除冷却 — that costs no quota either.
 :::
 
 ### What happens if config gets corrupted

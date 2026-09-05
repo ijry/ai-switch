@@ -98,7 +98,9 @@ import {
 import {
   createBatch,
   copyRouteCredential,
+  clearRouteCredentialFailureState,
   clearRouteCredentialModelState,
+  setRouteCredentialCooldown,
   setRouteCredentialModelStatus,
   setRouteCredentialRecovery,
   createApiRouteCredential,
@@ -242,6 +244,10 @@ type RoutePoolMutationInput = {
 
 const DEFAULT_ROUTE_CREDENTIAL_COOLDOWN_SECONDS = 10;
 const MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS = 86_400;
+// One-click steps offered by the cooldown dialog. Both directions, because the
+// interesting adjustment is usually "wait less" — a rate-limit window that turned
+// out to be shorter than the configured one.
+const COOLDOWN_ADJUST_STEPS = [-300, -60, 60, 300, 1800];
 
 // How long a finished 真实生成测试 stays on screen before tidying itself away.
 // Long enough to read the verdict and the routing chain, and the × is still
@@ -1453,6 +1459,15 @@ function credentialRetryLabel(credential: RouteCredential): string | null {
     return null;
   }
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// Keeps a hand-typed or stepped cooldown inside the range the backend accepts,
+// so the dialog never submits a value it already knows will be rejected.
+function clampCooldownSeconds(seconds: number): number {
+  if (!Number.isFinite(seconds)) {
+    return 1;
+  }
+  return Math.min(MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS, Math.max(1, Math.round(seconds)));
 }
 
 function formatCooldownRemaining(milliseconds: number): string {
@@ -2798,6 +2813,9 @@ export function AccountsScreen({
   const [quickEditConcurrencyCredential, setQuickEditConcurrencyCredential] = useState<RouteCredential | null>(null);
   const [quickEditConcurrencyValue, setQuickEditConcurrencyValue] = useState("");
   const [quickEditConcurrencyError, setQuickEditConcurrencyError] = useState<string | null>(null);
+  const [cooldownEditCredential, setCooldownEditCredential] = useState<RouteCredential | null>(null);
+  const [cooldownEditValue, setCooldownEditValue] = useState("");
+  const [cooldownEditError, setCooldownEditError] = useState<string | null>(null);
   const modelTestStorageKey = modelTestAccount?.id ?? poolModelTestKey(activePlatform);
   const routeTestModel = modelTestModels[modelTestStorageKey]?.model ?? "";
   const statsOpen = accountView === "stats";
@@ -4501,6 +4519,68 @@ export function AccountsScreen({
       credential: quickEditConcurrencyCredential,
       concurrency,
     });
+  };
+  // 账号级冷却原本只能等它自己过期：模型级有「解除」，账号级一个入口都没有。
+  // 列表里的冷却徽章因此变成可点的，弹窗里既能改剩余时长，也能直接解除。
+  const cooldownMutation = useMutation({
+    mutationFn: ({ credential, seconds }: { credential: RouteCredential; seconds: number }) =>
+      setRouteCredentialCooldown(credential.id, seconds),
+    onSuccess: async (updated) => {
+      setCooldownEditCredential(null);
+      setCooldownEditError(null);
+      mergeCredentialsIntoCache([updated]);
+      await invalidateAccountData();
+    },
+    onError: (error) => {
+      setCooldownEditError(formatApiError(error, "调整冷却时间失败。"));
+    },
+  });
+  const clearFailureStateMutation = useMutation({
+    mutationFn: (credential: RouteCredential) => clearRouteCredentialFailureState(credential.id),
+    onSuccess: async (updated) => {
+      setCooldownEditCredential(null);
+      setCooldownEditError(null);
+      mergeCredentialsIntoCache([updated]);
+      await invalidateAccountData();
+    },
+    onError: (error) => {
+      setCooldownEditError(formatApiError(error, "解除冷却失败。"));
+    },
+  });
+  const openCooldownEditor = (credential: RouteCredential) => {
+    cooldownMutation.reset();
+    clearFailureStateMutation.reset();
+    setCooldownEditError(null);
+    // Seed with what is actually left, so 保存 without touching anything is a
+    // no-op rather than a silent extension.
+    const raw = credential.cooldown_until || credential.next_retry_at;
+    const remaining = raw ? Math.ceil((new Date(raw).getTime() - Date.now()) / 1000) : 0;
+    setCooldownEditValue(String(clampCooldownSeconds(remaining)));
+    setCooldownEditCredential(credential);
+  };
+  const adjustCooldownEditValue = (delta: number) => {
+    setCooldownEditError(null);
+    setCooldownEditValue((current) => {
+      const parsed = Number(current);
+      const base = Number.isFinite(parsed) ? Math.round(parsed) : 0;
+      return String(clampCooldownSeconds(base + delta));
+    });
+  };
+  const submitCooldownEdit = () => {
+    if (!cooldownEditCredential) {
+      return;
+    }
+    const seconds = Number(cooldownEditValue);
+    if (
+      !Number.isInteger(seconds) ||
+      seconds < 1 ||
+      seconds > MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS
+    ) {
+      setCooldownEditError(`剩余冷却需在 1 到 ${MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS} 秒之间。`);
+      return;
+    }
+    setCooldownEditError(null);
+    cooldownMutation.mutate({ credential: cooldownEditCredential, seconds });
   };
   const modelStatusMutation = useMutation({
     mutationFn: ({
@@ -6541,13 +6621,21 @@ export function AccountsScreen({
                   const cooldownBadge =
                     cooldownState?.active && retryLabel ? (
                       <CredentialFailureTooltip credential={credential}>
-                        <span
-                          className="rounded-full bg-orange-50 px-2 py-0.5 text-[11px] font-semibold text-orange-800"
+                        {/* `data-plain-text` for the same reason as the counters
+                            above: the global `.accounts-screen button` rule would
+                            stack its own rounded shadow box on top of this pill's
+                            fill. */}
+                        <button
+                          aria-label={`账号冷却至 ${retryLabel}，点击调整或解除`}
+                          className="rounded-full bg-orange-50 px-2 py-0.5 text-[11px] font-semibold text-orange-800 motion-control hover:translate-y-0 hover:bg-orange-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 active:translate-y-0 active:scale-100"
+                          data-plain-text=""
                           data-testid={`credential-cooldown-${credential.id}`}
-                          title={`临时失败退避中，冷却至 ${retryLabel}`}
+                          onClick={() => openCooldownEditor(credential)}
+                          title={`临时失败退避中，冷却至 ${retryLabel}；点击调整或解除冷却`}
+                          type="button"
                         >
                           冷却 {formatCooldownRemaining(cooldownState.remaining)}
-                        </span>
+                        </button>
                       </CredentialFailureTooltip>
                     ) : null;
                   // The model list gets a line of its own in both layouts: it can carry
@@ -7702,6 +7790,85 @@ export function AccountsScreen({
             当前正在处理 {quickEditConcurrencyCredential.active_request_count ?? 0} 个请求；
             超过上限的请求会排到别的账号。
           </p>
+        </QuickEditDialog>
+      ) : null}
+
+      {cooldownEditCredential ? (
+        <QuickEditDialog
+          error={cooldownEditError}
+          onClose={() => {
+            if (!cooldownMutation.isPending && !clearFailureStateMutation.isPending) {
+              cooldownMutation.reset();
+              clearFailureStateMutation.reset();
+              setCooldownEditCredential(null);
+              setCooldownEditError(null);
+            }
+          }}
+          onSubmit={submitCooldownEdit}
+          saving={cooldownMutation.isPending || clearFailureStateMutation.isPending}
+          subtitle={cooldownEditCredential.display_name}
+          title="账号冷却"
+        >
+          <label className="grid gap-1 text-[12px] font-semibold text-stone-600">
+            剩余冷却（秒）
+            <input
+              aria-label="剩余冷却秒数"
+              className="w-full px-2.5 py-2 text-[13px] font-medium text-stone-900"
+              max={MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS}
+              min={1}
+              onChange={(event) => setCooldownEditValue(event.target.value)}
+              step={1}
+              type="number"
+              value={cooldownEditValue}
+            />
+          </label>
+          <div className="flex flex-wrap gap-1.5">
+            {COOLDOWN_ADJUST_STEPS.map((step) => {
+              const label = `${step > 0 ? "+" : "−"}${formatCooldownRemaining(Math.abs(step) * 1000)}`;
+              return (
+                <button
+                  aria-label={`${step > 0 ? "延长" : "缩短"}冷却 ${formatCooldownRemaining(Math.abs(step) * 1000)}`}
+                  className="rounded-lg bg-stone-100 px-2 py-1 text-[11px] font-semibold text-stone-700 motion-control hover:bg-stone-200 disabled:opacity-50"
+                  disabled={cooldownMutation.isPending || clearFailureStateMutation.isPending}
+                  key={step}
+                  onClick={() => adjustCooldownEditValue(step)}
+                  type="button"
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-[11px] text-stone-500">
+            {(() => {
+              const state = credentialCooldownState(cooldownEditCredential, cooldownNow);
+              const deadline = credentialRetryLabel(cooldownEditCredential);
+              return state?.active && deadline
+                ? `还剩 ${formatCooldownRemaining(state.remaining)}，冷却至 ${deadline}。`
+                : "冷却已结束，账号已经重新参与路由。";
+            })()}
+            {(cooldownEditCredential.transient_failure_count ?? 0) > 0
+              ? `已累计错误 ${cooldownEditCredential.transient_failure_count} 次。`
+              : ""}
+          </p>
+          <div className="mt-1 rounded-lg bg-stone-50 p-2.5">
+            {/* Filled rather than `ring-1`: inside `.accounts-screen` the global
+                button rule claims `box-shadow`, which is what a ring is drawn
+                with, so an outlined variant here would render as no outline. */}
+            <button
+              aria-label="解除账号冷却"
+              className="rounded-lg bg-orange-100 px-2.5 py-1.5 text-[12px] font-semibold text-orange-800 motion-control hover:bg-orange-200 disabled:opacity-50"
+              disabled={cooldownMutation.isPending || clearFailureStateMutation.isPending}
+              onClick={() => clearFailureStateMutation.mutate(cooldownEditCredential)}
+              type="button"
+            >
+              {clearFailureStateMutation.isPending ? "解除中…" : "立即解除冷却"}
+            </button>
+            <p className="mt-1.5 text-[11px] text-stone-500">
+              立即恢复参与路由，并清零错误次数与最近失败信息，等同于一次请求成功后的清账。
+              模型级的冷却与异常不在此列，请到编辑抽屉「模型状态」里单独解除。
+            </p>
+          </div>
         </QuickEditDialog>
       ) : null}
 
