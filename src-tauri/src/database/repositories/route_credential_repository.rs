@@ -1714,14 +1714,25 @@ impl RouteCredentialRepository {
     /// A success clears this account's backoff and, when the request named a
     /// model, that model's row. Sibling models keep their own state: proving
     /// `glm-5.3` works says nothing about `gpt-5.6-sol`.
+    ///
+    /// Returns whether anything was actually cleared. Almost every successful
+    /// request lands on an account that was already healthy, and the write used
+    /// to be unconditional, so it reported success for those too — and the proxy
+    /// turns a reported clear into a `route-credential-status` event, i.e. one
+    /// "this account's availability changed" per proxied request. The account
+    /// screen answers such an event by refetching the account page, the full
+    /// account list and the pool, and by re-running the config-write staleness
+    /// check, which renders every managed client config and diffs it against
+    /// disk.
     pub async fn clear_transient_failure(
         pool: &SqlitePool,
         id: &str,
         model_key: Option<&str>,
-    ) -> Result<(), AppError> {
-        if let Some(model_key) = model_key {
-            RouteCredentialModelRepository::clear(pool, id, model_key).await?;
-        }
+    ) -> Result<bool, AppError> {
+        let model_cleared = match model_key {
+            Some(model_key) => RouteCredentialModelRepository::clear(pool, id, model_key).await?,
+            None => false,
+        };
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
             "UPDATE route_credentials
@@ -1729,7 +1740,15 @@ impl RouteCredentialRepository {
                  semantic_failure_streak_count = 0, semantic_failure_streak_fingerprint = NULL,
                  last_failure_kind = NULL, last_failure_message = NULL,
                  last_failure_response_json = NULL, updated_at = ?
-             WHERE id = ?",
+             WHERE id = ?
+               AND (transient_failure_count != 0
+                    OR next_retry_at IS NOT NULL
+                    OR cooldown_until IS NOT NULL
+                    OR semantic_failure_streak_count != 0
+                    OR semantic_failure_streak_fingerprint IS NOT NULL
+                    OR last_failure_kind IS NOT NULL
+                    OR last_failure_message IS NOT NULL
+                    OR last_failure_response_json IS NOT NULL)",
         )
         .bind(&now)
         .bind(id)
@@ -1741,7 +1760,23 @@ impl RouteCredentialRepository {
             details: Some(err.to_string()),
             recoverable: true,
         })?;
-        if result.rows_affected() == 0 {
+        if result.rows_affected() > 0 {
+            return Ok(true);
+        }
+        // Zero rows now means either "there was nothing to clear" or "no such
+        // account", and callers still need the second one to be an error.
+        let exists = sqlx::query_scalar::<_, i64>("SELECT 1 FROM route_credentials WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.route_credential_retry_clear",
+                message: "Could not clear route credential retry state".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })?
+            .is_some();
+        if !exists {
             return Err(AppError::Validation {
                 code: "validation.route_credential_not_found",
                 message: "Route credential does not exist".to_string(),
@@ -1749,7 +1784,7 @@ impl RouteCredentialRepository {
                 recoverable: true,
             });
         }
-        Ok(())
+        Ok(model_cleared)
     }
 
     pub async fn record_semantic_failure_with_status(
@@ -3497,6 +3532,71 @@ mod tests {
         assert!(cleared.last_failure_kind.is_none());
         assert!(cleared.last_failure_message.is_none());
         assert!(cleared.last_failure_response_json.is_none());
+    }
+
+    /// The proxy calls this after every successful request and announces a
+    /// status change whenever it reports one. Only the request that actually
+    /// revived the account may do so: otherwise the account screen reloads its
+    /// whole list, plus the config-write staleness check, once per request.
+    #[tokio::test]
+    async fn clearing_reports_a_change_only_for_an_account_that_had_failed() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let created = create_api_credential(&pool, "codex", "Quiet Success").await;
+
+        assert!(
+            !RouteCredentialRepository::clear_transient_failure(&pool, &created.id, None)
+                .await
+                .unwrap(),
+            "a healthy account has nothing to clear"
+        );
+        // The row must not even be touched: `updated_at` moving is what a status
+        // change looks like to everything downstream.
+        let untouched = RouteCredentialRepository::get(&pool, &created.id)
+            .await
+            .unwrap();
+        assert_eq!(untouched.updated_at, created.updated_at);
+
+        RouteCredentialRepository::record_transient_failure(
+            &pool,
+            &created.id,
+            "transport",
+            "temporary",
+            None,
+            FailureScope::Account,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            RouteCredentialRepository::clear_transient_failure(&pool, &created.id, None)
+                .await
+                .unwrap(),
+            "the success that ends a cooldown is a real status change"
+        );
+        assert!(
+            !RouteCredentialRepository::clear_transient_failure(&pool, &created.id, None)
+                .await
+                .unwrap(),
+            "the next success has nothing left to clear"
+        );
+    }
+
+    #[tokio::test]
+    async fn clearing_an_unknown_account_still_fails() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+
+        let error = RouteCredentialRepository::clear_transient_failure(&pool, "missing", None)
+            .await
+            .expect_err("an unknown id is not just 'nothing to clear'");
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "validation.route_credential_not_found",
+                ..
+            }
+        ));
     }
 
     /// A cooldown deadline is "correct" when it lands inside the configured

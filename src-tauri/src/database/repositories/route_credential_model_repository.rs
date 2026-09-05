@@ -190,20 +190,35 @@ impl RouteCredentialModelRepository {
     /// A success proves this model works. Delete the row — unless the user
     /// paused it, in which case keep the status and only reset the failure
     /// bookkeeping.
+    ///
+    /// Returns whether this actually changed anything. A healthy model has no
+    /// row at all, so the answer is `false` for the overwhelming majority of
+    /// successful requests, and callers use it to decide whether the account's
+    /// availability is worth announcing.
     pub async fn clear(
         pool: &SqlitePool,
         credential_id: &str,
         model_key: &str,
-    ) -> Result<(), AppError> {
+    ) -> Result<bool, AppError> {
         let now = Utc::now().to_rfc3339();
-        sqlx::query(
+        // A paused model that carries no failure state is already in the shape
+        // this function wants, so rewriting it would report a change that never
+        // happened.
+        let paused_reset = sqlx::query(
             "UPDATE route_credential_models
              SET transient_failure_count = 0, cooldown_until = NULL,
                  semantic_failure_streak_count = 0,
                  semantic_failure_streak_fingerprint = NULL,
                  last_failure_kind = NULL, last_failure_message = NULL,
                  last_failure_response_json = NULL, updated_at = ?
-             WHERE route_credential_id = ? AND model_key = ? AND status = ?",
+             WHERE route_credential_id = ? AND model_key = ? AND status = ?
+               AND (transient_failure_count != 0
+                    OR cooldown_until IS NOT NULL
+                    OR semantic_failure_streak_count != 0
+                    OR semantic_failure_streak_fingerprint IS NOT NULL
+                    OR last_failure_kind IS NOT NULL
+                    OR last_failure_message IS NOT NULL
+                    OR last_failure_response_json IS NOT NULL)",
         )
         .bind(&now)
         .bind(credential_id)
@@ -219,7 +234,7 @@ impl RouteCredentialModelRepository {
             )
         })?;
 
-        sqlx::query(
+        let removed = sqlx::query(
             "DELETE FROM route_credential_models
              WHERE route_credential_id = ? AND model_key = ? AND status != ?",
         )
@@ -235,7 +250,7 @@ impl RouteCredentialModelRepository {
                 err,
             )
         })?;
-        Ok(())
+        Ok(paused_reset.rows_affected() > 0 || removed.rows_affected() > 0)
     }
 
     /// Scheduled recovery means "revive unconditionally", so it wipes automatic
@@ -490,6 +505,59 @@ mod tests {
                 .await
                 .expect("list after clear")
                 .is_empty()
+        );
+    }
+
+    /// A healthy model has no row, so nearly every successful request clears
+    /// nothing. The caller turns a reported change into a `route-credential-status`
+    /// event, so "nothing happened" has to be distinguishable from a recovery.
+    #[tokio::test]
+    async fn clear_reports_a_change_only_when_a_row_was_there() {
+        let pool = create_memory_pool().await.unwrap();
+        run_migrations(&pool).await.unwrap();
+        let id = seed(&pool).await;
+
+        assert!(
+            !RouteCredentialModelRepository::clear(&pool, &id, "upstream-sol")
+                .await
+                .expect("clear without a row"),
+            "a model that never failed has no row to clear"
+        );
+
+        let mut conn = pool.acquire().await.expect("conn");
+        RouteCredentialModelRepository::record_transient_failure(
+            &mut conn,
+            &id,
+            "upstream-sol",
+            "upstream_status",
+            "upstream returned 429",
+            None,
+            Some(30),
+            Some(429),
+            10,
+            true,
+        )
+        .await
+        .expect("record");
+        drop(conn);
+
+        assert!(
+            RouteCredentialModelRepository::clear(&pool, &id, "upstream-sol")
+                .await
+                .expect("clear after a failure"),
+            "removing the failure row is a real change"
+        );
+
+        // A paused model keeps its row forever. Once its failure bookkeeping is
+        // already empty, later successes must stop reporting changes too.
+        RouteCredentialModelRepository::set_status(&pool, &id, "upstream-sol", MODEL_STATUS_PAUSED)
+            .await
+            .expect("pause");
+        assert!(
+            !RouteCredentialModelRepository::clear(&pool, &id, "upstream-sol")
+                .await
+                .expect("clear a clean paused row"),
+            "a paused model with no failure state is already in the target shape"
         );
     }
 

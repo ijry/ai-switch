@@ -1606,14 +1606,18 @@ async fn forward_request(
             continue;
         }
 
-        if RouteCredentialRepository::clear_transient_failure(
-            pool,
-            &credential.id,
-            selected_model_key.as_deref(),
-        )
-        .await
-        .is_ok()
-        {
+        // Only a real transition is announced. Reporting every success as a
+        // status change made the account screen refetch its whole list once per
+        // proxied request.
+        if matches!(
+            RouteCredentialRepository::clear_transient_failure(
+                pool,
+                &credential.id,
+                selected_model_key.as_deref(),
+            )
+            .await,
+            Ok(true)
+        ) {
             state
                 .activity
                 .notify_status_change(&platform, &credential.id);
@@ -2320,14 +2324,18 @@ impl StreamCompletion {
             return;
         }
 
-        if RouteCredentialRepository::clear_transient_failure(
-            &state.pool,
-            &credential.id,
-            model_key.as_deref(),
-        )
-        .await
-        .is_ok()
-        {
+        // Same rule as the buffered path: a success that had no failure state to
+        // clear is not a status change, and announcing it made every streamed
+        // response reload the account screen.
+        if matches!(
+            RouteCredentialRepository::clear_transient_failure(
+                &state.pool,
+                &credential.id,
+                model_key.as_deref(),
+            )
+            .await,
+            Ok(true)
+        ) {
             state
                 .activity
                 .notify_status_change(&platform, &credential.id);
@@ -7074,6 +7082,89 @@ mod tests {
                 .expect("credential")
                 .status,
             "ok"
+        );
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    /// The account screen answers `route-credential-status` by refetching the
+    /// account page, the whole account list and the pool, and by re-rendering
+    /// every managed client config to diff it against disk. A request that left
+    /// the account exactly as healthy as it found it must therefore stay quiet —
+    /// announcing each one made the list reload once per proxied request.
+    #[tokio::test]
+    async fn a_success_that_clears_nothing_announces_no_status_change() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+        use crate::services::route_credential_activity::{
+            ROUTE_CREDENTIAL_ACTIVITY_EVENT, ROUTE_CREDENTIAL_STATUS_EVENT,
+        };
+        use crate::web::event_bridge::{EventEmitter, WebEventBroadcaster};
+
+        let (upstream, _calls) =
+            start_chunked_sse_upstream(CHUNKED_SSE_PARTS.to_vec(), Duration::from_millis(0)).await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_proxy_api_credential(&pool, "quiet", &upstream).await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        // Subscribe before starting: the broadcaster drops events while it has no
+        // receiver, which would make this pass without proving anything.
+        let mut events = broadcaster.subscribe();
+        runtime
+            .activity()
+            .set_emitter(EventEmitter::Web(Arc::clone(&broadcaster)));
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5.5","messages":[],"stream":true}))
+            .send()
+            .await
+            .expect("proxy response");
+        assert_eq!(response.status(), StatusCode::OK);
+        // Drain fully so the completion hook — which is what decides whether to
+        // announce anything — actually runs.
+        let _ = response.bytes().await.expect("proxy body");
+        let _ = wait_for_single_request_event(&pool).await;
+
+        let mut activity_seen = false;
+        let status_event = tokio::time::timeout(Duration::from_millis(1_500), async {
+            loop {
+                match events.recv().await {
+                    Ok(event) if event.channel == ROUTE_CREDENTIAL_STATUS_EVENT => {
+                        return Some(event);
+                    }
+                    Ok(event) => {
+                        activity_seen |= event.channel == ROUTE_CREDENTIAL_ACTIVITY_EVENT;
+                    }
+                    Err(_) => return None,
+                }
+            }
+        })
+        .await;
+        assert!(
+            !matches!(status_event, Ok(Some(_))),
+            "a healthy account's success must not be announced as a status change"
+        );
+        // The concurrency counters ride a different channel and must keep flowing:
+        // this is what proves the emitter was wired up at all.
+        assert!(
+            activity_seen,
+            "expected the per-request activity events to still be emitted"
         );
 
         RouteProxyService::stop(&runtime).await.expect("stop proxy");
