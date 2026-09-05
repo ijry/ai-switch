@@ -16,6 +16,7 @@ import { I18nProvider } from "./lib/i18n";
 import { createQueryClient } from "./lib/query/queryClient";
 import { isDesktop, isLocalWebDevRuntime } from "./lib/transport";
 import { AccountsScreen } from "./screens/AccountsScreen";
+import { AboutScreen } from "./screens/AboutScreen";
 import { BatchesScreen } from "./screens/BatchesScreen";
 import { DashboardScreen } from "./screens/DashboardScreen";
 import { ImportsScreen } from "./screens/ImportsScreen";
@@ -59,6 +60,7 @@ const implementedScreens = new Set([
   "Log",
   "MCP",
   "Skills",
+  "About",
   "Vibe",
 ]);
 
@@ -204,6 +206,7 @@ export function App() {
                 {screen === "Settings" && <SettingsScreen onOpenFeature={navigate} />}
                 {screen === "MCP" && <McpScreen />}
                 {screen === "Skills" && <SkillsScreen />}
+                {screen === "About" && <AboutScreen />}
                 {screen === "Log" && <OperationLogScreen />}
                   {!implementedScreens.has(screen) && (
                     <div className="rounded-2xl border border-stone-200 bg-white/80 p-5 text-sm text-stone-500 shadow-sm">

@@ -57,9 +57,29 @@ describe("AppLayout", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /MCP/ }));
     await userEvent.click(screen.getByRole("button", { name: /技能/ }));
+    await userEvent.click(screen.getByRole("button", { name: /关于/ }));
 
     expect(onNavigate).toHaveBeenCalledWith("MCP");
     expect(onNavigate).toHaveBeenCalledWith("Skills");
+    expect(onNavigate).toHaveBeenCalledWith("About");
+  });
+
+  it("highlights About on its own instead of the Settings area", () => {
+    render(
+      <I18nProvider initialLanguage="zh-CN">
+        <AppLayout
+          activeScreen="About"
+          onNavigate={vi.fn()}
+          onToggleSidebar={vi.fn()}
+          sidebarCollapsed={false}
+        >
+          <div>content</div>
+        </AppLayout>
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole("button", { name: /关于/ })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: /设置/ })).not.toHaveAttribute("aria-current");
   });
 
   it("only highlights the active system utility entry", () => {

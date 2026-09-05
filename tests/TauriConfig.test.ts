@@ -50,6 +50,7 @@ describe("Tauri desktop configuration", () => {
 
   it("routes external links through the opener adapter instead of window.open", () => {
     for (const path of [
+      "src/screens/AboutScreen.tsx",
       "src/screens/AccountsScreen.tsx",
       "src/screens/McpScreen.tsx",
       "src/components/settings/tailscale-settings.tsx",

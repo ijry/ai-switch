@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { motion } from "motion/react";
 import {
+  Info,
   Menu,
   PlugZap,
   Settings2,
@@ -450,6 +451,13 @@ export function AppLayout({
                   icon={Settings2}
                   label={t("nav.settings")}
                   onClick={() => handleNavigate("Settings")}
+                />
+                <NavButton
+                  active={activeScreen === "About"}
+                  collapsed={sidebarContentCollapsed}
+                  icon={Info}
+                  label={t("nav.about")}
+                  onClick={() => handleNavigate("About")}
                 />
               </section>
             </div>
