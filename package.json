@@ -16,9 +16,9 @@
     "rust:fmt": "cd src-tauri && cargo fmt",
     "rust:fmt:check": "cd src-tauri && cargo fmt --check",
     "rust:test": "cd src-tauri && cargo test",
-    "server:build": "cd src-tauri && cargo build --bin ai-switch-server",
-    "server:build:release": "cd src-tauri && cargo build --release --bin ai-switch-server",
-    "server:check": "cd src-tauri && cargo check --bin ai-switch-server",
+    "server:build": "cd src-tauri && cargo build --features standalone-server --bin ai-switch-server",
+    "server:build:release": "cd src-tauri && cargo build --release --features standalone-server --bin ai-switch-server",
+    "server:check": "cd src-tauri && cargo check --features standalone-server --bin ai-switch-server",
     "tauri:build": "tauri build"
   },
   "dependencies": {

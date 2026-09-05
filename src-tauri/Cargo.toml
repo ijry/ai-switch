@@ -14,9 +14,21 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "ai-switch"
 path = "src/main.rs"
 
+# Behind a feature so a plain `cargo build` — which is what `tauri build` runs —
+# produces the desktop binary alone. Tauri bundles every binary the package
+# builds into `AI Switch.app/Contents/MacOS`, and this one has no business being
+# there: nothing in the app launches it, it ships as its own archive, and on
+# x86_64 macOS it broke the release outright. arm64's linker ad-hoc signs every
+# binary it emits, so the stray copy was signable there, while the Intel runner
+# left it unsigned and `codesign` refused the whole bundle over the unsigned
+# nested code. `pnpm server:build*` passes the feature explicitly.
 [[bin]]
 name = "ai-switch-server"
 path = "src/bin/ai_switch_server.rs"
+required-features = ["standalone-server"]
+
+[features]
+standalone-server = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
