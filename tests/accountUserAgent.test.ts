@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   BROWSER_USER_AGENT,
+  CODEX_CLI_USER_AGENT,
+  CLAUDE_CLI_USER_AGENT,
+  GROK_WORKSPACE_USER_AGENT,
   matchUserAgentPreset,
   readUserAgentFromConfig,
   writeUserAgentToConfig,
@@ -32,9 +35,17 @@ describe("accountUserAgent", () => {
 
   it("matches presets and falls back to custom", () => {
     expect(matchUserAgentPreset("")).toBe("default");
-    expect(matchUserAgentPreset("xai-grok-workspace/0.2.93")).toBe("grok-workspace");
-    expect(matchUserAgentPreset("grok-cli")).toBe("grok-cli");
+    expect(matchUserAgentPreset(GROK_WORKSPACE_USER_AGENT)).toBe("grok-workspace");
+    expect(matchUserAgentPreset(CODEX_CLI_USER_AGENT)).toBe("codex-cli");
+    expect(matchUserAgentPreset(CLAUDE_CLI_USER_AGENT)).toBe("claude-cli");
     expect(matchUserAgentPreset(BROWSER_USER_AGENT)).toBe("browser");
     expect(matchUserAgentPreset("SomethingElse/1.0")).toBe("custom");
+    // Outdated CPA export (grok-cli) 被后端强制覆盖，不认作预设
+    expect(matchUserAgentPreset("grok-cli")).toBe("custom");
+  });
+
+  it("keeps CLI presets in the fingerprinted shape gateways check", () => {
+    expect(CODEX_CLI_USER_AGENT).toMatch(/^codex_cli_rs\/\d+\.\d+\.\d+ \(.+\) Terminal$/);
+    expect(CLAUDE_CLI_USER_AGENT).toMatch(/^claude-cli\/\d+\.\d+\.\d+ \(external, cli\)$/);
   });
 });

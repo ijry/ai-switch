@@ -1,12 +1,16 @@
 export const GROK_WORKSPACE_USER_AGENT = "xai-grok-workspace/0.2.93";
-export const GROK_CLI_USER_AGENT = "grok-cli";
+// 与 src-tauri/src/services/client_identity.rs 的内置伪装 UA 保持同形：
+// 网关按 `codex_cli_rs/` 前缀和 `claude-cli/<版本> (external, cli)` 指纹识别官方 CLI。
+export const CODEX_CLI_USER_AGENT = "codex_cli_rs/0.80.0 (MacOS 15.7.2; arm64) Terminal";
+export const CLAUDE_CLI_USER_AGENT = "claude-cli/2.1.2 (external, cli)";
 export const BROWSER_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 export type UserAgentPresetId =
   | "default"
   | "grok-workspace"
-  | "grok-cli"
+  | "codex-cli"
+  | "claude-cli"
   | "browser"
   | "custom";
 
@@ -17,7 +21,8 @@ export const USER_AGENT_PRESETS: Array<{
 }> = [
   { id: "default", label: "默认（空）", value: "" },
   { id: "grok-workspace", label: "Grok Workspace", value: GROK_WORKSPACE_USER_AGENT },
-  { id: "grok-cli", label: "Grok CLI (legacy)", value: GROK_CLI_USER_AGENT },
+  { id: "codex-cli", label: "Codex CLI", value: CODEX_CLI_USER_AGENT },
+  { id: "claude-cli", label: "Claude CLI", value: CLAUDE_CLI_USER_AGENT },
   { id: "browser", label: "Browser", value: BROWSER_USER_AGENT },
   { id: "custom", label: "自定义", value: "" },
 ];
