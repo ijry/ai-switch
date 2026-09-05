@@ -13,13 +13,13 @@ The 7 platforms split into two groups.
 
 **Native support** (`supported`) — Codex, Claude Code, Gemini CLI, Grok
 
-AI Switch understands these tools' config file formats and official sign-in formats. On top of generic API routing, it can write native config, import official accounts, route through official accounts, and handle deeplink imports.
+AI Switch understands these tools' config file formats and official sign-in formats. All 10 capabilities are available (the one exception is Gemini CLI quota, below).
 
-**Generic API routing** (`partial`) — OpenCode, OpenClaw, Hermes
+**API accounts only** (`partial`) — OpenCode, OpenClaw, Hermes
 
-> OpenCode, OpenClaw, and Hermes remain visible for generic API routing, terminal launch, and session workflows, but AI Switch does not claim native configuration, official-account import, or quota support for them.
+These three are agent harnesses, not model vendors — they have no official sign-in of their own. So the official-account half of the matrix (import, official account routing, deeplink, quota lookup) does not exist for them, and that is now the **only** thing `partial` means.
 
-You can still give them API accounts and route through the local proxy, and you can still launch terminals and manage sessions from AI Switch. But you supply the configuration yourself; AI Switch will not touch their config files.
+Everything else they have: API accounts, routing through the local proxy, **native config writing**, terminal launch, session management. The one extra constraint is that an API account must spell out its base URL and interface format — these three platforms have no default dialect.
 
 ## The full matrix
 
@@ -33,7 +33,7 @@ Three states:
 | --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
 | `route_credentials` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `generic_api_routing` | ✅ | ✅ | ✅ | ✅ | ◐ | ◐ | ◐ |
-| `config_write` | ✅ | ✅ | ✅ | ✅ | ✕ | ✕ | ✕ |
+| `config_write` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `official_import` | ✅ | ✅ | ✅ | ✅ | ✕ | ✕ | ✕ |
 | `official_account_routing` | ✅ | ✅ | ✅ | ✅ | ✕ | ✕ | ✕ |
 | `deeplink_import` | ✅ | ✅ | ✅ | ✅ | ✕ | ✕ | ✕ |
@@ -80,7 +80,7 @@ Note that partial does not mean unusable. Routing works fine; you just don't get
 
 Point the CLI's native config file at the local routing proxy.
 
-Supported on the four native platforms, with these targets:
+**Supported on all 7 platforms**, with these targets:
 
 | Platform | Target file | Format |
 | --- | --- | --- |
@@ -88,12 +88,31 @@ Supported on the four native platforms, with these targets:
 | Claude Code | `~/.claude/settings.json` | JSON |
 | Gemini CLI | `~/.gemini/settings.json` | JSON |
 | Grok | `~/.grok/settings.json` | JSON |
+| OpenCode | `~/.config/opencode/opencode.json` | JSON |
+| OpenClaw | `~/.openclaw/openclaw.json` | JSON |
+| Hermes | `~/.hermes/config.yaml` (an absolute `HERMES_HOME` wins) | YAML |
 
-Unavailable on the other three, with reason code `capability.native_config_unavailable`:
+The last three get different content from the first four. They do not hook in through environment variables; each gets an `ai-switch` record inside its own custom-provider structure, and the default model is pointed at it:
 
-> Native configuration writing is not implemented for this platform.
+| Platform | Where | Key fields |
+| --- | --- | --- |
+| OpenCode | `provider["ai-switch"]` | `npm: "@ai-sdk/openai-compatible"`, `options.baseURL`, `options.apiKey`, per-model `models.<id>.limit.{context,output}`; then top-level `model` becomes `ai-switch/<first model>` |
+| OpenClaw | `models.providers["ai-switch"]` | `api: "openai-completions"`, `baseUrl`, `apiKey`, `models[]` entries carrying `id` / `contextWindow` / `maxTokens`; then `agents.defaults.model.primary` becomes `ai-switch/<first model>` |
+| Hermes | the `custom_providers` entry named `ai-switch` | `base_url`, `api_key`, `api_mode: chat_completions`, singular `model` and plural `models.<id>.context_length`; plus the `model:` section's `provider` / `default` / `base_url` / `api_mode` |
 
-Configure those by hand: click the 🔌 button in the toolbar and copy the Base URL and API Key from the 「在以上客户端之外使用」 section at the bottom of the dialog. AI Switch neither parses nor modifies their config files.
+Three things worth calling out:
+
+**The base URL carries `/v1`.** These three clients append a bare endpoint (`{base}/chat/completions`), so the `/v1` has to sit inside the base URL, exactly like Codex. Claude / Gemini / Grok are the opposite — they append their own versioned paths, and a `/v1` here would produce `/v1/v1/messages`.
+
+**Hermes gets its `api_key` written inline.** This is the real cause of "Hermes says the API key is missing": with no inline key, Hermes looks in `~/.hermes/.env` or in an env var derived from the endpoint's **host** (`OPENROUTER_API_KEY` for openrouter.ai, and so on). A loopback address matches no host, so a hand-written provider carrying only `base_url` leaves Hermes with nowhere to read the key from.
+
+**The protocol is always Chat Completions** (`@ai-sdk/openai-compatible` / `openai-completions` / `chat_completions`). That is deliberate: the proxy's chat-completions bridge is platform-independent and converts to any of the four upstream dialects, so the same record serves an OpenAI pool as well as a Responses, Anthropic, or Gemini one.
+
+::: warning These three need models in the pool before a write
+None of them probes a custom provider's `/v1/models`, so the model list has to travel into the file with the write. And unlike the four native platforms they have **no built-in baseline model list**, so an empty pool — or pool accounts with no model mappings at all — makes the write fail with `config.pool_models_empty`. Configure at least one model mapping.
+:::
+
+You still fill things in by hand for a client AI Switch does not know about: click the 🔌 button in the toolbar and copy the Base URL and API Key from the 「其他 Agent」 tab.
 
 ### `official_import`
 
@@ -131,7 +150,7 @@ Pool routing does consider remaining quota when filtering — an account with ze
 
 Run a real generation test against an account. This is not a reachability probe: AI Switch genuinely has the upstream generate content, then shows the model output and the full request chain.
 
-Fully supported on the four native platforms. **Partial** on the other three, again `capability.api_credentials_only` — only `api` accounts with a base URL and interface format can be tested.
+Fully supported on the four native platforms. **Partial** on the other three, again `capability.api_credentials_only` — only `api` accounts with a base URL and interface format can be tested. All four dialect overrides are open to them (only Gemini CLI is pinned to `gemini`, because its inbound traffic is never bridged, and Grok to `openai`, because xAI serves nothing else).
 
 See [Model Connectivity Tests](/en/guide/model-test).
 
@@ -155,13 +174,13 @@ The distinction matters because it determines whether an operation is refused.
 
 **Partial (`partial`) operations are callable.** AI Switch attaches extra constraints — must be an `api` account, must have a base URL, must have an interface format — and executes normally once those hold. The UI surfaces the explanatory text tied to the reason code so you know why the constraint exists.
 
-**Unavailable (`unavailable`) operations are refused.** The call returns a `capability.unavailable` validation error, with a message shaped like `Hermes does not support config_write` and the specific reason code attached. The corresponding UI controls are disabled, with the reason on hover.
+**Unavailable (`unavailable`) operations are refused.** The call returns a `capability.unavailable` validation error, with a message shaped like `Hermes does not support official_import` and the specific reason code attached. The corresponding UI controls are disabled, with the reason on hover.
 
 This check is enforced server-side, not merely as greyed-out UI — invoking the command directly hits the same rule.
 
 ## Safety of native config writing
 
-Config writing on the four native platforms is not a plain file overwrite:
+Config writing on all 7 platforms is not a plain file overwrite:
 
 > Native configuration writes use safe direct writes: a snapshot is prepared before mutation, the write is atomic, concurrent modifications are detected, and guarded rollback is supported.
 
@@ -176,6 +195,8 @@ Four guarantees.
 **Guarded rollback.** You can roll back to a snapshot, and the rollback itself is guarded so it won't blindly overwrite current state.
 
 Writes are also **incremental**: AI Switch only adds or updates the fields it manages, leaving your other settings in place. Existing `env` entries and other settings in Claude Code's `settings.json`, for example, are not cleared.
+
+Hermes' `config.yaml` gets one more layer: it ships with extensive comments and Hermes' own docs tell people to hand-edit it, so AI Switch does a textual replacement of just the `custom_providers:` and `model:` sections and carries everything else through byte for byte. Conversely, **a file it cannot read is refused rather than overwritten**: OpenClaw's `openclaw.json` is nominally JSON5, but AI Switch parses strict JSON and reports `validation.route_config_existing_invalid` on comments or unquoted keys — a rewrite that dropped every provider you have is far worse than a refusal.
 
 ## Platform ids and aliases
 

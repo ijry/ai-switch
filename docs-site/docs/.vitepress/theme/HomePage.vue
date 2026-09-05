@@ -42,9 +42,9 @@ const COPY = {
 
     platformsTitle: "支持的平台",
     platformsLead:
-      "Codex、Claude Code、Gemini CLI 和 Grok 拥有原生配置写入与官方账号导入；OpenCode、OpenClaw 和 Hermes 通过通用 API 路由接入，可用于路由、终端启动和会话流程。",
+      "7 个平台都能路由 API、都能由 AI Switch 写入原生配置。Codex、Claude Code、Gemini CLI 和 Grok 还支持官方账号导入；OpenCode、OpenClaw 和 Hermes 是 agent harness，没有自己的官方登录态。",
     tierFull: "原生支持",
-    tierGeneric: "通用 API 路由",
+    tierGeneric: "部分支持",
     platformsNote:
       "原生配置写入采用安全直写：变更前建立快照、原子写入、检测并发修改，并支持带守卫的回滚。",
     capMatrixLink: "查看完整能力矩阵",
@@ -160,9 +160,9 @@ const COPY = {
 
     platformsTitle: "Supported platforms",
     platformsLead:
-      "Codex, Claude Code, Gemini CLI and Grok get native config writing and official account import. OpenCode, OpenClaw and Hermes connect through generic API routing, which still covers routing, terminal launch and session workflows.",
+      "All seven platforms route API traffic and get their native config written by AI Switch. Codex, Claude Code, Gemini CLI and Grok also support official account import; OpenCode, OpenClaw and Hermes are agent harnesses with no official sign-in of their own.",
     tierFull: "Native support",
-    tierGeneric: "Generic API routing",
+    tierGeneric: "Partial support",
     platformsNote:
       "Native config writing uses safe direct writes: a snapshot is taken before mutation, the write is atomic, concurrent changes are detected, and guarded rollback is supported.",
     capMatrixLink: "See the full capability matrix",

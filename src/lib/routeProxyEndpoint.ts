@@ -1,16 +1,21 @@
 /**
  * The pool address a client of `platform` has to be pointed at.
  *
- * Codex speaks the OpenAI wire format and calls `{baseUrl}/responses`, so the
- * `/v1` has to sit inside the base URL itself. The config writer already does
- * this when it renders `~/.codex/config.toml`
- * (`src-tauri/src/adapters/route_config/codex.rs`), and an address the user
- * copies by hand has to match what gets written. Claude / Gemini / Grok take the
- * bare address and append their own paths.
+ * Two shapes, decided by whether the client appends a bare endpoint or a
+ * versioned path of its own:
+ *
+ * - **`{base}/v1`** — Codex calls `{baseUrl}/responses`, and OpenCode / OpenClaw
+ *   / Hermes all reach the pool through Chat Completions, i.e.
+ *   `{baseUrl}/chat/completions`. Each platform's config writer renders exactly
+ *   this, and an address the user copies by hand has to match what gets written.
+ * - **bare** — Claude / Gemini / Grok clients append their own versioned paths
+ *   (`/v1/messages`, `/v1beta/models/...`), so a `/v1` here would double it.
  */
+const PLATFORMS_NEEDING_V1 = new Set(["codex", "opencode", "openclaw", "hermes"]);
+
 export function routeProxyEndpointForPlatform(baseUrl: string, platform: string): string {
   const trimmed = baseUrl.trim().replace(/\/+$/, "");
-  if (!trimmed || platform !== "codex") {
+  if (!trimmed || !PLATFORMS_NEEDING_V1.has(platform)) {
     return trimmed;
   }
   // Idempotent: a base URL that already ends in /v1 must not grow a second one.

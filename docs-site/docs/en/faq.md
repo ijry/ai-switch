@@ -18,9 +18,9 @@ Concretely:
 
 If you have exactly one account and never switch, hand-editing really is enough. The difference shows up once you have several accounts, or once you want failover to happen without you. See [quick start](/en/guide/quick-start) and [accounts and the pool](/en/guide/accounts).
 
-## Which platforms are supported, and why do OpenCode, OpenClaw, and Hermes only get generic API routing?
+## Which platforms are supported, and why are OpenCode, OpenClaw, and Hermes "partial"?
 
-Seven platforms. The first four are natively supported; the last three get generic API routing.
+Seven platforms. All seven route API traffic and write config; the difference is the official-account half.
 
 | Platform | Support |
 | --- | --- |
@@ -28,11 +28,11 @@ Seven platforms. The first four are natively supported; the last three get gener
 | Claude Code | Native: the same, with quota where the upstream account flow allows it |
 | Gemini CLI | Native: API routing, config writing, import; official quota is not claimed |
 | Grok | Native: the same as Claude Code |
-| OpenCode | Generic API routing |
-| OpenClaw | Generic API routing |
-| Hermes | Generic API routing |
+| OpenCode | Partial: API routing and config writing; no official account |
+| OpenClaw | Partial: the same |
+| Hermes | Partial: the same |
 
-Those three are limited because AI Switch does not claim it can reliably parse and rewrite their native configuration, import official accounts, or read official quota. They remain fully usable as API routing accounts, can be launched from the terminal, and participate in session workflows — but creating a credential for them **requires an explicit base URL and API dialect**, because AI Switch will not guess a default on their behalf.
+Those three are agent harnesses, not model vendors — they have no official sign-in of their own, so official account import, official account routing, deeplink, and quota lookup do not exist for them. That is the whole of what "partial" means. Config writing does work: AI Switch writes an `ai-switch` custom provider into `~/.config/opencode/opencode.json`, `~/.openclaw/openclaw.json`, and `~/.hermes/config.yaml`. The one extra requirement is that creating an API credential for them **requires an explicit base URL and API dialect**, because these three platforms have no default dialect.
 
 The full capability matrix (ten platform capabilities across seven platforms) is in the [platform support matrix](/en/guide/platform-support).
 

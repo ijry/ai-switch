@@ -50,9 +50,9 @@ A test can temporarily specify a dialect, which is how you probe "what protocol 
 
 | Platform | May be overridden to |
 | --- | --- |
-| `codex`, `claude` | `openai`, `openai-responses`, `anthropic`, `gemini` (all four) |
-| `gemini` | `gemini` only |
-| `grok`, `opencode`, `openclaw`, `hermes` | `openai` only |
+| `gemini` | `gemini` only (Gemini CLI's inbound traffic is never bridged) |
+| `grok` | `openai` only (xAI serves nothing else) |
+| every other platform | `openai`, `openai-responses`, `anthropic`, `gemini` (all four) |
 
 Out-of-range values return `validation.route_model_test_interface_format`.
 

@@ -7,7 +7,6 @@ use crate::{
 };
 
 const API_CREDENTIALS_ONLY: &str = "capability.api_credentials_only";
-const NATIVE_CONFIG_UNAVAILABLE: &str = "capability.native_config_unavailable";
 const OFFICIAL_ACCOUNT_UNAVAILABLE: &str = "capability.official_account_unavailable";
 const DEEPLINK_UNAVAILABLE: &str = "capability.deeplink_unavailable";
 const QUOTA_UNAVAILABLE: &str = "capability.quota_unavailable";
@@ -59,7 +58,12 @@ fn capability_for(platform: PlatformId) -> PlatformCapability {
         PlatformOperations {
             route_credentials: supported(),
             generic_api_routing: api_credentials_only(),
-            config_write: unavailable(NATIVE_CONFIG_UNAVAILABLE),
+            // Native config writing is real for these three: each has its own
+            // verified adapter. What they still lack is anything to do with an
+            // official vendor account, because they are agent harnesses rather
+            // than a vendor — they have no login of their own to import, route,
+            // or read quota from.
+            config_write: supported(),
             official_import: unavailable(OFFICIAL_ACCOUNT_UNAVAILABLE),
             official_account_routing: unavailable(OFFICIAL_ACCOUNT_UNAVAILABLE),
             deeplink_import: unavailable(DEEPLINK_UNAVAILABLE),
@@ -143,9 +147,11 @@ mod tests {
             .find(|item| item.platform == PlatformId::Hermes)
             .unwrap();
         assert_eq!(hermes.support_level, SupportLevel::Partial);
+        // "Partial" is now only about the official-account half of the matrix.
+        // Config writing is a verified adapter like any native CLI's.
         assert_eq!(
             hermes.operations.config_write.availability,
-            CapabilityAvailability::Unavailable
+            CapabilityAvailability::Supported
         );
         assert_eq!(
             hermes.operations.generic_api_routing.availability,
@@ -179,9 +185,11 @@ mod tests {
         .expect("partial capability remains callable");
         assert_eq!(partial.availability, CapabilityAvailability::Partial);
 
-        let error =
-            PlatformCapabilityService::require(PlatformId::Hermes, PlatformOperation::ConfigWrite)
-                .expect_err("native Hermes config writing is unavailable");
+        let error = PlatformCapabilityService::require(
+            PlatformId::Hermes,
+            PlatformOperation::OfficialImport,
+        )
+        .expect_err("Hermes has no official vendor account to import");
         assert!(matches!(
             error,
             AppError::Validation {

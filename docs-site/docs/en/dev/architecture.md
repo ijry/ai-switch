@@ -141,7 +141,7 @@ Top-level modules, per `src-tauri/src/lib.rs`:
 
 `src-tauri/src/models/platform.rs` defines three key enums:
 
-- `PlatformId` — **seven platforms**: `Codex`, `Claude`, `Gemini`, `Grok`, `OpenCode`, `OpenClaw`, `Hermes`. The first four are natively supported; the last three get generic API routing only.
+- `PlatformId` — **seven platforms**: `Codex`, `Claude`, `Gemini`, `Grok`, `OpenCode`, `OpenClaw`, `Hermes`. The first four are natively supported; the last three are agent harnesses with no official-account half of the matrix, so they are marked partial.
 - `ApiDialect` — **four upstream protocols**: `openai`, `openai-responses`, `anthropic`, `gemini`. `default_api_credential_dialect()` returns `None` for OpenCode, OpenClaw, and Hermes, which is exactly why API credentials for those three must spell out a base URL and a dialect.
 - `PlatformOperation` — **ten platform capabilities**: `route_credentials`, `generic_api_routing`, `config_write`, `official_import`, `official_account_routing`, `deeplink_import`, `official_quota`, `model_test`, `terminal_launch`, `session_resume`. Each is described by a `CapabilityRule` carrying availability (`Supported` / `Partial` / `Unavailable`), the credential kinds it accepts, and whether a base URL and dialect are mandatory.
 

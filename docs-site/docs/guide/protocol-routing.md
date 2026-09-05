@@ -42,10 +42,13 @@ const DEFAULT_ROUTE_PROXY_PORT: u16 = 19527;
 | Claude Code | `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`、`env.AI_SWITCH_ROUTE_PROXY`、`env.AI_SWITCH_ROUTE_PROXY_API_KEY`，以及 `aiSwitch.routeProxy.{enabled,baseUrl,platform,apiKey}` |
 | Gemini CLI | `~/.gemini/settings.json` | 同上结构，base URL 环境变量为 `GEMINI_API_BASE_URL` 与 `GOOGLE_GEMINI_BASE_URL` |
 | Grok | `~/.grok/settings.json` | 同上结构，base URL 环境变量为 `XAI_API_BASE_URL` 与 `GROK_API_BASE_URL` |
+| OpenCode | `~/.config/opencode/opencode.json` | `provider["ai-switch"]`：`npm = "@ai-sdk/openai-compatible"`、`options.baseURL = "<proxy>/v1"`、`options.apiKey`、每个模型的 `limit.{context,output}`；顶层 `model = "ai-switch/<首个模型>"` |
+| OpenClaw | `~/.openclaw/openclaw.json` | `models.providers["ai-switch"]`：`api = "openai-completions"`、`baseUrl = "<proxy>/v1"`、`apiKey`、`models[]`；`agents.defaults.model.primary = "ai-switch/<首个模型>"` |
+| Hermes | `~/.hermes/config.yaml` | `custom_providers` 里 `name: ai-switch` 那条：`base_url = "<proxy>/v1"`、`api_key`、`api_mode = chat_completions`、`model` 与 `models.<id>.context_length`；以及 `model:` 段的 `provider` / `default` / `base_url` / `api_mode` |
 
 Codex 的 provider 段落里刻意用 `experimental_bearer_token` 而不是 `api_key`：渲染时会主动删掉遗留的 `api_key` 键，避免两种写法同时存在。
 
-OpenCode、OpenClaw、Hermes **没有配置写入适配器**，只能通过路由凭据参与算力池，需要自行把客户端指向代理地址。详见 [平台支持矩阵](/guide/platform-support)。
+后三个平台走的是「自定义 provider」这条路，协议一律写 `chat_completions`（OpenCode 是 `@ai-sdk/openai-compatible`，OpenClaw 是 `openai-completions`）。这不是妥协：下面「桥接在什么时候发生」那节的第三个分支与平台无关，所以一条 Chat Completions 入口既能打到 OpenAI 池，也能打到 Responses、Anthropic、Gemini 池。Hermes 的 `api_key` 必须内联写死 —— 它找不到内联 key 时会按端点 host 推导环境变量名，而回环地址匹配不上任何 host。详见 [平台支持矩阵](/guide/platform-support)。
 
 ## 四种上游方言
 

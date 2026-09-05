@@ -260,7 +260,9 @@ mod tests {
 
         // And both results answer it from the one user message that follows, so
         // neither `tool_use` is left without a `tool_result` after it.
-        let results = messages[2]["content"].as_array().expect("tool_result blocks");
+        let results = messages[2]["content"]
+            .as_array()
+            .expect("tool_result blocks");
         assert_eq!(results.len(), 2, "{converted}");
         assert_eq!(results[0]["type"], "tool_result");
         assert_eq!(results[0]["tool_use_id"], "call_1");

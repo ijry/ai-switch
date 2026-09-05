@@ -166,10 +166,11 @@ AI Switch 的全部本地状态都在用户主目录下的 `~/.ai-switch/`（Win
 | Claude Code | `~/.claude/settings.json` |
 | Gemini CLI | `~/.gemini/settings.json` |
 | Grok | `~/.grok/settings.json` |
+| OpenCode | `~/.config/opencode/opencode.json` |
+| OpenClaw | `~/.openclaw/openclaw.json` |
+| Hermes | `~/.hermes/config.yaml`（`HERMES_HOME` 为绝对路径时以它为准） |
 
 这些写入是**安全直写**：变更前建立快照、原子写入、检测并发修改、支持带守卫的回滚。你在这些文件里的其他配置项会被保留，AI Switch 只增改自己管理的字段。
-
-OpenCode、OpenClaw、Hermes 不在此列 —— AI Switch 不写它们的原生配置。
 
 ## 自动更新
 

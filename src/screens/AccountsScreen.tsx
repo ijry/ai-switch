@@ -651,13 +651,21 @@ function defaultInterfaceFormat(platform: PlatformKey): InterfaceFormat {
 }
 
 function interfaceFormatsForPlatform(platform: PlatformKey): InterfaceFormat[] {
+  // Gemini CLI's inbound traffic is never bridged, so its pool can only hold
+  // gemini accounts.
   if (platform === "gemini") {
     return ["gemini"];
   }
-  if (platform === "codex" || platform === "claude") {
-    return routeInterfaceFormats;
+  // Grok is the one platform whose upstream is fixed by the vendor: xAI serves
+  // OpenAI-compatible endpoints and nothing else.
+  if (platform === "grok") {
+    return ["openai"];
   }
-  return [defaultInterfaceFormat(platform)];
+  // Everything else reaches its upstream through a bridge, so any of the four
+  // dialects works. For opencode/openclaw/hermes this is the load-bearing part:
+  // they have no default dialect at all, so a wrong or missing value is the
+  // difference between a working pool and `validation.api_dialect_required`.
+  return routeInterfaceFormats;
 }
 
 function shouldShowInterfaceFormatSelect(platform: PlatformKey) {
@@ -1570,25 +1578,24 @@ function apiPreviewJsonFromPayloads(platform: PlatformKey, secretJson: string, c
     );
   }
 
-  if (platform === "claude" || platform === "gemini" || platform === "grok") {
-    const apiKeyField = stringFromRecord(config, "api_key_field") || null;
-    return JSON.stringify(
-      {
-        settings_json: JSON.stringify({
-          aiSwitch: {
-            kind: "api",
-            baseUrl,
-            interfaceFormat,
-            apiKeyField,
-          },
-        }),
-      },
-      null,
-      2,
-    );
-  }
-
-  return "{}";
+  // Every other platform is described by the same generic API fields. Mirrors
+  // `route_preview_service.rs`'s catch-all arm, so a preview never comes back
+  // empty just because the platform is not one of the four named CLIs.
+  const apiKeyField = stringFromRecord(config, "api_key_field") || null;
+  return JSON.stringify(
+    {
+      settings_json: JSON.stringify({
+        aiSwitch: {
+          kind: "api",
+          baseUrl,
+          interfaceFormat,
+          apiKeyField,
+        },
+      }),
+    },
+    null,
+    2,
+  );
 }
 
 function apiPreviewJsonWithFields(

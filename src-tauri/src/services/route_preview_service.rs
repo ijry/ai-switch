@@ -18,7 +18,10 @@ impl RoutePreviewService {
                 "config_toml": codex_toml(&config),
             })
             .to_string(),
-            "claude" | "gemini" | "grok" => json!({
+            // Every other platform is described by the same generic API fields.
+            // The three agent-harness platforms only ever hold `api`
+            // credentials, so this arm is the whole of their preview.
+            _ => json!({
                 "settings_json": json!({
                     "aiSwitch": {
                         "kind": kind,
@@ -31,7 +34,6 @@ impl RoutePreviewService {
                 }).to_string()
             })
             .to_string(),
-            _ => "{}".to_string(),
         }
     }
 }

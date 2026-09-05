@@ -141,7 +141,7 @@ AI Switch 的核心设计目标是**一份业务逻辑，两种运行形态**。
 
 `src-tauri/src/models/platform.rs` 定义了三组关键枚举：
 
-- `PlatformId` —— **7 个平台**：`Codex`、`Claude`、`Gemini`、`Grok`、`OpenCode`、`OpenClaw`、`Hermes`。前四个原生支持，后三个只提供通用 API 路由。
+- `PlatformId` —— **7 个平台**：`Codex`、`Claude`、`Gemini`、`Grok`、`OpenCode`、`OpenClaw`、`Hermes`。前四个原生支持；后三个是 agent harness，没有官方账号那一半能力，标记为部分支持。
 - `ApiDialect` —— **4 种上游协议**：`openai`、`openai-responses`、`anthropic`、`gemini`。`default_api_credential_dialect()` 对 OpenCode / OpenClaw / Hermes 返回 `None`，因此这三个平台的 API 账号必须显式填写 base URL 与协议。
 - `PlatformOperation` —— **10 种平台能力**：`route_credentials`、`generic_api_routing`、`config_write`、`official_import`、`official_account_routing`、`deeplink_import`、`official_quota`、`model_test`、`terminal_launch`、`session_resume`。每种能力用 `CapabilityRule` 描述可用性（`Supported` / `Partial` / `Unavailable`）、所需凭据类型，以及是否强制 base URL 与协议。
 

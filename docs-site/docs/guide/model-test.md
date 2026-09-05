@@ -50,9 +50,9 @@ pub const MODEL_TEST_PROMPT: &str = "Reply with exactly: ai-switch-ok";
 
 | 平台 | 允许覆盖成 |
 | --- | --- |
-| `codex`、`claude` | `openai`、`openai-responses`、`anthropic`、`gemini`（四种全开） |
-| `gemini` | 只允许 `gemini` |
-| `grok`、`opencode`、`openclaw`、`hermes` | 只允许 `openai` |
+| `gemini` | 只允许 `gemini`（Gemini CLI 的入站流量从不桥接） |
+| `grok` | 只允许 `openai`（xAI 只提供这一种） |
+| 其余平台 | `openai`、`openai-responses`、`anthropic`、`gemini`（四种全开） |
 
 超出范围返回 `validation.route_model_test_interface_format`。
 

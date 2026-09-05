@@ -590,7 +590,9 @@ describe("AccountsScreen", () => {
       operations: {
         route_credentials: rule("supported"),
         generic_api_routing: rule("partial", "capability.api_credentials_only", ["api"]),
-        config_write: rule("unavailable", "capability.native_config_unavailable"),
+        // These three have real config-write adapters; what stays unavailable is
+        // everything tied to an official vendor account.
+        config_write: rule("supported"),
         official_import: rule("unavailable", "capability.official_account_unavailable"),
         official_account_routing: rule("unavailable", "capability.official_account_unavailable"),
         deeplink_import: rule("unavailable", "capability.deeplink_unavailable"),
@@ -2043,7 +2045,7 @@ describe("AccountsScreen", () => {
     expect(screen.queryByLabelText("批量移出算力池")).not.toBeInTheDocument();
   });
 
-  it("shows Hermes as partial and disables unsupported account actions", async () => {
+  it("shows Hermes as partial while letting it write its own config", async () => {
     const hermesCredentials: RouteCredential[] = credentialsFixture.map((credential) => ({
       ...credential,
       id: credential.kind === "official" ? "hermes-official" : "hermes-api",
@@ -2051,6 +2053,19 @@ describe("AccountsScreen", () => {
       display_name: credential.kind === "official" ? "Hermes Official" : "Hermes API",
     }));
     vi.mocked(listRouteCredentials).mockResolvedValue(hermesCredentials);
+    vi.mocked(listConfigWriteClients).mockResolvedValue([
+      {
+        client_key: "hermes",
+        display_name: "Hermes Agent",
+        native: true,
+        restart_required: false,
+        target_key: "hermes",
+        platform: "hermes",
+        config_path: "/home/u/.hermes/config.yaml",
+        file_status: "unmanaged",
+        error_code: null,
+      },
+    ]);
     vi.mocked(getRoutePool).mockResolvedValue({
       platform: "hermes",
       account_ids: hermesCredentials.map((credential) => credential.id),
@@ -2065,16 +2080,17 @@ describe("AccountsScreen", () => {
 
     renderScreen("hermes");
 
+    // Still "partial": no official vendor account to import, route, or bill.
     expect(await screen.findByLabelText("Hermes 部分支持")).toBeInTheDocument();
-    // No native config write here, but the dialog still has to open: it is where
-    // the endpoint parameters for a hand-configured client live.
     const writeConfig = screen.getByLabelText("写入路由配置文件");
     expect(writeConfig).toBeEnabled();
-    expect(writeConfig).toHaveAttribute("title", expect.stringContaining("原生配置"));
     await userEvent.click(writeConfig);
-    expect(await screen.findByLabelText("复制 Base URL")).toBeInTheDocument();
-    expect(screen.getByText("该平台的原生配置写入尚未实现。")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "写入" })).toBeDisabled();
+    expect(await screen.findByRole("checkbox", { name: /Hermes Agent/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "写入" })).toBeEnabled();
+    // The endpoint the manual tab hands out has to match what the writer puts in
+    // the file, `/v1` included.
+    await userEvent.click(screen.getByRole("tab", { name: "其他 Agent" }));
+    expect(screen.getByLabelText("Base URL")).toHaveValue("http://127.0.0.1:43111/v1");
     await userEvent.click(screen.getByLabelText("关闭接入算力池"));
     await userEvent.click(screen.getByLabelText("打开刷新菜单"));
     expect(screen.getByLabelText("刷新官方账号额度")).toBeDisabled();
@@ -2085,6 +2101,9 @@ describe("AccountsScreen", () => {
     const officialImport = screen.getByRole("button", { name: "批量导入" });
     expect(officialImport).toBeDisabled();
     expect(officialImport).toHaveAttribute("title", expect.stringContaining("官方账号"));
+    // The dialect has no default on this platform, so it must be selectable
+    // rather than silently pinned to openai.
+    expect(screen.getByLabelText("接口格式")).toBeInTheDocument();
 
     expect(screen.getByLabelText("测试 Hermes Official")).toBeDisabled();
     expect(screen.getByLabelText("测试 Hermes API")).toBeEnabled();

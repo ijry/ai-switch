@@ -235,6 +235,13 @@ impl RouteConfigService {
             // Per-iteration: a claude request must not inherit another
             // platform's pool state.
             let claude_env = Self::resolve_claude_env_plan(paths, pool, parsed).await?;
+            // A client that carries its own model list would otherwise have that
+            // list emptied by a base-URL-only rewrite.
+            let client_models = if adapter.requires_client_models() {
+                Self::resolve_client_models(pool, parsed).await?
+            } else {
+                Vec::new()
+            };
             requests.push(ConfigWriteRequest {
                 adapter,
                 home: home.to_path_buf(),
@@ -243,7 +250,7 @@ impl RouteConfigService {
                     route_proxy_key,
                     route_proxy_key_aliases: Vec::new(),
                     claude_env,
-                    client_models: Vec::new(),
+                    client_models,
                 },
             });
         }
@@ -801,12 +808,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_configs_rejects_unsupported_platform_without_writing_all_targets() {
+    async fn write_configs_refuses_a_platform_with_no_pool_models_without_minting_a_key() {
         let temp = tempfile::tempdir().expect("temp dir");
         let paths = AppPaths::from_data_dir(temp.path().to_path_buf());
         let pool = create_memory_pool().await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
         let runtime = ConfigWriteRuntimeState::default();
+        // OpenCode's provider entry carries the model list, and these three
+        // platforms have no baseline models of their own — an empty pool means
+        // there is nothing to write.
         let error = RouteConfigService::write_configs_for_home(
             &paths,
             &pool,
@@ -817,15 +827,12 @@ mod tests {
             None,
         )
         .await
-        .expect_err("unsupported target");
+        .expect_err("no pool models");
 
         match error {
             AppError::Validation { code, details, .. } => {
-                assert_eq!(code, "capability.unavailable");
-                assert_eq!(
-                    details.as_deref(),
-                    Some("capability.native_config_unavailable")
-                );
+                assert_eq!(code, "config.pool_models_empty");
+                assert_eq!(details.as_deref(), Some("opencode"));
             }
             other => panic!("expected validation error, got {other:?}"),
         }
@@ -838,61 +845,139 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_route_config_entry_point_leaves_hermes_config_untouched() {
-        let fixture = tempfile::tempdir().unwrap();
-        let home = fixture.path().join("home");
-        let paths = AppPaths::from_data_dir(fixture.path().join("app-data"));
-        paths.ensure().await.unwrap();
-        let pool = create_memory_pool().await.unwrap();
-        run_migrations(&pool).await.unwrap();
-        let runtime = ConfigWriteRuntimeState::default();
-        let hermes = home.join(".hermes").join("config.yaml");
-        tokio::fs::create_dir_all(hermes.parent().unwrap())
-            .await
-            .unwrap();
-        tokio::fs::write(&hermes, b"model: sentinel\n")
-            .await
-            .unwrap();
-        let before = ConfigWriter::inspect(&hermes).await.unwrap();
+    async fn every_agent_platform_writes_its_own_config_carrying_the_key_inline() {
+        for (platform, relative, needle) in [
+            ("opencode", ".config/opencode/opencode.json", "\"apiKey\""),
+            ("openclaw", ".openclaw/openclaw.json", "\"apiKey\""),
+            ("hermes", ".hermes/config.yaml", "api_key:"),
+        ] {
+            let fixture = ServiceFixture::new().await;
+            seed_agent_pool_member(&fixture.pool, platform, "glm-5.3").await;
 
-        let error = RouteConfigService::write_configs_for_home(
-            &paths,
-            &pool,
-            &runtime,
-            "http://127.0.0.1:43111",
+            let outcomes = RouteConfigService::write_configs_for_home(
+                &fixture.paths,
+                &fixture.pool,
+                &fixture.runtime,
+                BASE_URL,
+                platform,
+                &fixture.home,
+                None,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{platform} write: {error:?}"));
+
+            assert_eq!(outcomes.len(), 1, "{platform}");
+            assert_eq!(outcomes[0].status, "succeeded", "{platform}");
+            assert_eq!(outcomes[0].platform, platform);
+
+            let written = tokio::fs::read_to_string(fixture.home.join(relative))
+                .await
+                .unwrap_or_else(|error| panic!("{platform} config: {error:?}"));
+            let key = RouteProxyKeyRepository::get_existing_platform_key(&fixture.pool, platform)
+                .await
+                .expect("key lookup")
+                .expect("minted key");
+            // The credential travels inline: none of these three can read it from
+            // a loopback endpoint's host or from an env var we do not own, which
+            // is what left a hand-configured pool reporting a missing API key.
+            assert!(written.contains(&key), "{platform}: {written}");
+            assert!(written.contains(needle), "{platform}: {written}");
+            assert!(written.contains("glm-5.3"), "{platform}: {written}");
+            assert!(
+                written.contains("127.0.0.1:43111/v1"),
+                "{platform}: {written}"
+            );
+
+            // A fresh write is not stale, and the platform reports as managed.
+            assert!(
+                !RouteConfigService::config_write_is_stale_for_home(
+                    &fixture.paths,
+                    &fixture.pool,
+                    BASE_URL,
+                    platform,
+                    &fixture.home,
+                    None,
+                )
+                .await,
+                "{platform}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_base_url_rewrite_keeps_the_agent_platforms_model_list() {
+        // The HTTP↔HTTPS switch path passes no client models. For the four
+        // native CLIs that is right — they discover models themselves — but for
+        // these three the list lives in the file we are rewriting, so a
+        // models-less rewrite would silently empty the provider.
+        let fixture = ServiceFixture::new().await;
+        seed_agent_pool_member(&fixture.pool, "hermes", "glm-5.3").await;
+        RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            "http://127.0.0.1:19527",
             "hermes",
-            &home,
+            &fixture.home,
             None,
         )
         .await
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            AppError::Validation {
-                code: "capability.unavailable",
-                ..
-            }
-        ));
+        .expect("first write");
 
-        RouteProxyKeyRepository::ensure_platform_key(&pool, "hermes", "sk-ai-switch-hermes")
+        let outcomes = RouteConfigService::write_existing_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            "https://127.0.0.1:19528",
+            &fixture.home,
+        )
+        .await
+        .expect("rewrite");
+
+        assert!(outcomes
+            .iter()
+            .any(|item| item.platform == "hermes" && item.status == "succeeded"));
+        let written = tokio::fs::read_to_string(fixture.home.join(".hermes/config.yaml"))
+            .await
+            .expect("hermes config");
+        assert!(written.contains("https://127.0.0.1:19528/v1"), "{written}");
+        assert!(written.contains("glm-5.3"), "{written}");
+    }
+
+    #[tokio::test]
+    async fn a_hermes_write_leaves_every_section_it_does_not_own_untouched() {
+        let fixture = ServiceFixture::new().await;
+        seed_agent_pool_member(&fixture.pool, "hermes", "glm-5.3").await;
+        let hermes = fixture.home.join(".hermes").join("config.yaml");
+        tokio::fs::create_dir_all(hermes.parent().unwrap())
             .await
             .unwrap();
-        let outcomes = RouteConfigService::write_existing_configs_for_home(
-            &paths,
-            &pool,
-            &runtime,
-            "http://127.0.0.1:43111",
-            &home,
+        // Hermes' own docs tell people to hand-edit this file, so its comments
+        // and unrelated sections are load-bearing user data.
+        tokio::fs::write(
+            &hermes,
+            b"# my notes\ndatabase:\n  journal_mode: \"wal\"\n\nmcp_servers:\n  filesystem:\n    command: npx\n",
         )
         .await
         .unwrap();
-        assert!(outcomes
-            .iter()
-            .any(|item| item.platform == "hermes" && item.status == "skipped"));
 
-        let after = ConfigWriter::inspect(&hermes).await.unwrap();
-        assert_eq!(after.hash, before.hash);
-        assert_eq!(after.bytes, before.bytes);
+        RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            BASE_URL,
+            "hermes",
+            &fixture.home,
+            None,
+        )
+        .await
+        .expect("write");
+
+        let written = tokio::fs::read_to_string(&hermes).await.expect("read");
+        assert!(written.contains("# my notes"), "{written}");
+        assert!(written.contains("journal_mode: \"wal\""), "{written}");
+        assert!(written.contains("command: npx"), "{written}");
+        assert!(written.contains("provider: ai-switch"), "{written}");
     }
 
     #[tokio::test]
@@ -1946,13 +2031,20 @@ command = "npx"
     }
 
     async fn seed_codex_pool_member_with_config(pool: &SqlitePool, config_json: &str) {
+        seed_pool_member(pool, "codex", config_json).await;
+    }
+
+    /// An in-pool api credential on `platform`, advertising whatever
+    /// `config_json`'s mappings declare.
+    async fn seed_pool_member(pool: &SqlitePool, platform: &str, config_json: &str) {
         let credential_id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             "INSERT INTO route_credentials (id, platform, kind, display_name, secret_payload_json, config_json, preview_json, created_at, updated_at)
-             VALUES (?, 'codex', 'api', 'seed', '{}', ?, '{}', ?, ?)",
+             VALUES (?, ?, 'api', 'seed', '{}', ?, '{}', ?, ?)",
         )
         .bind(&credential_id)
+        .bind(platform)
         .bind(config_json)
         .bind(&now)
         .bind(&now)
@@ -1961,15 +2053,25 @@ command = "npx"
         .expect("insert credential");
         sqlx::query(
             "INSERT INTO route_pool_members (id, platform, route_credential_id, created_at, updated_at)
-             VALUES (?, 'codex', ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
+        .bind(platform)
         .bind(&credential_id)
         .bind(&now)
         .bind(&now)
         .execute(pool)
         .await
         .expect("insert pool member");
+    }
+
+    /// One model mapped to itself, the minimum for the pool to advertise it.
+    async fn seed_agent_pool_member(pool: &SqlitePool, platform: &str, model: &str) {
+        let config_json = serde_json::json!({
+            "model_mappings": [{ "from": model, "to": model }]
+        })
+        .to_string();
+        seed_pool_member(pool, platform, &config_json).await;
     }
 
     /// The sk the Codex CLI config was written with, read back from disk.

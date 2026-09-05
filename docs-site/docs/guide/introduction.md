@@ -99,15 +99,15 @@ AI Switch 的做法是把这些差异收敛到一个地方：账号集中管理�
 **平台**是 AI Switch 认识的目标 CLI，一共 7 个：
 
 - **原生支持**：Codex、Claude Code、Gemini CLI、Grok
-- **通用 API 路由**：OpenCode、OpenClaw、Hermes
+- **部分支持**：OpenCode、OpenClaw、Hermes
 
-区别在于能力范围。原生支持的四个平台可以由 AI Switch 直接写入配置文件、导入官方账号；后三个只做通用 API 路由，需要你显式提供 base URL 和接口格式。
+区别在官方账号。7 个平台都能路由 API、都能由 AI Switch 写入配置文件；但后三个是 agent harness 而不是模型厂商，没有自己的官方登录态，所以官方账号导入和额度查询对它们不存在，而且 API 账号必须显式提供 base URL 和接口格式。
 
 完整的 7 平台 × 10 能力对照表见 [平台支持矩阵](/guide/platform-support)。
 
 ## 适合谁用
 
-**同时用多个 AI CLI 的人。** 账号在一个地方管，四个 CLI 的配置由 AI Switch 写，不用记哪个文件是什么格式。
+**同时用多个 AI CLI 的人。** 账号在一个地方管，CLI 的配置由 AI Switch 写，不用记哪个文件是什么格式。
 
 **手上有多个中转账号的人。** 把它们全放进算力池，设好优先级，限流和额度耗尽的切换交给代理。主力账号优先级设 1，备用设 3，主力挂了自动降级。
 

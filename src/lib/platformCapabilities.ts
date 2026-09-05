@@ -2,7 +2,6 @@ import type { CapabilityRule, PlatformCapability, PlatformId } from "./api/types
 
 const capabilityReasons: Record<string, string> = {
   "capability.api_credentials_only": "仅支持已配置 Base URL 和接口格式的 API 账号。",
-  "capability.native_config_unavailable": "该平台的原生配置写入尚未实现。",
   "capability.official_account_unavailable": "该平台不支持官方账号导入或官方账号路由。",
   "capability.deeplink_unavailable": "该平台不支持 Deeplink 导入。",
   "capability.quota_unavailable": "该平台不支持官方账号额度刷新。",

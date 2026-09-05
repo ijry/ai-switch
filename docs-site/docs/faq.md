@@ -18,9 +18,9 @@ description: AI Switch 常见问题解答：与手改配置文件的区别、平
 
 如果你只有一个账号且从不切换，手改确实够用。账号一多、或者你希望失败时自动接管，差别就出来了。详见[快速开始](/guide/quick-start)与[账号与算力池](/guide/accounts)。
 
-## 支持哪些平台？为什么 OpenCode、OpenClaw、Hermes 只有通用 API 路由？
+## 支持哪些平台？为什么 OpenCode、OpenClaw、Hermes 是「部分支持」？
 
-共 **7 个平台**。前四个是原生支持，后三个是通用 API 路由：
+共 **7 个平台**。7 个都能路由 API、写配置，区别在官方账号那一半：
 
 | 平台 | 支持程度 |
 | --- | --- |
@@ -28,11 +28,11 @@ description: AI Switch 常见问题解答：与手改配置文件的区别、平
 | Claude Code | 原生：同上（额度取决于上游账号流程是否允许） |
 | Gemini CLI | 原生：API 路由、写配置、导入；不声称官方额度 |
 | Grok | 原生：同 Claude Code |
-| OpenCode | 通用 API 路由 |
-| OpenClaw | 通用 API 路由 |
-| Hermes | 通用 API 路由 |
+| OpenCode | 部分：API 路由、写配置；无官方账号 |
+| OpenClaw | 部分：同上 |
+| Hermes | 部分：同上 |
 
-后三个之所以只有通用路由，是因为 AI Switch 不声称能可靠地解析和改写它们的原生配置、导入官方账号或读取官方额度。它们仍然可以作为 API 路由账号使用、可以从终端启动、可以做会话管理——只是给这些账号建凭据时**必须显式填写 base URL 与 API 协议**，因为 AI Switch 不会为它们猜默认值。
+后三个是 agent harness，不是模型厂商 —— 它们没有自己的官方登录态，所以官方账号导入、官方账号路由、deeplink、额度查询这四项对它们不存在，这就是「部分支持」的全部含义。写配置是有的：AI Switch 会往 `~/.config/opencode/opencode.json`、`~/.openclaw/openclaw.json`、`~/.hermes/config.yaml` 里写一条 `ai-switch` 自定义 provider。唯一的额外要求是给它们建 API 凭据时**必须显式填写 base URL 与 API 协议**，因为这三个平台没有默认方言。
 
 完整的能力矩阵（10 种平台能力 × 7 个平台）见[平台支持矩阵](/guide/platform-support)。
 

@@ -99,15 +99,15 @@ Streaming responses are translated too. See [Protocol Routing and Bridging](/en/
 A **platform** is a target CLI that AI Switch knows about. There are seven:
 
 - **Native support**: Codex, Claude Code, Gemini CLI, Grok
-- **Generic API routing**: OpenCode, OpenClaw, Hermes
+- **Partial support**: OpenCode, OpenClaw, Hermes
 
-The difference is scope. AI Switch can write native config files and import official accounts for the first four. The last three get generic API routing only, and you have to supply the base URL and interface format yourself.
+The difference is official accounts. All seven route API traffic and can have their config files written by AI Switch, but the last three are agent harnesses rather than model vendors: they have no official sign-in of their own, so official account import and quota lookup do not exist for them, and their API accounts must spell out a base URL and interface format.
 
 The full 7-platform by 10-capability table is in [Platform Support Matrix](/en/guide/platform-support).
 
 ## Who it's for
 
-**People running several AI CLIs.** Accounts live in one inventory, AI Switch writes the config for four of the CLIs, and you never have to remember which file uses which format.
+**People running several AI CLIs.** Accounts live in one inventory, AI Switch writes the CLI config, and you never have to remember which file uses which format.
 
 **People holding several relay accounts.** Put them all in the pool, set the priorities, and let the proxy handle rate limits and exhausted credit. Main account at priority 1, backup at 3 — when the main one dies, traffic drops down on its own.
 

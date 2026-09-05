@@ -1507,15 +1507,16 @@ fn validate_model_test_interface_override(
     };
 
     let allowed = match platform {
-        "codex" | "claude" => {
-            matches!(
-                requested,
-                "openai" | "openai-responses" | "anthropic" | "gemini"
-            )
-        }
+        // Gemini CLI's inbound traffic is never bridged, so its pool can only
+        // hold `gemini` accounts and an override to anything else would probe a
+        // credential the proxy cannot route to.
         "gemini" => requested == "gemini",
-        "grok" | "opencode" | "openclaw" | "hermes" => requested == "openai",
-        _ => false,
+        // Everything else reaches its upstream through a bridge, and the four
+        // dialects are exactly what the bridges cover.
+        _ => matches!(
+            requested,
+            "openai" | "openai-responses" | "anthropic" | "gemini"
+        ),
     };
     if !allowed {
         return Err(AppError::Validation {
@@ -2535,13 +2536,20 @@ mod tests {
                 .as_deref(),
             Some("openai")
         );
+        // Gemini CLI traffic is never bridged, so its pool can only be gemini.
         assert!(validate_model_test_interface_override("gemini", Some("openai")).is_err());
-        assert_eq!(
-            validate_model_test_interface_override("hermes", Some("openai"))
-                .expect("valid Hermes OpenAI override")
-                .as_deref(),
-            Some("openai")
-        );
+        // The three agent-harness platforms reach every dialect through the
+        // chat-completions bridge, so an account configured as anthropic or
+        // openai-responses must be testable as itself.
+        for dialect in ["openai", "openai-responses", "anthropic", "gemini"] {
+            assert_eq!(
+                validate_model_test_interface_override("hermes", Some(dialect))
+                    .unwrap_or_else(|error| panic!("hermes {dialect}: {error:?}"))
+                    .as_deref(),
+                Some(dialect)
+            );
+        }
+        assert!(validate_model_test_interface_override("hermes", Some("bedrock")).is_err());
         assert_eq!(
             validate_model_test_interface_override("claude", None).expect("missing override"),
             None

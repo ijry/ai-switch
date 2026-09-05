@@ -1570,7 +1570,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_prepared_rows_is_read_only_and_rejects_hermes_before_path_access() {
+    async fn reconcile_prepared_rows_is_read_only_and_rejects_a_target_without_an_adapter() {
         let fixture = Fixture::new().await;
         let codex = TargetRepository::get_by_key(&fixture.pool, "codex")
             .await
@@ -1578,6 +1578,26 @@ mod tests {
         let hermes = TargetRepository::get_by_key(&fixture.pool, "hermes")
             .await
             .unwrap();
+        assert!(
+            TargetAdapterRegistry::new()
+                .by_target_key(&hermes.key)
+                .is_some(),
+            "Hermes has a real adapter now, so it is no longer the stand-in for \
+             a target that cannot be written"
+        );
+        // A target row left behind by an older version, whose adapter no longer
+        // exists. Reconciliation has to refuse it without opening its path.
+        sqlx::query(
+            "INSERT INTO target_apps (
+                id, key, platform, display_name, enabled, sort_order, created_at, updated_at
+             ) VALUES (?, 'claude_desktop', 'claude', 'Claude Desktop', 1, 99, ?, ?)",
+        )
+        .bind("legacy-desktop")
+        .bind(Utc::now().to_rfc3339())
+        .bind(Utc::now().to_rfc3339())
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
         let path = fixture.codex_path();
         tokio::fs::create_dir_all(path.parent().unwrap())
             .await
@@ -1624,28 +1644,29 @@ mod tests {
             .unwrap();
         }
 
-        let hermes_path = fixture.home.join(".hermes").join("config.yaml");
-        tokio::fs::create_dir_all(hermes_path.parent().unwrap())
+        let legacy_path = fixture.home.join(".claude-desktop").join("config.json");
+        tokio::fs::create_dir_all(legacy_path.parent().unwrap())
             .await
             .unwrap();
-        tokio::fs::write(&hermes_path, b"model: sentinel\n")
+        tokio::fs::write(&legacy_path, b"{\"sentinel\":true}")
             .await
             .unwrap();
         ConfigSnapshotRepository::prepare_with_id(
             &fixture.pool,
-            "reconcile-hermes",
+            "reconcile-legacy",
             NewConfigSnapshot {
-                target_app_id: Some(hermes.id),
-                platform: Some("hermes".to_string()),
+                target_app_id: Some("legacy-desktop".to_string()),
+                platform: Some("claude".to_string()),
                 operation: "write".to_string(),
-                operation_group_id: Some("reconcile-hermes".to_string()),
+                operation_group_id: Some("reconcile-legacy".to_string()),
                 source_snapshot_id: None,
-                path: hermes_path.display().to_string(),
+                path: legacy_path.display().to_string(),
                 before_hash: Some(hash_bytes(b"before")),
                 after_hash: Some(hash_bytes(b"after")),
                 backup_path: None,
                 original_file_existed: true,
-                metadata_json: r#"{"adapter_key":"hermes","operation":"write"}"#.to_string(),
+                metadata_json: r#"{"adapter_key":"claude_desktop","operation":"write"}"#
+                    .to_string(),
             },
         )
         .await
@@ -1684,18 +1705,18 @@ mod tests {
                 .status,
             "conflict"
         );
-        let hermes_snapshot = ConfigSnapshotRepository::get(&fixture.pool, "reconcile-hermes")
+        let legacy_snapshot = ConfigSnapshotRepository::get(&fixture.pool, "reconcile-legacy")
             .await
             .unwrap();
-        assert_eq!(hermes_snapshot.status, "conflict");
+        assert_eq!(legacy_snapshot.status, "conflict");
         assert_eq!(
-            hermes_snapshot.error_code.as_deref(),
-            Some("capability.unavailable")
+            legacy_snapshot.error_code.as_deref(),
+            Some("config.adapter_unavailable")
         );
         assert_eq!(tokio::fs::read(&path).await.unwrap(), current);
         assert_eq!(
-            tokio::fs::read(&hermes_path).await.unwrap(),
-            b"model: sentinel\n"
+            tokio::fs::read(&legacy_path).await.unwrap(),
+            b"{\"sentinel\":true}"
         );
     }
 

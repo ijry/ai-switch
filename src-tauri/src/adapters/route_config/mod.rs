@@ -1,6 +1,9 @@
 mod codex;
 mod deepseek_harness;
+mod hermes;
 mod json_agent;
+mod openclaw;
+mod opencode;
 mod qoder_cli;
 mod workbuddy;
 mod zcode;
@@ -13,7 +16,10 @@ use crate::{
 };
 use codex::CodexAdapter;
 use deepseek_harness::DeepSeekHarnessAdapter;
+use hermes::HermesAdapter;
 use json_agent::JsonAgentAdapter;
+use openclaw::OpenClawAdapter;
+use opencode::OpenCodeAdapter;
 use qoder_cli::QoderCliAdapter;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -163,6 +169,12 @@ impl TargetAdapterRegistry {
                 Arc::new(WorkBuddyAdapter::codebuddy_claude()),
                 Arc::new(QoderCliAdapter::codex()),
                 Arc::new(QoderCliAdapter::claude()),
+                // Each of these three is its own platform's CLI rather than a
+                // second client for Codex or Claude: they hold their own pool,
+                // their own proxy key and their own model list.
+                Arc::new(OpenCodeAdapter),
+                Arc::new(OpenClawAdapter),
+                Arc::new(HermesAdapter),
             ],
         }
     }
@@ -212,6 +224,28 @@ impl Default for TargetAdapterRegistry {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The proxy base URL with no trailing slash. What a client wants when it
+/// appends its own version segment (Anthropic clients hit `{base}/v1/messages`,
+/// so a `/v1` here would produce `/v1/v1/messages`).
+pub(super) fn base_url_root(base_url: &str) -> String {
+    base_url.trim().trim_end_matches('/').to_string()
+}
+
+/// The proxy base URL ending in `/v1`. What a client wants when it appends a
+/// bare endpoint (`{base}/chat/completions`, `{base}/responses`). Idempotent:
+/// a URL already ending in `v1` is returned unchanged.
+pub(super) fn base_url_with_v1(base_url: &str) -> String {
+    let trimmed = base_url_root(base_url);
+    if trimmed
+        .rsplit('/')
+        .next()
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("v1"))
+    {
+        return trimmed;
+    }
+    format!("{trimmed}/v1")
 }
 
 pub(super) fn existing_text<'a>(
@@ -292,13 +326,21 @@ mod tests {
                 .target_key(),
             "grok"
         );
-        assert!(registry
-            .clients_for_platform(PlatformId::OpenCode)
-            .is_empty());
-        assert!(registry
-            .clients_for_platform(PlatformId::OpenClaw)
-            .is_empty());
-        assert!(registry.clients_for_platform(PlatformId::Hermes).is_empty());
+        // Each of these three is the only client of its own platform, and it is
+        // that platform's own CLI.
+        for (client_key, platform) in [
+            ("opencode", PlatformId::OpenCode),
+            ("openclaw", PlatformId::OpenClaw),
+            ("hermes", PlatformId::Hermes),
+        ] {
+            let clients = registry.clients_for_platform(platform);
+            assert_eq!(clients.len(), 1, "{client_key}");
+            assert_eq!(clients[0].client_key, client_key);
+            assert!(clients[0].native, "{client_key}");
+            // None of them can discover models from the pool endpoint, so the
+            // write has to carry the list.
+            assert!(clients[0].requires_client_models, "{client_key}");
+        }
         // Claude Desktop is deliberately absent: it has no bring-your-own base
         // URL mechanism (its own config file configures MCP servers only), so no
         // adapter can route it through the proxy. The target that used to be here
@@ -724,9 +766,6 @@ api_key = "legacy-key"
         // Exactly one native client per platform: the write dialog default-checks
         // every `native` client, so a second one would silently double-write.
         assert_eq!(claude.iter().filter(|client| client.native).count(), 1);
-
-        // Platforms with no adapter list nothing rather than erroring.
-        assert!(registry.clients_for_platform(PlatformId::Hermes).is_empty());
     }
 
     #[test]

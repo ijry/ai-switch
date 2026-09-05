@@ -166,10 +166,11 @@ Beyond its own data directory, AI Switch modifies CLI config files when you use 
 | Claude Code | `~/.claude/settings.json` |
 | Gemini CLI | `~/.gemini/settings.json` |
 | Grok | `~/.grok/settings.json` |
+| OpenCode | `~/.config/opencode/opencode.json` |
+| OpenClaw | `~/.openclaw/openclaw.json` |
+| Hermes | `~/.hermes/config.yaml` (an absolute `HERMES_HOME` wins) |
 
 These writes are **safe direct writes**: a snapshot is taken before the change, the write is atomic, concurrent modifications are detected, and guarded rollback is supported. Your other settings in those files are preserved — AI Switch only adds or updates the fields it manages.
-
-OpenCode, OpenClaw, and Hermes are not in this list; AI Switch does not write their native configuration.
 
 ## Auto updates
 

@@ -25,13 +25,13 @@ Current foundation includes:
 | Claude Code | Supported | Supported | Supported where the upstream account flow allows it |
 | Gemini CLI | Supported | Supported | Import supported; official quota is not claimed |
 | Grok | Supported | Supported | Supported where the upstream account flow allows it |
-| OpenCode | Partial: API credentials require an explicit base URL and API dialect | Not supported | Not supported |
-| OpenClaw | Partial: API credentials require an explicit base URL and API dialect | Not supported | Not supported |
-| Hermes | Partial: API credentials require an explicit base URL and API dialect | Not supported | Not supported |
+| OpenCode | Partial: API credentials require an explicit base URL and API dialect | Supported | Not supported |
+| OpenClaw | Partial: API credentials require an explicit base URL and API dialect | Supported | Not supported |
+| Hermes | Partial: API credentials require an explicit base URL and API dialect | Supported | Not supported |
 
-OpenCode, OpenClaw, and Hermes remain visible for generic API routing, terminal launch, and session workflows, but AI Switch does not claim native configuration, official-account import, or quota support for them.
+Those three are agent harnesses rather than model vendors, so they have no official sign-in of their own: official-account import, official-account routing, deeplink, and quota lookup do not exist for them. That is the whole of what "partial" means.
 
-Native Codex, Claude Code, Gemini CLI, and Grok configuration changes use safe direct writes: AI Switch prepares a snapshot before mutation, writes atomically, detects concurrent changes, and supports guarded rollback. Phase A never resolves or modifies Hermes `config.yaml`.
+Native config writing uses safe direct writes: AI Switch prepares a snapshot before mutation, writes atomically, detects concurrent changes, and supports guarded rollback. All seven platforms write their own file — Codex's `~/.codex/config.toml`, the `settings.json` of Claude Code / Gemini CLI / Grok, and an `ai-switch` custom provider inside `~/.config/opencode/opencode.json`, `~/.openclaw/openclaw.json`, and `~/.hermes/config.yaml`.
 
 ### Protocol Routing
 

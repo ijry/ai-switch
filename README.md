@@ -25,13 +25,13 @@ AI Switch 是一个用于切换 AI 供应商与官方账号的应用，有桌面
 | Claude Code | 支持 | 支持 | 上游账号流程允许的范围内支持 |
 | Gemini CLI | 支持 | 支持 | 支持导入；不声称支持官方额度 |
 | Grok | 支持 | 支持 | 上游账号流程允许的范围内支持 |
-| OpenCode | 部分支持：API 账号必须显式提供 base URL 和接口格式 | 不支持 | 不支持 |
-| OpenClaw | 部分支持：API 账号必须显式提供 base URL 和接口格式 | 不支持 | 不支持 |
-| Hermes | 部分支持：API 账号必须显式提供 base URL 和接口格式 | 不支持 | 不支持 |
+| OpenCode | 部分支持：API 账号必须显式提供 base URL 和接口格式 | 支持 | 不支持 |
+| OpenClaw | 部分支持：API 账号必须显式提供 base URL 和接口格式 | 支持 | 不支持 |
+| Hermes | 部分支持：API 账号必须显式提供 base URL 和接口格式 | 支持 | 不支持 |
 
-OpenCode、OpenClaw、Hermes 保持可见，用于通用 API 路由、终端启动和会话流程，但 AI Switch 不声称对它们支持原生配置、官方账号导入或额度查询。
+后三个是 agent harness 而不是模型厂商，没有自己的官方登录态，所以官方账号导入、官方账号路由、deeplink 和额度查询对它们不存在 —— 这就是「部分支持」的全部含义。
 
-Codex、Claude Code、Gemini CLI、Grok 的原生配置写入采用安全直写：AI Switch 在变更前建立快照、原子写入、检测并发修改、支持带守卫的回滚。Phase A 不会解析也不会修改 Hermes 的 `config.yaml`。
+原生配置写入采用安全直写：AI Switch 在变更前建立快照、原子写入、检测并发修改、支持带守卫的回滚。7 个平台各写自己的文件：Codex 的 `~/.codex/config.toml`、Claude Code / Gemini CLI / Grok 的 `settings.json`，以及 `~/.config/opencode/opencode.json`、`~/.openclaw/openclaw.json`、`~/.hermes/config.yaml` 里的 `ai-switch` 自定义 provider。
 
 ### 协议路由
 

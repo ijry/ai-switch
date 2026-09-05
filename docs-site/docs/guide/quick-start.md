@@ -141,6 +141,9 @@ AI Switch 会把当前平台的 CLI 配置指向本地代理。对 Codex 来说�
 | Claude Code | `~/.claude/settings.json` |
 | Gemini CLI | `~/.gemini/settings.json` |
 | Grok | `~/.grok/settings.json` |
+| OpenCode | `~/.config/opencode/opencode.json` |
+| OpenClaw | `~/.openclaw/openclaw.json` |
+| Hermes | `~/.hermes/config.yaml` |
 
 写完直接跑 CLI 就行：
 
@@ -152,11 +155,11 @@ CLI 现在的请求全部经过 AI Switch。
 
 ### 方式 B：手动配置
 
-OpenCode、OpenClaw、Hermes 不支持原生配置写入，或者你想自己控制配置，就手动来。
+接一个 AI Switch 不认识的第三方工具，或者你想自己控制配置，就手动来。
 
-需要两个值，都在 **🔌 按钮**（提示文字「写入路由配置文件」）弹出的窗口里，最下面的「在以上客户端之外使用」区域：
+需要两个值，都在 **🔌 按钮**（提示文字「写入路由配置文件」）弹出的窗口里，切到「其他 Agent」标签页：
 
-- **Base URL** —— 当前代理地址，比如 `http://127.0.0.1:19527`（Codex 标签页会带上 `/v1`，因为 Codex 拿 base URL 直接拼 `/responses`）
+- **Base URL** —— 当前代理地址，比如 `http://127.0.0.1:19527`（Codex / OpenCode / OpenClaw / Hermes 的标签页会带上 `/v1`，因为这几个客户端拿 base URL 直接拼裸端点）
 - **API Key** —— 本地代理 key，形如 `sk-ai-switch-<uuid>`
 
 两个值都有一键复制按钮。API Key 默认打码，点眼睛图标才显示明文。

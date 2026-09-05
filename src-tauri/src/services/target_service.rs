@@ -233,9 +233,21 @@ experimental_bearer_token = "sentinel"
         assert_eq!(status("codex").file_status, "managed");
         assert_eq!(status("claude_code").file_status, "invalid");
         assert_eq!(status("gemini_cli").file_status, "missing");
-        assert_eq!(status("hermes").file_status, "adapter_unavailable");
-        assert!(status("hermes").config_path.is_none());
-        assert!(!status("hermes").adapter_available);
+        // Hermes has a verified adapter now, so it reports a real file state and
+        // a path. It stays `partial` because the official-account half of the
+        // matrix is still unavailable to it.
+        assert_eq!(status("hermes").file_status, "missing");
+        assert_eq!(
+            status("hermes").config_path.as_deref(),
+            Some(
+                home.join(".hermes")
+                    .join("config.yaml")
+                    .display()
+                    .to_string()
+                    .as_str()
+            )
+        );
+        assert!(status("hermes").adapter_available);
         assert_eq!(status("hermes").support_level.as_deref(), Some("partial"));
     }
 

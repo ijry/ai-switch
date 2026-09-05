@@ -1793,6 +1793,14 @@ mod tests {
             hermes
                 .pointer("/operations/config_write/availability")
                 .and_then(Value::as_str),
+            Some("supported")
+        );
+        // What "partial" now means: no official vendor account to import, route
+        // through, or read quota from.
+        assert_eq!(
+            hermes
+                .pointer("/operations/official_import/availability")
+                .and_then(Value::as_str),
             Some("unavailable")
         );
     }

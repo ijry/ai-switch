@@ -13,13 +13,13 @@ AI Switch 认识 7 个目标平台，每个平台在 10 种能力上的支持情
 
 **原生支持**（`supported`）—— Codex、Claude Code、Gemini CLI、Grok
 
-AI Switch 认识这些工具的配置文件格式和官方登录态格式。除了通用 API 路由，它还能直接写入原生配置、导入官方账号、用官方账号路由、处理 deeplink 导入。
+AI Switch 认识这些工具的配置文件格式和官方登录态格式。10 项能力全部可用（唯一例外见下面的 Gemini CLI 额度查询）。
 
-**通用 API 路由**（`partial`）—— OpenCode、OpenClaw、Hermes
+**只有 API 账号**（`partial`）—— OpenCode、OpenClaw、Hermes
 
-> OpenCode、OpenClaw、Hermes 保持可见，用于通用 API 路由、终端启动和会话流程，但 AI Switch 不声称对它们支持原生配置、官方账号导入或额度查询。
+这三个是 agent harness，不是模型厂商 —— 它们没有自己的官方登录态。所以官方账号那一半能力（导入、官方账号路由、deeplink、额度查询）对它们不存在，`partial` 现在**只**指这件事。
 
-也就是说，你依然可以给它们配 API 账号并通过本地代理路由，也依然可以从 AI Switch 启动终端、管理会话。但配置需要你自己填，AI Switch 不会去动它们的配置文件。
+其余能力它们都有：配 API 账号、通过本地代理路由、**写入原生配置**、启动终端、管理会话。唯一的额外约束是 API 账号必须显式填 Base URL 和接口格式 —— 这三个平台没有默认方言。
 
 ## 完整矩阵
 
@@ -33,7 +33,7 @@ AI Switch 认识这些工具的配置文件格式和官方登录态格式。除�
 | --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
 | `route_credentials` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `generic_api_routing` | ✅ | ✅ | ✅ | ✅ | ◐ | ◐ | ◐ |
-| `config_write` | ✅ | ✅ | ✅ | ✅ | ✕ | ✕ | ✕ |
+| `config_write` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `official_import` | ✅ | ✅ | ✅ | ✅ | ✕ | ✕ | ✕ |
 | `official_account_routing` | ✅ | ✅ | ✅ | ✅ | ✕ | ✕ | ✕ |
 | `deeplink_import` | ✅ | ✅ | ✅ | ✅ | ✕ | ✕ | ✕ |
@@ -80,7 +80,7 @@ Gemini CLI 是原生支持平台，配置写入、官方导入、官方账号路
 
 把 CLI 的原生配置文件指向本地路由代理。
 
-原生四平台支持，对应的目标文件：
+**7 个平台全部支持**，对应的目标文件：
 
 | 平台 | 目标文件 | 格式 |
 | --- | --- | --- |
@@ -88,12 +88,31 @@ Gemini CLI 是原生支持平台，配置写入、官方导入、官方账号路
 | Claude Code | `~/.claude/settings.json` | JSON |
 | Gemini CLI | `~/.gemini/settings.json` | JSON |
 | Grok | `~/.grok/settings.json` | JSON |
+| OpenCode | `~/.config/opencode/opencode.json` | JSON |
+| OpenClaw | `~/.openclaw/openclaw.json` | JSON |
+| Hermes | `~/.hermes/config.yaml`（`HERMES_HOME` 为绝对路径时以它为准） | YAML |
 
-后三个平台不支持，原因码 `capability.native_config_unavailable`：
+后三个平台的写入内容与前四个不同 —— 它们不是靠环境变量接入，而是各自往「自定义 provider」结构里塞一条 `ai-switch` 记录，再把默认模型指向它：
 
-> 该平台的原生配置写入尚未实现。
+| 平台 | 写入位置 | 关键字段 |
+| --- | --- | --- |
+| OpenCode | `provider["ai-switch"]` | `npm: "@ai-sdk/openai-compatible"`、`options.baseURL`、`options.apiKey`、每个模型的 `models.<id>.limit.{context,output}`；再把顶层 `model` 设为 `ai-switch/<首个模型>` |
+| OpenClaw | `models.providers["ai-switch"]` | `api: "openai-completions"`、`baseUrl`、`apiKey`、`models[]` 里每项的 `id` / `contextWindow` / `maxTokens`；再把 `agents.defaults.model.primary` 设为 `ai-switch/<首个模型>` |
+| Hermes | `custom_providers` 里 `name: ai-switch` 的那条 | `base_url`、`api_key`、`api_mode: chat_completions`、单数 `model` 与复数 `models.<id>.context_length`；再写 `model:` 段的 `provider` / `default` / `base_url` / `api_mode` |
 
-它们的配置需要你手动填：点工具栏的 🔌 按钮，在弹窗底部的「在以上客户端之外使用」区域复制 Base URL 和 API Key。AI Switch 不会解析也不会修改它们的配置文件。
+三点值得单独说明：
+
+**Base URL 带 `/v1`。** 这三个客户端拼的是裸端点（`{base}/chat/completions`），所以 `/v1` 必须在 base URL 里，和 Codex 一样。Claude / Gemini / Grok 反过来 —— 它们自己拼带版本号的路径，写 `/v1` 会变成 `/v1/v1/messages`。
+
+**Hermes 的 `api_key` 是内联写死的。** 这是「Hermes 报缺少 API Key」的真因：Hermes 找不到内联 key 时，会去 `~/.hermes/.env` 或按**端点 host** 推导出的环境变量里找（openrouter.ai 对应 `OPENROUTER_API_KEY`，以此类推）。回环地址匹配不上任何 host，所以手写一条只有 `base_url` 的 provider，Hermes 就无处可读 key。
+
+**协议一律用 Chat Completions**（`@ai-sdk/openai-compatible` / `openai-completions` / `chat_completions`）。这是刻意的：代理的 chat-completions 桥接与平台无关，能把它转成四种上游方言里的任何一种，所以同一条记录既服务 OpenAI 池，也服务 Responses、Anthropic、Gemini 池。
+
+::: warning 这三个平台写入前必须有模型
+它们都不会去探测自定义 provider 的 `/v1/models`，所以模型清单得由写入时带进文件。而且和原生四平台不同，它们**没有内置的基准模型列表**，因此算力池为空、或池内账号一个模型映射都没配时，写入会以 `config.pool_models_empty` 失败。至少配一条模型映射。
+:::
+
+后三个平台仍需你自己填的场景（比如接一个 AI Switch 不认识的第三方工具）：点工具栏的 🔌 按钮，在弹窗的「其他 Agent」标签页复制 Base URL 和 API Key。
 
 ### `official_import`
 
@@ -131,7 +150,7 @@ Gemini CLI 是原生支持平台，配置写入、官方导入、官方账号路
 
 对账号发起真实生成测试。这不是可达性探测 —— AI Switch 会真的让上游生成一段内容，然后展示模型输出和完整的请求链路。
 
-原生四平台完整支持。后三个是**部分支持**，同样是 `capability.api_credentials_only` —— 只能测试配好了 base URL 和接口格式的 `api` 账号。
+原生四平台完整支持。后三个是**部分支持**，同样是 `capability.api_credentials_only` —— 只能测试配好了 base URL 和接口格式的 `api` 账号。方言覆盖对它们四种全开（只有 Gemini CLI 锁死在 `gemini`，因为它的入站流量从不桥接；Grok 锁死在 `openai`，因为 xAI 只提供这一种）。
 
 详见 [模型连通性测试](/guide/model-test)。
 
@@ -155,13 +174,13 @@ Gemini CLI 是原生支持平台，配置写入、官方导入、官方账号路
 
 **部分支持（`partial`）的操作是可以调用的。** AI Switch 只是附带了额外约束（必须是 `api` 类型账号、必须有 base URL、必须有接口格式），满足条件就正常执行。界面上会显示原因码对应的提示文字，告诉你为什么有限制。
 
-**不支持（`unavailable`）的操作会被拒绝。** 调用直接返回 `capability.unavailable` 校验错误，消息形如 `Hermes does not support config_write`，并附带具体原因码。界面上对应的按钮会被禁用，鼠标悬停显示原因。
+**不支持（`unavailable`）的操作会被拒绝。** 调用直接返回 `capability.unavailable` 校验错误，消息形如 `Hermes does not support official_import`，并附带具体原因码。界面上对应的按钮会被禁用，鼠标悬停显示原因。
 
 这套检查在服务端强制执行，不只是界面上的置灰 —— 即使绕过界面直接调命令，也会被同一套规则拦住。
 
 ## 原生配置写入的安全性
 
-原生四平台的配置写入不是简单的覆盖文件：
+7 个平台的配置写入都不是简单的覆盖文件：
 
 > 原生配置写入采用安全直写：变更前建立快照、原子写入、检测并发修改、支持带守卫的回滚。
 
@@ -176,6 +195,8 @@ Gemini CLI 是原生支持平台，配置写入、官方导入、官方账号路
 **带守卫的回滚。** 出问题可以回滚到快照，回滚本身也有守卫检查，不会盲目覆盖当前状态。
 
 另外，写入是**增量**的：AI Switch 只增改自己管理的字段，你在这些文件里的其他配置项会被保留。比如 Claude Code 的 `settings.json` 里已有的 `env` 项和其他设置不会被清掉。
+
+Hermes 的 `config.yaml` 还多一层保护：它自带大量注释、官方文档也让人手改，所以 AI Switch 只对 `custom_providers:` 和 `model:` 这两段做文本替换，其余内容按字节原样保留。反过来，**读不懂的文件一律拒写**而不是覆盖：OpenClaw 的 `openclaw.json` 名义上是 JSON5，但 AI Switch 按严格 JSON 解析，遇到注释或不带引号的键会报 `validation.route_config_existing_invalid` —— 一次删掉你所有 provider 的重写，比拒绝要糟得多。
 
 ## 平台标识和别名
 

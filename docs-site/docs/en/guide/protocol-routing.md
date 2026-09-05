@@ -42,10 +42,13 @@ When writing CLI config, AI Switch touches only its own section and leaves every
 | Claude Code | `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`, `env.AI_SWITCH_ROUTE_PROXY`, `env.AI_SWITCH_ROUTE_PROXY_API_KEY`, plus `aiSwitch.routeProxy.{enabled,baseUrl,platform,apiKey}` |
 | Gemini CLI | `~/.gemini/settings.json` | Same structure; the base URL variables are `GEMINI_API_BASE_URL` and `GOOGLE_GEMINI_BASE_URL` |
 | Grok | `~/.grok/settings.json` | Same structure; the base URL variables are `XAI_API_BASE_URL` and `GROK_API_BASE_URL` |
+| OpenCode | `~/.config/opencode/opencode.json` | `provider["ai-switch"]`: `npm = "@ai-sdk/openai-compatible"`, `options.baseURL = "<proxy>/v1"`, `options.apiKey`, per-model `limit.{context,output}`; top-level `model = "ai-switch/<first model>"` |
+| OpenClaw | `~/.openclaw/openclaw.json` | `models.providers["ai-switch"]`: `api = "openai-completions"`, `baseUrl = "<proxy>/v1"`, `apiKey`, `models[]`; `agents.defaults.model.primary = "ai-switch/<first model>"` |
+| Hermes | `~/.hermes/config.yaml` | the `custom_providers` entry named `ai-switch`: `base_url = "<proxy>/v1"`, `api_key`, `api_mode = chat_completions`, `model` and `models.<id>.context_length`; plus the `model:` section's `provider` / `default` / `base_url` / `api_mode` |
 
 The Codex provider block deliberately uses `experimental_bearer_token` rather than `api_key`, and rendering actively deletes any leftover `api_key` key so the two forms never coexist.
 
-OpenCode, OpenClaw, and Hermes have **no config-write adapter**. They participate through route credentials only; you point the client at the proxy address yourself. See [Platform Support Matrix](/en/guide/platform-support).
+The last three go in as a custom provider, and the protocol is always `chat_completions` (`@ai-sdk/openai-compatible` for OpenCode, `openai-completions` for OpenClaw). That is not a compromise: the third branch under "When bridging happens" below is platform-independent, so one Chat Completions entry reaches an OpenAI pool as well as a Responses, Anthropic, or Gemini one. Hermes needs its `api_key` written inline — without one it derives an env var name from the endpoint's host, and a loopback address matches no host. See [Platform Support Matrix](/en/guide/platform-support).
 
 ## Four upstream dialects
 

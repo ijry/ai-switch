@@ -1,6 +1,6 @@
 use super::{
-    existing_text, generated_invalid, invalid_existing_config, ClientModel, RouteConfigInput,
-    TargetAdapter, TargetInspection,
+    base_url_root, base_url_with_v1, existing_text, generated_invalid, invalid_existing_config,
+    ClientModel, RouteConfigInput, TargetAdapter, TargetInspection,
 };
 use crate::{error::AppError, models::platform::PlatformId};
 use serde_json::{json, Map, Value};
@@ -46,18 +46,11 @@ impl ZCodeAdapter {
     }
 
     fn base_url(&self, base_url: &str) -> String {
-        let trimmed = base_url.trim().trim_end_matches('/');
         if self.base_url_suffix.is_empty() {
-            return trimmed.to_string();
+            base_url_root(base_url)
+        } else {
+            base_url_with_v1(base_url)
         }
-        if trimmed
-            .rsplit('/')
-            .next()
-            .is_some_and(|segment| segment.eq_ignore_ascii_case("v1"))
-        {
-            return trimmed.to_string();
-        }
-        format!("{trimmed}{}", self.base_url_suffix)
     }
 
     /// Record key of the entry we should write into, in priority order: our own
