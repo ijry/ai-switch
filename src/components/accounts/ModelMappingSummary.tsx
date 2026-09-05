@@ -147,6 +147,37 @@ function modelSummaryEntries(platform: string, mappings: ModelMapping[]): ModelS
   }));
 }
 
+const BASELINE_LABEL = "基线模型";
+
+function baselineTooltipText(platform: string): string {
+  const baselineModels = baselineModelsForPlatform(platform).map((alias) => claudeRoleLabel(alias));
+  return baselineModels.length > 0
+    ? "未配置模型映射，仅匹配基线模型：" + baselineModels.join("、")
+    : "未配置模型映射，当前平台暂无预设基线模型";
+}
+
+/**
+ * The same summary the tag row shows, flattened to one dot-separated line.
+ *
+ * For places that have a line of running text rather than room for tags — the
+ * account row's stats line doubles as this when the tag row is switched off. It
+ * deliberately shares `modelSummaryEntries` so the two can never disagree about
+ * which models an account serves.
+ */
+export function modelSummaryLine(
+  platform: string,
+  mappings: ModelMapping[],
+): { text: string; title: string } {
+  const entries = modelSummaryEntries(platform, mappings);
+  if (entries.length === 0) {
+    return { text: BASELINE_LABEL, title: baselineTooltipText(platform) };
+  }
+  return {
+    text: entries.map((entry) => entry.text).join(" · "),
+    title: entries.map((entry) => entry.popoverText).join("\n"),
+  };
+}
+
 export function ModelMappingSummary({
   platform,
   mappings,
@@ -184,25 +215,19 @@ export function ModelMappingSummary({
   }, [open]);
 
   if (entries.length === 0) {
-    const baselineModels = baselineModelsForPlatform(platform).map((alias) =>
-      claudeRoleLabel(alias),
-    );
-    const baselineTooltipText = baselineModels.length > 0
-      ? "未配置模型映射，仅匹配基线模型：" + baselineModels.join("、")
-      : "未配置模型映射，当前平台暂无预设基线模型";
     return (
       <span
         aria-describedby={baselineTooltipId}
-        className="group relative inline-flex rounded-full bg-stone-100 px-2 py-0.5 text-[11px] font-semibold text-stone-600 outline-none focus:ring-2 focus:ring-stone-300"
+        className="group relative inline-flex rounded-full bg-[#f7f7f7] px-2 py-0.5 text-[10px] text-[#666] outline-none focus:ring-2 focus:ring-stone-300"
         tabIndex={0}
       >
-        <span>基线模型</span>
+        <span>{BASELINE_LABEL}</span>
         <span
           className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden w-64 max-w-[calc(100vw-2rem)] whitespace-normal break-words rounded-lg border border-stone-200 bg-stone-900 px-3 py-2 text-left text-[11px] font-medium leading-5 text-white shadow-xl group-hover:block group-focus-within:block"
           id={baselineTooltipId}
           role="tooltip"
         >
-          {baselineTooltipText}
+          {baselineTooltipText(platform)}
         </span>
       </span>
     );
@@ -215,7 +240,7 @@ export function ModelMappingSummary({
     <div ref={containerRef} className="relative flex min-w-0 flex-wrap items-center gap-1">
       {visibleEntries.map((entry) => (
         <span
-          className="inline-flex max-w-48 truncate rounded-full bg-sky-50 px-2 py-0.5 font-mono text-[10px] font-semibold text-sky-800"
+          className="inline-flex max-w-48 truncate rounded-full bg-[#f7f7f7] px-2 py-0.5 font-mono text-[9px] text-[#666]"
           key={entry.key}
           title={entry.detail}
         >
@@ -226,7 +251,9 @@ export function ModelMappingSummary({
         <button
           aria-expanded={open}
           aria-haspopup="dialog"
-          className="rounded-full bg-sky-100 px-2 py-0.5 font-mono text-[10px] font-semibold text-sky-900 motion-control hover:bg-sky-200"
+          // Same palette as the tags it stands in for, one shade darker on hover so
+          // it still reads as the one clickable thing in the row.
+          className="rounded-full bg-[#f7f7f7] px-2 py-0.5 font-mono text-[9px] text-[#666] motion-control hover:bg-[#ededed]"
           onClick={() => setOpen((current) => !current)}
           title="查看完整模型映射"
           type="button"

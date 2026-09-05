@@ -48,7 +48,7 @@ import {
   type ReactNode,
 } from "react";
 import { PlatformSupportBadge } from "../components/platform/PlatformSupportBadge";
-import { baselineModelsForPlatform, expandDisplayModelMappings, ModelMappingSummary } from "../components/accounts/ModelMappingSummary";
+import { baselineModelsForPlatform, expandDisplayModelMappings, ModelMappingSummary, modelSummaryLine } from "../components/accounts/ModelMappingSummary";
 import {
   ExternalClientImportPanel,
   EXTERNAL_IMPORT_CLIENT_LABELS,
@@ -347,7 +347,7 @@ function accountStatusClass(status: string): string {
     case "revoked":
       return "bg-rose-100 text-rose-900 ring-1 ring-rose-200";
     case "paused":
-      return "bg-red-50 text-red-800 ring-1 ring-red-200";
+      return "bg-red-50 text-red-800";
     default:
       return "bg-stone-100 text-stone-600";
   }
@@ -367,7 +367,7 @@ function transientFailureTag(
   }
   return {
     label: `错误 ${count} 次`,
-    className: "bg-orange-50 text-orange-800 ring-1 ring-orange-200",
+    className: "bg-orange-50 text-orange-800",
   };
 }
 
@@ -1304,26 +1304,31 @@ function formatRelayBalanceAmount(value: number, unit: string): string {
   return unit === "USD" ? `$${amount}` : `${amount} ${unit}`.trim();
 }
 
-function formatRelayBalanceButtonAmount(snapshot: RelayBalanceSnapshot): string {
-  if (snapshot.unlimited) return "不限";
-  if (typeof snapshot.remaining !== "number") return "余额未知";
-  const amount = Number.isInteger(snapshot.remaining)
-    ? snapshot.remaining.toString()
-    : snapshot.remaining.toFixed(2);
-  if (["CNY", "RMB", "人民币"].includes(snapshot.unit)) return `￥${amount}`;
-  return formatRelayBalanceAmount(snapshot.remaining, snapshot.unit || "USD");
-}
-
 function formatRelayBalanceCheckedAt(checkedAt: string): string {
   const date = new Date(checkedAt);
   return Number.isFinite(date.getTime()) ? date.toLocaleString() : checkedAt;
 }
 
+/// A request duration for the account row.
+///
+/// Sub-second calls read better in milliseconds — "0.4s" hides the difference
+/// between 380ms and 440ms — while anything longer is easier to compare in seconds,
+/// which is also the scale a slow account announces itself on.
+function formatRequestDuration(milliseconds: number): string {
+  return milliseconds < 1000
+    ? `${Math.round(milliseconds)}ms`
+    : `${(milliseconds / 1000).toFixed(1)}s`;
+}
+
 /// The account row's balance badge: what it says, how alarming it looks, and the
 /// detail that belongs in the tooltip.
+///
+/// `amount` is the reading without the 余额 prefix, for the badge's accessible name:
+/// the badge is also the refresh button, so its name has to spell out the amount it
+/// visibly shows, in exactly the same wording.
 function relayBalanceBadge(
   snapshot: RelayBalanceSnapshot,
-): { label: string; toneClass: string; title: string } {
+): { amount: string; label: string; toneClass: string; title: string } {
   const unit = snapshot.unit || "USD";
   // An account-level reading is the panel account's money, shared by every account
   // pointing at that panel. Labelling it plain "余额" would read as this key's own.
@@ -1351,6 +1356,7 @@ function relayBalanceBadge(
 
   if (snapshot.unlimited) {
     return {
+      amount: "不限",
       label: "余额 不限",
       toneClass: "bg-teal-50 text-teal-800",
       title: details.join("\n"),
@@ -1358,12 +1364,14 @@ function relayBalanceBadge(
   }
   if (typeof snapshot.remaining !== "number") {
     return {
+      amount: "未知",
       label: `${prefix} 未知`,
       toneClass: "bg-stone-100 text-stone-600",
       title: details.join("\n"),
     };
   }
   return {
+    amount: formatRelayBalanceAmount(snapshot.remaining, unit),
     label: `${prefix} ${formatRelayBalanceAmount(snapshot.remaining, unit)}`,
     toneClass:
       snapshot.remaining <= 0 ? "bg-rose-50 text-rose-700" : "bg-teal-50 text-teal-800",
@@ -2580,6 +2588,11 @@ export function AccountsScreen({
   const [copiedCredentialId, setCopiedCredentialId] = useState<string | null>(null);
   const [copyingCredential, setCopyingCredential] = useState<RouteCredential | null>(null);
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
+  // Whether every row's stats line is currently showing its model list instead of
+  // the request numbers. One flag for the whole list rather than a set of row ids:
+  // it is a view mode for the column, and a list where some rows show models and
+  // others show counts is not readable as either.
+  const [statsLineShowsModels, setStatsLineShowsModels] = useState(false);
   const [compactRowActions, setCompactRowActions] = useState(false);
   const [accountLayout, setAccountLayout] = useState<AccountListLayout>(() =>
     loadAccountListLayout(),
@@ -5787,6 +5800,7 @@ export function AccountsScreen({
                         ["showAccountType", "账号类型（API/Token）"],
                         ["showModelList", "模型列表"],
                         ["showRequestStats", "请求统计"],
+                        ["showLatencyStats", "请求耗时"],
                       ] as const
                     ).map(([key, label]) => (
                       <label
@@ -6019,14 +6033,82 @@ export function AccountsScreen({
                   // whose panel did not answer, so nulling the snapshot here turned
                   // one timed-out panel into "balance gone" on that row while the
                   // stored value was still perfectly good. The failure is already
-                  // visible in the rose tone, the icon, and the tooltip.
+                  // visible in the pinned rose refresh icon and the tooltip.
                   const effectiveRelayBalanceSnapshot =
                     relayBalanceStatus?.snapshot ?? relayBalanceSnapshot;
                   const relayBalanceTag = effectiveRelayBalanceSnapshot
                     ? relayBalanceBadge(effectiveRelayBalanceSnapshot)
                     : null;
-                  const hideRelayBalanceTag =
-                    effectiveRelayBalanceSnapshot?.unlimited === true && !cardLayout;
+                  // 余额只剩这一个入口：读数是标签本身，刷新按钮长在标签里，悬停/聚焦
+                  // 才追加图标，右侧不再单独摆一个钱包。归档账号没有刷新入口，但存过的
+                  // 读数还得看得见，所以退化成一个静态标签。
+                  const relayBalanceRefreshable =
+                    credentialRelayBalanceEnabled && !credential.archived_at;
+                  const relayBalanceError = relayBalanceStatus?.error ?? null;
+                  const relayBalanceRefreshing = refreshingRelayBalanceId === credential.id;
+                  // 三种情况下图标常显而不等悬停：还没有读数（此时标签只剩图标，是取第
+                  // 一次余额的唯一入口）、正在查、上次查失败——最后一种原先由钱包图标
+                  // 变红承担，藏进 hover 里就等于没有了。
+                  const relayBalanceIconPinned =
+                    !effectiveRelayBalanceSnapshot ||
+                    relayBalanceRefreshing ||
+                    Boolean(relayBalanceError);
+                  // 有读数就用读数自己的色调：查询失败不该把一笔好读数染成「余额告急」，
+                  // 那个色是留给 remaining <= 0 的。没有读数可保时才整颗染红。
+                  const relayBalanceToneClass =
+                    relayBalanceTag?.toneClass ??
+                    (relayBalanceError ? "bg-rose-50 text-rose-700" : "bg-teal-50 text-teal-800");
+                  const relayBalanceBlock = !relayBalanceRefreshable ? (
+                    relayBalanceTag ? (
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${relayBalanceTag.toneClass}`}
+                        data-testid={`credential-relay-balance-${credential.id}`}
+                        title={relayBalanceTag.title}
+                      >
+                        {relayBalanceTag.label}
+                      </span>
+                    ) : null
+                  ) : (
+                    <button
+                      // The visible label is an amount, so the accessible name has to
+                      // carry it too — an aria-label of just "查询 X 余额" overrides it,
+                      // leaving a screen reader with no balance and no hint that the
+                      // last refresh failed. It quotes the badge's own wording so the
+                      // spoken name matches the text on screen.
+                      aria-label={
+                        relayBalanceError
+                          ? `查询 ${credential.display_name} 余额（上次查询失败）`
+                          : relayBalanceTag
+                            ? `查询 ${credential.display_name} 余额（当前 ${relayBalanceTag.amount}）`
+                            : `查询 ${credential.display_name} 余额`
+                      }
+                      className={`group/balance inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold motion-control disabled:opacity-50 ${relayBalanceToneClass}`}
+                      data-testid={`credential-relay-balance-${credential.id}`}
+                      disabled={
+                        relayBalanceMutation.isPending || relayBalancePlatformMutation.isPending
+                      }
+                      onClick={() => relayBalanceMutation.mutate(credential.id)}
+                      title={
+                        relayBalanceError ??
+                        relayBalanceTag?.title ??
+                        `查询 ${credential.display_name} 的中转站余额`
+                      }
+                      type="button"
+                    >
+                      {relayBalanceTag ? <span>{relayBalanceTag.label}</span> : null}
+                      <RefreshCw
+                        aria-hidden="true"
+                        className={`h-3 w-3 shrink-0 ${relayBalanceRefreshing ? "animate-spin" : ""} ${
+                          relayBalanceError ? "text-rose-600" : ""
+                        } ${
+                          relayBalanceIconPinned
+                            ? ""
+                            : "hidden group-hover/balance:block group-focus-within/balance:block"
+                        }`}
+                        data-testid={`credential-relay-balance-refresh-${credential.id}`}
+                      />
+                    </button>
+                  );
                   const isCopyingCredential =
                     copyCredentialMutation.isPending &&
                     copyCredentialMutation.variables?.credential.id === credential.id;
@@ -6048,52 +6130,6 @@ export function AccountsScreen({
                         <RefreshCw
                           aria-hidden="true"
                           className={`h-3.5 w-3.5 ${refreshingQuotaId === credential.id ? "animate-spin" : ""}`}
-                        />
-                      ),
-                    });
-                  }
-                  if (credentialRelayBalanceEnabled && !credential.archived_at) {
-                    rowActions.push({
-                      key: "relay-balance",
-                      // The visible label is an amount, so the accessible name has
-                      // to carry it too — an aria-label of just "查询 X 余额"
-                      // overrides it, leaving a screen reader with no balance and
-                      // no hint that the last refresh failed.
-                      ariaLabel: relayBalanceStatus?.error
-                        ? `查询 ${credential.display_name} 余额（上次查询失败）`
-                        : effectiveRelayBalanceSnapshot
-                          ? `查询 ${credential.display_name} 余额（当前 ${formatRelayBalanceButtonAmount(effectiveRelayBalanceSnapshot)}）`
-                          : `查询 ${credential.display_name} 余额`,
-                      menuLabel: effectiveRelayBalanceSnapshot
-                        ? `查余额 ${formatRelayBalanceButtonAmount(effectiveRelayBalanceSnapshot)}`
-                        : "查余额",
-                      title:
-                        relayBalanceStatus?.error ??
-                        (hideRelayBalanceTag ? relayBalanceTag?.title : undefined) ??
-                        `查询 ${credential.display_name} 的中转站余额`,
-                      disabled:
-                        relayBalanceMutation.isPending || relayBalancePlatformMutation.isPending,
-                      onClick: () => relayBalanceMutation.mutate(credential.id),
-                      inlineLabel: effectiveRelayBalanceSnapshot
-                        ? formatRelayBalanceButtonAmount(effectiveRelayBalanceSnapshot)
-                        : undefined,
-                      inlineToneClass: relayBalanceStatus?.error
-                        ? "border-rose-200 text-rose-600 hover:bg-rose-50"
-                        : effectiveRelayBalanceSnapshot
-                          ? "border-emerald-200 text-emerald-600 hover:bg-emerald-50"
-                          : "border-teal-200 text-teal-700 hover:bg-teal-50",
-                      icon: (
-                        <Wallet
-                          aria-hidden="true"
-                          className={`h-3.5 w-3.5 ${
-                            refreshingRelayBalanceId === credential.id ? "animate-pulse" : ""
-                          } ${
-                            relayBalanceStatus?.error
-                              ? "text-rose-600"
-                              : effectiveRelayBalanceSnapshot
-                                ? "text-emerald-600"
-                                : ""
-                          }`}
                         />
                       ),
                     });
@@ -6203,15 +6239,15 @@ export function AccountsScreen({
                             // A card lays the name out in a nowrap row, so it has to be
                             // allowed to shrink; the list wraps its badges instead.
                             //
-                            // `basis-48` aligns the badges that follow it into a
+                            // `basis-64` aligns the badges that follow it into a
                             // column, but it must stay shrinkable: the grid track
-                            // holding it is `minmax(0,1fr)`, which goes below 12rem
+                            // holding it is `minmax(0,1fr)`, which goes below 16rem
                             // once the window approaches the 320px minimum. With
                             // `shrink-0` the name overflowed into the action column
                             // and, because the scroll container hides overflow-x,
                             // did so with neither an ellipsis nor a way to scroll to
                             // it — the text simply ran under the buttons.
-                            cardLayout ? "min-w-0 flex-1" : "min-w-0 basis-48"
+                            cardLayout ? "min-w-0 flex-1" : "min-w-0 basis-64"
                           }`}
                           title={`P${credential.route_priority}-${credential.display_name}`}
                         >
@@ -6236,9 +6272,10 @@ export function AccountsScreen({
                         )}
                     </>
                   );
-                  // Concurrency and cooldown ride along with the badges in a row,
-                  // but a card sends them to the footer so they sit next to the
-                  // stats instead of pushing the status badges onto a new line.
+                  // A row keeps both live counters up in the badges: 并发 goes last,
+                  // after the balance, where a number that changes with every request
+                  // is not shoving the status badges around. A card is too narrow for
+                  // that, so it sends them to the footer instead.
                   const concurrencyBadge =
                     (credential.active_request_count ?? 0) > 0 ? (
                       <span
@@ -6262,12 +6299,49 @@ export function AccountsScreen({
                         </span>
                       </CredentialFailureTooltip>
                     ) : null;
-                  // The model list gets a line of its own in both layouts: it can
-                  // carry four tags on its own, and inline it pushed the status
-                  // badges past a wrap where they were easy to miss.
+                  // The model list gets a line of its own in both layouts: it can carry
+                  // four tags on its own, and inline it pushed the status badges past a
+                  // wrap where they were easy to miss.
                   const modelListBlock = accountDisplayPreferences.showModelList ? (
                     <ModelMappingSummary platform={activePlatform} mappings={modelMappings} />
                   ) : null;
+                  // Switch 显示模型列表 off and the models have nowhere left to go, so the
+                  // stats line doubles as their slot: click it to swap the numbers for a
+                  // dot-separated model list in the very same type, click again to swap
+                  // back. The swap is list-wide, so one click never leaves half the rows
+                  // showing models and half showing counts. Null while the tag row is on
+                  // — there is nothing to reveal.
+                  const modelLineToggle = accountDisplayPreferences.showModelList
+                    ? null
+                    : (() => {
+                        const summary = statsLineShowsModels
+                          ? modelSummaryLine(activePlatform, modelMappings)
+                          : null;
+                        return {
+                          showsModels: statsLineShowsModels,
+                          text: summary?.text ?? "",
+                          title: summary?.title ?? "点击把所有账号的这一行换成模型列表",
+                        };
+                      })();
+                  // 请求耗时 is off by default and lives at the right end of the stats
+                  // line. Only wall-clock duration is recorded (`duration_ms` in the
+                  // proxy's usage-event metadata), so this is the whole request, and
+                  // nothing here claims to be a time-to-first-token — that number does
+                  // not exist anywhere in the pipeline yet.
+                  const latencyTag =
+                    accountDisplayPreferences.showLatencyStats &&
+                    credential.last_duration_ms != null ? (
+                      <span
+                        data-testid={`account-latency-${credential.id}`}
+                        title={
+                          credential.avg_recent_duration_ms != null
+                            ? `最近 10 次成功请求平均 ${formatRequestDuration(credential.avg_recent_duration_ms)}（最近一次 ${formatRequestDuration(credential.last_duration_ms)}）`
+                            : `最近一次请求 ${formatRequestDuration(credential.last_duration_ms)}；还没有成功的请求可以求平均`
+                        }
+                      >
+                        耗时 {formatRequestDuration(credential.last_duration_ms)}
+                      </span>
+                    ) : null;
                   const badges = (
                     <>
                         {accountDisplayPreferences.showAccountType ? (
@@ -6288,7 +6362,6 @@ export function AccountsScreen({
                             {failureTag?.label ?? accountStatusLabel(credential.status)}
                           </span>
                         </CredentialFailureTooltip>
-                        {cardLayout ? null : concurrencyBadge}
                         {cardLayout ? null : cooldownBadge}
                         {modelIssues.length > 0 && (
                           <span
@@ -6369,15 +6442,8 @@ export function AccountsScreen({
                             重置 {latestReset}
                           </span>
                         )}
-                        {relayBalanceTag && !hideRelayBalanceTag && (
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${relayBalanceTag.toneClass}`}
-                            data-testid={`credential-relay-balance-${credential.id}`}
-                            title={relayBalanceTag.title}
-                          >
-                            {relayBalanceTag.label}
-                          </span>
-                        )}
+                        {relayBalanceBlock}
+                        {cardLayout ? null : concurrencyBadge}
                     </>
                   );
                   const statsLine = (() => {
@@ -6578,8 +6644,39 @@ export function AccountsScreen({
                           {modelListBlock}
                         </div>
                       ) : null}
-                      {accountDisplayPreferences.showRequestStats ? (
-                        <p className="mt-0.5 truncate text-[12px] text-stone-500">{statsLine}</p>
+                      {accountDisplayPreferences.showRequestStats || latencyTag ? (
+                        <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[11px] text-stone-500">
+                          {accountDisplayPreferences.showRequestStats ? (
+                            modelLineToggle ? (
+                              <button
+                                aria-label={
+                                  modelLineToggle.showsModels
+                                    ? "全部账号改显示请求统计"
+                                    : "全部账号改显示模型列表"
+                                }
+                                aria-pressed={modelLineToggle.showsModels}
+                                // It is a line of text that happens to be clickable, so
+                                // the global button chrome — a 1px hover lift and a press
+                                // scale from styles.css — is cancelled here. Only the
+                                // colour shifts; the focus ring stays for keyboard users.
+                                className="min-w-0 flex-1 truncate text-left motion-control hover:translate-y-0 hover:text-stone-700 active:translate-y-0 active:scale-100"
+                                data-testid={`account-stats-line-${credential.id}`}
+                                onClick={() => setStatsLineShowsModels((current) => !current)}
+                                title={modelLineToggle.title}
+                                type="button"
+                              >
+                                {modelLineToggle.showsModels ? modelLineToggle.text : statsLine}
+                              </button>
+                            ) : (
+                              <p className="min-w-0 flex-1 truncate">{statsLine}</p>
+                            )
+                          ) : null}
+                          {/* ml-auto rather than relying on the stats line's flex-1:
+                              with 请求统计 off the tag is the only child. */}
+                          {latencyTag ? (
+                            <span className="ml-auto shrink-0">{latencyTag}</span>
+                          ) : null}
+                        </div>
                       ) : null}
                     </div>
                     {actionsBlock}

@@ -249,6 +249,10 @@ export type RouteCredential = {
   success_count?: number;
   failure_count?: number;
   success_rate?: number | null;
+  /** Duration in milliseconds of the most recent request (success or failure). */
+  last_duration_ms?: number | null;
+  /** Average duration in milliseconds of the most recent 10 successful requests. */
+  avg_recent_duration_ms?: number | null;
   created_at: string;
   updated_at: string;
 };

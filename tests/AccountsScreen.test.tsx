@@ -831,7 +831,12 @@ describe("AccountsScreen", () => {
     expect(screen.queryByText("基线模型")).not.toBeInTheDocument();
     expect(screen.queryByText("暂无请求")).not.toBeInTheDocument();
     expect(window.localStorage.getItem(ACCOUNT_DISPLAY_PREFERENCES_STORAGE_KEY)).toBe(
-      JSON.stringify({ showAccountType: true, showModelList: false, showRequestStats: false }),
+      JSON.stringify({
+        showAccountType: true,
+        showModelList: false,
+        showRequestStats: false,
+        showLatencyStats: false,
+      }),
     );
 
     await userEvent.click(screen.getByLabelText("打开刷新菜单"));
@@ -853,7 +858,9 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     const pausedStatus = await screen.findByText("暂停");
-    expect(pausedStatus).toHaveClass("bg-red-50", "text-red-800", "ring-red-200");
+    expect(pausedStatus).toHaveClass("bg-red-50", "text-red-800");
+    // 徽章行里没有一个 tag 带描边，暂停也不例外。
+    expect(pausedStatus.className).not.toMatch(/\bring-/);
   });
 
   it("switches to the imported account pool scope and consumes the focus nonce", async () => {
@@ -1307,15 +1314,134 @@ describe("AccountsScreen", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows the request duration only once 请求耗时 is switched on", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      { ...credentialsFixture[0], last_duration_ms: 2_480, avg_recent_duration_ms: 1_910.4 },
+    ]);
+    renderScreen();
+
+    // 默认不显示：这一块要用右上角下拉里的开关打开。
+    await screen.findByText("Team Account");
+    expect(screen.queryByTestId("account-latency-cred-official-1")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("打开刷新菜单"));
+    await userEvent.click(screen.getByLabelText("显示请求耗时"));
+
+    const tag = await screen.findByTestId("account-latency-cred-official-1");
+    expect(tag).toHaveTextContent("耗时 2.5s");
+    // 鼠标移过看最近 10 次的平均，别的都在 title 里。
+    expect(tag).toHaveAttribute(
+      "title",
+      "最近 10 次成功请求平均 1.9s（最近一次 2.5s）",
+    );
+    expect(window.localStorage.getItem(ACCOUNT_DISPLAY_PREFERENCES_STORAGE_KEY)).toContain(
+      '"showLatencyStats":true',
+    );
+  });
+
+  it("keeps sub-second durations in milliseconds and says when no average exists", async () => {
+    window.localStorage.setItem(
+      ACCOUNT_DISPLAY_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({
+        showAccountType: false,
+        showModelList: true,
+        showRequestStats: true,
+        showLatencyStats: true,
+      }),
+    );
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      // Only a failed request so far: it has a duration but no average to report.
+      { ...credentialsFixture[0], last_duration_ms: 384, avg_recent_duration_ms: null },
+    ]);
+    renderScreen();
+
+    const tag = await screen.findByTestId("account-latency-cred-official-1");
+    // "0.4s" would hide the difference between 380ms and 440ms.
+    expect(tag).toHaveTextContent("耗时 384ms");
+    expect(tag).toHaveAttribute(
+      "title",
+      "最近一次请求 384ms；还没有成功的请求可以求平均",
+    );
+  });
+
+  it("leaves the duration out of a row that has never been timed", async () => {
+    window.localStorage.setItem(
+      ACCOUNT_DISPLAY_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({
+        showAccountType: false,
+        showModelList: true,
+        showRequestStats: true,
+        showLatencyStats: true,
+      }),
+    );
+    renderScreen();
+
+    // Rows from before durations were recorded must not render "耗时 0ms".
+    await screen.findByText("Team Account");
+    expect(screen.queryByTestId("account-latency-cred-official-1")).not.toBeInTheDocument();
+  });
+
+  it("swaps every stats line for a dot-separated model list when the tag row is off", async () => {
+    window.localStorage.setItem(
+      ACCOUNT_DISPLAY_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({ showAccountType: false, showModelList: false, showRequestStats: true }),
+    );
+    renderScreen();
+
+    await screen.findByText("Team Account");
+    const line = await screen.findByTestId("account-stats-line-cred-api-1");
+    const other = screen.getByTestId("account-stats-line-cred-official-1");
+    expect(line).toHaveTextContent("暂无请求");
+    expect(line).toHaveAttribute("title", "点击把所有账号的这一行换成模型列表");
+
+    await userEvent.click(line);
+    expect(line).toHaveTextContent("gpt-5");
+    expect(line).not.toHaveTextContent("暂无请求");
+    expect(line.getAttribute("title")).toContain("gpt-5 →");
+    // 一次点击切换整个列表：另一个账号也跟着换成了模型列表（它没配映射，所以是基线模型）。
+    expect(other).toHaveTextContent("基线模型");
+    expect(other).not.toHaveTextContent("请求 3");
+
+    // 从任意一行点回来，整列一起换回统计。
+    await userEvent.click(other);
+    expect(line).toHaveTextContent("暂无请求");
+    expect(other).toHaveTextContent("请求 3");
+  });
+
+  it("keeps the stats line looking like text rather than a control", async () => {
+    window.localStorage.setItem(
+      ACCOUNT_DISPLAY_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({ showAccountType: false, showModelList: false, showRequestStats: true }),
+    );
+    renderScreen();
+
+    // styles.css lifts every button 1px on hover and scales it on press. On a line of
+    // running text that reads as a card, so both are cancelled on this one.
+    const line = await screen.findByTestId("account-stats-line-cred-api-1");
+    expect(line.className).toContain("hover:translate-y-0");
+    expect(line.className).toContain("active:translate-y-0");
+    expect(line.className).toContain("active:scale-100");
+  });
+
+  it("leaves the stats line inert while the model tag row is shown", async () => {
+    renderScreen();
+
+    // 模型列表有自己的一行时，统计行没有可换的东西，就不该是个按钮。
+    await screen.findByText("Team Account");
+    expect(screen.queryByTestId("account-stats-line-cred-api-1")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "全部账号改显示模型列表" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("gives the model list its own line in both layouts", async () => {
     renderScreen();
 
     await screen.findByText("Team Account");
-    const listRow = screen.getByTestId("account-model-list-cred-official-1");
-    expect(listRow).toContainElement(screen.getByText("基线模型"));
-    expect(listRow).not.toContainElement(
-      within(screen.getByLabelText("放置在 Team Account 前")).getByText("正常"),
-    );
+    const row = await screen.findByLabelText("放置在 Team Account 前");
+    const listRow = within(row).getByTestId("account-model-list-cred-official-1");
+    expect(listRow).toContainElement(within(row).getByText("基线模型"));
+    expect(listRow).not.toContainElement(within(row).getByText("正常"));
 
     await userEvent.click(screen.getByRole("button", { name: "卡片模式" }));
 
@@ -1325,7 +1451,7 @@ describe("AccountsScreen", () => {
     expect(cardRow).not.toContainElement(within(card).getByText("正常"));
   });
 
-  it("moves the card concurrency and cooldown tags onto the stats footer", async () => {
+  it("sends the card's live counters to the footer and keeps a row's in the badges", async () => {
     vi.mocked(listRouteCredentials).mockResolvedValue([
       {
         ...credentialsFixture[0],
@@ -1354,13 +1480,17 @@ describe("AccountsScreen", () => {
       within(card).getByTestId("credential-cooldown-cred-official-1"),
     );
 
-    // 列表模式仍把它们留在徽章行，紧跟状态标签。
+    // 列表模式：两个计数器都留在徽章行，并发排在最后（余额之后），冷却紧跟状态标签。
     await userEvent.click(screen.getByRole("button", { name: "列表模式" }));
     const row = await screen.findByLabelText("放置在 Team Account 前");
     expect(screen.queryByTestId("account-card-footer-cred-official-1")).not.toBeInTheDocument();
-    expect(within(row).getByText("正常").closest("div")).toContainElement(
-      within(row).getByTestId("credential-activity-cred-official-1"),
+    const rowBadges = within(row).getByText("正常").closest("div");
+    const activity = within(row).getByTestId("credential-activity-cred-official-1");
+    expect(rowBadges).toContainElement(activity);
+    expect(rowBadges).toContainElement(
+      within(row).getByTestId("credential-cooldown-cred-official-1"),
     );
+    expect(rowBadges?.lastElementChild).toBe(activity);
   });
 
   it("keeps the card footer for a live counter when request stats are hidden", async () => {
@@ -1385,6 +1515,14 @@ describe("AccountsScreen", () => {
     expect(
       within(card).getByTestId("account-card-footer-cred-official-1"),
     ).toContainElement(within(card).getByTestId("credential-activity-cred-official-1"));
+
+    // 列表模式不需要这个兜底：并发本来就在徽章行，跟请求统计的开关无关。
+    await userEvent.click(screen.getByRole("button", { name: "列表模式" }));
+    const row = await screen.findByLabelText("放置在 Team Account 前");
+    expect(row).not.toHaveTextContent("请求 3");
+    expect(within(row).getByText("正常").closest("div")).toContainElement(
+      within(row).getByTestId("credential-activity-cred-official-1"),
+    );
   });
 
   it("reorders accounts when a card is dropped on the right half of its neighbour", async () => {
@@ -3662,7 +3800,7 @@ describe("AccountsScreen", () => {
     });
   });
 
-  it("shows the stored balance on the account row and re-queries it from the row action", async () => {
+  it("shows the stored balance on the account row and re-queries it from the badge", async () => {
     const relayAccount = {
       ...credentialsFixture[1],
       config_json: JSON.stringify({
@@ -3696,8 +3834,12 @@ describe("AccountsScreen", () => {
     expect(
       await screen.findByTestId(`credential-relay-balance-${relayAccount.id}`),
     ).toHaveTextContent("余额 $37.70");
+    // 有读数时刷新图标只在悬停/聚焦时追加，静止的 tag 保持干净。
+    expect(screen.getByTestId(`credential-relay-balance-refresh-${relayAccount.id}`)).toHaveClass(
+      "hidden",
+    );
 
-    // The accessible name carries the amount the button visibly shows: an
+    // The accessible name carries the amount the badge visibly shows: an
     // aria-label of just "查询 X 余额" would override it and leave a screen
     // reader with no balance at all.
     await userEvent.click(
@@ -3708,7 +3850,7 @@ describe("AccountsScreen", () => {
     );
   });
 
-  it("keeps an unlimited balance on the wallet action without a duplicate badge", async () => {
+  it("keeps an unlimited balance on the row badge that replaced the wallet", async () => {
     const relayAccount = {
       ...credentialsFixture[1],
       config_json: JSON.stringify({
@@ -3727,15 +3869,14 @@ describe("AccountsScreen", () => {
     vi.mocked(listRouteCredentials).mockResolvedValue([credentialsFixture[0], relayAccount]);
     renderScreen();
 
-    const walletButton = await screen.findByRole("button", {
-      name: "查询 API Account 余额（当前 不限）",
-    });
-    expect(walletButton).toHaveTextContent("不限");
-    expect(walletButton).toHaveAttribute(
+    const badge = await screen.findByTestId(`credential-relay-balance-${relayAccount.id}`);
+    expect(badge).toHaveTextContent("余额 不限");
+    expect(badge).toHaveAttribute(
       "title",
       expect.stringContaining("来源 https://panel.example.com/api/usage/token/"),
     );
-    expect(screen.queryByTestId(`credential-relay-balance-${relayAccount.id}`)).not.toBeInTheDocument();
+    // 右侧的钱包图标没了，余额只剩这一个入口，不再出现两个都叫「查询…余额」的按钮。
+    expect(screen.getAllByRole("button", { name: /查询 API Account 余额/ })).toEqual([badge]);
   });
 
   it("keeps an unlimited balance badge on account cards", async () => {
@@ -3843,16 +3984,24 @@ describe("AccountsScreen", () => {
     await userEvent.click(screen.getByRole("menuitem", { name: "查询中转站余额" }));
     await waitFor(() => expect(refreshRouteCredentialsRelayBalance).toHaveBeenCalled());
 
-    // Still there, and the failure is reachable through the row action's title.
+    // Still there, and the failure is reachable through the badge's title.
     expect(
       await screen.findByTestId(`credential-relay-balance-${relayAccount.id}`),
     ).toHaveTextContent("余额 $37.70");
     expect(
       screen.getByRole("button", { name: /查询 API Account 余额（上次查询失败）/ }),
     ).toBeInTheDocument();
+    // 读数还是好的，色调就不变——那个红是留给 remaining <= 0 的。失败只由常显的
+    // 红色刷新图标和 tooltip 承担。
+    expect(screen.getByTestId(`credential-relay-balance-${relayAccount.id}`)).toHaveClass(
+      "text-teal-800",
+    );
+    const staleIcon = screen.getByTestId(`credential-relay-balance-refresh-${relayAccount.id}`);
+    expect(staleIcon).not.toHaveClass("hidden");
+    expect(staleIcon).toHaveClass("text-rose-600");
   });
 
-  it("shows the balance beside a green wallet after a successful query", async () => {
+  it("fills the badge with the balance after a successful query", async () => {
     const relayAccount = {
       ...credentialsFixture[1],
       config_json: JSON.stringify({
@@ -3886,15 +4035,21 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     const queryButton = await screen.findByRole("button", { name: "查询 API Account 余额" });
+    // 刚开启余额查询还没有读数，tag 只剩一个常显的刷新图标——第一次余额就靠它取。
+    expect(queryButton.textContent).toBe("");
+    expect(
+      screen.getByTestId(`credential-relay-balance-refresh-${relayAccount.id}`),
+    ).not.toHaveClass("hidden");
+
     await userEvent.click(queryButton);
 
     await waitFor(() => {
-      expect(queryButton).toHaveTextContent("￥90");
-      expect(queryButton).toHaveClass("text-emerald-600");
+      expect(queryButton).toHaveTextContent("余额 90.00 CNY");
+      expect(queryButton).toHaveClass("text-teal-800");
     });
   });
 
-  it("shows a red wallet and the balance query error in its tooltip", async () => {
+  it("turns the badge rose and puts the balance query error in its tooltip", async () => {
     const relayAccount = {
       ...credentialsFixture[1],
       config_json: JSON.stringify({
@@ -3913,9 +4068,12 @@ describe("AccountsScreen", () => {
     await userEvent.click(queryButton);
 
     await waitFor(() => {
-      expect(queryButton).toHaveClass("text-rose-600");
+      expect(queryButton).toHaveClass("text-rose-700");
       expect(queryButton).toHaveAttribute("title", "余额接口没有返回 JSON");
     });
+    const icon = screen.getByTestId(`credential-relay-balance-refresh-${relayAccount.id}`);
+    expect(icon).not.toHaveClass("hidden");
+    expect(icon).toHaveClass("text-rose-600");
   });
 
   it("leaves the balance action off accounts that have not enabled querying", async () => {
@@ -3995,7 +4153,9 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     const failingRow = await screen.findByLabelText("放置在 Team Account 前");
-    expect(within(failingRow).getByText("错误 3 次")).toBeInTheDocument();
+    const failureTag = within(failingRow).getByText("错误 3 次");
+    expect(failureTag).toBeInTheDocument();
+    expect(failureTag.className).not.toMatch(/\bring-/);
     expect(within(failingRow).queryByText("正常")).not.toBeInTheDocument();
 
     const healthyRow = screen.getByLabelText("放置在 API Account 前");

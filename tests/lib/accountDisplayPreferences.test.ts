@@ -13,11 +13,13 @@ describe("account display preferences", () => {
       showAccountType: false,
       showModelList: true,
       showRequestStats: true,
+      showLatencyStats: false,
     });
     expect(DEFAULT_ACCOUNT_DISPLAY_PREFERENCES).toEqual({
       showAccountType: false,
       showModelList: true,
       showRequestStats: true,
+      showLatencyStats: false,
     });
   });
 
@@ -31,6 +33,7 @@ describe("account display preferences", () => {
       showAccountType: true,
       showModelList: false,
       showRequestStats: true,
+      showLatencyStats: false,
     });
     expect(loadAccountDisplayPreferences({ getItem: () => "not-json" })).toEqual(
       DEFAULT_ACCOUNT_DISPLAY_PREFERENCES,
@@ -40,13 +43,14 @@ describe("account display preferences", () => {
   it("persists the selected display preferences", () => {
     let saved = "";
     saveAccountDisplayPreferences(
-      { showAccountType: true, showModelList: false, showRequestStats: false },
+      { showAccountType: true, showModelList: false, showRequestStats: false, showLatencyStats: true },
       { setItem: (_key, value) => { saved = value; } },
     );
     expect(JSON.parse(saved)).toEqual({
       showAccountType: true,
       showModelList: false,
       showRequestStats: false,
+      showLatencyStats: true,
     });
   });
 
@@ -58,21 +62,23 @@ describe("account display preferences", () => {
     expect(loadAccountDisplayPreferences(storage)).toEqual({
       showAccountType: true,
       showModelList: false,
-      // Only the absent one falls back.
+      // Only the absent ones fall back.
       showRequestStats: true,
+      showLatencyStats: false,
     });
   });
 
   it("falls back per field for wrong types and drops unknown keys", () => {
     const storage = {
       getItem: () =>
-        '{"showAccountType":"yes","showModelList":false,"showRequestStats":1,"stale":true}',
+        '{"showAccountType":"yes","showModelList":false,"showRequestStats":1,"showLatencyStats":"maybe","stale":true}',
     };
     const loaded = loadAccountDisplayPreferences(storage);
     expect(loaded).toEqual({
       showAccountType: false,
       showModelList: false,
       showRequestStats: true,
+      showLatencyStats: false,
     });
     // A key from a removed toggle must not be written back on the next save.
     expect(Object.keys(loaded)).not.toContain("stale");

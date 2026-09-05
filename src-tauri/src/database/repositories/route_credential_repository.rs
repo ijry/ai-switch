@@ -74,6 +74,29 @@ const PAGE_SELECT: &str = "SELECT
     CASE WHEN COUNT(ue.id) = 0 THEN NULL
          ELSE CAST(COALESCE(SUM(CASE WHEN json_extract(ue.metadata_json, '$.success') = 1 THEN 1 ELSE 0 END), 0) AS REAL) * 100.0 / COUNT(ue.id)
     END AS success_rate,
+    -- Same latency columns as `list_by_platform`; see the comment there for why they
+    -- are subqueries. A reorder answers with a page, so leaving them out here would
+    -- blank the latency tags out until the next refetch.
+    (SELECT CAST(json_extract(metadata_json, '$.duration_ms') AS INTEGER)
+       FROM usage_events
+      WHERE route_credential_id = rc.id
+        AND source_label IN ('route_proxy', 'route_pool_model_test')
+        AND metric_type = 'request'
+        AND json_extract(metadata_json, '$.duration_ms') IS NOT NULL
+      ORDER BY created_at DESC
+      LIMIT 1
+    ) AS last_duration_ms,
+    (SELECT AVG(CAST(json_extract(metadata_json, '$.duration_ms') AS REAL))
+       FROM (SELECT metadata_json
+               FROM usage_events
+              WHERE route_credential_id = rc.id
+                AND source_label IN ('route_proxy', 'route_pool_model_test')
+                AND metric_type = 'request'
+                AND json_extract(metadata_json, '$.success') = 1
+                AND json_extract(metadata_json, '$.duration_ms') IS NOT NULL
+              ORDER BY created_at DESC
+              LIMIT 10)
+    ) AS avg_recent_duration_ms,
     rc.quota_remaining, rc.quota_limit, rc.quota_used, rc.quota_updated_at, rc.archived_at,
     rc.created_at, rc.updated_at
  FROM route_credentials rc
@@ -903,6 +926,33 @@ impl RouteCredentialRepository {
                 CASE WHEN COUNT(ue.id) = 0 THEN NULL
                      ELSE CAST(COALESCE(SUM(CASE WHEN json_extract(ue.metadata_json, '$.success') = 1 THEN 1 ELSE 0 END), 0) AS REAL) * 100.0 / COUNT(ue.id)
                 END AS success_rate,
+                (SELECT CAST(json_extract(metadata_json, '$.duration_ms') AS INTEGER)
+                   FROM usage_events
+                  WHERE route_credential_id = rc.id
+                    AND source_label IN ('route_proxy', 'route_pool_model_test')
+                    AND metric_type = 'request'
+                    AND json_extract(metadata_json, '$.duration_ms') IS NOT NULL
+                  ORDER BY created_at DESC
+                  LIMIT 1
+                ) AS last_duration_ms,
+                -- Correlated subqueries rather than aggregates over the joined
+                -- `usage_events`: that join is grouped for the request counters, so
+                -- AVG() over it would average every request ever made instead of the
+                -- last ten. Failures are excluded from the average because a request
+                -- that died on connect reports a duration that says nothing about how
+                -- fast the account answers; `last_duration_ms` keeps them so the most
+                -- recent number is always the most recent request.
+                (SELECT AVG(CAST(json_extract(metadata_json, '$.duration_ms') AS REAL))
+                   FROM (SELECT metadata_json
+                           FROM usage_events
+                          WHERE route_credential_id = rc.id
+                            AND source_label IN ('route_proxy', 'route_pool_model_test')
+                            AND metric_type = 'request'
+                            AND json_extract(metadata_json, '$.success') = 1
+                            AND json_extract(metadata_json, '$.duration_ms') IS NOT NULL
+                          ORDER BY created_at DESC
+                          LIMIT 10)
+                ) AS avg_recent_duration_ms,
                 rc.quota_remaining,
                 rc.quota_limit,
                 rc.quota_used,
@@ -2111,9 +2161,103 @@ mod tests {
         }
     }
 
+    async fn record_request(
+        pool: &SqlitePool,
+        credential_id: &str,
+        created_at: &str,
+        duration_ms: i64,
+        success: bool,
+    ) {
+        sqlx::query(
+            "INSERT INTO usage_events
+             (id, route_credential_id, source_label, metric_type, amount, unit, metadata_json, created_at)
+             VALUES (?, ?, 'route_proxy', 'request', 1, 'count', ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(credential_id)
+        .bind(format!(
+            r#"{{"success":{},"duration_ms":{}}}"#,
+            i32::from(success),
+            duration_ms
+        ))
+        .bind(created_at)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
-    async fn external_source_pair_is_unique_and_looked_up_by_source_id() {
+    async fn latency_columns_report_the_last_request_and_average_the_last_ten_successes() {
         let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let credential = create_api_credential(&pool, "codex", "Latency").await;
+
+        // Eleven successes at 100..1100ms, so the oldest (100) must fall out of the
+        // ten-request window: an average that includes it is averaging everything.
+        for index in 0..11 {
+            record_request(
+                &pool,
+                &credential.id,
+                &format!("2026-09-01T00:{:02}:00Z", index),
+                100 + index as i64 * 100,
+                true,
+            )
+            .await;
+        }
+        // A later failure: it is the most recent request, but a request that died on
+        // connect says nothing about how fast the account answers, so it must move
+        // `last_duration_ms` without dragging the average down.
+        record_request(&pool, &credential.id, "2026-09-01T00:20:00Z", 9, false).await;
+
+        let listed = RouteCredentialRepository::list_by_platform(&pool, "codex")
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].last_duration_ms, Some(9));
+        // Mean of 200..1100 = 650. Including the dropped 100 would give ~613, and
+        // including the 9ms failure would give ~596.
+        assert_eq!(listed[0].avg_recent_duration_ms, Some(650.0));
+
+        // The paged projection has to agree: a reorder answers with a page, and a
+        // missing column there would blank the tags out after every drag.
+        let page = RouteCredentialRepository::page(
+            &pool,
+            page_request("codex", 1, RouteCredentialPoolScope::OutOfPool),
+        )
+        .await
+        .unwrap();
+        assert_eq!(page.items[0].last_duration_ms, Some(9));
+        assert_eq!(page.items[0].avg_recent_duration_ms, Some(650.0));
+    }
+
+    #[tokio::test]
+    async fn latency_columns_stay_empty_without_timed_requests() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let credential = create_api_credential(&pool, "codex", "Untimed").await;
+        // A row from before durations were recorded: counted as a request, but it can
+        // neither be the last duration nor enter the average.
+        sqlx::query(
+            "INSERT INTO usage_events
+             (id, route_credential_id, source_label, metric_type, amount, unit, metadata_json, created_at)
+             VALUES (?, ?, 'route_proxy', 'request', 1, 'count', '{\"success\":1}', '2026-09-01T00:00:00Z')",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&credential.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let listed = RouteCredentialRepository::list_by_platform(&pool, "codex")
+            .await
+            .unwrap();
+        assert_eq!(listed[0].request_count, 1);
+        assert_eq!(listed[0].last_duration_ms, None);
+        assert_eq!(listed[0].avg_recent_duration_ms, None);
+    }
+
+    #[tokio::test]
+    async fn external_source_pair_is_unique_and_looked_up_by_source_id() {        let pool = crate::database::create_memory_pool().await.unwrap();
         crate::database::run_migrations(&pool).await.unwrap();
 
         let mut tx = pool.begin().await.unwrap();

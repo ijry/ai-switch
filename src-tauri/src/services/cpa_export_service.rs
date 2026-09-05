@@ -760,6 +760,8 @@ mod tests {
             success_count: 0,
             failure_count: 0,
             success_rate: None,
+            last_duration_ms: None,
+            avg_recent_duration_ms: None,
             quota_remaining: None,
             quota_limit: None,
             quota_used: None,

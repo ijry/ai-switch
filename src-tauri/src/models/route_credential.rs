@@ -150,6 +150,12 @@ pub struct RouteCredential {
     pub failure_count: i64,
     #[sqlx(default)]
     pub success_rate: Option<f64>,
+    /// Duration in milliseconds of the most recent request (success or failure).
+    #[sqlx(default)]
+    pub last_duration_ms: Option<i64>,
+    /// Average duration in milliseconds of the most recent 10 successful requests.
+    #[sqlx(default)]
+    pub avg_recent_duration_ms: Option<f64>,
     // Legacy single-window fields kept for existing DBs/migrations.
     pub quota_remaining: Option<i64>,
     pub quota_limit: Option<i64>,
