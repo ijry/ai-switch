@@ -97,6 +97,10 @@ Three selectors sit at the top: **client** (Codex CLI by default), **scope** (gl
 
 Lists every Skill found for the current client and scope, showing id, source, layout, and description. You can create, edit, and delete (read-only Skills excepted).
 
+For the 27 Skills in the bundled packs, the list and the detail heading show copy that ships with AI Switch rather than the file's own frontmatter: in a bundled `SKILL.md` the `name` is the kebab-case id and the `description` is a long trigger sentence aimed at the agent, and neither reads well in a list. Switch the interface to Simplified Chinese and the Chinese name and one-line summary appear; in English you get the English pair. The filter matches both languages, so "头脑风暴" and `brainstorming` find the same Skill. The preview and the editor always show the file itself, byte for byte.
+
+Skills you wrote yourself are unaffected — they keep displaying their own frontmatter `name` and `description`.
+
 The editor has three inputs:
 
 1. **Skill id** — the directory or file name.
@@ -107,7 +111,12 @@ Each Skill's source is labelled builtin, Codex, Agents, project, or unknown, ref
 
 ### Skill packages
 
-Lists the bundled Skill packs and their installation state for the current client, with an "Install missing Skills" button in the pack detail.
+Lists the bundled Skill packs and their installation state for the current client. The pack detail carries both whole-pack and per-Skill actions:
+
+- **Install missing Skills** — installs everything in the pack that is not there yet.
+- **Uninstall installed Skills** — removes every member of the pack that is installed, after a confirmation prompt.
+- **One row per Skill**, labelled "Installed" or "Not installed", followed by a button: "Install" when it is missing, "Uninstall" when it is present (also confirmed first). Clicking the name jumps back to the Skills tab to read its content.
+- For a Skill that lives in a read-only root the "Uninstall" button is disabled, for the same reason read-only Skills cannot be edited.
 
 ## The two bundled Skill packs
 
@@ -167,11 +176,26 @@ When you click "Install missing Skills":
 3. Copying **writes only files that do not exist and never overwrites**.
 4. Ids already present are recorded in a "skipped" list and reported in the result.
 
+A per-Skill "Install" runs the same logic narrowed to that one id. An id that is not a member of the pack is rejected with `skills.package_member_missing` — better an error than an install button that reports success without installing anything.
+
 ::: tip Same id means skip, regardless of origin
 "Already installed" is determined purely by id match, not by whether the Skill came from this pack. So if you wrote your own Skill called `writing-plans`, installing the Core pack skips it and leaves yours intact. To take the pack's version instead, delete yours first, then install.
 :::
 
 The install target is the **first writable (non-read-only) root** for the current scope. For Codex in global scope that means `$CODEX_HOME/skills`.
+
+## Uninstall behaviour
+
+Uninstalling **deletes the Skill's files from disk** (the whole directory, for the Skill-directory layout), which is why the UI confirms first. It only ever touches members of the pack:
+
+1. A requested id must belong to the pack, otherwise `skills.package_member_missing` comes back.
+2. An id that was not installed is recorded as "skipped" rather than treated as a failure, so "uninstall the whole pack" still completes from a half-installed state.
+3. A Skill in a read-only root is skipped too — the copy the client maintains itself is left alone.
+4. The paths deleted come from the Skill listing, so a delete can only ever land inside a scanned Skill directory.
+
+::: warning Same id means delete, regardless of origin
+Like install, uninstall matches by id alone. If you wrote your own Skill called `writing-plans` and press "Uninstall" on that row of the Core pack, yours is the one that goes. Read the id in the confirmation prompt.
+:::
 
 ## Where the pack files are found
 

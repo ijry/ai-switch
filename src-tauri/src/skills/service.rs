@@ -301,6 +301,17 @@ pub fn save_skill(
         })
 }
 
+/// Deletes a Skill that was already resolved from a listing. Package uninstall
+/// resolves many members from one listing, so it must not re-scan per member.
+pub(super) fn remove_skill_item(skill: &SkillItem) -> Result<(), AppError> {
+    let target = Path::new(&skill.path);
+    match skill.layout {
+        SkillLayout::SkillDirectory => fs::remove_dir_all(target),
+        SkillLayout::MarkdownFile => fs::remove_file(target),
+    }
+    .map_err(|error| io_error("Could not delete Skill", Some(error.to_string())))
+}
+
 pub fn delete_skill(
     agent: SkillAgentType,
     scope: SkillScope,
@@ -323,12 +334,57 @@ pub fn delete_skill(
             recoverable: true,
         });
     }
-    let target = Path::new(&skill.path);
-    let result = match skill.layout {
-        SkillLayout::SkillDirectory => fs::remove_dir_all(target),
-        SkillLayout::MarkdownFile => fs::remove_file(target),
-    };
-    result
-        .map(|_| true)
-        .map_err(|error| io_error("Could not delete Skill", Some(error.to_string())))
+    remove_skill_item(&skill).map(|_| true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(path: &Path, layout: SkillLayout) -> SkillItem {
+        SkillItem {
+            id: "demo".to_string(),
+            name: "demo".to_string(),
+            scope: SkillScope::Global,
+            layout,
+            path: path.display().to_string(),
+            description: None,
+            read_only: false,
+            package_id: None,
+            package_name: None,
+            category: None,
+            tags: Vec::new(),
+            language: None,
+            source: SkillSource::Codex,
+            version: None,
+            installed_at: None,
+            target_clients: vec![SkillAgentType::Codex],
+        }
+    }
+
+    #[test]
+    fn removes_both_skill_layouts_from_a_resolved_listing() {
+        let root = tempfile::tempdir().unwrap();
+        let directory_skill = root.path().join("demo");
+        fs::create_dir_all(&directory_skill).unwrap();
+        fs::write(directory_skill.join("SKILL.md"), "---\nname: demo\n---\n").unwrap();
+        let markdown_skill = root.path().join("solo.md");
+        fs::write(&markdown_skill, "---\nname: solo\n---\n").unwrap();
+
+        remove_skill_item(&item(&directory_skill, SkillLayout::SkillDirectory)).unwrap();
+        remove_skill_item(&item(&markdown_skill, SkillLayout::MarkdownFile)).unwrap();
+
+        assert!(!directory_skill.exists());
+        assert!(!markdown_skill.exists());
+    }
+
+    #[test]
+    fn reports_a_filesystem_code_when_the_skill_is_already_gone() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("missing.md");
+
+        let error = remove_skill_item(&item(&missing, SkillLayout::MarkdownFile)).unwrap_err();
+
+        assert_eq!(error.code(), "skills.config_io");
+    }
 }

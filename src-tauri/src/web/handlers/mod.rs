@@ -77,6 +77,7 @@ pub fn is_sensitive_command(command: &str) -> bool {
             | "skills_save"
             | "skills_delete"
             | "skills_install_package"
+            | "skills_uninstall_package"
             | "create_mobile_pairing"
             | "create_terminal_session"
             | "get_web_service_config"
@@ -219,12 +220,31 @@ pub async fn dispatch_command(
             let agent_type = parse_arg(&args, "agentType")?;
             let scope = parse_arg(&args, "scope")?;
             let workspace_path = optional_string_arg(&args, "workspacePath")?;
+            let skill_ids = optional_string_array_arg(&args, "skillIds")?;
             to_value(
                 crate::skills::command::skills_install_package(
                     package_id,
                     agent_type,
                     scope,
                     workspace_path,
+                    skill_ids,
+                )
+                .await?,
+            )
+        }
+        "skills_uninstall_package" => {
+            let package_id = required_string_arg(&args, "packageId")?;
+            let agent_type = parse_arg(&args, "agentType")?;
+            let scope = parse_arg(&args, "scope")?;
+            let workspace_path = optional_string_arg(&args, "workspacePath")?;
+            let skill_ids = optional_string_array_arg(&args, "skillIds")?;
+            to_value(
+                crate::skills::command::skills_uninstall_package(
+                    package_id,
+                    agent_type,
+                    scope,
+                    workspace_path,
+                    skill_ids,
                 )
                 .await?,
             )

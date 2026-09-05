@@ -188,6 +188,16 @@ pub struct SkillPackageInstallResult {
     pub skipped_skill_ids: Vec<String>,
 }
 
+/// `skipped_skill_ids` covers both members that were not installed to begin with
+/// and members that live in a read-only directory — neither is an error, so a
+/// "uninstall the whole pack" request still removes everything it can.
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillPackageUninstallResult {
+    pub package_id: String,
+    pub removed_skill_ids: Vec<String>,
+    pub skipped_skill_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillPackageDetail {
     pub package: SkillPackage,

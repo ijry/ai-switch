@@ -1300,6 +1300,12 @@ export type SkillPackageInstallResult = {
   skipped_skill_ids: string[];
 };
 
+export type SkillPackageUninstallResult = {
+  package_id: string;
+  removed_skill_ids: string[];
+  skipped_skill_ids: string[];
+};
+
 export type SkillPackageDetail = {
   package: SkillPackage;
   skills: SkillItem[];

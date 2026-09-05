@@ -2,7 +2,8 @@
 
 use super::model::{
     SkillAgentInfo, SkillAgentType, SkillContent, SkillItem, SkillLayout, SkillPackageDetail,
-    SkillPackageInstallResult, SkillScope, SkillsListResult, SkillsPackageListResult,
+    SkillPackageInstallResult, SkillPackageUninstallResult, SkillScope, SkillsListResult,
+    SkillsPackageListResult,
 };
 use super::packages;
 use super::service;
@@ -109,18 +110,39 @@ pub async fn skills_read_package(
     .map_err(ApiError::from)
 }
 
+/// `skill_ids` empty means "the whole pack"; a subset installs just those members.
 #[tauri::command]
 pub async fn skills_install_package(
     package_id: String,
     agent_type: Option<SkillAgentType>,
     scope: Option<SkillScope>,
     workspace_path: Option<String>,
+    skill_ids: Option<Vec<String>>,
 ) -> Result<SkillPackageInstallResult, ApiError> {
     packages::install_skill_package(
         &package_id,
         agent_type,
         scope,
         workspace_path.as_deref().map(std::path::Path::new),
+        skill_ids,
+    )
+    .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn skills_uninstall_package(
+    package_id: String,
+    agent_type: Option<SkillAgentType>,
+    scope: Option<SkillScope>,
+    workspace_path: Option<String>,
+    skill_ids: Option<Vec<String>>,
+) -> Result<SkillPackageUninstallResult, ApiError> {
+    packages::uninstall_skill_package(
+        &package_id,
+        agent_type,
+        scope,
+        workspace_path.as_deref().map(std::path::Path::new),
+        skill_ids,
     )
     .map_err(ApiError::from)
 }

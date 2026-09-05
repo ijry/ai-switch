@@ -76,6 +76,7 @@ import type {
   SkillLayout,
   SkillPackageDetail,
   SkillPackageInstallResult,
+  SkillPackageUninstallResult,
   SkillScope,
   SkillsListResult,
   SkillsPackageListResult,
@@ -699,16 +700,35 @@ export function skillsReadPackage(input: {
   });
 }
 
+/// `skillIds` null installs every missing member; pass ids to install just those.
 export function skillsInstallPackage(input: {
   packageId: string;
   agentType?: SkillAgentType;
   scope?: SkillScope;
   workspacePath?: string | null;
+  skillIds?: string[] | null;
 }): Promise<SkillPackageInstallResult> {
   return invoke("skills_install_package", {
     packageId: input.packageId,
     agentType: input.agentType ?? null,
     scope: input.scope ?? null,
     workspacePath: input.workspacePath ?? null,
+    skillIds: input.skillIds ?? null,
+  });
+}
+
+export function skillsUninstallPackage(input: {
+  packageId: string;
+  agentType?: SkillAgentType;
+  scope?: SkillScope;
+  workspacePath?: string | null;
+  skillIds?: string[] | null;
+}): Promise<SkillPackageUninstallResult> {
+  return invoke("skills_uninstall_package", {
+    packageId: input.packageId,
+    agentType: input.agentType ?? null,
+    scope: input.scope ?? null,
+    workspacePath: input.workspacePath ?? null,
+    skillIds: input.skillIds ?? null,
   });
 }

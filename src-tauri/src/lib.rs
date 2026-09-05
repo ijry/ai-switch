@@ -100,7 +100,7 @@ use services::tailscale_service::{TailscaleRuntimeState, TailscaleService};
 use services::web_service::{WebService, WebServiceRuntimeState};
 use skills::command::{
     skills_delete, skills_install_package, skills_list, skills_list_agents, skills_list_packages,
-    skills_read, skills_read_package, skills_save,
+    skills_read, skills_read_package, skills_save, skills_uninstall_package,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -621,7 +621,8 @@ pub fn run() {
             skills_delete,
             skills_list_packages,
             skills_read_package,
-            skills_install_package
+            skills_install_package,
+            skills_uninstall_package
         ])
         .build(tauri::generate_context!())
         .expect("failed to build AI Switch")

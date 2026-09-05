@@ -8,10 +8,11 @@ use crate::error::AppError;
 
 use super::model::{
     SkillAgentType, SkillItem, SkillPackage, SkillPackageDetail, SkillPackageInstallResult,
-    SkillPackageMember, SkillScope, SkillSource, SkillsPackageListResult,
+    SkillPackageMember, SkillPackageUninstallResult, SkillScope, SkillSource,
+    SkillsPackageListResult,
 };
 use super::paths::{scoped_dirs, skill_storage_spec, validate_skill_id};
-use super::service::list_skills;
+use super::service::{list_skills, remove_skill_item};
 
 const CORE_SKILL_IDS: &[&str] = &[
     "brainstorming",
@@ -105,6 +106,44 @@ fn package_not_found(package_id: &str) -> AppError {
         details: Some(package_id.to_string()),
         recoverable: true,
     }
+}
+
+fn package_member_missing(package_id: &str, skill_id: &str) -> AppError {
+    AppError::Validation {
+        code: "skills.package_member_missing",
+        message: "Skill is not a member of this package".to_string(),
+        details: Some(format!("{package_id}/{skill_id}")),
+        recoverable: true,
+    }
+}
+
+/// Resolves the member ids one install/uninstall call should act on: the whole
+/// pack when the caller passes nothing, otherwise exactly the ids it asked for.
+/// A requested id that the pack does not contain is rejected rather than ignored
+/// — silently doing less than asked is how a "install this one Skill" button ends
+/// up reporting success without installing anything.
+fn requested_member_ids(
+    spec: BuiltinPackageSpec,
+    skill_ids: Option<Vec<String>>,
+) -> Result<Vec<String>, AppError> {
+    let Some(requested) = skill_ids else {
+        return spec
+            .skill_ids
+            .iter()
+            .map(|skill_id| validate_skill_id(skill_id))
+            .collect();
+    };
+    let mut resolved: Vec<String> = Vec::new();
+    for raw in requested {
+        let skill_id = validate_skill_id(&raw)?;
+        if !spec.skill_ids.contains(&skill_id.as_str()) {
+            return Err(package_member_missing(spec.id, &skill_id));
+        }
+        if !resolved.contains(&skill_id) {
+            resolved.push(skill_id);
+        }
+    }
+    Ok(resolved)
 }
 
 fn package_operation_unsupported(message: impl Into<String>, details: Option<String>) -> AppError {
@@ -370,6 +409,7 @@ pub fn install_skill_package(
     agent: Option<SkillAgentType>,
     scope: Option<SkillScope>,
     workspace_path: Option<&Path>,
+    skill_ids: Option<Vec<String>>,
 ) -> Result<SkillPackageInstallResult, AppError> {
     let agent = agent.unwrap_or(SkillAgentType::Codex);
     let scope = scope.unwrap_or(SkillScope::Global);
@@ -384,6 +424,7 @@ pub fn install_skill_package(
         .copied()
         .find(|item| item.id == package_id)
         .ok_or_else(|| package_not_found(package_id))?;
+    let targets = requested_member_ids(spec, skill_ids)?;
 
     let storage_spec = skill_storage_spec(agent);
     let dirs = scoped_dirs(agent, scope, workspace_path)?;
@@ -408,8 +449,7 @@ pub fn install_skill_package(
     let package_resource_root = resource_root.join(spec.id);
     let mut installed_skill_ids = Vec::new();
     let mut skipped_skill_ids = Vec::new();
-    for skill_id in spec.skill_ids {
-        let safe_id = validate_skill_id(skill_id)?;
+    for safe_id in targets {
         if installed.contains_key(&safe_id) {
             skipped_skill_ids.push(safe_id);
             continue;
@@ -429,6 +469,50 @@ pub fn install_skill_package(
     Ok(SkillPackageInstallResult {
         package_id: spec.id.to_string(),
         installed_skill_ids,
+        skipped_skill_ids,
+    })
+}
+
+pub fn uninstall_skill_package(
+    package_id: &str,
+    agent: Option<SkillAgentType>,
+    scope: Option<SkillScope>,
+    workspace_path: Option<&Path>,
+    skill_ids: Option<Vec<String>>,
+) -> Result<SkillPackageUninstallResult, AppError> {
+    let agent = agent.unwrap_or(SkillAgentType::Codex);
+    let scope = scope.unwrap_or(SkillScope::Global);
+    if agent != SkillAgentType::Codex {
+        return Err(package_operation_unsupported(
+            "AI Switch Skill packages can currently be uninstalled for Codex CLI only",
+            Some(agent.as_str().to_string()),
+        ));
+    }
+    let spec = package_specs()
+        .iter()
+        .copied()
+        .find(|item| item.id == package_id)
+        .ok_or_else(|| package_not_found(package_id))?;
+    let targets = requested_member_ids(spec, skill_ids)?;
+
+    // One listing for every member: the paths it reports are what gets deleted,
+    // so nothing outside a scanned Skill directory can be reached from here.
+    let installed = installed_skill_index(agent, scope, workspace_path)?;
+    let mut removed_skill_ids = Vec::new();
+    let mut skipped_skill_ids = Vec::new();
+    for safe_id in targets {
+        match installed.get(&safe_id) {
+            Some(skill) if !skill.read_only => {
+                remove_skill_item(skill)?;
+                removed_skill_ids.push(safe_id);
+            }
+            _ => skipped_skill_ids.push(safe_id),
+        }
+    }
+
+    Ok(SkillPackageUninstallResult {
+        package_id: spec.id.to_string(),
+        removed_skill_ids,
         skipped_skill_ids,
     })
 }
@@ -513,6 +597,54 @@ mod tests {
             index.by_skill["statistical-analysis"].package_id,
             "ai-switch.science"
         );
+    }
+
+    fn core_spec() -> BuiltinPackageSpec {
+        package_specs()
+            .iter()
+            .copied()
+            .find(|spec| spec.id == "ai-switch.core")
+            .unwrap()
+    }
+
+    #[test]
+    fn requested_members_default_to_the_whole_pack() {
+        let expected = CORE_SKILL_IDS
+            .iter()
+            .map(|skill_id| (*skill_id).to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(requested_member_ids(core_spec(), None).unwrap(), expected);
+    }
+
+    #[test]
+    fn requested_members_keep_only_the_asked_for_ids_once() {
+        let resolved = requested_member_ids(
+            core_spec(),
+            Some(vec![
+                "writing-plans".to_string(),
+                "writing-plans".to_string(),
+            ]),
+        )
+        .unwrap();
+
+        assert_eq!(resolved, vec!["writing-plans".to_string()]);
+    }
+
+    #[test]
+    fn requested_members_reject_a_skill_the_pack_does_not_own() {
+        let error = requested_member_ids(core_spec(), Some(vec!["statistical-power".to_string()]))
+            .unwrap_err();
+
+        assert_eq!(error.code(), "skills.package_member_missing");
+    }
+
+    #[test]
+    fn requested_members_reject_a_path_traversal_id() {
+        let error =
+            requested_member_ids(core_spec(), Some(vec!["../../evil".to_string()])).unwrap_err();
+
+        assert_eq!(error.code(), "skills.invalid_id");
     }
 
     #[test]

@@ -38,10 +38,8 @@ export function SkillPackagesList({
             <MotionListItem itemKey={item.id} key={item.id}>
             <button
               aria-current={item.id === selectedId ? "true" : undefined}
-              className={`w-full rounded-xl border px-2.5 py-2 text-left ${
-                item.id === selectedId
-                  ? "border-stone-300 bg-stone-100"
-                  : "border-transparent hover:border-stone-200 hover:bg-stone-50"
+              className={`w-full rounded-xl px-2.5 py-2 text-left motion-control ${
+                item.id === selectedId ? "bg-stone-100 ring-1 ring-stone-300" : "hover:bg-stone-50"
               }`}
               onClick={() => onSelect(item.id)}
               type="button"
@@ -51,7 +49,7 @@ export function SkillPackagesList({
               </div>
               <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-stone-500">
                 <span className="truncate">{t(skillSourceLabelKey(item.source))}</span>
-                <span className="shrink-0">
+                <span className="shrink-0 whitespace-nowrap">
                   {t("skills.packageInstalledCount", {
                     installed: item.installed_count,
                     total: item.skill_count,

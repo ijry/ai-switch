@@ -10,13 +10,19 @@ import {
   skillsRead,
   skillsReadPackage,
   skillsSave,
+  skillsUninstallPackage,
 } from "../lib/api/client";
 import { ApiClientError } from "../lib/api/errors";
 import { apiErrorMessageKey } from "../lib/api/errorMessages";
 import { useI18n } from "../lib/i18n";
 import type { SkillAgentType, SkillItem, SkillLayout, SkillScope } from "../lib/api/types";
 import { isDesktop } from "../lib/transport";
-import { DEFAULT_SKILL_CONTENT } from "../components/skills/catalog";
+import {
+  DEFAULT_SKILL_CONTENT,
+  skillDisplayCopy,
+  skillPackageNameKey,
+  skillSearchHaystack,
+} from "../components/skills/catalog";
 import { SkillsList } from "../components/skills/SkillsList";
 import { SkillPackageDetail } from "../components/skills/SkillPackageDetail";
 import { SkillPackagesList } from "../components/skills/SkillPackagesList";
@@ -92,21 +98,37 @@ export function SkillsScreen() {
       await queryClient.invalidateQueries({ queryKey: ["skills"] });
     },
   });
+  /// Installing or uninstalling a pack member changes the Skills list, the pack's
+  /// install counters and the open pack detail at once, so all three refetch.
+  const invalidateSkillQueries = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["skills"] }),
+      queryClient.invalidateQueries({ queryKey: ["skill"] }),
+      queryClient.invalidateQueries({ queryKey: ["skills-packages"] }),
+      queryClient.invalidateQueries({ queryKey: ["skills-package"] }),
+    ]);
+  };
   const installPackageMutation = useMutation({
-    mutationFn: () =>
+    mutationFn: (skillIds: string[] | null) =>
       skillsInstallPackage({
         packageId: selectedPackageId ?? "",
         agentType,
         scope,
         workspacePath: scope === "project" ? workspacePath : null,
+        skillIds,
       }),
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["skills"] }),
-        queryClient.invalidateQueries({ queryKey: ["skills-packages"] }),
-        queryClient.invalidateQueries({ queryKey: ["skills-package"] }),
-      ]);
-    },
+    onSuccess: invalidateSkillQueries,
+  });
+  const uninstallPackageMutation = useMutation({
+    mutationFn: (skillIds: string[] | null) =>
+      skillsUninstallPackage({
+        packageId: selectedPackageId ?? "",
+        agentType,
+        scope,
+        workspacePath: scope === "project" ? workspacePath : null,
+        skillIds,
+      }),
+    onSuccess: invalidateSkillQueries,
   });
 
   useEffect(() => {
@@ -136,7 +158,7 @@ export function SkillsScreen() {
   const visibleSkills = useMemo(() => {
     const needle = filterText.trim().toLowerCase();
     if (!needle) return listQuery.data?.skills ?? [];
-    return (listQuery.data?.skills ?? []).filter((item) => `${item.id} ${item.name} ${item.description ?? ""}`.toLowerCase().includes(needle));
+    return (listQuery.data?.skills ?? []).filter((item) => skillSearchHaystack(item).includes(needle));
   }, [filterText, listQuery.data?.skills]);
   const error =
     listQuery.error ??
@@ -145,11 +167,31 @@ export function SkillsScreen() {
     packageDetailQuery.error ??
     saveMutation.error ??
     deleteMutation.error ??
-    installPackageMutation.error;
+    installPackageMutation.error ??
+    uninstallPackageMutation.error;
   const agentOptions = agentsQuery.data ?? [];
   const errorMessage = error instanceof ApiClientError
     ? t(apiErrorMessageKey(error.code))
     : t("skills.operationFailed");
+  const packageNameKey = selectedPackageId ? skillPackageNameKey(selectedPackageId) : undefined;
+  const packageLabel = packageNameKey
+    ? t(packageNameKey)
+    : packageDetailQuery.data?.package.name ?? selectedPackageId ?? "";
+  // `variables` is the id list the pending call was given: `null` is the whole
+  // pack, a single id is one member's row spinner.
+  const memberBusyId =
+    (installPackageMutation.isPending ? installPackageMutation.variables?.[0] : undefined) ??
+    (uninstallPackageMutation.isPending ? uninstallPackageMutation.variables?.[0] : undefined) ??
+    null;
+  const uninstallMembers = (skillIds: string[] | null) => {
+    const confirmed = skillIds?.length === 1
+      ? window.confirm(t("skills.packageUninstallMemberConfirm", { id: skillIds[0] }))
+      : window.confirm(t("skills.packageUninstallConfirm", {
+          count: packageDetailQuery.data?.package.installed_count ?? 0,
+          name: packageLabel,
+        }));
+    if (confirmed) uninstallPackageMutation.mutate(skillIds);
+  };
 
   const newSkill = () => {
     setView("skills");
@@ -184,7 +226,7 @@ export function SkillsScreen() {
 
       <div className="rounded-2xl border border-stone-200 bg-white/70 px-2 shadow-sm"><SkillsTabs value={view} onChange={setView} /></div>
       {view === "packages" ? (
-        <div className="grid min-h-[420px] min-w-0 gap-3 rounded-2xl lg:grid-cols-[minmax(220px,320px)_minmax(0,1fr)]">
+        <div className="grid min-h-[420px] min-w-0 gap-3 rounded-2xl lg:grid-cols-[minmax(200px,260px)_minmax(0,1fr)]">
           <SkillPackagesList
             loading={packagesQuery.isLoading}
             onSelect={setSelectedPackageId}
@@ -193,16 +235,21 @@ export function SkillsScreen() {
             warnings={packagesQuery.data?.warnings ?? []}
           />
           <SkillPackageDetail
+            busySkillId={memberBusyId}
             detail={packageDetailQuery.data ?? null}
-            installing={installPackageMutation.isPending}
+            installing={installPackageMutation.isPending && !installPackageMutation.variables}
             loading={packageDetailQuery.isLoading}
-            onInstallMissing={() => installPackageMutation.mutate()}
+            onInstallMember={(skillId) => installPackageMutation.mutate([skillId])}
+            onInstallMissing={() => installPackageMutation.mutate(null)}
             onSelectSkill={(item) => {
               setView("skills");
               setSelectedId(item.id);
               setCreating(false);
               setEditing(false);
             }}
+            onUninstallAll={() => uninstallMembers(null)}
+            onUninstallMember={(skillId) => uninstallMembers([skillId])}
+            uninstalling={uninstallPackageMutation.isPending && !uninstallPackageMutation.variables}
           />
         </div>
       ) : (
@@ -217,15 +264,107 @@ export function SkillsScreen() {
             selectedId={selectedId}
             total={listQuery.data?.skills.length ?? 0}
           />
-          <main className="min-h-0 min-w-0 overflow-hidden rounded-2xl border border-stone-200 bg-white p-3 shadow-sm">{selected ? <SkillEditor item={selected} draft={draft} draftId={draftId} editing={editing || creating} layout={layout} saving={saveMutation.isPending} onEdit={() => { setEditing(true); if (readQuery.data) { setDraft(readQuery.data.content); setDraftId(readQuery.data.skill.id); setLayout(readQuery.data.skill.layout); } }} onDraftChange={setDraft} onIdChange={setDraftId} onLayoutChange={setLayout} onCancel={() => { setEditing(false); if (creating) { setCreating(false); setSelectedId(null); } }} onSave={() => saveMutation.mutate()} onDelete={() => { if (window.confirm(t("skills.deleteConfirm", { id: selected.id }))) deleteMutation.mutate(); }} /> : <div className="grid h-full min-h-[360px] place-items-center text-center text-[13px] text-stone-500"><div><FilePenLine className="mx-auto h-8 w-8 text-stone-300" /><p className="mt-2">{t("skills.emptySelection")}</p></div></div>}</main>
+          <main className="min-h-0 min-w-0 overflow-hidden rounded-2xl border border-stone-200 bg-white p-3 shadow-sm">
+            {selected ? (
+              <SkillEditor
+                creating={creating}
+                draft={draft}
+                draftId={draftId}
+                editing={editing || creating}
+                item={selected}
+                layout={layout}
+                onCancel={() => { setEditing(false); if (creating) { setCreating(false); setSelectedId(null); } }}
+                onDelete={() => { if (window.confirm(t("skills.deleteConfirm", { id: selected.id }))) deleteMutation.mutate(); }}
+                onDraftChange={setDraft}
+                onEdit={() => { setEditing(true); if (readQuery.data) { setDraft(readQuery.data.content); setDraftId(readQuery.data.skill.id); setLayout(readQuery.data.skill.layout); } }}
+                onIdChange={setDraftId}
+                onLayoutChange={setLayout}
+                onSave={() => saveMutation.mutate()}
+                saving={saveMutation.isPending}
+              />
+            ) : (
+              <div className="grid h-full min-h-[360px] place-items-center text-center text-[13px] text-stone-500">
+                <div>
+                  <FilePenLine className="mx-auto h-8 w-8 text-stone-300" />
+                  <p className="mt-2">{t("skills.emptySelection")}</p>
+                </div>
+              </div>
+            )}
+          </main>
         </div>
       )}
-      {error || pickerError ? <p className="border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-800" role="alert">{pickerError ?? errorMessage}</p> : null}
+      {error || pickerError ? <p className="rounded-xl bg-red-50 px-3 py-2 text-[12px] text-red-800 ring-1 ring-red-200" role="alert">{pickerError ?? errorMessage}</p> : null}
     </section>
   );
 }
 
-function SkillEditor({ item, draft, draftId, editing, layout, saving, onEdit, onDraftChange, onIdChange, onLayoutChange, onCancel, onSave, onDelete }: { item: SkillItem; draft: string; draftId: string; editing: boolean; layout: SkillLayout; saving: boolean; onEdit: () => void; onDraftChange: (value: string) => void; onIdChange: (value: string) => void; onLayoutChange: (value: SkillLayout) => void; onCancel: () => void; onSave: () => void; onDelete: () => void }) {
-  const { t } = useI18n();
-  return <div className="flex h-full min-h-0 min-w-0 flex-col"><div className="flex flex-wrap items-start justify-between gap-3 border-b border-stone-200 pb-3"><div className="min-w-0"><div className="flex items-center gap-2"><h2 className="truncate text-[15px] font-semibold text-stone-950">{item.name}</h2>{item.read_only ? <span className="border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">{t("skills.readOnly")}</span> : null}</div><p className="mt-1 break-all font-mono text-[11px] text-stone-500">{item.path}</p></div><div className="flex gap-1">{!editing ? <button aria-label={t("skills.edit")} className="grid h-8 w-8 place-items-center border border-stone-300 text-stone-700 hover:bg-stone-50 disabled:opacity-40" disabled={item.read_only} onClick={onEdit} title={item.read_only ? t("errors.skills.readOnly") : t("skills.edit")} type="button"><FilePenLine className="h-3.5 w-3.5" /></button> : null}{!item.read_only ? <button aria-label={t("skills.delete")} className="grid h-8 w-8 place-items-center border border-red-200 text-red-700 hover:bg-red-50" onClick={onDelete} title={t("skills.delete")} type="button"><Trash2 className="h-3.5 w-3.5" /></button> : null}</div></div>{editing ? <div className="mt-3 flex min-h-0 flex-1 flex-col gap-3"><div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px]"><label className="grid gap-1 text-[11px] font-semibold text-stone-600">{t("skills.skillId")}<input className="border border-stone-300 px-2 py-1.5 font-mono text-[12px] font-normal outline-none focus:border-blue-400" onChange={(event) => onIdChange(event.target.value)} value={draftId} /></label><label className="grid gap-1 text-[11px] font-semibold text-stone-600">{t("skills.layout")}<select className="border border-stone-300 bg-white px-2 py-1.5 text-[12px] font-normal" onChange={(event) => onLayoutChange(event.target.value as SkillLayout)} value={layout}><option value="skill_directory">{t("skills.directoryLayout")}</option><option value="markdown_file">{t("skills.markdownLayout")}</option></select></label></div><textarea aria-label={t("skills.title")} className="min-h-[260px] min-w-0 flex-1 resize-y overflow-auto border border-stone-300 p-2 font-mono text-[12px] leading-5 outline-none focus:border-blue-400" onChange={(event) => onDraftChange(event.target.value)} spellCheck={false} value={draft} /><div className="flex justify-end gap-2"><button className="border border-stone-300 px-3 py-2 text-[12px] font-semibold text-stone-700 hover:bg-stone-50" onClick={onCancel} type="button">{t("skills.cancel")}</button><button className="inline-flex items-center gap-1.5 bg-stone-900 px-3 py-2 text-[12px] font-semibold text-white hover:bg-stone-800 disabled:opacity-50" disabled={saving || !draftId.trim()} onClick={onSave} type="button"><Check className="h-3.5 w-3.5" />{saving ? t("skills.saving") : t("skills.save")}</button></div></div> : <pre className="mt-3 min-h-0 min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-words border border-stone-200 bg-stone-50 p-3 font-mono text-[12px] leading-5 text-stone-700">{draft || t("skills.loadingContent")}</pre>}</div>;
+function SkillEditor({
+  creating,
+  item,
+  draft,
+  draftId,
+  editing,
+  layout,
+  saving,
+  onEdit,
+  onDraftChange,
+  onIdChange,
+  onLayoutChange,
+  onCancel,
+  onSave,
+  onDelete,
+}: {
+  creating: boolean;
+  item: SkillItem;
+  draft: string;
+  draftId: string;
+  editing: boolean;
+  layout: SkillLayout;
+  saving: boolean;
+  onEdit: () => void;
+  onDraftChange: (value: string) => void;
+  onIdChange: (value: string) => void;
+  onLayoutChange: (value: SkillLayout) => void;
+  onCancel: () => void;
+  onSave: () => void;
+  onDelete: () => void;
+}) {
+  const { language, t } = useI18n();
+  // An unsaved draft keeps whatever the id field says: looking up bundled copy
+  // would retitle the editor the moment the typed id happened to match a Skill
+  // AI Switch ships.
+  const heading = creating ? item.name : skillDisplayCopy(item, language).name;
+
+  return (
+    <div className="flex h-full min-h-0 min-w-0 flex-col">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-stone-200 pb-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <h2 className="truncate text-[15px] font-semibold text-stone-950">{heading}</h2>
+            {item.read_only ? <span className="shrink-0 whitespace-nowrap rounded-lg bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 ring-1 ring-amber-200">{t("skills.readOnly")}</span> : null}
+          </div>
+          <p className="mt-1 break-all font-mono text-[11px] text-stone-500">{item.path}</p>
+        </div>
+        <div className="flex shrink-0 gap-1.5">
+          {!editing ? <button aria-label={t("skills.edit")} className="grid h-8 w-8 place-items-center rounded-lg bg-white text-stone-700 ring-1 ring-stone-300 motion-control hover:bg-stone-50 disabled:opacity-40" disabled={item.read_only} onClick={onEdit} title={item.read_only ? t("errors.skills.readOnly") : t("skills.edit")} type="button"><FilePenLine className="h-3.5 w-3.5" /></button> : null}
+          {!item.read_only && !creating ? <button aria-label={t("skills.delete")} className="grid h-8 w-8 place-items-center rounded-lg bg-white text-red-700 ring-1 ring-red-200 motion-control hover:bg-red-50" onClick={onDelete} title={t("skills.delete")} type="button"><Trash2 className="h-3.5 w-3.5" /></button> : null}
+        </div>
+      </div>
+      {editing ? (
+        <div className="mt-3 flex min-h-0 flex-1 flex-col gap-3">
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px]">
+            <label className="grid gap-1 text-[11px] font-semibold text-stone-600">{t("skills.skillId")}<input className="rounded-lg border border-stone-300 px-2 py-1.5 font-mono text-[12px] font-normal outline-none focus:border-blue-400" onChange={(event) => onIdChange(event.target.value)} value={draftId} /></label>
+            <label className="grid gap-1 text-[11px] font-semibold text-stone-600">{t("skills.layout")}<select className="rounded-lg border border-stone-300 bg-white px-2 py-1.5 text-[12px] font-normal" onChange={(event) => onLayoutChange(event.target.value as SkillLayout)} value={layout}><option value="skill_directory">{t("skills.directoryLayout")}</option><option value="markdown_file">{t("skills.markdownLayout")}</option></select></label>
+          </div>
+          <textarea aria-label={t("skills.title")} className="min-h-[260px] min-w-0 flex-1 resize-y overflow-auto rounded-lg border border-stone-300 p-2 font-mono text-[12px] leading-5 outline-none focus:border-blue-400" onChange={(event) => onDraftChange(event.target.value)} spellCheck={false} value={draft} />
+          <div className="flex flex-wrap justify-end gap-2">
+            <button className="whitespace-nowrap rounded-xl bg-white px-3 py-2 text-[12px] font-semibold text-stone-700 ring-1 ring-stone-300 motion-control hover:bg-stone-50" onClick={onCancel} type="button">{t("skills.cancel")}</button>
+            <button className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl bg-stone-900 px-3 py-2 text-[12px] font-semibold text-white motion-control hover:bg-stone-800 disabled:opacity-50" disabled={saving || !draftId.trim()} onClick={onSave} type="button"><Check className="h-3.5 w-3.5" />{saving ? t("skills.saving") : t("skills.save")}</button>
+          </div>
+        </div>
+      ) : (
+        <pre className="mt-3 min-h-0 min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-stone-50 p-3 font-mono text-[12px] leading-5 text-stone-700">{draft || t("skills.loadingContent")}</pre>
+      )}
+    </div>
+  );
 }
