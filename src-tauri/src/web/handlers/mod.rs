@@ -381,9 +381,14 @@ pub async fn dispatch_command(
         "save_settings" => {
             let settings: AppSettings = parse_arg(&args, "settings")?;
             to_value(
-                save_settings_core(&state.paths, &state.deeplink_protocols, settings)
-                    .await
-                    .map_err(to_error)?,
+                save_settings_core(
+                    &state.paths,
+                    &state.deeplink_protocols,
+                    &state.close_to_tray,
+                    settings,
+                )
+                .await
+                .map_err(to_error)?,
             )
         }
         "list_sessions" => {
@@ -1191,6 +1196,7 @@ mod tests {
                 config_writes: ConfigWriteRuntimeState::default(),
                 deeplink_protocols:
                     crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime::default(),
+                close_to_tray: crate::app_state::CloseToTrayRuntime::default(),
                 route_proxy: RouteProxyRuntimeState::default(),
                 web_service: WebServiceRuntimeState::default(),
                 tailscale: TailscaleRuntimeState::default(),

@@ -3335,6 +3335,50 @@ describe("AccountsScreen", () => {
     );
   });
 
+  it("clears the create form after a save when the reset box stays checked", async () => {
+    renderScreen();
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "First Account");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-first");
+    await userEvent.clear(screen.getByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://api.first.test/v1");
+
+    expect(screen.getByRole("checkbox", { name: "提交完重置表单" })).toBeChecked();
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+    await waitFor(() => expect(createApiRouteCredential).toHaveBeenCalledTimes(1));
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    expect(screen.getByLabelText("API 账号名称")).toHaveValue("");
+    expect(screen.getByLabelText("API Key")).toHaveValue("");
+    // Back to the platform default rather than blank: an empty Base URL would be
+    // a worse starting point than the one a fresh install shows.
+    expect(screen.getByLabelText("Base URL")).toHaveValue("https://api.example.com/v1");
+  });
+
+  it("keeps the create form filled in after a save when the reset box is cleared", async () => {
+    renderScreen();
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Kept Account");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-kept");
+    await userEvent.clear(screen.getByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://api.kept.test/v1");
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "提交完重置表单" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+    await waitFor(() => expect(createApiRouteCredential).toHaveBeenCalledTimes(1));
+
+    // The point of unchecking it: a second account that differs only by key does
+    // not have to be retyped from scratch.
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    expect(screen.getByLabelText("API 账号名称")).toHaveValue("Kept Account");
+    expect(screen.getByLabelText("API Key")).toHaveValue("sk-kept");
+    expect(screen.getByLabelText("Base URL")).toHaveValue("https://api.kept.test/v1");
+  });
+
   it("loads and saves responses custom tool compat from API account config", async () => {
     const api = {
       ...credentialsFixture[1],

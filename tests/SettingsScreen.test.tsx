@@ -256,6 +256,33 @@ describe("SettingsScreen", () => {
     expect(selector).toHaveValue("zh-CN");
   });
 
+  it("saves the close-to-tray choice without disturbing the other settings", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settingsFixture);
+    vi.mocked(saveSettings).mockImplementation(async (settings) => settings);
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <I18nProvider initialLanguage="zh-CN">
+          <SettingsScreen />
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+
+    const toggle = await screen.findByRole("checkbox", { name: "关闭时最小化到托盘" });
+    expect(toggle).toBeChecked();
+
+    await userEvent.click(toggle);
+
+    await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(saveSettings).mock.calls[0][0]).toEqual({
+      ...settingsFixture,
+      close_to_tray: false,
+    });
+    // The reply is written straight back into the cache, so the box has to follow
+    // the saved value rather than snapping back to the fixture.
+    await waitFor(() => expect(toggle).not.toBeChecked());
+  });
+
   it("opens feature entries through the settings hub", async () => {
     const onOpenFeature = vi.fn();
     vi.mocked(getSettings).mockResolvedValue(settingsFixture);

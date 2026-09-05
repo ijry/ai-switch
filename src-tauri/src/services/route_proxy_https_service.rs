@@ -1439,6 +1439,7 @@ mod tests {
                 config_writes: ConfigWriteRuntimeState::default(),
                 deeplink_protocols:
                     crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime::default(),
+                close_to_tray: crate::app_state::CloseToTrayRuntime::default(),
                 route_proxy: RouteProxyRuntimeState::default(),
                 web_service: WebServiceRuntimeState::default(),
                 tailscale: TailscaleRuntimeState::default(),

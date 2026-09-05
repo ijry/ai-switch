@@ -195,6 +195,27 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
             </span>
           </span>
         </label>
+        <label className="flex max-w-xl items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-[12px] font-semibold text-stone-700">
+          <input
+            aria-label={t("settings.closeToTray.label")}
+            checked={settings.close_to_tray}
+            className="mt-0.5"
+            disabled={saveMutation.isPending}
+            onChange={(event) =>
+              saveMutation.mutate({
+                ...settings,
+                close_to_tray: event.target.checked,
+              })
+            }
+            type="checkbox"
+          />
+          <span className="grid gap-1">
+            <span>{t("settings.closeToTray.label")}</span>
+            <span className="text-[11px] font-medium text-stone-500">
+              {t("settings.closeToTray.hint")}
+            </span>
+          </span>
+        </label>
         <label className="flex max-w-sm flex-col gap-1.5 text-[12px] font-semibold text-stone-600">
           <span>{t("settings.language")}</span>
           <select

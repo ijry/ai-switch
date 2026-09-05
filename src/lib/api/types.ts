@@ -1030,6 +1030,11 @@ export type AppSettings = {
   data_dir: string;
   ccswitch_deeplink_compat_enabled: boolean;
   /**
+   * Close-button behavior: hide to the tray (true) or quit the app (false).
+   * On macOS the Dock icon follows the main window while this is enabled.
+   */
+  close_to_tray: boolean;
+  /**
    * Pool-wide Claude Code client behavior switches as a JSON object string.
    * Claude Code reads these from its own settings file, which the whole pool
    * shares, so unlike model mappings they cannot be per-account.

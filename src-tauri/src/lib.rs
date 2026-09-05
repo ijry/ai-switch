@@ -23,7 +23,7 @@ mod web;
 #[link(name = "resource", kind = "static")]
 unsafe extern "C" {}
 
-use app_state::AppState;
+use app_state::{AppState, CloseToTrayRuntime};
 use commands::batch_commands::{
     create_batch, create_official_account, create_provider, get_official_account,
     list_batch_groups, update_official_account,
@@ -130,8 +130,39 @@ fn is_deeplink_url(app: &tauri::AppHandle, value: &str) -> bool {
                 .ccswitch_enabled())
 }
 
+/// Hides the macOS Dock icon so a window closed to the tray leaves only the
+/// tray item behind. Idempotent, and a no-op everywhere else.
+///
+/// Deliberately `set_activation_policy` rather than `set_dock_visibility`: the
+/// latter goes through tao's `TransformProcessType`, which drops any hide that
+/// lands within a second of a show — exactly the show-from-tray-then-close
+/// sequence this feature is built on — and leaves a stale Dock tile behind.
+fn hide_dock_icon(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Accessory) {
+            eprintln!("failed to hide the Dock icon: {error}");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+}
+
+/// Restores the macOS Dock icon when the main window comes back.
+fn restore_dock_icon(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
+            eprintln!("failed to restore the Dock icon: {error}");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+}
+
 fn focus_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        restore_dock_icon(app);
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
@@ -290,6 +321,14 @@ pub fn run() {
     });
 
     let launched_from_autostart = is_autostart_launch(std::env::args().skip(1));
+    // Read once here so the close handler, which runs on the main thread and
+    // cannot await, has an answer from the very first click. Unreadable settings
+    // fall back to the tray, which is what the app did before this was an option.
+    let close_to_tray = CloseToTrayRuntime::new(
+        tauri::async_runtime::block_on(services::settings_service::SettingsService::load(&paths))
+            .map(|settings| settings.close_to_tray)
+            .unwrap_or(true),
+    );
     let mut builder = tauri::Builder::default();
     let tray_quit_requested = Arc::new(AtomicBool::new(false));
     let close_tray_quit_requested = Arc::clone(&tray_quit_requested);
@@ -318,9 +357,23 @@ pub fn run() {
                 return;
             }
             if let WindowEvent::CloseRequested { api, .. } = event {
-                if !close_tray_quit_requested.load(Ordering::SeqCst) {
+                // Tray "quit" closes the window for real; the close button is
+                // governed by the setting.
+                if close_tray_quit_requested.load(Ordering::SeqCst) {
+                    return;
+                }
+                let app = window.app_handle();
+                if app.state::<AppState>().close_to_tray.enabled() {
                     api.prevent_close();
                     let _ = window.hide();
+                    hide_dock_icon(app);
+                } else {
+                    // Route through the same exit the tray menu uses, so the
+                    // route proxy and terminal children get torn down instead of
+                    // being orphaned by a bare window close. The flag also keeps
+                    // this branch from re-entering on the way out.
+                    close_tray_quit_requested.store(true, Ordering::SeqCst);
+                    app.exit(0);
                 }
             }
         })
@@ -334,6 +387,7 @@ pub fn run() {
             pool,
             config_writes: ConfigWriteRuntimeState::default(),
             deeplink_protocols: DeepLinkProtocolRuntime::default(),
+            close_to_tray,
             route_proxy: RouteProxyRuntimeState::default(),
             web_service: WebServiceRuntimeState::default(),
             tailscale: TailscaleRuntimeState::default(),
@@ -347,6 +401,11 @@ pub fn run() {
                     if let Err(error) = window.hide() {
                         eprintln!("failed to hide window for autostart launch: {error}");
                     }
+                }
+                // Started straight into the tray, so the Dock icon should not be
+                // the one thing that shows up — same rule the close button follows.
+                if app.state::<AppState>().close_to_tray.enabled() {
+                    hide_dock_icon(app.handle());
                 }
             }
 

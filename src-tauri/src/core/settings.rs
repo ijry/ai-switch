@@ -1,3 +1,4 @@
+use crate::app_state::CloseToTrayRuntime;
 use crate::error::AppError;
 use crate::models::settings::{AppSettings, AppSettingsView};
 use crate::paths::AppPaths;
@@ -14,6 +15,7 @@ pub async fn get_settings_core(
 pub async fn save_settings_core(
     paths: &AppPaths,
     runtime: &DeepLinkProtocolRuntime,
+    close_to_tray: &CloseToTrayRuntime,
     settings: AppSettings,
 ) -> Result<AppSettingsView, AppError> {
     let previous = SettingsService::load(paths).await?;
@@ -28,5 +30,8 @@ pub async fn save_settings_core(
         }
         return Err(error);
     }
+    // Only after the file lands, so a failed write leaves the close button
+    // behaving the way the persisted settings still describe.
+    close_to_tray.set_enabled(settings.close_to_tray);
     Ok(runtime.view(settings))
 }

@@ -2658,6 +2658,10 @@ export function AccountsScreen({
   const [createTab, setCreateTab] = useState<CreateTab>("basic");
   const [editTab, setEditTab] = useState<EditTab>("basic");
   const [joinPoolOnCreate, setJoinPoolOnCreate] = useState(true);
+  // Clearing the form after a successful save is the common case, but importing
+  // several accounts that differ only by key is not: leaving it unchecked keeps
+  // Base URL, mappings and the rest in place for the next round.
+  const [resetFormAfterCreate, setResetFormAfterCreate] = useState(true);
   const [officialText, setOfficialText] = useState(() => defaultOfficialJson(activePlatform));
   const [officialBatchName, setOfficialBatchName] = useState("");
   const [officialFilePaths, setOfficialFilePaths] = useState<string[]>([]);
@@ -3278,10 +3282,19 @@ export function AccountsScreen({
     }
   }, [routePoolQuery.data]);
 
-  useEffect(() => {
+  // Every field the 新增账号 dialog owns, back to what a fresh open would show.
+  // Also used after a successful save, so anything added to that form belongs
+  // here — a field left out is one that survives into the next account.
+  const resetCreateForm = useCallback(() => {
     const nextInterfaceFormat = defaultInterfaceFormat(activePlatform);
     setOfficialText(defaultOfficialJson(activePlatform));
+    setOfficialBatchName("");
     setOfficialFilePaths([]);
+    setFilePickerError(null);
+    setApiName("");
+    setApiKey("");
+    setApiKeyDecodeError(null);
+    setApiKeyOcrError(null);
     setApiInterfaceFormat(nextInterfaceFormat);
     setApiResponsesCustomToolCompat(false);
     setApiUserAgent("");
@@ -3291,10 +3304,18 @@ export function AccountsScreen({
     setApiMappingsError(null);
     setApiFetchedModels([]);
     setApiFetchModelsError(null);
+    setApiPreviewJson("");
     setApiRelayBalance(emptyRelayBalanceForm);
     setApiRelayBalancePanelAccount(emptyRelayBalancePanelAccount);
-    setModelTestOutcome(null);
   }, [activePlatform]);
+
+  useEffect(() => {
+    resetCreateForm();
+    // Not part of the form: the test panel is shared with the pool toolbar, and
+    // an outcome from the platform the user just left would be misread as this
+    // platform's.
+    setModelTestOutcome(null);
+  }, [activePlatform, resetCreateForm]);
 
   useEffect(() => {
     if (!editingCredential) {
@@ -3792,6 +3813,9 @@ export function AccountsScreen({
     },
     onSuccess: async (result) => {
       setCreateOpen(false);
+      if (resetFormAfterCreate) {
+        resetCreateForm();
+      }
       const imported =
         result && typeof result === "object" && "imported" in result
           ? ((result as { imported?: RouteCredential[] }).imported ?? [])
@@ -7997,6 +8021,23 @@ export function AccountsScreen({
                 {formatApiError(createMutation.error, "新增账号失败。")}
               </p>
             )}
+
+            <label className="mt-4 flex items-start gap-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-medium text-stone-700">
+              <input
+                aria-label="提交完重置表单"
+                checked={resetFormAfterCreate}
+                className="mt-0.5 h-4 w-4 rounded border-stone-300 text-amber-500 focus:ring-blue-400"
+                disabled={createMutation.isPending}
+                onChange={(event) => setResetFormAfterCreate(event.target.checked)}
+                type="checkbox"
+              />
+              <span className="grid gap-0.5">
+                <span>提交完重置表单</span>
+                <span className="text-[11px] font-medium text-stone-500">
+                  保存成功后清空本表单；取消则保留这次填的内容，方便接着录入同一批账号。
+                </span>
+              </span>
+            </label>
 
             <div className="mt-4 flex justify-end gap-2 border-t border-stone-100 pt-3">
               <button
