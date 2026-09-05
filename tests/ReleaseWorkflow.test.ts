@@ -139,8 +139,26 @@ describe("package manager dry run", () => {
   });
 
   it("keeps every outward-facing step behind the dry-run switch", () => {
-    // Two steps reach another repository: the cask push and the winget PR. Both
-    // have to stay gated, or a rehearsal would publish.
-    expect(workflow.match(/^\s+if: \$\{\{ !inputs\.dry_run \}\}$/gm) ?? []).toHaveLength(2);
+    // Two things reach another repository: the cask push and the winget PR. Both
+    // have to stay gated, or a rehearsal would publish. They are gated in
+    // different places — the cask push is a whole job, so its condition sits in
+    // the job-level `if` beside the publishable/homebrew checks, while the winget
+    // submission is one step inside a job that also does the dry-run reporting.
+    // So assert the gate per target instead of counting one particular syntax,
+    // which is what this test used to do: moving the cask push behind a job-level
+    // `if` failed it while leaving the rehearsal every bit as safe.
+    const homebrewPushJob = workflow.slice(
+      workflow.indexOf("\n  homebrew-push:"),
+      workflow.indexOf("\n  winget:"),
+    );
+    expect(homebrewPushJob).toMatch(/&& !inputs\.dry_run/);
+
+    const wingetSubmit = workflow.slice(
+      workflow.indexOf("- name: Submit the manifest to winget-pkgs"),
+    );
+    expect(wingetSubmit).toContain("if: ${{ !inputs.dry_run }}");
+
+    // And nothing else: a third step that pushes would have to gate itself too.
+    expect(workflow.match(/!inputs\.dry_run/g) ?? []).toHaveLength(2);
   });
 });
