@@ -3537,12 +3537,17 @@ fn build_api_upstream_request(
         }
         ApiDialect::OpenAi | ApiDialect::OpenAiResponses => {
             insert_header(headers, "authorization", &format!("Bearer {api_key}"))?;
-            // Impersonate the Codex CLI for gateways that fingerprint clients.
-            apply_codex_cli_identity(headers);
         }
     }
 
     apply_credential_user_agent(headers, config)?;
+    // After the credential's own User-Agent, never before: the identity has to be
+    // decided from the value that actually goes out. See [`may_impersonate_codex_cli`].
+    if matches!(dialect, ApiDialect::OpenAi | ApiDialect::OpenAiResponses)
+        && may_impersonate_codex_cli(config)
+    {
+        apply_codex_cli_identity(headers, &credential.id);
+    }
     let streaming_request = request_body_requests_stream(&rewritten_body);
     Ok(BuiltUpstreamRequest {
         target_url,
@@ -3602,6 +3607,13 @@ fn build_official_upstream_request(
         apply_official_grok_cli_headers(headers)?;
     }
     apply_credential_user_agent(headers, config)?;
+    // An official Codex account is reached over the same Responses dialect as an API
+    // one — from ChatGPT's own endpoint to a relay hosting the OAuth token — and both
+    // fingerprint the client. The probe starts from an empty header map, so without
+    // this it would carry no client identity at all.
+    if platform == PlatformId::Codex && may_impersonate_codex_cli(config) {
+        apply_codex_cli_identity(headers, &credential.id);
+    }
     let target_url = build_target_url(base_url, path, query);
     Ok(BuiltUpstreamRequest {
         target_url,
@@ -4994,10 +5006,95 @@ fn apply_one_m_context_beta(headers: &mut HeaderMap) {
     }
 }
 
+/// Whether the Codex CLI identity may be claimed on this credential's requests.
+///
+/// A credential that pins its own `User-Agent` already has an identity, and one that
+/// is not Codex-shaped cannot be talked into passing a Codex gate anyway — the gate
+/// reads the engine version out of the UA. Stamping `originator` and an engine
+/// fingerprint beside it would only build the half-Codex request that gets refused,
+/// and would break a relay-side allowlist keyed on that exact client. So a pinned
+/// foreign identity is left to stand on its own.
+fn may_impersonate_codex_cli(config: &Value) -> bool {
+    match credential_user_agent(config) {
+        Some(user_agent) => client_identity::codex_paired_originator(user_agent).is_some(),
+        None => true,
+    }
+}
+
 /// Make an OpenAI/Responses-dialect upstream request look like the Codex CLI.
-fn apply_codex_cli_identity(headers: &mut HeaderMap) {
+///
+/// Identity is all-or-nothing, for the same reason it is on the Anthropic side
+/// (see [`apply_claude_code_identity`]): a real Codex client already carries a
+/// coherent set, and anything else has to be replaced outright rather than topped
+/// up. Filling in only `originator` next to a foreign `user-agent` is what makes a
+/// relay answer `This account only allows Codex official clients` — sub2api
+/// accepts the request as official on the originator, then reads the engine
+/// version out of the UA, finds `claude-cli/2.1.2` or `python-requests/2.32`, and
+/// refuses.
+///
+/// The `x-codex-*` fingerprint is a separate gate: the engine stamps it on every
+/// inference request, and sub2api requires one such header by default. Nothing
+/// bridged from another protocol carries it, which is how an account can serve the
+/// claude platform happily and 403 on every codex-platform turn.
+fn apply_codex_cli_identity(headers: &mut HeaderMap, credential_id: &str) {
+    match codex_client_originator(headers) {
+        // A real Codex client: keep its own UA and version, and pair the originator
+        // it left out rather than inventing an unrelated one.
+        Some(originator) => fill_header_if_absent(headers, "originator", &originator),
+        None => replace_client_identity_with_codex_cli(headers),
+    }
+    ensure_codex_engine_fingerprint(headers, credential_id);
+}
+
+/// The originator that pairs with the caller's `user-agent`, when the caller is a
+/// real Codex client.
+fn codex_client_originator(headers: &HeaderMap) -> Option<String> {
+    let user_agent = headers.get("user-agent")?.to_str().ok()?;
+    client_identity::codex_paired_originator(user_agent)
+}
+
+/// Overwrite the caller's client identity with the Codex CLI's own.
+fn replace_client_identity_with_codex_cli(headers: &mut HeaderMap) {
     for (name, value) in client_identity::codex_cli_identity_headers() {
-        fill_header_if_absent(headers, name, &value);
+        let Ok(value) = HeaderValue::from_str(&value) else {
+            continue;
+        };
+        headers.insert(HeaderName::from_static(name), value);
+    }
+    // One request cannot claim two clients. An Anthropic client bridged onto a
+    // Responses upstream would otherwise arrive as the Codex CLI still wearing
+    // Claude Code's SDK headers — a combination no real client emits, and the kind
+    // of contradiction that gets a request rejected as an unknown client.
+    let foreign: Vec<HeaderName> = headers
+        .keys()
+        .filter(|name| {
+            let name = name.as_str();
+            name.starts_with("x-stainless-") || name.starts_with("anthropic-") || name == "x-app"
+        })
+        .cloned()
+        .collect();
+    for name in foreign {
+        headers.remove(name);
+    }
+}
+
+/// Stamp the engine fingerprint the gate looks for, unless the caller brought one.
+///
+/// A real client's own `x-codex-*` headers are left alone: they carry its window
+/// and installation ids, and a second opinion from us would only contradict them.
+fn ensure_codex_engine_fingerprint(headers: &mut HeaderMap, credential_id: &str) {
+    if headers.keys().any(|name| {
+        name.as_str()
+            .starts_with(client_identity::CODEX_ENGINE_HEADER_PREFIX)
+    }) {
+        return;
+    }
+    let window_id = client_identity::codex_engine_window_id(credential_id);
+    if let Ok(value) = HeaderValue::from_str(&window_id) {
+        headers.insert(
+            HeaderName::from_static(client_identity::CODEX_WINDOW_ID_HEADER),
+            value,
+        );
     }
 }
 
@@ -5887,6 +5984,70 @@ mod tests {
         format!("http://{address}/v1")
     }
 
+    /// An upstream running sub2api's `codex_cli_only` gate on its shipped default
+    /// policy, which is two independent checks:
+    ///
+    /// 1. the request names an official Codex client in `user-agent` or
+    ///    `originator`, and the engine version is parseable *out of the UA* even
+    ///    when it was the originator that matched;
+    /// 2. it carries an `x-codex-*` engine-fingerprint header.
+    ///
+    /// Anything else gets the one generic message the gate uses for every reason it
+    /// refuses, which is why the 403 never says which half was missing.
+    async fn start_codex_cli_only_upstream() -> String {
+        let app = Router::new().fallback(|headers: HeaderMap| async move {
+            let header = |name: &str| {
+                headers
+                    .get(name)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            let user_agent = header("user-agent");
+            let official_client = ["codex_cli_rs/", "codex-tui/"]
+                .iter()
+                .any(|prefix| user_agent.starts_with(prefix))
+                || matches!(header("originator").as_str(), "codex_cli_rs" | "codex-tui");
+            let version = user_agent
+                .split_once('/')
+                .map(|(_, rest)| rest.split([' ', '(']).next().unwrap_or_default().to_string())
+                .unwrap_or_default();
+            let mut segments = version.splitn(3, '.');
+            let engine_version_parseable = matches!(
+                (segments.next(), segments.next(), segments.next()),
+                (Some(major), Some(minor), Some(patch))
+                    if !major.is_empty()
+                        && major.bytes().all(|byte| byte.is_ascii_digit())
+                        && !minor.is_empty()
+                        && minor.bytes().all(|byte| byte.is_ascii_digit())
+                        && patch.starts_with(|char: char| char.is_ascii_digit())
+            );
+            let fingerprinted = headers
+                .keys()
+                .any(|name| name.as_str().starts_with("x-codex-"));
+
+            if official_client && engine_version_parseable && fingerprinted {
+                (
+                    StatusCode::OK,
+                    r#"{"choices":[{"message":{"content":"ok"}}]}"#,
+                )
+            } else {
+                (
+                    StatusCode::FORBIDDEN,
+                    r#"{"error":{"message":"This account only allows Codex official clients","type":"forbidden_error"}}"#,
+                )
+            }
+        });
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind codex-only upstream");
+        let address = listener.local_addr().expect("codex-only address");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve codex-only");
+        });
+        format!("http://{address}/v1")
+    }
+
     /// An upstream that accepts the connection and then goes silent forever.
     ///
     /// This is the failure the proxy could not see before it had deadlines: no
@@ -6501,6 +6662,55 @@ mod tests {
         assert_eq!(
             primary_response.text().await.expect("primary body"),
             r#"{"route":"priority-one"}"#
+        );
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    /// The reported failure, end to end: a client that is not Codex routes through
+    /// the pool to a relay whose account has `codex_cli_only` on. Before the
+    /// identity was repaired here, every such turn came back as
+    /// `This account only allows Codex official clients`.
+    #[tokio::test]
+    async fn route_proxy_passes_a_relays_codex_only_gate_for_a_foreign_client() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let upstream = start_codex_cli_only_upstream().await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_proxy_api_credential(&pool, "codex-only-relay", &upstream).await;
+        RoutePoolRepository::replace_members(&pool, "codex", &[credential_id])
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-codex-only")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool, RouteProxyTransport::HttpOnly)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/chat/completions",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(&route_key)
+            .header(ROUTE_PROXY_PLATFORM_HEADER, "codex")
+            // A client with an identity of its own, and none of it Codex: the shape
+            // every bridged turn and every non-Codex tool arrives in.
+            .header("user-agent", "claude-cli/2.1.2 (external, cli)")
+            .json(&json!({"model":"gpt-5.5","messages":[]}))
+            .send()
+            .await
+            .expect("gated response");
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            response.text().await.expect("body"),
+            r#"{"choices":[{"message":{"content":"ok"}}]}"#
         );
 
         RouteProxyService::stop(&runtime).await.expect("stop proxy");
@@ -8706,7 +8916,7 @@ mod tests {
     #[test]
     fn apply_codex_cli_identity_fills_originator_and_user_agent() {
         let mut headers = HeaderMap::new();
-        apply_codex_cli_identity(&mut headers);
+        apply_codex_cli_identity(&mut headers, "account-1");
         assert_eq!(
             headers.get("originator").and_then(|v| v.to_str().ok()),
             Some(client_identity::CODEX_CLI_ORIGINATOR)
@@ -8715,6 +8925,182 @@ mod tests {
             .get("user-agent")
             .and_then(|v| v.to_str().ok())
             .is_some_and(|ua| ua.starts_with("codex_cli_rs/")));
+        // sub2api's `codex_cli_only` gate requires an `x-codex-*` header on top of
+        // the official UA; without one it answers `This account only allows Codex
+        // official clients`, the same message it gives an unknown client.
+        assert_eq!(
+            headers
+                .get(client_identity::CODEX_WINDOW_ID_HEADER)
+                .and_then(|v| v.to_str().ok()),
+            Some(client_identity::codex_engine_window_id("account-1").as_str())
+        );
+    }
+
+    /// The reported failure: a client that is not Codex reaches a Responses relay
+    /// through the pool. Grafting `originator` onto its own UA left the gate with an
+    /// official client and a version it could not parse, so every turn 403'd while
+    /// the same account served the claude platform fine.
+    #[test]
+    fn codex_identity_replaces_a_foreign_client_wholesale() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("user-agent"),
+            HeaderValue::from_static("claude-cli/2.1.2 (external, cli)"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-stainless-lang"),
+            HeaderValue::from_static("js"),
+        );
+        headers.insert(
+            HeaderName::from_static("anthropic-beta"),
+            HeaderValue::from_static("claude-code-20250219"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-app"),
+            HeaderValue::from_static("cli"),
+        );
+        apply_codex_cli_identity(&mut headers, "account-1");
+
+        assert_eq!(
+            headers.get("user-agent").and_then(|v| v.to_str().ok()),
+            Some(client_identity::codex_cli_user_agent().as_str()),
+            "an official originator beside a foreign UA is what the gate refuses"
+        );
+        assert_eq!(
+            headers.get("originator").and_then(|v| v.to_str().ok()),
+            Some(client_identity::CODEX_CLI_ORIGINATOR)
+        );
+        assert!(headers.contains_key(client_identity::CODEX_WINDOW_ID_HEADER));
+        // No real client is the Codex CLI and an Anthropic SDK at the same time.
+        assert!(!headers.contains_key("x-stainless-lang"));
+        assert!(!headers.contains_key("anthropic-beta"));
+        assert!(!headers.contains_key("x-app"));
+    }
+
+    #[test]
+    fn codex_identity_leaves_a_real_codex_client_alone() {
+        let mut headers = HeaderMap::new();
+        // The interactive TUI reports itself with a hyphen. Filling in
+        // `codex_cli_rs` here is the pairing mismatch OpenAI's inference endpoint
+        // answers with 404.
+        headers.insert(
+            HeaderName::from_static("user-agent"),
+            HeaderValue::from_static("codex-tui/0.153.4 (Ubuntu 22.4.0; x86_64) xterm-256color"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-codex-window-id"),
+            HeaderValue::from_static("6f1d1f2c-0f5a-4a0e-9a1c-1d1f2c0f5a11"),
+        );
+        apply_codex_cli_identity(&mut headers, "account-1");
+
+        assert_eq!(
+            headers.get("user-agent").and_then(|v| v.to_str().ok()),
+            Some("codex-tui/0.153.4 (Ubuntu 22.4.0; x86_64) xterm-256color"),
+            "a real client's own version and terminal fingerprint must survive"
+        );
+        assert_eq!(
+            headers.get("originator").and_then(|v| v.to_str().ok()),
+            Some("codex-tui")
+        );
+        assert_eq!(
+            headers
+                .get(client_identity::CODEX_WINDOW_ID_HEADER)
+                .and_then(|v| v.to_str().ok()),
+            Some("6f1d1f2c-0f5a-4a0e-9a1c-1d1f2c0f5a11"),
+            "the client's own window id is not ours to overwrite"
+        );
+    }
+
+    /// The probe and every bridged turn start from a header map with no client
+    /// identity in it, so the gate's two checks have to be satisfied by the builder.
+    #[test]
+    fn built_responses_request_carries_the_codex_engine_fingerprint() {
+        let credential = api_credential("responses-relay", "openai-responses");
+        let (_, headers, _) = build_upstream_request(
+            &credential,
+            "codex",
+            "/v1/responses",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5","input":"hi"}"#,
+        )
+        .expect("responses request");
+
+        assert_eq!(
+            headers.get("originator").and_then(|v| v.to_str().ok()),
+            Some(client_identity::CODEX_CLI_ORIGINATOR)
+        );
+        assert!(headers.contains_key(client_identity::CODEX_WINDOW_ID_HEADER));
+    }
+
+    /// A credential that pins a User-Agent of its own keeps it, and gets no Codex
+    /// claim bolted onto it: the pinned UA is what a gate would read the engine
+    /// version from, so half a Codex identity could only make the request worse.
+    #[test]
+    fn a_pinned_user_agent_is_not_dressed_up_as_the_codex_cli() {
+        let credential = api_credential_with_config(
+            "pinned-ua",
+            &serde_json::json!({
+                "base_url": "https://api.example.com/v1",
+                "interface_format": "openai-responses",
+                "headers": {"User-Agent": "MyRelayClient/1.0"}
+            })
+            .to_string(),
+        );
+
+        let (_, headers, _) = build_upstream_request(
+            &credential,
+            "codex",
+            "/v1/responses",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5","input":"hi"}"#,
+        )
+        .expect("pinned request");
+
+        assert_eq!(
+            headers.get("user-agent").and_then(|v| v.to_str().ok()),
+            Some("MyRelayClient/1.0")
+        );
+        assert!(!headers.contains_key("originator"));
+        assert!(!headers.contains_key(client_identity::CODEX_WINDOW_ID_HEADER));
+    }
+
+    /// A Claude Code client routed to a Responses relay: the bridge rewrites the
+    /// body, so the headers have to stop advertising Anthropic and start
+    /// advertising Codex, fingerprint included. Left half-converted, the relay's
+    /// `codex_cli_only` gate reads `claude-cli/2.1.2` as the engine and refuses the
+    /// account on every turn.
+    #[test]
+    fn bridged_anthropic_client_reaches_a_responses_relay_as_the_codex_cli() {
+        let credential = api_credential("claude-to-responses", "openai-responses");
+        let mut inbound = HeaderMap::new();
+        inbound.insert(
+            HeaderName::from_static("user-agent"),
+            HeaderValue::from_static("claude-cli/2.1.2 (external, cli)"),
+        );
+        inbound.insert(
+            HeaderName::from_static("x-stainless-runtime"),
+            HeaderValue::from_static("node"),
+        );
+
+        let (url, headers, _) = build_upstream_request(
+            &credential,
+            "claude",
+            "/v1/messages",
+            None,
+            inbound,
+            br#"{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"max_tokens":16}"#,
+        )
+        .expect("bridged request");
+
+        assert_eq!(url, "https://api.example.com/v1/responses");
+        assert_eq!(
+            headers.get("user-agent").and_then(|v| v.to_str().ok()),
+            Some(client_identity::codex_cli_user_agent().as_str())
+        );
+        assert!(headers.contains_key(client_identity::CODEX_WINDOW_ID_HEADER));
+        assert!(!headers.contains_key("x-stainless-runtime"));
     }
 
     #[test]

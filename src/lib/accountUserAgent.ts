@@ -1,7 +1,9 @@
 export const GROK_WORKSPACE_USER_AGENT = "xai-grok-workspace/0.2.93";
 // 与 src-tauri/src/services/client_identity.rs 的内置伪装 UA 保持同形：
 // 网关按 `codex_cli_rs/` 前缀和 `claude-cli/<版本> (external, cli)` 指纹识别官方 CLI。
-export const CODEX_CLI_USER_AGENT = "codex_cli_rs/0.80.0 (MacOS 15.7.2; arm64) Terminal";
+// 版本号也要一起跟：中转站会从 `codex_cli_rs/<版本>` 里解出引擎版本，落在它要求的
+// 区间外就整个账号被拒（沿用旧版本的账号会看到「Codex version … below the minimum」）。
+export const CODEX_CLI_USER_AGENT = "codex_cli_rs/0.153.4 (MacOS 15.7.2; arm64) Terminal";
 export const CLAUDE_CLI_USER_AGENT = "claude-cli/2.1.2 (external, cli)";
 export const BROWSER_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";

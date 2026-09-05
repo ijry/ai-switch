@@ -62,7 +62,51 @@ fn derive_device_id(seed: &str) -> String {
 
 /// Impersonated Codex CLI originator/User-Agent.
 pub const CODEX_CLI_ORIGINATOR: &str = "codex_cli_rs";
-const CODEX_CLI_VERSION: &str = "0.80.0";
+/// Codex engine version claimed in the impersonated User-Agent.
+///
+/// Relays read this out of the UA's leading `client/version` segment and gate on
+/// it — sub2api's `codex_cli_only` refuses anything below the configured minimum,
+/// and OpenAI's own inference endpoint 404s clients that predate its floor. Keep
+/// it at the latest published `@openai/codex` release.
+const CODEX_CLI_VERSION: &str = "0.153.4";
+
+/// Header the Codex engine stamps on every inference request.
+///
+/// sub2api's `codex_cli_only` gate ships exactly one *required* engine-fingerprint
+/// signal: any header whose name starts with [`CODEX_ENGINE_HEADER_PREFIX`], on
+/// the grounds that ~98.8% of real Codex traffic carries this one. Looking like
+/// the official client in `user-agent`/`originator` is therefore not enough — a
+/// request without the fingerprint is refused with the very same generic
+/// `This account only allows Codex official clients` message.
+pub const CODEX_WINDOW_ID_HEADER: &str = "x-codex-window-id";
+
+/// Prefix that marks a header as part of the Codex engine fingerprint.
+pub const CODEX_ENGINE_HEADER_PREFIX: &str = "x-codex-";
+
+/// Official Codex client names, exactly as the engine reports them in
+/// `originator` and in the leading UA segment.
+///
+/// Mirrors codex-rs's first-party list (`login/src/auth/default_client.rs`) plus
+/// the app-server clients relay gates keep on their own allowlists. Matching is
+/// on the whole name rather than "contains codex", so `evil-codex_cli_rs` is not
+/// mistaken for the real thing — the same narrowing the gates apply.
+const CODEX_OFFICIAL_CLIENT_NAMES: &[&str] = &[
+    "codex_cli_rs",
+    "codex-tui",
+    "codex_vscode",
+    "codex_vscode_copilot",
+    "codex_app",
+    "codex_chatgpt_desktop",
+    "codex_atlas",
+    "codex_exec",
+    "codex_sdk_ts",
+];
+
+/// Prefix covering the `Codex Desktop`-style family.
+///
+/// The trailing space is load-bearing: trimmed to a bare `codex` it would match
+/// any name containing the word.
+const CODEX_OFFICIAL_CLIENT_FAMILY_PREFIX: &str = "codex ";
 
 /// Fill-if-missing identity headers that make an Anthropic-dialect request look
 /// like Claude Code. `anthropic-beta` is handled separately (it must be merged,
@@ -83,8 +127,11 @@ pub fn claude_code_identity_headers() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-/// Fill-if-missing identity headers that make an OpenAI/Responses-dialect
-/// request look like the Codex CLI.
+/// Identity headers that make an OpenAI/Responses-dialect request look like the
+/// Codex CLI.
+///
+/// Applied as a set, never spliced into a caller's own headers — see
+/// [`codex_paired_originator`] for what a half-Codex identity costs.
 pub fn codex_cli_identity_headers() -> Vec<(&'static str, String)> {
     vec![
         ("user-agent", codex_cli_user_agent()),
@@ -92,13 +139,135 @@ pub fn codex_cli_identity_headers() -> Vec<(&'static str, String)> {
     ]
 }
 
-/// Codex CLI User-Agent, e.g. `codex_cli_rs/0.80.0 (Windows 15.7.2; x86_64) Terminal`.
+/// Codex CLI User-Agent, e.g. `codex_cli_rs/0.153.4 (Windows 11; x86_64) Terminal`.
 pub fn codex_cli_user_agent() -> String {
     format!(
-        "{CODEX_CLI_ORIGINATOR}/{CODEX_CLI_VERSION} ({} 15.7.2; {}) Terminal",
+        "{CODEX_CLI_ORIGINATOR}/{CODEX_CLI_VERSION} ({} {}; {}) Terminal",
         os_name(),
+        os_version_hint(),
         arch_name()
     )
+}
+
+/// OS version reported next to [`os_name`] in the Codex UA.
+///
+/// codex-rs fills this from `os_info`; we keep one plausible current release per
+/// OS instead of taking a dependency to probe it. No gate parses the value, but a
+/// pair that cannot exist (`Windows 15.7.2`) is the kind of tell a fingerprinting
+/// relay looks for.
+fn os_version_hint() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "15.7.2",
+        "windows" => "11",
+        _ => "22.4.0",
+    }
+}
+
+/// The `originator` that pairs with `user_agent`, when that UA belongs to a Codex
+/// client a relay gate accepts as official.
+///
+/// `None` means "not a Codex client", and the caller should then replace the whole
+/// identity instead of grafting an official `originator` onto a foreign UA. Both
+/// halves of that answer matter:
+///
+/// * sub2api's version check reads the *UA*, not `originator`. An official
+///   originator next to `python-requests/2.32` gives the gate a client it accepts
+///   and a version it cannot parse, which it rejects as `codex_version_undetectable`
+///   — reported as the same generic "only allows Codex official clients".
+/// * OpenAI's `/backend-api/codex` 404s when `originator` and the UA's leading
+///   client name disagree, so filling in `codex_cli_rs` beside a `codex-tui/…` UA
+///   breaks a request that would have gone through untouched.
+pub fn codex_paired_originator(user_agent: &str) -> Option<String> {
+    let user_agent = user_agent.trim();
+    let (leading, rest) = user_agent.split_once('/')?;
+    // An official name with an unparseable version is refused just like an unknown
+    // client, so it is not an identity worth keeping.
+    if !has_codex_engine_version(rest) {
+        return None;
+    }
+    if let Some(name) = official_codex_client_name(leading) {
+        return Some(name);
+    }
+    // `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` renames the leading segment but leaves
+    // the engine's own `(name; version)` trailer, so a wrapper such as
+    // `cccc/0.153.4 (…) (codex-tui; 0.153.4)` is still a real Codex engine and the
+    // gates read the trailer to recognise it.
+    official_codex_client_name(&codex_user_agent_trailer_name(user_agent)?)
+}
+
+/// Match one client name against the official set.
+fn official_codex_client_name(candidate: &str) -> Option<String> {
+    let candidate = candidate.trim();
+    let lowered = candidate.to_ascii_lowercase();
+    if CODEX_OFFICIAL_CLIENT_NAMES.contains(&lowered.as_str()) {
+        // The exact set is canonically lowercase, so `CODEX_CLI_RS` is the same
+        // client rather than a second identity.
+        return Some(lowered);
+    }
+    // The `Codex ` family is a prefix rather than a fixed name, so it is the one
+    // place a client could talk us into echoing arbitrary bytes back as an
+    // "official" originator. Official names are short ASCII.
+    if candidate.len() > 64
+        || !candidate
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() || byte == b' ')
+    {
+        return None;
+    }
+    // Matched case-sensitively upstream, so this family's own casing has to survive.
+    lowered
+        .starts_with(CODEX_OFFICIAL_CLIENT_FAMILY_PREFIX)
+        .then(|| candidate.to_string())
+}
+
+/// True when a UA's version segment starts with the three-part engine version a
+/// relay's version gate parses (`0.153.4-alpha.3` counts, `8.0` does not).
+///
+/// `rest` is everything after the first `/`; the version ends at the first space
+/// or `(`, matching how codex-rs formats the UA.
+fn has_codex_engine_version(rest: &str) -> bool {
+    let version = rest.split([' ', '(']).next().unwrap_or_default();
+    let mut segments = version.splitn(3, '.');
+    let (Some(major), Some(minor), Some(patch)) =
+        (segments.next(), segments.next(), segments.next())
+    else {
+        return false;
+    };
+    let patch_digits = patch
+        .split(|char: char| !char.is_ascii_digit())
+        .next()
+        .unwrap_or_default();
+    !patch_digits.is_empty()
+        && [major, minor]
+            .iter()
+            .all(|segment| !segment.is_empty() && segment.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+/// The `name` of the trailing `(name; version)` group codex-rs appends to its UA.
+fn codex_user_agent_trailer_name(user_agent: &str) -> Option<String> {
+    let (_, trailer) = user_agent.rsplit_once('(')?;
+    let (inner, _) = trailer.split_once(')')?;
+    let name = inner.split(';').next()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Stable `x-codex-window-id` for a routed account.
+///
+/// A real CLI mints one per window and keeps it for that window's lifetime, so a
+/// fresh id on every request would itself be an odd fingerprint. Deriving it from
+/// the account id gives all of that account's traffic one window — what a single
+/// user's CLI looks like — while hashing keeps the account id out of the value.
+pub fn codex_engine_window_id(seed: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(seed.as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    // Sets the version/variant bits, so the value still parses as the v4 UUID the
+    // CLI would have generated.
+    uuid::Builder::from_random_bytes(bytes)
+        .into_uuid()
+        .to_string()
 }
 
 /// OS name mapped to the value the Claude/Codex CLIs report.
@@ -218,8 +387,89 @@ mod tests {
     #[test]
     fn codex_user_agent_has_expected_shape() {
         let ua = codex_cli_user_agent();
-        assert!(ua.starts_with("codex_cli_rs/0.80.0 ("));
+        assert!(ua.starts_with(&format!("codex_cli_rs/{CODEX_CLI_VERSION} (")));
         assert!(ua.ends_with(") Terminal"));
+        // Our own UA has to clear the version gate it is meant to satisfy.
+        assert_eq!(
+            codex_paired_originator(&ua),
+            Some(CODEX_CLI_ORIGINATOR.to_string())
+        );
+    }
+
+    #[test]
+    fn pairs_the_originator_with_the_clients_own_codex_user_agent() {
+        // The bug this pairing fixes: filling in `codex_cli_rs` beside a
+        // `codex-tui` UA is the mismatch OpenAI's inference endpoint 404s on.
+        assert_eq!(
+            codex_paired_originator("codex-tui/0.153.4 (Ubuntu 22.4.0; x86_64) xterm-256color"),
+            Some("codex-tui".to_string())
+        );
+        assert_eq!(
+            codex_paired_originator("codex_vscode/1.0.0 (Windows 11; x86_64) vscode"),
+            Some("codex_vscode".to_string())
+        );
+        // The exact set is canonically lowercase.
+        assert_eq!(
+            codex_paired_originator("CODEX_CLI_RS/0.153.4 (Windows 11; x86_64) Terminal"),
+            Some("codex_cli_rs".to_string())
+        );
+        // `Codex ` family: matched case-sensitively upstream, so the casing stays.
+        assert_eq!(
+            codex_paired_originator("Codex Desktop/1.4.0 (MacOS 15.7.2; arm64) Codex"),
+            Some("Codex Desktop".to_string())
+        );
+        // Originator override renames the leading segment; the engine's own
+        // `(name; version)` trailer still identifies it.
+        assert_eq!(
+            codex_paired_originator(
+                "cccc/0.153.4 (MacOS 15.7.2; arm64) iTerm2 (codex-tui; 0.153.4)"
+            ),
+            Some("codex-tui".to_string())
+        );
+    }
+
+    #[test]
+    fn refuses_to_pair_an_originator_with_a_foreign_user_agent() {
+        // Every case here is one the gate would reject anyway, so the caller has to
+        // replace the identity wholesale instead of topping it up.
+        for user_agent in [
+            "claude-cli/2.1.2 (external, cli)",
+            "python-requests/2.32",
+            "curl/8.18.0",
+            // Official name, version the gate cannot parse: `codex_version_undetectable`.
+            "codex_cli_rs/beta (Windows 11; x86_64) Terminal",
+            // The prefix has to lead — "contains codex" is how fakes get through.
+            "evil-codex_cli_rs/0.153.4 (Windows 11; x86_64) Terminal",
+            // Trailer is the OS group, not a client identity.
+            "unknown/1.2.3 (Windows 11; x86_64) Terminal",
+            "",
+        ] {
+            assert_eq!(
+                codex_paired_originator(user_agent),
+                None,
+                "should not be treated as an official Codex client: {user_agent}"
+            );
+        }
+        // The `Codex ` family is a prefix, so it needs its own bound: an official
+        // client name is short ASCII, not a paragraph a caller wants echoed back as
+        // its originator.
+        let padded = format!(
+            "Codex {}/1.2.3 (Windows 11; x86_64) Terminal",
+            "x".repeat(64)
+        );
+        assert_eq!(codex_paired_originator(&padded), None);
+    }
+
+    #[test]
+    fn window_id_is_a_stable_uuid_per_account() {
+        let first = codex_engine_window_id("account-1");
+        let again = codex_engine_window_id("account-1");
+        let other = codex_engine_window_id("account-2");
+
+        assert_eq!(first, again, "one account is one window");
+        assert_ne!(first, other, "different accounts are different windows");
+        let parsed = uuid::Uuid::parse_str(&first).expect("uuid shape");
+        assert_eq!(parsed.get_version_num(), 4, "the CLI generates v4: {first}");
     }
 
     #[test]

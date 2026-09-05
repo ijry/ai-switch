@@ -61,7 +61,7 @@ OpenCode、OpenClaw、Hermes **没有配置写入适配器**，只能通过路�
 各方言还带了自己的附加处理：
 
 - **`anthropic`**：自动补 `anthropic-version: 2023-06-01`（客户端已提供则不覆盖）；对 messages 路径追加 `?beta=true`；套用 Claude Code 的客户端标识，避免做客户端指纹校验的网关把请求当成未知客户端拒掉。
-- **`openai` / `openai-responses`**：套用 Codex CLI 的客户端标识，同样是为了过指纹校验；请求路径会剥掉前导版本段（`/v1/...` → `/...`），再由 base URL 拼回去。
+- **`openai` / `openai-responses`**：套用 Codex CLI 的客户端标识，同样是为了过指纹校验；请求路径会剥掉前导版本段（`/v1/...` → `/...`），再由 base URL 拼回去。标识是整套替换而不是逐项补齐：客户端自己就是官方 Codex（`user-agent` 属于官方客户端家族、且能解出 `X.Y.Z` 引擎版本）时原样保留，只补上与它配套的 `originator`；否则整套换成我们的，并清掉客户端带来的 Anthropic SDK 标识——半个 Codex 身份比任何一种完整身份都更容易被拒。另外补一个 `x-codex-window-id` 引擎指纹头（客户端已带任意 `x-codex-*` 时不补）：中转站的「仅官方 Codex 客户端」限制默认要求它，缺了整个账号每轮都会拿到 `This account only allows Codex official clients`。账号自己配了 `User-Agent` 时这套伪装整体让路，不给它拼半个身份。
 - **`gemini`**：key 放查询参数，不放请求头。流式请求走 `:streamGenerateContent` 并附加 `alt=sse`。
 
 不管走哪个方言，出站请求都会被强制加上 `accept-encoding: identity`。原因写在代码注释里：出站 HTTP 客户端是不带任何解压特性编译的，一旦上游返回 gzip/br/zstd，中转和解析环节看到的就是乱码。
