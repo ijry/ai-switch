@@ -205,6 +205,68 @@ mod tests {
         );
     }
 
+    /// Anthropic answers a parallel tool turn with several `tool_use` blocks in
+    /// one assistant message, and requires the matching `tool_result` blocks in
+    /// the single user message that follows. Codex replays that turn as a flat run
+    /// of `function_call` / `function_call_output` items, so emitting one message
+    /// per item splits it into two assistant messages and two user messages — the
+    /// first `tool_use` is then not answered by the next message, and the upstream
+    /// rejects the request (`Invalid tool use format` on the AWS-backed relays).
+    /// Nothing in the transcript can be replayed after that, so the session is
+    /// dead from its first parallel turn while every other session keeps working.
+    #[test]
+    fn a_parallel_tool_turn_stays_one_assistant_message_and_one_user_reply() {
+        let body = serde_json::json!({
+            "model": "claude-sonnet-4-5",
+            "input": [
+                {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "read both files"}]},
+                {"type": "function_call", "call_id": "call_1", "name": "read",
+                 "arguments": "{\"path\":\"a\"}"},
+                {"type": "function_call", "call_id": "call_2", "name": "read",
+                 "arguments": "{\"path\":\"b\"}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "a"},
+                {"type": "function_call_output", "call_id": "call_2", "output": "b"}
+            ],
+            "tools": [{
+                "type": "function",
+                "name": "read",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}
+            }]
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &responses_request_to_anthropic(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+        let messages = converted["messages"].as_array().expect("messages");
+
+        let roles = messages
+            .iter()
+            .map(|message| message["role"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            roles,
+            vec!["user", "assistant", "user"],
+            "a parallel turn must not split into extra messages: {converted}"
+        );
+
+        // Both calls share the assistant turn that produced them, in order.
+        let calls = messages[1]["content"].as_array().expect("tool_use blocks");
+        assert_eq!(calls.len(), 2, "{converted}");
+        assert_eq!(calls[0]["type"], "tool_use");
+        assert_eq!(calls[0]["id"], "call_1");
+        assert_eq!(calls[1]["id"], "call_2");
+
+        // And both results answer it from the one user message that follows, so
+        // neither `tool_use` is left without a `tool_result` after it.
+        let results = messages[2]["content"].as_array().expect("tool_result blocks");
+        assert_eq!(results.len(), 2, "{converted}");
+        assert_eq!(results[0]["type"], "tool_result");
+        assert_eq!(results[0]["tool_use_id"], "call_1");
+        assert_eq!(results[1]["tool_use_id"], "call_2");
+    }
+
     #[test]
     fn converts_anthropic_response_to_responses_json() {
         let upstream = serde_json::json!({
@@ -720,29 +782,100 @@ impl AnthropicSseState {
 fn convert_input(input: &Value) -> Result<Vec<Value>, String> {
     match input {
         Value::String(text) => Ok(vec![json!({"role": "user", "content": [text_block(text)]})]),
-        Value::Array(items) => items
-            .iter()
-            .filter(|item| !is_reasoning_input_item(item))
-            .filter_map(|item| convert_input_item(item).transpose())
-            .collect(),
+        Value::Array(items) => convert_input_items(items),
         Value::Null => Ok(Vec::new()),
         _ => Err("Responses input must be a string or array".to_string()),
     }
 }
 
-/// One Anthropic message per Responses input item, or `None` for items that have
-/// no Anthropic equivalent and must be dropped rather than rejected.
+fn convert_input_items(items: &[Value]) -> Result<Vec<Value>, String> {
+    let mut messages = Vec::new();
+    let mut pending = PendingToolTurn::default();
+
+    for item in items {
+        if is_reasoning_input_item(item) {
+            continue;
+        }
+        convert_input_item(item, &mut messages, &mut pending)?;
+    }
+
+    pending.flush(&mut messages);
+    Ok(messages)
+}
+
+/// Anthropic pairs a tool turn as *one* assistant message holding every
+/// `tool_use`, immediately followed by *one* user message holding the matching
+/// `tool_result` blocks. Codex replays the same turn as a flat run of separate
+/// `function_call` / `function_call_output` items, so converting one item to one
+/// message splits a parallel turn across two assistant messages and two user
+/// messages — then the first `tool_use` is not answered by the message that
+/// follows it, and a strict upstream rejects the whole request
+/// (`Invalid tool use format` on the AWS-backed relays; Anthropic itself says
+/// `tool_use ids were found without tool_result blocks immediately after`).
+/// Buffering both sides and flushing on the next unrelated item rebuilds the
+/// pairing Anthropic documents.
+#[derive(Default)]
+struct PendingToolTurn {
+    tool_uses: Vec<Value>,
+    tool_results: Vec<Value>,
+}
+
+impl PendingToolTurn {
+    /// A new call opens a new tool turn, so results buffered from the previous
+    /// one have to land before it.
+    fn push_tool_use(&mut self, messages: &mut Vec<Value>, block: Value) {
+        self.flush_tool_results(messages);
+        self.tool_uses.push(block);
+    }
+
+    fn push_tool_result(&mut self, messages: &mut Vec<Value>, block: Value) {
+        self.flush_tool_uses(messages);
+        self.tool_results.push(block);
+    }
+
+    fn flush(&mut self, messages: &mut Vec<Value>) {
+        self.flush_tool_uses(messages);
+        self.flush_tool_results(messages);
+    }
+
+    fn flush_tool_uses(&mut self, messages: &mut Vec<Value>) {
+        if self.tool_uses.is_empty() {
+            return;
+        }
+        messages.push(json!({
+            "role": "assistant",
+            "content": std::mem::take(&mut self.tool_uses)
+        }));
+    }
+
+    fn flush_tool_results(&mut self, messages: &mut Vec<Value>) {
+        if self.tool_results.is_empty() {
+            return;
+        }
+        messages.push(json!({
+            "role": "user",
+            "content": std::mem::take(&mut self.tool_results)
+        }));
+    }
+}
+
+/// One Responses input item, appended to `messages` or buffered in `pending`.
 ///
-/// The tail of this match is the part worth being careful with. Codex's own
-/// transcript carries item types no other client produces — `custom_tool_call`
-/// for freeform tools like `apply_patch`, `local_shell_call` for the sandboxed
-/// shell — and they appear from the second turn of any session that edited a
-/// file. Failing on an unknown type kills the whole request, so the account
-/// looks broken while the same relay works under the claude platform (which
-/// speaks `/v1/messages` and never reaches this converter). Mirrors
-/// `responses_chat::convert_input_item`, which has handled these since the Chat
-/// bridge shipped.
-fn convert_input_item(item: &Value) -> Result<Option<Value>, String> {
+/// Two things make this match worth reading carefully. Tool calls and their
+/// outputs are buffered rather than emitted, so `PendingToolTurn` can rebuild
+/// Anthropic's one-message-per-tool-turn pairing. And the tail handles item types
+/// no Anthropic client ever sends — `custom_tool_call` for freeform tools like
+/// `apply_patch`, `local_shell_call` for the sandboxed shell — which Codex
+/// replays from the second turn of any session that edited a file. Failing on an
+/// unknown type kills the whole request, so the account looks broken while the
+/// same relay works under the claude platform (which speaks `/v1/messages` and
+/// never reaches this converter). Mirrors `responses_chat::convert_input_item`,
+/// which has handled these since the Chat bridge shipped.
+fn convert_input_item(
+    item: &Value,
+    messages: &mut Vec<Value>,
+    pending: &mut PendingToolTurn,
+) -> Result<(), String> {
     let object = item
         .as_object()
         .ok_or_else(|| "Responses input items must be JSON objects".to_string())?;
@@ -756,15 +889,15 @@ fn convert_input_item(item: &Value) -> Result<Option<Value>, String> {
                 .unwrap_or("{}");
             let input = serde_json::from_str::<Value>(arguments)
                 .unwrap_or_else(|_| Value::String(arguments.to_string()));
-            Ok(Some(json!({
-                "role": "assistant",
-                "content": [{
+            pending.push_tool_use(
+                messages,
+                json!({
                     "type": "tool_use",
                     "id": call_id,
                     "name": name,
                     "input": input
-                }]
-            })))
+                }),
+            );
         }
         Some("function_call_output") => {
             let call_id = required_string(object, "call_id", "function_call_output")?;
@@ -773,14 +906,14 @@ fn convert_input_item(item: &Value) -> Result<Option<Value>, String> {
                 .map(stringify_content)
                 .transpose()?
                 .unwrap_or_default();
-            Ok(Some(json!({
-                "role": "user",
-                "content": [{
+            pending.push_tool_result(
+                messages,
+                json!({
                     "type": "tool_result",
                     "tool_use_id": call_id,
                     "content": output
-                }]
-            })))
+                }),
+            );
         }
         // A freeform tool's whole payload is one string. `{"input": "…"}` is the
         // shape `custom_tool_to_function_tool` advertises to the model, so a call
@@ -808,15 +941,15 @@ fn convert_input_item(item: &Value) -> Result<Option<Value>, String> {
                     json!({"input": object.get("input").cloned().unwrap_or_else(|| json!(""))}),
                 )
             };
-            Ok(Some(json!({
-                "role": "assistant",
-                "content": [{
+            pending.push_tool_use(
+                messages,
+                json!({
                     "type": "tool_use",
                     "id": call_id,
                     "name": name,
                     "input": input
-                }]
-            })))
+                }),
+            );
         }
         Some(item_type @ ("custom_tool_call_output" | "tool_search_output")) => {
             let call_id = required_string(object, "call_id", item_type)?;
@@ -826,14 +959,14 @@ fn convert_input_item(item: &Value) -> Result<Option<Value>, String> {
                 .map(stringify_content)
                 .transpose()?
                 .unwrap_or_default();
-            Ok(Some(json!({
-                "role": "user",
-                "content": [{
+            pending.push_tool_result(
+                messages,
+                json!({
                     "type": "tool_result",
                     "tool_use_id": call_id,
                     "content": output
-                }]
-            })))
+                }),
+            );
         }
         // Tools the upstream never saw declared (they are filtered out of the
         // tool array by `is_responses_builtin_tool_type`), so replaying their
@@ -847,26 +980,31 @@ fn convert_input_item(item: &Value) -> Result<Option<Value>, String> {
             | "computer_call_output"
             | "local_shell_call"
             | "local_shell_call_output",
-        ) => Ok(None),
+        ) => {
+            pending.flush(messages);
+        }
         // A bare content part used as an input item, rather than wrapped in a
         // message. Codex sends this shape for pasted images.
         Some("input_text" | "input_image" | "input_file" | "input_audio") => {
+            pending.flush(messages);
             let role = object.get("role").and_then(Value::as_str).unwrap_or("user");
             let content = convert_message_content(&Value::Array(vec![item.clone()]))?;
-            Ok(Some(json!({"role": role, "content": content})))
+            messages.push(json!({"role": role, "content": content}));
         }
         Some("message") | None if object.contains_key("role") => {
+            pending.flush(messages);
             let role = object.get("role").and_then(Value::as_str).unwrap_or("user");
             let content = object
                 .get("content")
                 .map(convert_message_content)
                 .transpose()?
                 .unwrap_or_else(Vec::new);
-            Ok(Some(json!({"role": role, "content": content})))
+            messages.push(json!({"role": role, "content": content}));
         }
-        Some(other) => Err(format!("Unsupported Responses input item type: {other}")),
-        None => Err("Responses input item is missing role or type".to_string()),
+        Some(other) => return Err(format!("Unsupported Responses input item type: {other}")),
+        None => return Err("Responses input item is missing role or type".to_string()),
     }
+    Ok(())
 }
 
 fn convert_message_content(content: &Value) -> Result<Vec<Value>, String> {
