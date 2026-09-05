@@ -8,6 +8,7 @@ import {
   Heart,
   LifeBuoy,
   Link2,
+  MessagesSquare,
   Rocket,
   ScrollText,
   Share2,
@@ -19,6 +20,8 @@ import {
   FRIENDLY_LINKS,
   OFFICIAL_SITE_URL,
   OPEN_SOURCE_CREDITS,
+  QQ_GROUP_NAME,
+  QQ_GROUP_URL,
 } from "../components/about/catalog";
 import { AiSwitchLogo } from "../components/brand/AiSwitchLogo";
 import { appVersion } from "../lib/appVersion";
@@ -26,7 +29,7 @@ import { copyPlainText } from "../lib/copyToClipboard";
 import { useI18n, type TranslationKey } from "../lib/i18n";
 import { openExternal } from "../lib/openExternal";
 
-type LinkScope = "links" | "credits" | "friendly";
+type LinkScope = "links" | "credits" | "friendly" | "community";
 type CopyState = "idle" | "copied" | "failed";
 
 const LINK_ICONS: Partial<Record<TranslationKey, LucideIcon>> = {
@@ -170,6 +173,42 @@ export function AboutScreen() {
           })}
         </div>
         {openFailure("links", "px-4 pb-3")}
+      </div>
+
+      <div className="rounded-2xl border border-sky-200 bg-gradient-to-br from-sky-50 via-white to-white p-4 shadow-sm ring-1 ring-sky-200">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-sky-600 text-white shadow-sm">
+                <MessagesSquare aria-hidden="true" className="h-4 w-4" />
+              </span>
+              <h2 className="text-[15px] font-semibold text-stone-950">
+                {t("about.community.title")}
+              </h2>
+            </div>
+            <p className="mt-1.5 max-w-2xl text-[13px] leading-6 text-stone-600">
+              {t("about.community.subtitle")}
+            </p>
+            {/* The invite address stays on screen: `about.openFailed` tells the
+                user to copy it into a browser, which needs it to be selectable. */}
+            <p className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[11px] text-stone-500">
+              <span className="font-semibold text-stone-600">
+                {t("about.community.group", { name: QQ_GROUP_NAME })}
+              </span>
+              <span className="select-all break-all">{QQ_GROUP_URL}</span>
+            </p>
+          </div>
+          <button
+            className="inline-flex items-center gap-2 rounded-xl bg-stone-900 px-4 py-2.5 text-[13px] font-semibold text-white shadow-sm motion-control hover:bg-stone-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+            onClick={() => openLink(QQ_GROUP_URL, "community")}
+            title={QQ_GROUP_URL}
+            type="button"
+          >
+            <MessagesSquare aria-hidden="true" className="h-4 w-4" />
+            {t("about.community.join")}
+          </button>
+        </div>
+        {openFailure("community")}
       </div>
 
       <div className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 via-white to-emerald-50 p-4 shadow-sm ring-1 ring-amber-200">

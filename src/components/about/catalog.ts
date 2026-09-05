@@ -3,6 +3,14 @@ import type { TranslationKey } from "../../lib/i18n";
 export const OFFICIAL_SITE_URL = "https://ijry.github.io/ai-switch/";
 export const REPOSITORY_URL = "https://github.com/ijry/ai-switch";
 
+/**
+ * Official QQ group. The invite link is short-lived by QQ's own design, so the
+ * group name travels with it: once the link expires the user can still search
+ * for the group by name.
+ */
+export const QQ_GROUP_NAME = "AI Switch交流";
+export const QQ_GROUP_URL = "https://qm.qq.com/q/eLyRbXjRcI";
+
 export type AboutLink = {
   labelKey: TranslationKey;
   url: string;

@@ -2,7 +2,11 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { version as packageVersion } from "../package.json";
-import { OFFICIAL_SITE_URL } from "../src/components/about/catalog";
+import {
+  OFFICIAL_SITE_URL,
+  QQ_GROUP_NAME,
+  QQ_GROUP_URL,
+} from "../src/components/about/catalog";
 import { I18nProvider } from "../src/lib/i18n";
 import { openExternal } from "../src/lib/openExternal";
 import { AboutScreen } from "../src/screens/AboutScreen";
@@ -81,6 +85,31 @@ describe("AboutScreen", () => {
     await userEvent.click(screen.getByRole("button", { name: "打开uview-plus" }));
 
     expect(openExternal).toHaveBeenCalledWith("https://uview-plus.jiangruyi.com/");
+  });
+
+  it("opens the QQ group invite and keeps the group name and address visible", async () => {
+    renderAbout();
+
+    expect(screen.getByRole("heading", { name: "加入交流群" })).toBeInTheDocument();
+    // The invite link expires; the group name is what lets the user search for it.
+    expect(screen.getByText(`QQ 群「${QQ_GROUP_NAME}」`)).toBeInTheDocument();
+    expect(screen.getByText(QQ_GROUP_URL)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "加入 QQ 群聊" }));
+
+    expect(openExternal).toHaveBeenCalledWith(QQ_GROUP_URL);
+  });
+
+  it("explains a refused group invite instead of dropping the rejection", async () => {
+    vi.mocked(openExternal).mockRejectedValue(new Error("forbidden url"));
+    renderAbout();
+
+    await userEvent.click(screen.getByRole("button", { name: "加入 QQ 群聊" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "打不开链接，请复制地址到浏览器里打开。",
+    );
+    expect(screen.getByText(QQ_GROUP_URL)).toBeInTheDocument();
   });
 
   it("copies a share blurb that carries the website address", async () => {

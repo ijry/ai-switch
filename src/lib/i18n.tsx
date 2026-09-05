@@ -733,6 +733,11 @@ const en = {
   "about.linkIssues": "Report an issue",
   "about.openLink": "Open {name}",
   "about.openFailed": "Could not open the link. Copy the address into a browser instead.",
+  "about.community.title": "Join the community",
+  "about.community.subtitle":
+    "Bug reports, feature ideas, or a setup that will not cooperate — bring them to the QQ group and swap notes with us and other users.",
+  "about.community.group": "QQ group “{name}”",
+  "about.community.join": "Join the QQ group",
   "about.share.title": "Share AI Switch",
   "about.share.subtitle": "One click copies the blurb and the website address, ready to paste anywhere.",
   "about.share.message":
@@ -1476,6 +1481,11 @@ const zh = {
   "about.linkIssues": "问题反馈",
   "about.openLink": "打开{name}",
   "about.openFailed": "打不开链接，请复制地址到浏览器里打开。",
+  "about.community.title": "加入交流群",
+  "about.community.subtitle":
+    "遇到问题、想提功能建议，或者配置怎么都不对，都可以进群说一声，也能和其他用户互相支招。",
+  "about.community.group": "QQ 群「{name}」",
+  "about.community.join": "加入 QQ 群聊",
   "about.share.title": "分享本工具",
   "about.share.subtitle": "点一下就把文案和网址一起复制好，直接粘到群里或朋友圈。",
   "about.share.message":
