@@ -147,6 +147,64 @@ mod tests {
         );
     }
 
+    /// Codex replays its own transcript on every turn, and after the first
+    /// `apply_patch` that transcript contains item types no Anthropic client ever
+    /// sends. Rejecting one fails the whole request, so the relay looks dead
+    /// under the codex platform while the same base_url and key keep working
+    /// under the claude platform.
+    #[test]
+    fn converts_codex_only_input_items_instead_of_failing_the_turn() {
+        let body = serde_json::json!({
+            "model": "claude-sonnet-4-5",
+            "instructions": "You are a coding agent running in the Codex CLI.",
+            "input": [
+                {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "fix the typo"}]},
+                {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "gAAAA"},
+                {"type": "custom_tool_call", "id": "ctc_1", "call_id": "call_1",
+                 "name": "apply_patch", "input": "*** Begin Patch\n*** End Patch\n"},
+                {"type": "custom_tool_call_output", "call_id": "call_1", "output": "Success"},
+                {"type": "local_shell_call", "id": "lsc_1", "call_id": "call_2",
+                 "action": {"type": "exec", "command": ["ls"]}},
+                {"type": "local_shell_call_output", "call_id": "call_2", "output": "README.md"},
+                {"type": "input_text", "text": "and run the tests"}
+            ]
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &responses_request_to_anthropic(&serde_json::to_vec(&body).unwrap())
+                .expect("Codex transcript must convert"),
+        )
+        .unwrap();
+        let messages = converted["messages"].as_array().expect("messages");
+
+        // The freeform call keeps the `{"input": …}` spelling the tool was
+        // declared with, so the replayed turn agrees with its own schema.
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[1]["content"][0]["type"], "tool_use");
+        assert_eq!(messages[1]["content"][0]["name"], "apply_patch");
+        assert_eq!(messages[1]["content"][0]["id"], "call_1");
+        assert_eq!(
+            messages[1]["content"][0]["input"]["input"],
+            "*** Begin Patch\n*** End Patch\n"
+        );
+        assert_eq!(messages[2]["content"][0]["type"], "tool_result");
+        assert_eq!(messages[2]["content"][0]["tool_use_id"], "call_1");
+        assert_eq!(messages[2]["content"][0]["content"], "Success");
+
+        // `local_shell` is filtered out of the tool array, so replaying its call
+        // would be a tool_use Claude cannot match to any declared tool.
+        let rendered = serde_json::to_string(&converted).unwrap();
+        assert!(
+            !rendered.contains("call_2"),
+            "hosted-tool calls must be dropped, not forwarded: {rendered}"
+        );
+        assert_eq!(
+            messages.last().unwrap()["content"][0]["text"],
+            "and run the tests"
+        );
+    }
+
     #[test]
     fn converts_anthropic_response_to_responses_json() {
         let upstream = serde_json::json!({
@@ -665,14 +723,26 @@ fn convert_input(input: &Value) -> Result<Vec<Value>, String> {
         Value::Array(items) => items
             .iter()
             .filter(|item| !is_reasoning_input_item(item))
-            .map(convert_input_item)
+            .filter_map(|item| convert_input_item(item).transpose())
             .collect(),
         Value::Null => Ok(Vec::new()),
         _ => Err("Responses input must be a string or array".to_string()),
     }
 }
 
-fn convert_input_item(item: &Value) -> Result<Value, String> {
+/// One Anthropic message per Responses input item, or `None` for items that have
+/// no Anthropic equivalent and must be dropped rather than rejected.
+///
+/// The tail of this match is the part worth being careful with. Codex's own
+/// transcript carries item types no other client produces — `custom_tool_call`
+/// for freeform tools like `apply_patch`, `local_shell_call` for the sandboxed
+/// shell — and they appear from the second turn of any session that edited a
+/// file. Failing on an unknown type kills the whole request, so the account
+/// looks broken while the same relay works under the claude platform (which
+/// speaks `/v1/messages` and never reaches this converter). Mirrors
+/// `responses_chat::convert_input_item`, which has handled these since the Chat
+/// bridge shipped.
+fn convert_input_item(item: &Value) -> Result<Option<Value>, String> {
     let object = item
         .as_object()
         .ok_or_else(|| "Responses input items must be JSON objects".to_string())?;
@@ -686,7 +756,7 @@ fn convert_input_item(item: &Value) -> Result<Value, String> {
                 .unwrap_or("{}");
             let input = serde_json::from_str::<Value>(arguments)
                 .unwrap_or_else(|_| Value::String(arguments.to_string()));
-            Ok(json!({
+            Ok(Some(json!({
                 "role": "assistant",
                 "content": [{
                     "type": "tool_use",
@@ -694,7 +764,7 @@ fn convert_input_item(item: &Value) -> Result<Value, String> {
                     "name": name,
                     "input": input
                 }]
-            }))
+            })))
         }
         Some("function_call_output") => {
             let call_id = required_string(object, "call_id", "function_call_output")?;
@@ -703,14 +773,87 @@ fn convert_input_item(item: &Value) -> Result<Value, String> {
                 .map(stringify_content)
                 .transpose()?
                 .unwrap_or_default();
-            Ok(json!({
+            Ok(Some(json!({
                 "role": "user",
                 "content": [{
                     "type": "tool_result",
                     "tool_use_id": call_id,
                     "content": output
                 }]
-            }))
+            })))
+        }
+        // A freeform tool's whole payload is one string. `{"input": "…"}` is the
+        // shape `custom_tool_to_function_tool` advertises to the model, so a call
+        // replayed from history has to be spelled the same way or the next turn
+        // contradicts the schema the tool was declared with.
+        Some(item_type @ ("custom_tool_call" | "tool_search_call")) => {
+            let call_id = object
+                .get("call_id")
+                .or_else(|| object.get("id"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|call_id| !call_id.is_empty())
+                .ok_or_else(|| format!("Responses {item_type} is missing call_id"))?;
+            let (name, input) = if item_type == "tool_search_call" {
+                (
+                    "tool_search",
+                    object
+                        .get("arguments")
+                        .cloned()
+                        .unwrap_or_else(|| json!({})),
+                )
+            } else {
+                (
+                    required_string(object, "name", "custom_tool_call")?,
+                    json!({"input": object.get("input").cloned().unwrap_or_else(|| json!(""))}),
+                )
+            };
+            Ok(Some(json!({
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": call_id,
+                    "name": name,
+                    "input": input
+                }]
+            })))
+        }
+        Some(item_type @ ("custom_tool_call_output" | "tool_search_output")) => {
+            let call_id = required_string(object, "call_id", item_type)?;
+            let output = object
+                .get("output")
+                .or_else(|| object.get("result"))
+                .map(stringify_content)
+                .transpose()?
+                .unwrap_or_default();
+            Ok(Some(json!({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": call_id,
+                    "content": output
+                }]
+            })))
+        }
+        // Tools the upstream never saw declared (they are filtered out of the
+        // tool array by `is_responses_builtin_tool_type`), so replaying their
+        // calls would be a tool_use Claude cannot match to a tool.
+        Some(
+            "web_search_call"
+            | "web_search_call_output"
+            | "file_search_call"
+            | "file_search_call_output"
+            | "computer_call"
+            | "computer_call_output"
+            | "local_shell_call"
+            | "local_shell_call_output",
+        ) => Ok(None),
+        // A bare content part used as an input item, rather than wrapped in a
+        // message. Codex sends this shape for pasted images.
+        Some("input_text" | "input_image" | "input_file" | "input_audio") => {
+            let role = object.get("role").and_then(Value::as_str).unwrap_or("user");
+            let content = convert_message_content(&Value::Array(vec![item.clone()]))?;
+            Ok(Some(json!({"role": role, "content": content})))
         }
         Some("message") | None if object.contains_key("role") => {
             let role = object.get("role").and_then(Value::as_str).unwrap_or("user");
@@ -719,7 +862,7 @@ fn convert_input_item(item: &Value) -> Result<Value, String> {
                 .map(convert_message_content)
                 .transpose()?
                 .unwrap_or_else(Vec::new);
-            Ok(json!({"role": role, "content": content}))
+            Ok(Some(json!({"role": role, "content": content})))
         }
         Some(other) => Err(format!("Unsupported Responses input item type: {other}")),
         None => Err("Responses input item is missing role or type".to_string()),

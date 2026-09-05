@@ -247,6 +247,65 @@ mod tests {
     }
 
     #[test]
+    fn codex_only_item_types_convert_without_failing_the_request() {
+        let body = serde_json::json!({
+            "model": "gemini-2.5-flash",
+            "instructions": "You are a coding agent.",
+            "input": [
+                {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "fix the typo"}]},
+                {"type": "custom_tool_call", "id": "ctc_1", "call_id": "call_1",
+                 "name": "apply_patch", "input": "*** Begin Patch\n*** End Patch\n"},
+                {"type": "custom_tool_call_output", "call_id": "call_1", "output": "Success"},
+                {"type": "local_shell_call", "id": "lsc_1", "call_id": "call_2",
+                 "action": {"type": "exec", "command": ["ls"]}},
+                {"type": "local_shell_call_output", "call_id": "call_2", "output": "ok"},
+                {"type": "function_call", "id": "fc_1", "call_id": "call_3",
+                 "name": "shell", "arguments": "{\"command\":[\"ls\"]}"},
+                {"type": "function_call_output", "call_id": "call_3", "output": "ok"},
+                {"type": "input_text", "text": "this too"}
+            ],
+            "tools": [
+                {"type": "function", "name": "shell", "description": "run a command",
+                 "parameters": {"type": "object", "properties": {"command": {"type": "array"}}}},
+                {"type": "custom", "name": "apply_patch", "description": "edit files",
+                 "format": {"type": "grammar", "syntax": "lark", "definition": "start: TEXT"}}
+            ],
+            "max_output_tokens": 16
+        });
+        let gemini_body: Value = serde_json::from_slice(
+            &responses_request_to_gemini(&serde_json::to_vec(&body).unwrap())
+                .expect("codex items convert cleanly"),
+        )
+        .unwrap();
+        let contents = gemini_body["contents"].as_array().expect("contents array");
+
+        // Both tool call/result pairs survived, `local_shell_*` was dropped rather
+        // than failing the request, and the bare content part became its own turn.
+        assert_eq!(
+            contents.len(),
+            6,
+            "user → apply_patch pair → shell pair → bare text: {gemini_body}"
+        );
+        assert_eq!(
+            contents[1]["parts"][0]["functionCall"]["name"],
+            "apply_patch"
+        );
+        assert_eq!(
+            contents[1]["parts"][0]["functionCall"]["args"]["input"],
+            "*** Begin Patch\n*** End Patch\n",
+            "the freeform payload keeps the key its schema declares: {gemini_body}"
+        );
+        assert_eq!(
+            contents[2]["parts"][0]["functionResponse"]["name"],
+            "apply_patch"
+        );
+        assert_eq!(contents[3]["parts"][0]["functionCall"]["name"], "shell");
+        assert_eq!(contents[4]["parts"][0]["functionResponse"]["name"], "shell");
+        assert_eq!(contents[5]["parts"][0]["text"], "this too");
+    }
+
+    #[test]
     fn converts_gemini_sse_to_responses_events() {
         let body = concat!(
             "data: {\"responseId\":\"resp_1\",\"model\":\"gemini-2.5-flash\",\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hel\"}]},\"finishReason\":null}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":1,\"totalTokenCount\":4}}\n\n",
@@ -493,6 +552,46 @@ fn convert_input(input: &Value) -> Result<Value, String> {
                     Some("function_call_output") => {
                         contents.push(convert_function_result(object, &state)?);
                     }
+                    // Codex-only item types. They appear from the second turn of
+                    // any session that used a freeform tool (`apply_patch`) or the
+                    // sandboxed shell, and rejecting one fails the whole request —
+                    // so the account looks broken while the same relay works from a
+                    // client that speaks this upstream's dialect natively. Mirrors
+                    // `responses_chat::convert_input_item`.
+                    Some("custom_tool_call") | Some("tool_search_call") => {
+                        contents.push(convert_function_call(
+                            &codex_tool_call_as_function_call(object),
+                            &mut state,
+                        )?);
+                    }
+                    Some("custom_tool_call_output") | Some("tool_search_output") => {
+                        contents.push(convert_function_result(
+                            &codex_tool_output_as_function_output(object),
+                            &state,
+                        )?);
+                    }
+                    // Hosted tools are filtered out of the declaration Gemini
+                    // receives, so replaying their calls would name a function it
+                    // was never told about.
+                    Some(
+                        "web_search_call"
+                        | "web_search_call_output"
+                        | "file_search_call"
+                        | "file_search_call_output"
+                        | "computer_call"
+                        | "computer_call_output"
+                        | "local_shell_call"
+                        | "local_shell_call_output",
+                    ) => {}
+                    // A bare content part used as an input item rather than
+                    // wrapped in a message.
+                    Some("input_text" | "input_image" | "input_file" | "input_audio") => {
+                        let role = object.get("role").and_then(Value::as_str).unwrap_or("user");
+                        contents.push(json!({
+                            "role": if role == "assistant" { "model" } else { "user" },
+                            "parts": convert_message_content(&Value::Array(vec![item.clone()]))?
+                        }));
+                    }
                     Some(other) => {
                         return Err(format!("Unsupported Responses input item type: {other}"));
                     }
@@ -504,6 +603,47 @@ fn convert_input(input: &Value) -> Result<Value, String> {
         Value::Null => Ok(Value::Array(Vec::new())),
         _ => Err("Responses input must be a string or array".to_string()),
     }
+}
+
+/// Restate a Codex freeform / tool-search call in `function_call` terms.
+///
+/// A freeform call's whole payload is the single `input` string, and
+/// `custom_tool_to_function_tool` declares that as `{"input": string}` — so the
+/// replayed call has to use the same key or it contradicts the schema the tool was
+/// declared with. `tool_search_call` carries no name of its own.
+fn codex_tool_call_as_function_call(object: &Map<String, Value>) -> Map<String, Value> {
+    let mut normalized = object.clone();
+    if object.get("type").and_then(Value::as_str) == Some("tool_search_call") {
+        normalized.insert("name".to_string(), json!("tool_search"));
+    } else {
+        normalized.insert(
+            "arguments".to_string(),
+            json!({"input": object.get("input").cloned().unwrap_or_else(|| json!(""))}),
+        );
+    }
+    if !normalized.contains_key("call_id") {
+        if let Some(id) = object.get("id").cloned() {
+            normalized.insert("call_id".to_string(), id);
+        }
+    }
+    normalized
+}
+
+/// The matching output item, so `convert_function_result` can resolve the name
+/// from the call it recorded.
+fn codex_tool_output_as_function_output(object: &Map<String, Value>) -> Map<String, Value> {
+    let mut normalized = object.clone();
+    if !normalized.contains_key("output") {
+        if let Some(result) = object.get("result").cloned() {
+            normalized.insert("output".to_string(), result);
+        }
+    }
+    if object.get("type").and_then(Value::as_str) == Some("tool_search_output")
+        && !normalized.contains_key("name")
+    {
+        normalized.insert("name".to_string(), json!("tool_search"));
+    }
+    normalized
 }
 
 fn convert_message(object: &Map<String, Value>) -> Result<Value, String> {

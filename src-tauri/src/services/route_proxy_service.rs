@@ -3419,9 +3419,18 @@ fn build_api_upstream_request(
     let mappings = parse_model_capability_value(config).mappings;
     let upstream_path = normalize_api_upstream_path(interface_format, path);
     let mut rewritten_body = apply_model_mappings(body, &mappings);
-    // API relays (e.g. Xiaomi) commonly lack Codex custom-tool support on Responses.
+    // Codex's `tools[].type = "custom"` and the `custom_tool_call` items that
+    // follow it exist only in the Responses schema, so every bridge that leaves
+    // that schema needs them spelled as plain function tools — a `custom` tool
+    // otherwise reaches the upstream with an empty `input_schema` and the model
+    // has no way to pass the patch. API relays (e.g. Xiaomi) commonly lack
+    // custom-tool support on Responses itself, which is what the account-level
+    // `responses_custom_tool_compat` switch covers.
     let bridge_requires_custom_tool_compat = platform == PlatformId::Codex
-        && dialect == ApiDialect::OpenAi
+        && matches!(
+            dialect,
+            ApiDialect::OpenAi | ApiDialect::Anthropic | ApiDialect::Gemini
+        )
         && is_responses_path(&upstream_path);
     if (responses_custom_tool_compat_enabled(config) || bridge_requires_custom_tool_compat)
         && should_rewrite_custom_tools_for_api(interface_format, &upstream_path)
@@ -3436,7 +3445,12 @@ fn build_api_upstream_request(
     // whole function_call) onto tool-call turns before the Responses→Chat
     // conversion. Chat reasoning providers (DeepSeek/MiMo) otherwise lose the
     // model's plan across tool calls and stall. See [`CodexReasoningCache`].
-    if bridge_requires_custom_tool_compat {
+    // Kept to the Chat bridge: `reasoning_content` is a Chat-only field, and the
+    // Anthropic and Gemini converters drop reasoning items outright.
+    let chat_bridge_restores_reasoning = platform == PlatformId::Codex
+        && dialect == ApiDialect::OpenAi
+        && is_responses_path(&upstream_path);
+    if chat_bridge_restores_reasoning {
         if let Some(cache) = codex_history {
             if let Ok(mut value) = serde_json::from_slice::<Value>(&rewritten_body) {
                 if cache.enrich_responses_request(&mut value) > 0 {
@@ -3457,8 +3471,7 @@ fn build_api_upstream_request(
     } = prepare_protocol_bridge_request(platform, dialect, &upstream_path, &rewritten_body)?;
     // Only now is the body in its final upstream schema — bridging may have
     // converted a Responses request into `messages` or `contents`, so a reminder
-    // written any earlier would land in the wrong shape. Everything below this
-    // point touches headers and the URL only.
+    // written any earlier would land in the wrong shape.
     let mut rewritten_body = rewritten_body;
     if turn_reminder == TurnReminderMode::Apply {
         if let Some(reminder) = turn_reminder_text(config) {
@@ -3466,6 +3479,15 @@ fn build_api_upstream_request(
                 turn_reminder::append_turn_reminder(dialect, &rewritten_body, &reminder);
         }
     }
+    // A bridged body carries the *client's* system prompt, and no client except
+    // Claude Code sends Claude Code's. Relays gating on the Claude Code signature
+    // read it out of the body, so it has to be patched in here rather than left
+    // to the header spoofing above. Passthrough is deliberately untouched: a real
+    // Claude Code request already carries both fields.
+    if dialect == ApiDialect::Anthropic && bridge_kind.is_some() {
+        rewritten_body = apply_claude_code_body_identity(&rewritten_body, &credential.id);
+    }
+    // Everything below this point touches headers and the URL only.
     let merged_query = merge_query_parts(query, upstream_query.as_deref());
     let mut target_url = build_target_url(base_url, &upstream_path, merged_query.as_deref());
 
@@ -4847,6 +4869,92 @@ fn apply_claude_code_identity(headers: &mut HeaderMap) {
             continue;
         };
         headers.insert(HeaderName::from_static(name), value);
+    }
+}
+
+/// Make a *bridged* Anthropic request look like Claude Code in the body, not just
+/// in the headers.
+///
+/// Relays running sub2api's `claude_code_only` group gate score the request's
+/// `system` against [`client_identity::CLAUDE_CODE_SYSTEM_PROMPT`] and parse
+/// `metadata.user_id`; header spoofing alone does not pass. Claude Code sends
+/// both, so the passthrough path needs nothing — but a Codex or chat-only client
+/// sends its own instructions and no metadata at all, which is why such a relay
+/// answers `this group only allows Claude Code clients` for every request from
+/// the codex platform while the same account works from the claude platform.
+///
+/// The connectivity probe has seeded these two fields since the gate was found
+/// (see `route_model_test_service::codex_probe_body`), which is what makes the
+/// failure so confusing: the account tests green and then fails on real traffic.
+///
+/// Claude Code splits its own prompt into a bare signature block followed by the
+/// real instructions, so the signature goes in as its own leading block rather
+/// than being merged into the client's text. That matches the shape the gate
+/// scores and leaves the client's own instructions intact and dominant.
+fn apply_claude_code_body_identity(body: &[u8], credential_id: &str) -> Vec<u8> {
+    let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
+        return body.to_vec();
+    };
+    let Some(object) = value.as_object_mut() else {
+        return body.to_vec();
+    };
+    prepend_claude_code_system_signature(object);
+    ensure_claude_code_metadata_user_id(object, credential_id);
+    serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec())
+}
+
+/// Put Claude Code's signature block at the head of `system`, unless the client
+/// already sent it.
+fn prepend_claude_code_system_signature(object: &mut serde_json::Map<String, Value>) {
+    let signature = json!({"type": "text", "text": client_identity::CLAUDE_CODE_SYSTEM_PROMPT});
+    let mut blocks = match object.remove("system") {
+        // Anthropic accepts a plain string too; promoting it to a block array is
+        // what lets the signature sit in front of it.
+        Some(Value::String(text)) => vec![json!({"type": "text", "text": text})],
+        Some(Value::Array(blocks)) => blocks,
+        _ => Vec::new(),
+    };
+    let already_signed = blocks
+        .first()
+        .and_then(|block| block.get("text"))
+        .and_then(Value::as_str)
+        .is_some_and(|text| {
+            text.trim_start()
+                .starts_with(client_identity::CLAUDE_CODE_SYSTEM_PROMPT)
+        });
+    if !already_signed {
+        blocks.insert(0, signature);
+    }
+    object.insert("system".to_string(), Value::Array(blocks));
+}
+
+/// Fill `metadata.user_id` with a gate-parseable value, keeping whatever the
+/// client sent.
+///
+/// The device id is derived from the account id so it stays put across requests,
+/// while the session id is fresh per request — the gate only parses the shape,
+/// and no client-side session identifier survives the bridge to key it on.
+fn ensure_claude_code_metadata_user_id(
+    object: &mut serde_json::Map<String, Value>,
+    credential_id: &str,
+) {
+    let has_user_id = object
+        .get("metadata")
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get("user_id"))
+        .and_then(Value::as_str)
+        .is_some_and(|user_id| !user_id.trim().is_empty());
+    if has_user_id {
+        return;
+    }
+    let user_id = json!(client_identity::claude_code_metadata_user_id(credential_id));
+    match object.get_mut("metadata").and_then(Value::as_object_mut) {
+        Some(metadata) => {
+            metadata.insert("user_id".to_string(), user_id);
+        }
+        None => {
+            object.insert("metadata".to_string(), json!({"user_id": user_id}));
+        }
     }
 }
 
@@ -8408,6 +8516,77 @@ mod tests {
         assert!(headers.contains_key("x-stainless-os"));
     }
 
+    /// Relays running sub2api's `claude_code_only` group read the Claude Code
+    /// signature out of the *body*, not just the headers. Claude Code sends it;
+    /// Codex sends its own instructions and no metadata at all, so a bridged
+    /// request has to be signed here or the relay answers `this group only allows
+    /// Claude Code clients` for every turn while the claude platform works. The
+    /// connectivity probe has seeded both fields since the gate was found, which
+    /// is why such an account tests green and then fails on real traffic.
+    #[test]
+    fn bridged_anthropic_request_carries_the_claude_code_body_signature() {
+        let credential = api_credential("anthropic-signature", "anthropic");
+        let (_, _, rewritten) = build_upstream_request(
+            &credential,
+            "codex",
+            "/v1/responses",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5","instructions":"You are a coding agent running in the Codex CLI.","input":"hi"}"#,
+        )
+        .expect("bridged request");
+        let value: Value = serde_json::from_slice(&rewritten).expect("anthropic json");
+
+        // Claude Code's own shape: the bare signature as its own leading block,
+        // the real instructions after — not one merged blob.
+        assert_eq!(
+            value.pointer("/system/0/text"),
+            Some(&json!(client_identity::CLAUDE_CODE_SYSTEM_PROMPT)),
+            "gated relays score the leading system block: {value}"
+        );
+        assert_eq!(
+            value.pointer("/system/1/text"),
+            Some(&json!("You are a coding agent running in the Codex CLI.")),
+            "the client's own instructions must survive: {value}"
+        );
+
+        let user_id = value
+            .pointer("/metadata/user_id")
+            .and_then(Value::as_str)
+            .expect("metadata.user_id");
+        let parsed: Value = serde_json::from_str(user_id).expect("the gate parses user_id as JSON");
+        assert_eq!(
+            parsed["device_id"].as_str().map(str::len),
+            Some(64),
+            "the gate's regex wants 64 hex chars: {user_id}"
+        );
+    }
+
+    /// A real Claude Code request already carries both fields, and its system
+    /// prompt is the thing being scored — rewriting it would be both pointless and
+    /// a way to corrupt a working request.
+    #[test]
+    fn claude_passthrough_body_is_forwarded_untouched() {
+        let credential = api_credential("anthropic-passthrough", "anthropic");
+        let body = br#"{"model":"claude-sonnet-4-5","system":[{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."}],"messages":[{"role":"user","content":"hi"}],"max_tokens":16}"#;
+
+        let (_, _, forwarded) = build_upstream_request(
+            &credential,
+            "claude",
+            "/v1/messages",
+            None,
+            HeaderMap::new(),
+            body,
+        )
+        .expect("passthrough request");
+
+        assert_eq!(
+            serde_json::from_slice::<Value>(&forwarded).unwrap(),
+            serde_json::from_slice::<Value>(body).unwrap(),
+            "an Anthropic client's body is already what the gate wants"
+        );
+    }
+
     #[test]
     fn a_single_stainless_header_is_enough_to_count_as_an_sdk_identity() {
         let mut headers = HeaderMap::new();
@@ -9020,6 +9199,106 @@ mod tests {
         assert_eq!(
             assistant.pointer("/tool_calls/0/function/arguments"),
             Some(&json!(r#"{"input":"*** Begin Patch"}"#))
+        );
+    }
+
+    /// The same custom-tool rewrite the chat bridge gets, for an Anthropic relay.
+    /// Without it `apply_patch` reaches Claude declared as `input_schema: {}` —
+    /// the model has nowhere to put the patch — and the `custom_tool_call` items
+    /// Codex replays next turn fail the request outright.
+    #[test]
+    fn build_upstream_request_bridges_custom_responses_tools_to_anthropic_tools() {
+        let credential = api_credential("anthropic-custom-tool", "anthropic");
+        let body = br#"{
+            "model":"gpt-5",
+            "input":[{
+                "type":"custom_tool_call",
+                "call_id":"call_1",
+                "name":"apply_patch",
+                "input":"*** Begin Patch"
+            }],
+            "tools":[{
+                "type":"custom",
+                "name":"apply_patch",
+                "description":"Apply a patch"
+            }]
+        }"#;
+        let (url, _, rewritten) = build_upstream_request(
+            &credential,
+            "codex",
+            "/v1/responses",
+            None,
+            HeaderMap::new(),
+            body,
+        )
+        .expect("bridged custom request");
+        let value: Value = serde_json::from_slice(&rewritten).expect("anthropic json");
+
+        assert_eq!(url, "https://api.example.com/v1/messages?beta=true");
+        assert_eq!(value.pointer("/tools/0/name"), Some(&json!("apply_patch")));
+        assert_eq!(
+            value.pointer("/tools/0/input_schema/properties/input/type"),
+            Some(&json!("string")),
+            "the freeform payload needs a declared slot: {value}"
+        );
+        assert_eq!(
+            value.pointer("/messages/0/content/0/type"),
+            Some(&json!("tool_use"))
+        );
+        assert_eq!(
+            value.pointer("/messages/0/content/0/input/input"),
+            Some(&json!("*** Begin Patch"))
+        );
+    }
+
+    /// The return leg of the same round trip. Codex declared `apply_patch` as a
+    /// freeform tool, so it only accepts the answer back as `custom_tool_call`
+    /// with the patch as a bare string — a `function_call` carrying
+    /// `{"input": "…"}` is a tool it has no handler for.
+    #[test]
+    fn anthropic_tool_use_comes_back_to_codex_as_a_custom_tool_call() {
+        let client_body = br#"{
+            "model":"gpt-5",
+            "input":"edit the file",
+            "tools":[{"type":"custom","name":"apply_patch","description":"Apply a patch"}]
+        }"#;
+        let custom_tool_names = collect_custom_tool_names(client_body);
+        assert!(custom_tool_names.contains("apply_patch"));
+
+        let upstream = serde_json::json!({
+            "id": "msg_01",
+            "model": "claude-sonnet-4-5",
+            "stop_reason": "tool_use",
+            "content": [{
+                "type": "tool_use",
+                "id": "toolu_01",
+                "name": "apply_patch",
+                "input": {"input": "*** Begin Patch\n*** End Patch\n"}
+            }]
+        });
+        let transformed = transform_protocol_bridge_response(
+            ProtocolBridgeKind::ResponsesToAnthropic,
+            200,
+            Some("application/json"),
+            &serde_json::to_vec(&upstream).unwrap(),
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("bridged response");
+        let restored =
+            restore_custom_tools_in_responses_payload(&transformed.body, &custom_tool_names);
+        let value: Value = serde_json::from_slice(&restored).expect("responses json");
+
+        assert_eq!(
+            value.pointer("/output/0/type"),
+            Some(&json!("custom_tool_call")),
+            "Codex must see the freeform item type it declared: {value}"
+        );
+        assert_eq!(value.pointer("/output/0/name"), Some(&json!("apply_patch")));
+        assert_eq!(value.pointer("/output/0/call_id"), Some(&json!("toolu_01")));
+        assert_eq!(
+            value.pointer("/output/0/input"),
+            Some(&json!("*** Begin Patch\n*** End Patch\n")),
+            "the patch must arrive unwrapped: {value}"
         );
     }
 
