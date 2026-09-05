@@ -954,6 +954,88 @@ describe("AccountsScreen", () => {
     );
   });
 
+  it("edits the route priority through the P(N) prefix without opening the drawer", async () => {
+    renderScreen();
+
+    await screen.findByText("Team Account");
+    await userEvent.click(screen.getByTestId("credential-priority-cred-official-1"));
+
+    const dialog = await screen.findByRole("dialog", { name: "路由优先级" });
+    expect(within(dialog).getByText("Team Account")).toBeInTheDocument();
+    // 抽屉没被打开：快捷编辑只带这一个字段。
+    expect(screen.queryByLabelText("编辑账号名称")).not.toBeInTheDocument();
+
+    const select = within(dialog).getByLabelText("快捷编辑路由优先级") as HTMLSelectElement;
+    expect(select.value).toBe("3");
+    await userEvent.selectOptions(select, "1");
+    await userEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const [id, payload] = vi.mocked(updateRouteCredential).mock.calls[0];
+    expect(id).toBe("cred-official-1");
+    expect(payload.route_priority).toBe(1);
+    // 其余字段照抄，免得快捷编辑顺手清空了账号的其他配置。
+    expect(payload).toMatchObject({
+      display_name: "Team Account",
+      email: "team@example.com",
+      status: "ok",
+      max_concurrency: 1,
+      secret_payload_json: credentialsFixture[0].secret_payload_json,
+      config_json: credentialsFixture[0].config_json,
+      preview_json: credentialsFixture[0].preview_json,
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "路由优先级" })).not.toBeInTheDocument(),
+    );
+  });
+
+  it("edits the max concurrency through the live counter and rejects a value below 1", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      { ...credentialsFixture[0], active_request_count: 1, max_concurrency: 2 },
+    ]);
+    renderScreen();
+
+    await screen.findByText("Team Account");
+    await userEvent.click(screen.getByTestId("credential-activity-cred-official-1"));
+
+    const dialog = await screen.findByRole("dialog", { name: "最大并发数" });
+    const field = within(dialog).getByLabelText("快捷编辑最大并发数") as HTMLInputElement;
+    expect(field.value).toBe("2");
+
+    // 校验在前端就拦下来，不白跑一次 IPC。
+    fireEvent.change(field, { target: { value: "0" } });
+    await userEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    expect(await screen.findByText("最大并发数必须是大于等于 1 的整数")).toBeInTheDocument();
+    expect(updateRouteCredential).not.toHaveBeenCalled();
+
+    fireEvent.change(field, { target: { value: "5" } });
+    await userEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const [id, payload] = vi.mocked(updateRouteCredential).mock.calls[0];
+    expect(id).toBe("cred-official-1");
+    expect(payload.max_concurrency).toBe(5);
+    expect(payload.route_priority).toBe(3);
+  });
+
+  it("keeps the quick edit open and shows why when saving the priority fails", async () => {
+    vi.mocked(updateRouteCredential).mockRejectedValueOnce(new Error("优先级保存失败"));
+    renderScreen();
+
+    await screen.findByText("Team Account");
+    await userEvent.click(screen.getByTestId("credential-priority-cred-api-1"));
+
+    const dialog = await screen.findByRole("dialog", { name: "路由优先级" });
+    await userEvent.selectOptions(
+      within(dialog).getByLabelText("快捷编辑路由优先级"),
+      "5",
+    );
+    await userEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+
+    expect(await screen.findByText("优先级保存失败")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "路由优先级" })).toBeInTheDocument();
+  });
+
   it("refreshes account and pool caches after a route credential status event", async () => {
     renderScreen();
 

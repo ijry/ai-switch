@@ -60,6 +60,7 @@ import { FormTabs, type FormTab } from "../components/accounts/FormTabs";
 import { RouteCredentialExportDialog } from "../components/accounts/RouteCredentialExportDialog";
 import { CopyRouteCredentialDialog } from "../components/accounts/CopyRouteCredentialDialog";
 import { UsageOverviewPanel } from "../components/accounts/UsageOverviewPanel";
+import { QuickEditDialog } from "../components/accounts/QuickEditDialog";
 import { neighborsForDrop } from "../lib/accountReorder";
 import {
   loadAccountListLayout,
@@ -2763,6 +2764,12 @@ export function AccountsScreen({
   const [clientConfigDraft, setClientConfigDraft] = useState("");
   const [clientConfigError, setClientConfigError] = useState<string | null>(null);
   const [routePoolFeedback, setRoutePoolFeedback] = useState<RoutePoolFeedback>(null);
+  const [quickEditPriorityCredential, setQuickEditPriorityCredential] = useState<RouteCredential | null>(null);
+  const [quickEditPriorityValue, setQuickEditPriorityValue] = useState("3");
+  const [quickEditPriorityError, setQuickEditPriorityError] = useState<string | null>(null);
+  const [quickEditConcurrencyCredential, setQuickEditConcurrencyCredential] = useState<RouteCredential | null>(null);
+  const [quickEditConcurrencyValue, setQuickEditConcurrencyValue] = useState("");
+  const [quickEditConcurrencyError, setQuickEditConcurrencyError] = useState<string | null>(null);
   const modelTestStorageKey = modelTestAccount?.id ?? poolModelTestKey(activePlatform);
   const routeTestModel = modelTestModels[modelTestStorageKey]?.model ?? "";
   const statsOpen = accountView === "stats";
@@ -4360,6 +4367,93 @@ export function AccountsScreen({
       await invalidateAccountData();
     },
   });
+  // 快捷编辑只动一个字段，其余照抄账号当前值。secret_payload_json 可能是脱敏
+  // 后的掩码，后端在 update 里会自己换回真 key，所以原样回传是安全的。
+  const quickEditPriorityMutation = useMutation({
+    mutationFn: ({ credential, priority }: { credential: RouteCredential; priority: number }) =>
+      updateRouteCredential(credential.id, {
+        display_name: credential.display_name,
+        email: credential.email ?? null,
+        status: credential.status,
+        route_priority: priority,
+        max_concurrency: credential.max_concurrency,
+        secret_payload_json: credential.secret_payload_json,
+        config_json: credential.config_json,
+        preview_json: credential.preview_json,
+      }),
+    onSuccess: async (updated) => {
+      setQuickEditPriorityCredential(null);
+      setQuickEditPriorityError(null);
+      mergeCredentialsIntoCache([updated]);
+      await invalidateAccountData();
+    },
+    onError: (error) => {
+      setQuickEditPriorityError(formatApiError(error, "保存路由优先级失败。"));
+    },
+  });
+  const quickEditConcurrencyMutation = useMutation({
+    mutationFn: ({ credential, concurrency }: { credential: RouteCredential; concurrency: number }) =>
+      updateRouteCredential(credential.id, {
+        display_name: credential.display_name,
+        email: credential.email ?? null,
+        status: credential.status,
+        route_priority: credential.route_priority,
+        max_concurrency: concurrency,
+        secret_payload_json: credential.secret_payload_json,
+        config_json: credential.config_json,
+        preview_json: credential.preview_json,
+      }),
+    onSuccess: async (updated) => {
+      setQuickEditConcurrencyCredential(null);
+      setQuickEditConcurrencyError(null);
+      mergeCredentialsIntoCache([updated]);
+      await invalidateAccountData();
+    },
+    onError: (error) => {
+      setQuickEditConcurrencyError(formatApiError(error, "保存最大并发数失败。"));
+    },
+  });
+  // 列表里的 P(N) 和并发计数原本都是只读展示，改一个数字得开整个编辑抽屉。这两个
+  // 入口把它们变成可点的：只带一个字段，存完就关。
+  const openQuickEditPriority = (credential: RouteCredential) => {
+    quickEditPriorityMutation.reset();
+    setQuickEditPriorityError(null);
+    setQuickEditPriorityValue(String(credential.route_priority));
+    setQuickEditPriorityCredential(credential);
+  };
+  const openQuickEditConcurrency = (credential: RouteCredential) => {
+    quickEditConcurrencyMutation.reset();
+    setQuickEditConcurrencyError(null);
+    setQuickEditConcurrencyValue(String(credential.max_concurrency));
+    setQuickEditConcurrencyCredential(credential);
+  };
+  const submitQuickEditPriority = () => {
+    if (!quickEditPriorityCredential) {
+      return;
+    }
+    const priority = Number(quickEditPriorityValue);
+    if (!Number.isInteger(priority) || priority < 1 || priority > 5) {
+      setQuickEditPriorityError("路由优先级必须是 1-5 的整数");
+      return;
+    }
+    setQuickEditPriorityError(null);
+    quickEditPriorityMutation.mutate({ credential: quickEditPriorityCredential, priority });
+  };
+  const submitQuickEditConcurrency = () => {
+    if (!quickEditConcurrencyCredential) {
+      return;
+    }
+    const concurrency = Number(quickEditConcurrencyValue);
+    if (!Number.isInteger(concurrency) || concurrency < 1) {
+      setQuickEditConcurrencyError("最大并发数必须是大于等于 1 的整数");
+      return;
+    }
+    setQuickEditConcurrencyError(null);
+    quickEditConcurrencyMutation.mutate({
+      credential: quickEditConcurrencyCredential,
+      concurrency,
+    });
+  };
   const modelStatusMutation = useMutation({
     mutationFn: ({
       credentialId,
@@ -6251,7 +6345,23 @@ export function AccountsScreen({
                           }`}
                           title={`P${credential.route_priority}-${credential.display_name}`}
                         >
-                          <span className="text-stone-500">{`P${credential.route_priority}-`}</span>
+                          {/* The prefix doubles as the 路由优先级 quick edit. Chrome
+                              cancelled down to a colour shift and an underline on
+                              hover: the global button lift would make a number
+                              sitting mid-sentence jump. Focus is a fill rather
+                              than a ring — the enclosing `truncate` box clips
+                              anything drawn outside the text, and a clipped ring
+                              is no focus indicator at all. */}
+                          <button
+                            aria-label={`快捷编辑 ${credential.display_name} 的路由优先级，当前 P${credential.route_priority}`}
+                            className="text-stone-500 shadow-none motion-control hover:translate-y-0 hover:text-blue-700 hover:underline focus:outline-none focus-visible:bg-blue-100 focus-visible:text-blue-800 focus-visible:underline active:translate-y-0 active:scale-100"
+                            data-testid={`credential-priority-${credential.id}`}
+                            onClick={() => openQuickEditPriority(credential)}
+                            title="点击修改路由优先级"
+                            type="button"
+                          >
+                            {`P${credential.route_priority}-`}
+                          </button>
                           <span>{credential.display_name}</span>
                         </p>
                         {baseUrlLink && (
@@ -6276,16 +6386,23 @@ export function AccountsScreen({
                   // after the balance, where a number that changes with every request
                   // is not shoving the status badges around. A card is too narrow for
                   // that, so it sends them to the footer instead.
+                  //
+                  // The counter is also the 最大并发数 quick edit. `aria-label` stays
+                  // the reading itself so the live announcement is unchanged; `title`
+                  // carries the "click me" as the accessible description.
                   const concurrencyBadge =
                     (credential.active_request_count ?? 0) > 0 ? (
-                      <span
+                      <button
                         aria-label={`正在处理请求，当前 ${credential.active_request_count}/${credential.max_concurrency}`}
-                        className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700"
+                        className="inline-flex items-center gap-1 px-1 text-[10px] font-semibold text-emerald-700 motion-control hover:translate-y-0 hover:bg-emerald-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 active:translate-y-0 active:scale-100"
                         data-testid={`credential-activity-${credential.id}`}
+                        onClick={() => openQuickEditConcurrency(credential)}
+                        title="点击修改最大并发数"
+                        type="button"
                       >
                         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
                         {credential.active_request_count}/{credential.max_concurrency}
-                      </span>
+                      </button>
                     ) : null;
                   const cooldownBadge =
                     cooldownState?.active && retryLabel ? (
@@ -7360,6 +7477,76 @@ export function AccountsScreen({
           }}
           sourcePlatform={activePlatform}
         />
+      ) : null}
+
+      {quickEditPriorityCredential ? (
+        <QuickEditDialog
+          error={quickEditPriorityError}
+          onClose={() => {
+            if (!quickEditPriorityMutation.isPending) {
+              quickEditPriorityMutation.reset();
+              setQuickEditPriorityCredential(null);
+              setQuickEditPriorityError(null);
+            }
+          }}
+          onSubmit={submitQuickEditPriority}
+          saving={quickEditPriorityMutation.isPending}
+          subtitle={quickEditPriorityCredential.display_name}
+          title="路由优先级"
+        >
+          <label className="grid gap-1 text-[12px] font-semibold text-stone-600">
+            优先级
+            <select
+              aria-label="快捷编辑路由优先级"
+              className="w-full px-2.5 py-2 text-[13px] font-medium text-stone-900"
+              onChange={(event) => setQuickEditPriorityValue(event.target.value)}
+              value={quickEditPriorityValue}
+            >
+              {[1, 2, 3, 4, 5].map((priority) => (
+                <option key={priority} value={priority}>
+                  {priority}（数字越小优先级越高）
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="text-[11px] text-stone-500">
+            路由先挑优先级最高的账号，同级之间按列表顺序轮换。
+          </p>
+        </QuickEditDialog>
+      ) : null}
+
+      {quickEditConcurrencyCredential ? (
+        <QuickEditDialog
+          error={quickEditConcurrencyError}
+          onClose={() => {
+            if (!quickEditConcurrencyMutation.isPending) {
+              quickEditConcurrencyMutation.reset();
+              setQuickEditConcurrencyCredential(null);
+              setQuickEditConcurrencyError(null);
+            }
+          }}
+          onSubmit={submitQuickEditConcurrency}
+          saving={quickEditConcurrencyMutation.isPending}
+          subtitle={quickEditConcurrencyCredential.display_name}
+          title="最大并发数"
+        >
+          <label className="grid gap-1 text-[12px] font-semibold text-stone-600">
+            最大并发数
+            <input
+              aria-label="快捷编辑最大并发数"
+              className="w-full px-2.5 py-2 text-[13px] font-medium text-stone-900"
+              min={1}
+              onChange={(event) => setQuickEditConcurrencyValue(event.target.value)}
+              step={1}
+              type="number"
+              value={quickEditConcurrencyValue}
+            />
+          </label>
+          <p className="text-[11px] text-stone-500">
+            当前正在处理 {quickEditConcurrencyCredential.active_request_count ?? 0} 个请求；
+            超过上限的请求会排到别的账号。
+          </p>
+        </QuickEditDialog>
       ) : null}
 
       {createOpen && (
