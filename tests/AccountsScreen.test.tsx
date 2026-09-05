@@ -1503,6 +1503,57 @@ describe("AccountsScreen", () => {
     expect(line.className).toContain("hover:translate-y-0");
     expect(line.className).toContain("active:translate-y-0");
     expect(line.className).toContain("active:scale-100");
+    // The rest of that chrome — a radius plus a shadow, which together drew a ghost
+    // border around the sentence — cannot be cancelled by a utility class, because
+    // the .accounts-screen rules outweigh one. This attribute is how styles.css is
+    // told to skip the line.
+    expect(line).toHaveAttribute("data-plain-text");
+  });
+
+  it("keeps the quick-edit numbers free of the button chrome too", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      { ...credentialsFixture[0], active_request_count: 1, max_concurrency: 2 },
+    ]);
+    renderScreen();
+
+    // P(N) 和并发计数也是"可点的数字"，同样会被那圈圆角投影框住。`shadow-none`
+    // 压不过 .accounts-screen 的选择器，只有这个属性能让 styles.css 跳过它们。
+    await screen.findByText("Team Account");
+    expect(screen.getByTestId("credential-priority-cred-official-1")).toHaveAttribute(
+      "data-plain-text",
+    );
+    const counter = screen.getByTestId("credential-activity-cred-official-1");
+    expect(counter).toHaveAttribute("data-plain-text");
+    // 免了那条规则占着 box-shadow，计数的焦点环才画得出来；hover 底色仍是个药丸。
+    expect(counter.className).toContain("focus-visible:ring-2");
+    expect(counter.className).toContain("rounded-full");
+  });
+
+  it("keeps the duration next to the stats instead of at the row's right edge", async () => {
+    window.localStorage.setItem(
+      ACCOUNT_DISPLAY_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({
+        showAccountType: false,
+        showModelList: false,
+        showRequestStats: true,
+        showLatencyStats: true,
+      }),
+    );
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      { ...credentialsFixture[0], last_duration_ms: 110_900, avg_recent_duration_ms: 98_100 },
+    ]);
+    renderScreen();
+
+    // 统计行占满整行时会把耗时顶到最右边，离它说明的数字十几厘米远。给它一个
+    // 跟名称同宽的下限，短行的耗时就落在名称那些标签的同一列；长行照旧顺着排，
+    // 不会被截断。
+    const line = await screen.findByTestId("account-stats-line-cred-official-1");
+    expect(line.className).not.toContain("flex-1");
+    expect(line.className).toContain("min-[600px]:min-w-64");
+    // margin-left:auto would eat the free space the width floor just created.
+    const latencySlot = screen.getByTestId("account-latency-cred-official-1").parentElement;
+    expect(latencySlot?.className).toContain("shrink-0");
+    expect(latencySlot?.className).not.toContain("ml-auto");
   });
 
   it("leaves the stats line inert while the model tag row is shown", async () => {

@@ -89,13 +89,18 @@ button:disabled {
   cursor: not-allowed;
 }
 
-.accounts-screen button[class*="border"],
-.accounts-screen button:not([class*="border"]) {
+/* `data-plain-text` opts a button out of the chrome below. Some buttons are a run
+   of text that happens to be clickable — the account row's stats line — and on
+   those the radius plus the shadow draw a ghost border around the sentence. The
+   opt-out also leaves `box-shadow` unset, so the focus-visible ring further down
+   this file finally reaches them. */
+.accounts-screen button[class*="border"]:not([data-plain-text]),
+.accounts-screen button:not([class*="border"]):not([data-plain-text]) {
   border-radius: 0.5rem;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
 }
 
-.accounts-screen button:not([class*="border"]) {
+.accounts-screen button:not([class*="border"]):not([data-plain-text]) {
   border: 1px solid transparent;
 }
 

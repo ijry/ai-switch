@@ -576,6 +576,23 @@ function credentialBatchFilterLabel(key: string): string {
   return key === SINGLE_ACCOUNT_FILTER ? "单账号" : key;
 }
 
+/**
+ * Width of the stats line under an account name in the list layout.
+ *
+ * `basis-64` would match the name above it exactly, but that hard 16rem clips the
+ * longest real lines — six-digit counts with a batch name, or the dot-separated
+ * model list this line swaps to — so the floor is a minimum instead: short lines
+ * still land 耗时 in the same column as the name's badges, longer ones push it
+ * along rather than losing characters.
+ *
+ * The floor is dropped below 600px. Nothing may force this line wider than its
+ * grid track, which is `minmax(0,1fr)` and goes well under 16rem as the window
+ * approaches its 320px minimum; the scroll container hides overflow-x, so the
+ * text would run under the action buttons with no way to reach it. 599/600px is
+ * the same seam the 成功/失败 breakdown hides at.
+ */
+const STATS_LINE_WIDTH = "min-[600px]:min-w-64";
+
 function kindLabel(kind: RouteCredential["kind"]) {
   return kind === "api" ? "API" : "官方";
 }
@@ -6348,13 +6365,17 @@ export function AccountsScreen({
                           {/* The prefix doubles as the 路由优先级 quick edit. Chrome
                               cancelled down to a colour shift and an underline on
                               hover: the global button lift would make a number
-                              sitting mid-sentence jump. Focus is a fill rather
-                              than a ring — the enclosing `truncate` box clips
-                              anything drawn outside the text, and a clipped ring
-                              is no focus indicator at all. */}
+                              sitting mid-sentence jump. `data-plain-text` covers
+                              the rest — `shadow-none` cannot, because the
+                              .accounts-screen rules outweigh a utility class and
+                              were drawing a rounded box around `P1-`. Focus is a
+                              fill rather than a ring — the enclosing `truncate`
+                              box clips anything drawn outside the text, and a
+                              clipped ring is no focus indicator at all. */}
                           <button
                             aria-label={`快捷编辑 ${credential.display_name} 的路由优先级，当前 P${credential.route_priority}`}
-                            className="text-stone-500 shadow-none motion-control hover:translate-y-0 hover:text-blue-700 hover:underline focus:outline-none focus-visible:bg-blue-100 focus-visible:text-blue-800 focus-visible:underline active:translate-y-0 active:scale-100"
+                            className="text-stone-500 motion-control hover:translate-y-0 hover:text-blue-700 hover:underline focus:outline-none focus-visible:bg-blue-100 focus-visible:text-blue-800 focus-visible:underline active:translate-y-0 active:scale-100"
+                            data-plain-text=""
                             data-testid={`credential-priority-${credential.id}`}
                             onClick={() => openQuickEditPriority(credential)}
                             title="点击修改路由优先级"
@@ -6390,11 +6411,19 @@ export function AccountsScreen({
                   // The counter is also the 最大并发数 quick edit. `aria-label` stays
                   // the reading itself so the live announcement is unchanged; `title`
                   // carries the "click me" as the accessible description.
+                  //
+                  // `data-plain-text` for the same reason as the P(N) prefix: the
+                  // global shadow drew a box around a counter that has no surface of
+                  // its own until hover. It also frees box-shadow, which that rule
+                  // was claiming — so `focus-visible:ring-2` below now shows.
+                  // `rounded-full` keeps the hover fill a pill, like the badges it
+                  // sits among.
                   const concurrencyBadge =
                     (credential.active_request_count ?? 0) > 0 ? (
                       <button
                         aria-label={`正在处理请求，当前 ${credential.active_request_count}/${credential.max_concurrency}`}
-                        className="inline-flex items-center gap-1 px-1 text-[10px] font-semibold text-emerald-700 motion-control hover:translate-y-0 hover:bg-emerald-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 active:translate-y-0 active:scale-100"
+                        className="inline-flex items-center gap-1 rounded-full px-1 text-[10px] font-semibold text-emerald-700 motion-control hover:translate-y-0 hover:bg-emerald-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 active:translate-y-0 active:scale-100"
+                        data-plain-text=""
                         data-testid={`credential-activity-${credential.id}`}
                         onClick={() => openQuickEditConcurrency(credential)}
                         title="点击修改最大并发数"
@@ -6774,9 +6803,12 @@ export function AccountsScreen({
                                 aria-pressed={modelLineToggle.showsModels}
                                 // It is a line of text that happens to be clickable, so
                                 // the global button chrome — a 1px hover lift and a press
-                                // scale from styles.css — is cancelled here. Only the
-                                // colour shifts; the focus ring stays for keyboard users.
-                                className="min-w-0 flex-1 truncate text-left motion-control hover:translate-y-0 hover:text-stone-700 active:translate-y-0 active:scale-100"
+                                // scale from styles.css, plus the radius and shadow that
+                                // drew a ghost border around the sentence — is cancelled
+                                // here. Only the colour shifts; `data-plain-text` leaves
+                                // box-shadow free for the focus ring.
+                                className={`min-w-0 ${STATS_LINE_WIDTH} truncate rounded text-left motion-control hover:translate-y-0 hover:text-stone-700 active:translate-y-0 active:scale-100`}
+                                data-plain-text=""
                                 data-testid={`account-stats-line-${credential.id}`}
                                 onClick={() => setStatsLineShowsModels((current) => !current)}
                                 title={modelLineToggle.title}
@@ -6785,14 +6817,10 @@ export function AccountsScreen({
                                 {modelLineToggle.showsModels ? modelLineToggle.text : statsLine}
                               </button>
                             ) : (
-                              <p className="min-w-0 flex-1 truncate">{statsLine}</p>
+                              <p className={`min-w-0 ${STATS_LINE_WIDTH} truncate`}>{statsLine}</p>
                             )
                           ) : null}
-                          {/* ml-auto rather than relying on the stats line's flex-1:
-                              with 请求统计 off the tag is the only child. */}
-                          {latencyTag ? (
-                            <span className="ml-auto shrink-0">{latencyTag}</span>
-                          ) : null}
+                          {latencyTag ? <span className="shrink-0">{latencyTag}</span> : null}
                         </div>
                       ) : null}
                     </div>
