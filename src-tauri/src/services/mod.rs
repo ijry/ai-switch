@@ -1,4 +1,5 @@
 pub mod agent_launch_service;
+pub(crate) mod anthropic_thinking;
 pub mod batch_service;
 pub mod cc_switch_import_service;
 pub mod claude_trust_service;

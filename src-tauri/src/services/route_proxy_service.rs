@@ -13,6 +13,7 @@ use crate::models::route_credential_model::{
     FailureScope, RouteCredentialModelState, MODEL_STATUS_OK,
 };
 use crate::models::route_pool::RouteUsageBreakdown;
+use crate::services::anthropic_thinking::strip_replayed_thinking_from_bytes;
 use crate::services::client_identity;
 use crate::services::codex_reasoning_cache::CodexReasoningCache;
 use crate::services::http_client::{
@@ -24,8 +25,8 @@ use crate::services::official_agent_identity_service::{
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::response_failure_service::{
-    detect_response_failed, is_quota_exhaustion_failure, stream_disconnected_before_completion,
-    STREAM_DISCONNECTED_FAILURE_MESSAGE,
+    detect_response_failed, is_quota_exhaustion_failure, is_thinking_signature_failure,
+    stream_disconnected_before_completion, STREAM_DISCONNECTED_FAILURE_MESSAGE,
 };
 use crate::services::route_config_service::generate_route_proxy_key;
 use crate::services::route_credential_activity::{
@@ -749,7 +750,9 @@ async fn forward_request(
     // Fallback for upstreams that fetch remote image URLs and reject non-image
     // Content-Types (e.g. OSS objects served as text/plain): when a routed
     // credential opts in, inline remote images as base64 data URLs up front.
-    let body_bytes = if credentials.iter().any(selected_credential_inlines_images) {
+    // Mutable because a rejected reasoning signature is recovered by rewriting
+    // the body and re-asking the same account; see the retry loop below.
+    let mut body_bytes = if credentials.iter().any(selected_credential_inlines_images) {
         axum::body::Bytes::from(inline_remote_image_urls_in_body(&body_bytes, &client).await)
     } else {
         body_bytes
@@ -765,6 +768,10 @@ async fn forward_request(
     let request_start = Instant::now();
     let mut acquired_any = false;
     let mut attempt = 0usize;
+    // One rewrite per client request. The body is only ever stripped of replayed
+    // reasoning, so a second pass would find nothing and the retry would repeat a
+    // request the upstream has already refused.
+    let mut thinking_stripped = false;
 
     while let Some((credential_index, credential_retry_count)) = retry_queue.pop_front() {
         attempt += 1;
@@ -1471,6 +1478,33 @@ async fn forward_request(
 
         let next_index = (credential_index + 1) % credentials.len();
         let _ = RoutePoolRepository::save_cursor_index(pool, &platform, next_index as i64).await;
+
+        // A refused `thinking` signature is not this account's doing. The block
+        // was minted by whichever account served the previous turn, and the pool
+        // deliberately advances past that account (the cursor above), so the first
+        // turn that replays the reasoning lands somewhere that cannot verify it.
+        // Every remaining account would refuse the same history identically, so
+        // switching accounts cannot recover the turn — only rewriting the body
+        // can. Nothing is charged to the credential or its model: both work.
+        if semantic_failure
+            .as_ref()
+            .is_some_and(|failure| is_thinking_signature_failure(&failure.message))
+        {
+            if !thinking_stripped {
+                if let Some(stripped) = strip_replayed_thinking_from_bytes(&body_bytes) {
+                    body_bytes = axum::body::Bytes::from(stripped);
+                    thinking_stripped = true;
+                    // The same account, and the failure policy's retry budget is
+                    // left alone: this attempt asks a different question.
+                    retry_queue.push_front((credential_index, credential_retry_count));
+                    continue;
+                }
+            }
+            // Nothing left to strip, or the upstream refused the stripped body as
+            // well. Its own answer names the problem better than the aggregated
+            // "all route credentials failed" error a pool walk would end in.
+            return proxy_upstream_response(status, upstream_headers, response_bytes.to_vec());
+        }
 
         if quota_failure || quota_exhausted {
             if let Some(failure) = semantic_failure.as_ref() {
@@ -5872,6 +5906,97 @@ mod tests {
         (format!("http://{address}/v1"), calls)
     }
 
+    /// How a Bedrock-backed relay refuses a replayed reasoning block: a 400 whose
+    /// real message is buried in the gateway's own prose, with `error.type` a
+    /// formatted Go nil. Verbatim from a user report.
+    const THINKING_SIGNATURE_REJECTION: &str = r#"{"error":{"message":"Anthropic Claude bad request: InvokeModelWithResponseStream: operation error Bedrock Runtime: InvokeModelWithResponseStream, https response error StatusCode: 400, , ValidationException: messages.1.content.0: Invalid `signature` in `thinking` block (request id: cf669ff644885c3d88c0febf9d08bc37)","type":"<nil>"},"type":"error"}"#;
+
+    const ANTHROPIC_MESSAGE_BODY: &str = r#"{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}"#;
+
+    #[derive(Clone)]
+    struct ThinkingSignatureUpstreamState {
+        calls: Arc<AtomicUsize>,
+        bodies: Arc<std::sync::Mutex<Vec<Value>>>,
+    }
+
+    async fn thinking_signature_upstream_handler(
+        AxumState(state): AxumState<ThinkingSignatureUpstreamState>,
+        body: axum::body::Bytes,
+    ) -> Response {
+        let attempt = state.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        state
+            .bodies
+            .lock()
+            .expect("record upstream body")
+            .push(serde_json::from_slice(&body).unwrap_or(Value::Null));
+        let (status, response_body) = if attempt == 1 {
+            (StatusCode::BAD_REQUEST, THINKING_SIGNATURE_REJECTION)
+        } else {
+            (StatusCode::OK, ANTHROPIC_MESSAGE_BODY)
+        };
+        Response::builder()
+            .status(status)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(response_body))
+            .expect("thinking signature response")
+    }
+
+    /// An upstream that refuses the first request the way a relay refuses a
+    /// foreign reasoning signature, then serves anything asked afterwards, while
+    /// recording every request body it saw.
+    #[allow(clippy::type_complexity)]
+    async fn start_thinking_signature_upstream(
+    ) -> (String, Arc<AtomicUsize>, Arc<std::sync::Mutex<Vec<Value>>>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let app = Router::new()
+            .fallback(thinking_signature_upstream_handler)
+            .with_state(ThinkingSignatureUpstreamState {
+                calls: Arc::clone(&calls),
+                bodies: Arc::clone(&bodies),
+            });
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind thinking signature upstream");
+        let address = listener.local_addr().expect("upstream address");
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve thinking signature upstream");
+        });
+        (format!("http://{address}/v1"), calls, bodies)
+    }
+
+    /// A Claude-platform account speaking Anthropic natively, so `/v1/messages`
+    /// reaches the upstream as a passthrough and carries the client's own
+    /// `thinking` blocks.
+    async fn create_proxy_anthropic_credential(
+        pool: &SqlitePool,
+        name: &str,
+        base_url: &str,
+    ) -> String {
+        let config = json!({
+            "base_url": base_url,
+            "interface_format": "anthropic",
+            "model_mappings": [{"from": "claude-sonnet-4", "to": "claude-sonnet-4"}]
+        });
+        let credential = RouteCredentialRepository::create(
+            pool,
+            "claude",
+            "api",
+            name,
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"sk-upstream"}"#,
+            &config.to_string(),
+            "{}",
+        )
+        .await
+        .expect("create credential");
+        credential.id
+    }
+
     async fn start_flaky_body_upstream(
         failed_attempts: usize,
         success_body: &'static str,
@@ -7125,6 +7250,192 @@ mod tests {
                 .status,
             "ok"
         );
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    /// A replayed `thinking` block only verifies against the account that minted
+    /// it, and the pool rotates accounts between turns, so the first turn to reuse
+    /// the reasoning lands somewhere that refuses it. The proxy has to recover the
+    /// turn by rewriting the body — no other account can accept this history — and
+    /// must not charge the account for history it did not write.
+    #[tokio::test]
+    async fn rejected_thinking_signature_is_retried_without_the_replayed_reasoning() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let (upstream, calls, bodies) = start_thinking_signature_upstream().await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_proxy_anthropic_credential(&pool, "relay", &upstream).await;
+        RoutePoolRepository::replace_members(&pool, "claude", std::slice::from_ref(&credential_id))
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "claude", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/messages",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({
+                "model": "claude-sonnet-4",
+                "max_tokens": 64,
+                "thinking": {"type": "enabled", "budget_tokens": 1024},
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": "read a.txt"}]},
+                    {"role": "assistant", "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": "Let me read it.",
+                            "signature": "minted-by-another-account"
+                        },
+                        {"type": "tool_use", "id": "toolu_1", "name": "read", "input": {}}
+                    ]},
+                    {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "hi"}
+                    ]}
+                ]
+            }))
+            .send()
+            .await
+            .expect("proxy response");
+
+        // The client never sees the rejection.
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.json::<Value>().await.expect("body")["id"], "msg_1");
+        // One rejection, one rewritten retry — not the failure policy's three
+        // identical attempts, which could never have been accepted.
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let recorded = bodies.lock().expect("recorded bodies").clone();
+        let first = serde_json::to_string(&recorded[0]).expect("first body");
+        assert!(
+            first.contains("minted-by-another-account"),
+            "the first attempt must be the client's own body: {first}"
+        );
+        let retry = &recorded[1];
+        let retried_turn = retry["messages"][1]["content"]
+            .as_array()
+            .expect("assistant content");
+        assert_eq!(retried_turn.len(), 1, "reasoning must be gone: {retry}");
+        assert_eq!(retried_turn[0]["type"], "tool_use");
+        // The stripped turn calls a tool, so thinking has to be off or the upstream
+        // would refuse it again for want of a leading thinking block.
+        assert_eq!(retry["thinking"], json!({"type": "disabled"}));
+        // The user's own words survive.
+        assert_eq!(retry["messages"][0]["content"][0]["text"], "read a.txt");
+        assert_eq!(retry["messages"][2]["content"][0]["type"], "tool_result");
+
+        // Neither the account nor the model is at fault, so neither is parked.
+        let credential = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("credential");
+        assert_eq!(credential.status, "ok");
+        assert_eq!(credential.transient_failure_count, 0);
+        assert!(credential.next_retry_at.is_none());
+        assert!(
+            credential.last_failure_message.is_none(),
+            "blamed the account: {:?}",
+            credential.last_failure_message
+        );
+        let parked: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM route_credential_models \
+             WHERE status <> 'ok' OR transient_failure_count > 0 OR last_failure_message IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("model rows");
+        assert_eq!(parked, 0, "a working model must not be parked");
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    /// When the stripped body is refused too, the pool walk is pointless: every
+    /// remaining account refuses the same history for the same reason, and each
+    /// one would be parked for it. The upstream's own answer goes back instead.
+    #[tokio::test]
+    async fn an_unrecoverable_thinking_signature_rejection_stops_at_one_account() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let (upstream, calls) = start_status_sequence_upstream(
+            usize::MAX,
+            StatusCode::BAD_REQUEST,
+            THINKING_SIGNATURE_REJECTION,
+            ANTHROPIC_MESSAGE_BODY,
+        )
+        .await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let first = create_proxy_anthropic_credential(&pool, "relay-a", &upstream).await;
+        let second = create_proxy_anthropic_credential(&pool, "relay-b", &upstream).await;
+        RoutePoolRepository::replace_members(&pool, "claude", &[first.clone(), second.clone()])
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "claude", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/messages",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({
+                "model": "claude-sonnet-4",
+                "max_tokens": 64,
+                "messages": [
+                    {"role": "assistant", "content": [
+                        {"type": "thinking", "thinking": "…", "signature": "minted-elsewhere"},
+                        {"type": "text", "text": "done"}
+                    ]},
+                    {"role": "user", "content": [{"type": "text", "text": "again"}]}
+                ]
+            }))
+            .send()
+            .await
+            .expect("proxy response");
+
+        // The upstream's own words, not the pool's aggregated "all credentials
+        // failed" 502 — they name the real problem.
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.text().await.expect("proxy body");
+        assert!(body.contains("Invalid `signature`"), "body: {body}");
+        // The client's body, then the stripped one. The second account is never
+        // asked, because it would refuse the same history.
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        for credential_id in [first, second] {
+            let credential = RouteCredentialRepository::get(&pool, &credential_id)
+                .await
+                .expect("credential");
+            assert_eq!(credential.status, "ok", "{} was parked", credential_id);
+            assert_eq!(credential.transient_failure_count, 0);
+            assert!(credential.last_failure_message.is_none());
+        }
+        let parked: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM route_credential_models \
+             WHERE status <> 'ok' OR transient_failure_count > 0 OR last_failure_message IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("model rows");
+        assert_eq!(parked, 0, "a working model must not be parked");
 
         RouteProxyService::stop(&runtime).await.expect("stop proxy");
     }

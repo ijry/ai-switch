@@ -82,6 +82,36 @@ pub fn is_quota_exhaustion_failure(failure: &SemanticResponseFailure) -> bool {
         || message.contains("free usage exhausted")
 }
 
+/// Returns whether an upstream rejected a `thinking` block that the client
+/// replayed from an earlier turn.
+///
+/// A thinking block's `signature` only verifies against the upstream that minted
+/// it. Claude Code replays assistant thinking blocks in every later turn, so a
+/// pooled conversation breaks as soon as one turn lands on a different account
+/// than the turn that produced the reasoning — and a relay that re-signs into
+/// another platform's API (Bedrock validates strictly) rejects it outright.
+/// Neither the credential nor the model is at fault, and no other account in the
+/// pool can accept the same history, so this must not be charged to the account.
+///
+/// The rule needs both nouns plus an invalidity marker because relays word it
+/// differently and wrap it in their own prose, which rules out matching one
+/// phrase. Requiring `thinking` keeps it clear of request-signing and TLS errors,
+/// which also say "signature". A *missing* signature lands here too: same cause,
+/// same recovery.
+pub fn is_thinking_signature_failure(text: &str) -> bool {
+    // Upstreams quote the field names (`` `signature` ``), so drop the backticks
+    // before matching rather than spelling both forms.
+    let normalized = text.to_lowercase().replace('`', " ");
+    let compact = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
+    let names_a_replayed_block = compact.contains("thinking") && compact.contains("signature");
+    let rejected = compact.contains("invalid")
+        || compact.contains("无效")
+        || compact.contains("verification failed")
+        || compact.contains("does not match")
+        || compact.contains("is required");
+    names_a_replayed_block && rejected
+}
+
 /// Detects a stream that delivered data but never emitted a terminal marker.
 /// A partial Responses stream is commonly surfaced to the caller as
 /// `stream disconnected before completion`.
@@ -361,6 +391,56 @@ data: {"type":"response.failed","error":{"message":"down"}}
         )
         .expect("semantic failure");
         assert!(!is_quota_exhaustion_failure(&prefix_only_in_the_middle));
+    }
+
+    /// The body a Bedrock-backed relay returns once Claude Code replays a
+    /// `thinking` block that a *different* upstream produced. Its `error.type` is
+    /// the literal string `<nil>` — the gateway formatted a Go nil into JSON — so
+    /// the type-based rules cannot see it and the message is all there is.
+    #[test]
+    fn detects_a_replayed_thinking_signature_rejection() {
+        let failure = detect_response_failed(
+            r#"{"error":{"message":"Anthropic Claude bad request: InvokeModelWithResponseStream: operation error Bedrock Runtime: InvokeModelWithResponseStream, https response error StatusCode: 400, , ValidationException: messages.5.content.0: Invalid `signature` in `thinking` block (request id: cf669ff644885c3d88c0febf9d08bc37)","type":"<nil>"},"type":"error"}"#
+                .as_bytes(),
+        )
+        .expect("semantic failure");
+        assert!(is_thinking_signature_failure(&failure.message));
+        // Not the account's fault, so it must not read as spent quota.
+        assert!(!is_quota_exhaustion_failure(&failure));
+    }
+
+    /// Relays word this differently and wrap it in their own prose, so the rule
+    /// matches on the two nouns plus an invalidity marker rather than one phrase.
+    #[test]
+    fn accepts_other_wordings_of_the_same_rejection() {
+        for message in [
+            "Invalid signature for thinking block",
+            "messages.3.content.0.thinking.signature: signature verification failed",
+            "上游报错：thinking 块的 signature 无效",
+        ] {
+            assert!(
+                is_thinking_signature_failure(message),
+                "must match: {message}"
+            );
+        }
+    }
+
+    /// `signature` alone belongs to request signing and TLS; `thinking` alone
+    /// belongs to every reasoning-parameter complaint. Only together do they name
+    /// a replayed reasoning block.
+    #[test]
+    fn thinking_signature_rule_needs_both_nouns_and_an_invalidity_marker() {
+        for message in [
+            "SignatureDoesNotMatch: The request signature we calculated does not match the signature you provided",
+            "thinking.budget_tokens must be less than max_tokens",
+            "invalid_request_error: model not found",
+            "thinking block signature accepted",
+        ] {
+            assert!(
+                !is_thinking_signature_failure(message),
+                "must not match: {message}"
+            );
+        }
     }
 
     #[test]
