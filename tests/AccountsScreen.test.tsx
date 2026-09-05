@@ -4191,6 +4191,104 @@ describe("AccountsScreen", () => {
     expect(staleIcon).toHaveClass("text-rose-600");
   });
 
+  it("spins the balance icons while a batch query is still in flight", async () => {
+    // 批量查询期间列表里一点动静都没有：行内图标只认单账号刷新，菜单里的钱包只是
+    // 明暗闪烁。整列变灰和「正在查」是两件事。
+    const relayAccount = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://panel.example.com/v1",
+        interface_format: "openai",
+        relay_balance: { provider: "new_api" },
+        relay_balance_snapshot: {
+          provider: "new_api",
+          remaining: 37.7,
+          unit: "USD",
+          source_url: "https://panel.example.com/api/usage/token/",
+          checked_at: "2026-09-02T12:00:00Z",
+        },
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockImplementation(async () => [
+      credentialsFixture[0],
+      relayAccount,
+    ]);
+    let finishBatch: (() => void) | undefined;
+    vi.mocked(refreshRouteCredentialsRelayBalance).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishBatch = () =>
+            resolve([
+              { credential: relayAccount, updated: true, source: "new_api", message: null },
+            ]);
+        }),
+    );
+    renderScreen();
+
+    const icon = await screen.findByTestId(
+      `credential-relay-balance-refresh-${relayAccount.id}`,
+    );
+    expect(icon).toHaveClass("hidden");
+
+    await userEvent.click(screen.getByRole("button", { name: "打开刷新菜单" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "查询中转站余额" }));
+    await waitFor(() => expect(refreshRouteCredentialsRelayBalance).toHaveBeenCalled());
+
+    // 这一行正在这批里，图标就得转，而且不能还藏在 hover 后面。
+    expect(icon).toHaveClass("animate-spin");
+    expect(icon).not.toHaveClass("hidden");
+    // 菜单里那个入口自己也在转，钱包暂时让位给转圈的刷新图标。
+    await userEvent.click(screen.getByRole("button", { name: "打开刷新菜单" }));
+    expect(screen.getByTestId("relay-balance-platform-icon")).toHaveClass("animate-spin");
+
+    await act(async () => {
+      finishBatch?.();
+    });
+    await waitFor(() => expect(icon).not.toHaveClass("animate-spin"));
+  });
+
+  it("spins the drawer's 立即查询 icon while that account's balance query runs", async () => {
+    const relayAccount = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://panel.example.com/v1",
+        interface_format: "openai",
+        relay_balance: { provider: "new_api" },
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([credentialsFixture[0], relayAccount]);
+    let finishQuery: (() => void) | undefined;
+    vi.mocked(refreshRouteCredentialRelayBalance).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishQuery = () =>
+            resolve({
+              credential: relayAccount,
+              updated: false,
+              source: "new_api",
+              message: null,
+            });
+        }),
+    );
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
+    // 抽屉盖住了行内那颗转着的徽标，按钮自己不动就等于查询没有反馈——它只是变灰。
+    const icon = screen.getByTestId("relay-balance-instant-icon");
+    expect(icon).not.toHaveClass("animate-spin");
+
+    await userEvent.click(screen.getByRole("button", { name: "立即查询" }));
+    await waitFor(() => expect(icon).toHaveClass("animate-spin"));
+
+    await act(async () => {
+      finishQuery?.();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("relay-balance-instant-icon")).not.toHaveClass("animate-spin"),
+    );
+  });
+
   it("fills the badge with the balance after a successful query", async () => {
     const relayAccount = {
       ...credentialsFixture[1],

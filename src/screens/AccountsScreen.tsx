@@ -6044,10 +6044,21 @@ export function AccountsScreen({
                     title="查询本平台所有开启了余额查询的中转站账号"
                     type="button"
                   >
-                    <Wallet
-                      aria-hidden="true"
-                      className={`h-3.5 w-3.5 ${relayBalancePlatformMutation.isPending ? "animate-pulse" : ""}`}
-                    />
+                    {/* 钱包只是这条菜单项的身份标记，转起来会像在翻跟头；查询期间
+                        让位给刷新图标，跟上面「刷新账号额度」一个转法。 */}
+                    {relayBalancePlatformMutation.isPending ? (
+                      <RefreshCw
+                        aria-hidden="true"
+                        className="h-3.5 w-3.5 animate-spin"
+                        data-testid="relay-balance-platform-icon"
+                      />
+                    ) : (
+                      <Wallet
+                        aria-hidden="true"
+                        className="h-3.5 w-3.5"
+                        data-testid="relay-balance-platform-icon"
+                      />
+                    )}
                     查中转站余额
                   </button>
               </MotionMenu>
@@ -6245,7 +6256,12 @@ export function AccountsScreen({
                   const relayBalanceRefreshable =
                     credentialRelayBalanceEnabled && !credential.archived_at;
                   const relayBalanceError = relayBalanceStatus?.error ?? null;
-                  const relayBalanceRefreshing = refreshingRelayBalanceId === credential.id;
+                  // 批量查询扫的正是所有渲染出这颗徽标的行——api、未归档、开了余额
+                  // 查询——所以它跑起来时每颗图标都得转。只认 credential.id 的话，
+                  // 「查中转站余额」期间整列只是变灰，看不出到底在不在查。
+                  const relayBalanceRefreshing =
+                    refreshingRelayBalanceId === credential.id ||
+                    relayBalancePlatformMutation.isPending;
                   // 三种情况下图标常显而不等悬停：还没有读数（此时标签只剩图标，是取第
                   // 一次余额的唯一入口）、正在查、上次查失败——最后一种原先由钱包图标
                   // 变红承担，藏进 hover 里就等于没有了。
@@ -8818,21 +8834,31 @@ export function AccountsScreen({
                           更新于 {formatRelayBalanceCheckedAt(editRelayBalanceSnapshot.checked_at)}
                         </span>
                         <button
-                          className={`${secondaryButtonClass} h-7 px-2 text-[11px]`}
+                          className={`${secondaryButtonClass} inline-flex h-7 items-center gap-1 px-2 text-[11px]`}
                           disabled={relayBalanceMutation.isPending}
                           onClick={() => relayBalanceMutation.mutate(editingCredential.id)}
                           type="button"
                         >
+                          <RefreshCw
+                            aria-hidden="true"
+                            className={`h-3 w-3 ${relayBalanceMutation.isPending ? "animate-spin" : ""}`}
+                            data-testid="relay-balance-instant-icon"
+                          />
                           立即查询
                         </button>
                       </div>
                     ) : (
                       <button
-                        className={`${secondaryButtonClass} h-7 justify-self-start px-2 text-[11px]`}
+                        className={`${secondaryButtonClass} inline-flex h-7 items-center gap-1 justify-self-start px-2 text-[11px]`}
                         disabled={relayBalanceMutation.isPending}
                         onClick={() => relayBalanceMutation.mutate(editingCredential.id)}
                         type="button"
                       >
+                        <RefreshCw
+                          aria-hidden="true"
+                          className={`h-3 w-3 ${relayBalanceMutation.isPending ? "animate-spin" : ""}`}
+                          data-testid="relay-balance-instant-icon"
+                        />
                         立即查询
                       </button>
                     )}
