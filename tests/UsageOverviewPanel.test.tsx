@@ -145,6 +145,45 @@ describe("UsageOverviewPanel", () => {
     expect(screen.getByText("$16,248.91")).toBeInTheDocument();
   });
 
+  it("totals every token bucket and rates the cache against prompt tokens only", async () => {
+    renderPanel();
+
+    // 5,584,802,591 + 129,897,022 + 318,626,507 + 19,115,772,272.
+    expect(await screen.findByText("251.49亿")).toBeInTheDocument();
+    expect(
+      screen.getByTitle("25,149,098,392（输入 + 输出 + 缓存写入 + 缓存读取）"),
+    ).toBeInTheDocument();
+
+    // 19,115,772,272 cache reads over the 25,019,201,370 prompt tokens — input plus
+    // both cache buckets. Output is excluded, so generation cannot dilute the rate.
+    expect(screen.getByText("76.4%")).toBeInTheDocument();
+    expect(
+      screen.getByTitle(
+        "缓存读取 19,115,772,272 ÷ 提示 25,019,201,370（输入 + 缓存写入 + 缓存读取，不含输出）",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no cache hit rate for a window without prompt tokens", async () => {
+    vi.mocked(getUsageOverview).mockResolvedValue(
+      overviewFixture({
+        totals: {
+          request_count: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_write_tokens: 0,
+          cache_read_tokens: 0,
+          cost_micros: 0,
+        },
+      }),
+    );
+    renderPanel();
+
+    // A 0/0 rate must not read as "0% hit", which is a real and much worse result.
+    expect(await screen.findByText("—")).toBeInTheDocument();
+    expect(screen.getByTitle("窗口内没有提示 Token，无从计算命中率")).toBeInTheDocument();
+  });
+
   it("opens the model price configuration from the settings icon", async () => {
     renderPanel();
     await screen.findByText("1.1万");

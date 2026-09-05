@@ -340,29 +340,40 @@ function RequestRow({
   const cache = row.cache_write_tokens + row.cache_read_tokens;
   return (
     <div className="bg-white" data-usage-request-row>
-      <div className="grid grid-cols-2 gap-2 px-3 py-2.5 text-[12px] text-stone-600 sm:grid-cols-3 lg:grid-cols-[1.3fr_1.5fr_0.8fr_0.8fr_1.1fr_0.8fr_auto] lg:items-center">
-        <span className="font-medium text-stone-800">{formatTime(row.occurred_at)}</span>
-        <span className="truncate" title={row.model}>
-          <span className="mr-1 text-[10px] text-stone-400 lg:hidden">模型</span>
-          {row.model}
+      {/* Narrow widths get two tidy lines instead of the seven columns folding into
+          a ragged 2-or-3 column block that stranded 详情 mid-row: the timestamp with
+          the badges and 详情 pinned to its right, then the labelled fields wrapping
+          underneath. `lg:contents` dissolves that second grouping so its fields
+          become columns of the wide grid in DOM order, and the `order`/`ml-auto`
+          that arrange the narrow lines have to be reset there or they would
+          rearrange the grid too. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5 text-[12px] text-stone-600 lg:grid lg:grid-cols-[1.3fr_1.5fr_0.8fr_0.8fr_1.1fr_0.8fr_auto] lg:gap-2 lg:items-center">
+        <span className="order-1 font-medium text-stone-800 lg:order-none">
+          {formatTime(row.occurred_at)}
         </span>
-        <span
-          title={`输入 ${formatExactCount(row.input_tokens)}；输出 ${formatExactCount(row.output_tokens)}；缓存写入 ${formatExactCount(row.cache_write_tokens)}；缓存读取 ${formatExactCount(row.cache_read_tokens)}`}
-        >
-          <span className="mr-1 text-[10px] text-stone-400 lg:hidden">Token</span>
-          {formatCompactCount(tokens)}
-          {cache > 0 ? <span className="ml-1 text-stone-400">+{formatCompactCount(cache)}</span> : null}
-        </span>
-        <span title={row.price_source === "estimated" ? "按本地价格表估算" : undefined}>
-          <span className="mr-1 text-[10px] text-stone-400 lg:hidden">费用</span>
-          {row.price_source ? formatCostMicros(row.cost_micros) : "无价格"}
-          {row.price_source === "estimated" ? <span className="text-stone-400">(估)</span> : null}
-        </span>
-        <span className="truncate" title={row.account_name ?? row.account_id ?? undefined}>
-          <span className="mr-1 text-[10px] text-stone-400 lg:hidden">账号</span>
-          {row.account_name ?? row.account_id ?? "未经代理"}
-        </span>
-        <span className="flex items-center gap-1.5">
+        <div className="order-4 flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1 lg:contents">
+          <span className="min-w-0 truncate" title={row.model}>
+            <span className="mr-1 text-[10px] text-stone-400 lg:hidden">模型</span>
+            {row.model}
+          </span>
+          <span
+            title={`输入 ${formatExactCount(row.input_tokens)}；输出 ${formatExactCount(row.output_tokens)}；缓存写入 ${formatExactCount(row.cache_write_tokens)}；缓存读取 ${formatExactCount(row.cache_read_tokens)}`}
+          >
+            <span className="mr-1 text-[10px] text-stone-400 lg:hidden">Token</span>
+            {formatCompactCount(tokens)}
+            {cache > 0 ? <span className="ml-1 text-stone-400">+{formatCompactCount(cache)}</span> : null}
+          </span>
+          <span title={row.price_source === "estimated" ? "按本地价格表估算" : undefined}>
+            <span className="mr-1 text-[10px] text-stone-400 lg:hidden">费用</span>
+            {row.price_source ? formatCostMicros(row.cost_micros) : "无价格"}
+            {row.price_source === "estimated" ? <span className="text-stone-400">(估)</span> : null}
+          </span>
+          <span className="min-w-0 truncate" title={row.account_name ?? row.account_id ?? undefined}>
+            <span className="mr-1 text-[10px] text-stone-400 lg:hidden">账号</span>
+            {row.account_name ?? row.account_id ?? "未经代理"}
+          </span>
+        </div>
+        <span className="order-2 ml-auto flex items-center gap-1.5 lg:order-none lg:ml-0">
           <span
             className={`rounded-md px-1.5 py-0.5 text-[11px] font-semibold ${sourceStyles[row.source]}`}
           >
@@ -378,7 +389,7 @@ function RequestRow({
           aria-controls={detailId(row.id)}
           aria-expanded={expanded}
           aria-label={`${expanded ? "隐藏" : "查看"}请求 ${row.id} 详情`}
-          className="justify-self-end rounded-lg border border-stone-200 bg-white px-2.5 py-1 text-[12px] font-semibold text-stone-700 motion-control hover:bg-stone-50"
+          className="order-3 shrink-0 rounded-lg border border-stone-200 bg-white px-2.5 py-1 text-[12px] font-semibold text-stone-700 motion-control hover:bg-stone-50 lg:order-none lg:justify-self-end"
           onClick={onToggle}
           type="button"
         >
@@ -415,6 +426,17 @@ export function UsageOverviewPanel() {
   const rowCount = overview?.row_count ?? 0;
   const pageCount = Math.max(1, Math.ceil(rowCount / pageSize));
   const cacheTotal = (totals?.cache_write_tokens ?? 0) + (totals?.cache_read_tokens ?? 0);
+  const tokenTotal = (totals?.input_tokens ?? 0) + (totals?.output_tokens ?? 0) + cacheTotal;
+  // Every prompt token is exactly one of three things — read from the cache, written
+  // into it, or sent fresh — so their sum is the denominator, with no double counting.
+  // Cache writes stay in it even though they are misses: a window spent building
+  // caches genuinely is a poor hit rate. Output tokens are not part of a prompt and
+  // are left out entirely, which would otherwise dilute the ratio with generation.
+  const promptTokens =
+    (totals?.input_tokens ?? 0) +
+    (totals?.cache_write_tokens ?? 0) +
+    (totals?.cache_read_tokens ?? 0);
+  const cacheHitRate = promptTokens > 0 ? (totals?.cache_read_tokens ?? 0) / promptTokens : null;
 
   const selectPeriod = (next: Period) => {
     setPeriod(next);
@@ -500,7 +522,7 @@ export function UsageOverviewPanel() {
         </p>
       ) : (
         <>
-          <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-5">
+          <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
             <SummaryCard
               label="请求"
               title={formatExactCount(totals?.request_count ?? 0)}
@@ -520,6 +542,20 @@ export function UsageOverviewPanel() {
               label="缓存 Token"
               title={`写入 ${formatExactCount(totals?.cache_write_tokens ?? 0)}；读取 ${formatExactCount(totals?.cache_read_tokens ?? 0)}`}
               value={formatCompactCount(cacheTotal)}
+            />
+            <SummaryCard
+              label="缓存命中率"
+              title={
+                cacheHitRate === null
+                  ? "窗口内没有提示 Token，无从计算命中率"
+                  : `缓存读取 ${formatExactCount(totals?.cache_read_tokens ?? 0)} ÷ 提示 ${formatExactCount(promptTokens)}（输入 + 缓存写入 + 缓存读取，不含输出）`
+              }
+              value={cacheHitRate === null ? "—" : `${(cacheHitRate * 100).toFixed(1)}%`}
+            />
+            <SummaryCard
+              label="总计 Token"
+              title={`${formatExactCount(tokenTotal)}（输入 + 输出 + 缓存写入 + 缓存读取）`}
+              value={formatCompactCount(tokenTotal)}
             />
             <SummaryCard
               label="费用（USD）"
