@@ -72,6 +72,7 @@ describe("DeepLinkImportDialog", () => {
     vi.mocked(getRoutePool).mockResolvedValue({
       platform: "codex",
       account_ids: ["existing-account"],
+      model_mode: "aggregate",
       stats: {
         member_count: 1,
         request_count: 0,

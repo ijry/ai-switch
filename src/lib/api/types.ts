@@ -592,9 +592,17 @@ export type RoutePoolStats = {
   request_page_size: number;
 };
 
+/**
+ * How a platform names the models its pool advertises. `aggregate` merges the
+ * pool into one word list and rotates; `precise` gives every API account its own
+ * `账号/模型` entries and merges the official accounts under `official/`.
+ */
+export type RoutePoolModelMode = "aggregate" | "precise";
+
 export type RoutePoolState = {
   platform: string;
   account_ids: string[];
+  model_mode: RoutePoolModelMode;
   stats: RoutePoolStats;
 };
 

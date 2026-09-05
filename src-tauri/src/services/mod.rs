@@ -30,6 +30,7 @@ pub(crate) mod route_failure_scope;
 pub(crate) mod route_model_capability;
 pub mod route_model_fetch_service;
 pub mod route_model_test_service;
+pub(crate) mod route_pool_model_mode;
 pub mod route_pool_service;
 pub mod route_preview_service;
 pub mod route_protocol_bridge;

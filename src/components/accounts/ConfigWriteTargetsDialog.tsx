@@ -1,6 +1,6 @@
 import { Check, Copy, Eye, EyeOff, Plug, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { ConfigWriteClientStatus } from "../../lib/api/types";
+import type { ConfigWriteClientStatus, RoutePoolModelMode } from "../../lib/api/types";
 import { copySensitiveText } from "../../lib/routeCredentialTransfer";
 import { routeProxyEndpointForPlatform } from "../../lib/routeProxyEndpoint";
 
@@ -123,6 +123,72 @@ function EndpointRow({ label, value, secret = false }: EndpointRowProps) {
  */
 type ConfigWriteTab = "builtin" | "manual";
 
+const modelModeOptions: { mode: RoutePoolModelMode; label: string; hint: string }[] = [
+  {
+    mode: "aggregate",
+    label: "聚合模式",
+    hint: "同名模型合并成一条，请求在池内轮换。",
+  },
+  {
+    mode: "precise",
+    label: "精确模式",
+    hint: "每个 API 账号各出「账号/模型」，请求钉在该账号；官方账号合并为「official/模型」继续轮换。",
+  },
+];
+
+/**
+ * Aggregate versus precise, above the tabs because it decides the model list on
+ * both sides: what gets written into a client config, and what a client that
+ * discovers models over `/v1/models` sees.
+ *
+ * Saved on toggle rather than on 写入 — it is a pool-level setting, the pool's own
+ * model list changes at once, and the 「配置已过期」hint then nudges the user to
+ * rewrite the client configs.
+ */
+function ModelModePicker({
+  mode,
+  disabled,
+  onChange,
+}: {
+  mode: RoutePoolModelMode;
+  disabled: boolean;
+  onChange: (mode: RoutePoolModelMode) => void;
+}) {
+  const active = modelModeOptions.find((option) => option.mode === mode) ?? modelModeOptions[0];
+
+  return (
+    <div className="grid gap-2 rounded-md bg-stone-50 px-3.5 py-3">
+      <span className="text-[11px] font-semibold text-stone-600">模型清单</span>
+      <div
+        aria-label="模型清单模式"
+        className="flex w-fit rounded-md bg-white p-1 shadow-inner"
+        role="radiogroup"
+      >
+        {modelModeOptions.map((option) => (
+          <button
+            key={option.mode}
+            aria-checked={mode === option.mode}
+            className={`rounded px-3 py-1.5 text-xs font-semibold motion-control focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60 ${
+              mode === option.mode ? "bg-stone-900 text-white" : "text-stone-600 hover:text-stone-950"
+            }`}
+            disabled={disabled}
+            onClick={() => {
+              if (mode !== option.mode) {
+                onChange(option.mode);
+              }
+            }}
+            role="radio"
+            type="button"
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+      <p className="text-[11px] leading-5 text-stone-500">{active.hint}</p>
+    </div>
+  );
+}
+
 type ConfigWriteTargetsDialogProps = {
   platform: string;
   /** Human-readable name of the agent tab, for prose that names it. */
@@ -141,6 +207,11 @@ type ConfigWriteTargetsDialogProps = {
   /** Why HTTPS is absent even though it was turned on. */
   httpsError?: string | null;
   poolApiKey?: string | null;
+  /** Current catalog mode for this platform; `undefined` until the pool loads. */
+  modelMode?: RoutePoolModelMode;
+  /** A mode change is saving right now, so the picker is frozen. */
+  modelModeSaving?: boolean;
+  onModelModeChange?: (mode: RoutePoolModelMode) => void;
   loading: boolean;
   error: string | null;
   onClose: () => void;
@@ -157,6 +228,9 @@ export function ConfigWriteTargetsDialog({
   poolHttpsBaseUrl = null,
   httpsError = null,
   poolApiKey = null,
+  modelMode = "aggregate",
+  modelModeSaving = false,
+  onModelModeChange,
   loading,
   error,
   onClose,
@@ -337,7 +411,14 @@ export function ConfigWriteTargetsDialog({
         </header>
 
         <form className="flex min-h-0 flex-1 flex-col" onSubmit={submit}>
-          <div className="px-6 pt-4">
+          <div className="grid gap-4 px-6 pt-4">
+            {onModelModeChange ? (
+              <ModelModePicker
+                disabled={loading || modelModeSaving}
+                mode={modelMode}
+                onChange={onModelModeChange}
+              />
+            ) : null}
             <div
               aria-label="接入方式"
               className="flex w-fit rounded-md bg-stone-100 p-1"

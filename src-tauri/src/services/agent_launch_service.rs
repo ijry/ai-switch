@@ -13,7 +13,8 @@ use crate::models::platform::PlatformId;
 use crate::models::route_credential::RouteCredentialPoolScope;
 use crate::models::route_credential_transfer::RouteCredentialSelectionContext;
 use crate::services::route_model_capability::{
-    advertised_model_catalog_entries, codex_reasoning_metadata, parse_model_capability,
+    advertised_model_catalog_entries, catalog_member_inputs, catalog_members,
+    codex_reasoning_metadata,
 };
 use crate::terminal_manager::{
     agent_program_name, agent_supports_model_flag, agent_supports_reasoning, find_program_in_path,
@@ -140,14 +141,15 @@ impl AgentLaunchService {
             },
         )
         .await?;
-        let capabilities = credentials
-            .iter()
-            .map(|credential| parse_model_capability(&credential.config_json))
-            .collect::<Vec<_>>();
+        let members = catalog_members(&catalog_member_inputs(&credentials));
+        // Follows the platform's mode so the launcher offers the same vocabulary
+        // the written client config carries — a Codex CLI whose catalog only lists
+        // prefixed ids would reject a bare `--model`.
+        let mode = RoutePoolRepository::model_mode(pool, platform.as_str()).await?;
 
         let supports_reasoning = agent_supports_reasoning(platform.as_str());
         Ok(
-            advertised_model_catalog_entries(platform.as_str(), &capabilities)
+            advertised_model_catalog_entries(platform.as_str(), &members, mode)
                 .into_iter()
                 .map(|entry| {
                     if !supports_reasoning {
@@ -158,9 +160,10 @@ impl AgentLaunchService {
                         };
                     }
                     // Same per-alias list the catalog advertises, so `--reasoning`
-                    // can only offer efforts the router will accept.
+                    // can only offer efforts the router will accept. Keyed by the
+                    // bare alias: a prefixed id matches no profile table.
                     let (levels, default_level) =
-                        codex_reasoning_metadata(&entry.id, entry.reasoning_levels.as_deref());
+                        codex_reasoning_metadata(&entry.base_id, entry.reasoning_levels.as_deref());
                     AgentLaunchModel {
                         id: entry.id,
                         reasoning_levels: levels.iter().filter_map(reasoning_level).collect(),

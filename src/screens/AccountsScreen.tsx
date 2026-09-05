@@ -127,6 +127,7 @@ import {
   saveSettings,
   setRouteCredentialStatuses,
   setRoutePoolMembers,
+  setRoutePoolModelMode,
   startRouteProxy,
   stopRouteProxy,
   subscribeRouteProxyLiveLog,
@@ -161,6 +162,7 @@ import type {
   RecoveryMode,
   RecoveryRule,
   RouteModelsFetchRequest,
+  RoutePoolModelMode,
   RoutePoolModelTestOutcome,
   RoutePoolModelTestRequest,
   RouteProxyLiveLogEntry,
@@ -4219,6 +4221,20 @@ export function AccountsScreen({
     },
     onError: (error) => setConfigWriteError(formatConfigWriteError(error)),
   });
+  // The pool's own `/v1/models` changes the moment this is saved, so it is its own
+  // mutation rather than a parameter of the write: a user whose clients discover
+  // models over HTTP never clicks 写入 at all.
+  const setModelModeMutation = useMutation({
+    mutationFn: (mode: RoutePoolModelMode) =>
+      setRoutePoolModelMode({ platform: activePlatform, mode }),
+    onSuccess: (state) => {
+      queryClient.setQueryData(["route-pool", activePlatform], state);
+      // The rendered client config now differs from disk, which is exactly what
+      // the staleness hint is for.
+      void queryClient.invalidateQueries({ queryKey: ["route-config-stale"] });
+    },
+    onError: (error) => setConfigWriteError(formatApiError(error, "切换模型清单模式失败。")),
+  });
   // Config is written on demand, so mapping and client-config edits sit unapplied
   // until the user asks for a write. The backend answers this by rendering through
   // the real adapter and diffing against disk, so the hint cannot drift from what
@@ -4233,6 +4249,8 @@ export function AccountsScreen({
       allCredentialsQuery.dataUpdatedAt,
       settingsQuery.data?.claude_client_config_json ?? null,
       storedClientSelection,
+      // The written model ids follow the mode, so switching it makes the file stale.
+      routePoolQuery.data?.model_mode ?? null,
     ],
     queryFn: () =>
       routeConfigWriteIsStale(
@@ -7681,11 +7699,14 @@ export function AccountsScreen({
           httpsError={routeProxyQuery.data?.https_error ?? null}
           initialSelection={storedClientSelection}
           loading={writeConfigsMutation.isPending}
+          modelMode={routePoolQuery.data?.model_mode ?? "aggregate"}
+          modelModeSaving={setModelModeMutation.isPending}
           onClose={() => {
             if (!writeConfigsMutation.isPending) {
               setConfigWriteDialogOpen(false);
             }
           }}
+          onModelModeChange={(mode) => setModelModeMutation.mutate(mode)}
           onSubmit={(clientKeys) => writeConfigsMutation.mutate(clientKeys)}
           platform={activePlatform}
           platformLabel={platformLabels[activePlatform]}

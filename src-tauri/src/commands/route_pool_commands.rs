@@ -3,7 +3,7 @@ use crate::error::{ApiError, AppError};
 use crate::models::route_pool::{
     FetchedRouteModel, RouteModelsFetchRequest, RoutePoolModelTestOutcome,
     RoutePoolModelTestRequest, RoutePoolRouteOutcome, RoutePoolRouteRequest, RoutePoolState,
-    SetRoutePoolMembersInput,
+    SetRoutePoolMembersInput, SetRoutePoolModelModeInput,
 };
 use crate::services::route_model_fetch_service::RouteModelFetchService;
 use crate::services::route_model_test_service::RouteModelTestService;
@@ -58,6 +58,19 @@ pub async fn set_route_pool_members(
     input: SetRoutePoolMembersInput,
 ) -> Result<RoutePoolState, ApiError> {
     RoutePoolService::set_members(&state.pool, input)
+        .await
+        .map_err(ApiError::from)
+}
+
+/// Switch the platform between the aggregated model list and the per-account
+/// one. Takes effect immediately for `/v1/models`; client config files only
+/// change on the next write.
+#[tauri::command]
+pub async fn set_route_pool_model_mode(
+    state: State<'_, AppState>,
+    input: SetRoutePoolModelModeInput,
+) -> Result<RoutePoolState, ApiError> {
+    RoutePoolService::set_model_mode(&state.pool, input)
         .await
         .map_err(ApiError::from)
 }

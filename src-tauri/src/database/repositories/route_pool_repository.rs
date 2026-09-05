@@ -2,6 +2,7 @@ use crate::error::AppError;
 use crate::models::route_pool::{
     ProxyRequestRow, RoutePoolMemberAccount, RoutePoolStats, RoutePoolUsageLog, RouteUsageBreakdown,
 };
+use crate::services::route_pool_model_mode::PoolModelMode;
 use chrono::Utc;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use std::collections::HashSet;
@@ -251,6 +252,52 @@ impl RoutePoolRepository {
                 max_concurrency: row.get("max_concurrency"),
             })
             .collect())
+    }
+
+    /// The platform's model catalog mode. A missing row — or an unrecognized
+    /// value — reads as [`PoolModelMode::Aggregate`]: this switch must never be
+    /// the thing that makes the pool unusable.
+    pub async fn model_mode(pool: &SqlitePool, platform: &str) -> Result<PoolModelMode, AppError> {
+        let row = sqlx::query("SELECT mode FROM route_pool_model_modes WHERE platform = ?")
+            .bind(platform)
+            .fetch_optional(pool)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.route_pool_model_mode_get",
+                message: "Could not load route pool model mode".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })?;
+
+        Ok(row
+            .map(|row| PoolModelMode::parse(row.get::<String, _>("mode").as_str()))
+            .unwrap_or_default())
+    }
+
+    pub async fn save_model_mode(
+        pool: &SqlitePool,
+        platform: &str,
+        mode: PoolModelMode,
+    ) -> Result<(), AppError> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO route_pool_model_modes (platform, mode, updated_at)
+             VALUES (?, ?, ?)
+             ON CONFLICT(platform) DO UPDATE SET mode = excluded.mode, updated_at = excluded.updated_at",
+        )
+        .bind(platform)
+        .bind(mode.as_str())
+        .bind(&now)
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_pool_model_mode_save",
+            message: "Could not save route pool model mode".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+
+        Ok(())
     }
 
     pub async fn next_cursor_index(pool: &SqlitePool, platform: &str) -> Result<i64, AppError> {
@@ -629,6 +676,69 @@ mod tests {
         .await
         .unwrap()
         .id
+    }
+
+    #[tokio::test]
+    async fn model_mode_defaults_to_aggregate_and_survives_a_round_trip() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+
+        // No row yet: every pool that predates the switch keeps rotating.
+        assert_eq!(
+            RoutePoolRepository::model_mode(&pool, "codex")
+                .await
+                .unwrap(),
+            PoolModelMode::Aggregate
+        );
+
+        RoutePoolRepository::save_model_mode(&pool, "codex", PoolModelMode::Precise)
+            .await
+            .unwrap();
+        assert_eq!(
+            RoutePoolRepository::model_mode(&pool, "codex")
+                .await
+                .unwrap(),
+            PoolModelMode::Precise
+        );
+        // Per platform: switching codex must not move claude.
+        assert_eq!(
+            RoutePoolRepository::model_mode(&pool, "claude")
+                .await
+                .unwrap(),
+            PoolModelMode::Aggregate
+        );
+
+        RoutePoolRepository::save_model_mode(&pool, "codex", PoolModelMode::Aggregate)
+            .await
+            .unwrap();
+        assert_eq!(
+            RoutePoolRepository::model_mode(&pool, "codex")
+                .await
+                .unwrap(),
+            PoolModelMode::Aggregate
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hand_edited_model_mode_reads_as_aggregate() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO route_pool_model_modes (platform, mode, updated_at) VALUES (?, ?, ?)",
+        )
+        .bind("codex")
+        .bind("per-account")
+        .bind("2026-09-06T00:00:00Z")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            RoutePoolRepository::model_mode(&pool, "codex")
+                .await
+                .unwrap(),
+            PoolModelMode::Aggregate
+        );
     }
 
     #[tokio::test]

@@ -1,4 +1,9 @@
-use crate::models::route_credential::{is_fallback_mapping, ModelMapping};
+use crate::models::route_credential::{
+    is_fallback_mapping, is_synthetic_route_alias, ModelMapping,
+};
+use crate::services::route_pool_model_mode::{
+    assign_member_prefixes, PoolModelMode, OFFICIAL_MODEL_PREFIX,
+};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
@@ -7,9 +12,88 @@ pub(crate) struct ModelCapability {
     pub(crate) mappings: Vec<ModelMapping>,
 }
 
+/// One pool member as the catalog sees it: its parsed mappings plus the prefix
+/// its entries carry in precise mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModelCatalogMember {
+    /// `"api"` or `"official"`.
+    pub(crate) kind: String,
+    /// The account's own prefix, or [`OFFICIAL_MODEL_PREFIX`] for every official
+    /// account — they share one entry set.
+    pub(crate) prefix: String,
+    pub(crate) capability: ModelCapability,
+}
+
+/// What a caller hands over per pool member. Every call site has these four
+/// fields on the row it already loaded.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CatalogMemberInput<'a> {
+    pub(crate) id: &'a str,
+    pub(crate) display_name: &'a str,
+    pub(crate) kind: &'a str,
+    pub(crate) config_json: &'a str,
+}
+
+/// Shorthand for the two call sites that already hold full credential rows.
+pub(crate) fn catalog_member_inputs(
+    credentials: &[crate::models::route_credential::RouteCredential],
+) -> Vec<CatalogMemberInput<'_>> {
+    credentials
+        .iter()
+        .map(|credential| CatalogMemberInput {
+            id: &credential.id,
+            display_name: &credential.display_name,
+            kind: &credential.kind,
+            config_json: &credential.config_json,
+        })
+        .collect()
+}
+
+/// Parse each member's mappings and hand out precise-mode prefixes.
+///
+/// Official members are collapsed onto the reserved prefix and lose their
+/// synthetic aliases, matching what routing does for them
+/// (`filter_candidates_for_model`): their bodies are forwarded unrewritten, so an
+/// invented alias would reach the vendor verbatim, and advertising one would
+/// promise a model the router refuses to serve.
+pub(crate) fn catalog_members(inputs: &[CatalogMemberInput<'_>]) -> Vec<ModelCatalogMember> {
+    let api_members: Vec<(&str, &str)> = inputs
+        .iter()
+        .filter(|input| input.kind != "official")
+        .map(|input| (input.id, input.display_name))
+        .collect();
+    // Only API accounts compete for a prefix; the official ones share theirs.
+    let mut api_prefixes = assign_member_prefixes(&api_members).into_iter();
+
+    inputs
+        .iter()
+        .map(|input| {
+            let mut capability = parse_model_capability(input.config_json);
+            let prefix = if input.kind == "official" {
+                capability
+                    .mappings
+                    .retain(|mapping| !is_synthetic_route_alias(&mapping.from));
+                OFFICIAL_MODEL_PREFIX.to_string()
+            } else {
+                api_prefixes.next().unwrap_or_default()
+            };
+            ModelCatalogMember {
+                kind: input.kind.to_string(),
+                prefix,
+                capability,
+            }
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AdvertisedModel {
     pub(crate) id: String,
+    /// `id` without its account prefix. Everything that reads a *model name* out
+    /// of an entry — the Codex reasoning profile, the `[1m]` window rule — has to
+    /// use this: `Grox/gpt-5.6-sol` matches no profile table, and would silently
+    /// drop the model to the generic three-tier default.
+    pub(crate) base_id: String,
     description: String,
     /// The model this alias is rewritten to. Read per source before the merge,
     /// because the default context window is a property of the *upstream* model
@@ -185,13 +269,18 @@ pub(crate) fn codex_reasoning_metadata(
     (levels, default_level)
 }
 
-pub(crate) fn codex_model_catalog_payload(capabilities: &[ModelCapability]) -> Value {
-    let models = advertised_model_catalog_entries("codex", capabilities)
+pub(crate) fn codex_model_catalog_payload(
+    members: &[ModelCatalogMember],
+    mode: PoolModelMode,
+) -> Value {
+    let models = advertised_model_catalog_entries("codex", members, mode)
         .into_iter()
         .enumerate()
         .map(|(index, model)| {
+            // Keyed by the bare alias: the reasoning table knows `gpt-5.6-sol`,
+            // never `Grox/gpt-5.6-sol`.
             let (supported_reasoning_levels, default_reasoning_level) =
-                codex_reasoning_metadata(&model.id, model.reasoning_levels.as_deref());
+                codex_reasoning_metadata(&model.base_id, model.reasoning_levels.as_deref());
             let context_window =
                 codex_effective_context_window(model.context_window, &model.upstream_model);
             json!({
@@ -406,17 +495,28 @@ pub(crate) fn known_upstream_models(
 
 pub(crate) fn advertised_model_ids(
     platform: &str,
-    capabilities: &[ModelCapability],
+    members: &[ModelCatalogMember],
+    mode: PoolModelMode,
 ) -> Vec<String> {
-    advertised_model_catalog_entries(platform, capabilities)
+    advertised_model_catalog_entries(platform, members, mode)
         .into_iter()
         .map(|model| model.id)
         .collect()
 }
 
+/// The pool's client-facing word list.
+///
+/// In [`PoolModelMode::Aggregate`] every member contributes into one shared,
+/// de-duplicated list — two accounts offering `gpt-5.6-sol` produce one entry and
+/// the router rotates between them. In [`PoolModelMode::Precise`] each entry id is
+/// prefixed with its member's prefix, so the ids no longer collide across API
+/// accounts and each one addresses exactly the account that declared it. Official
+/// members all carry the reserved prefix, so they still merge into one entry set
+/// and still rotate.
 pub(crate) fn advertised_model_catalog_entries(
     platform: &str,
-    capabilities: &[ModelCapability],
+    members: &[ModelCatalogMember],
+    mode: PoolModelMode,
 ) -> Vec<AdvertisedModel> {
     let mut models = Vec::new();
     let mut seen = HashSet::new();
@@ -426,7 +526,8 @@ pub(crate) fn advertised_model_catalog_entries(
     // account rather than once for the pool: two catch-all accounts can rewrite
     // the same baseline alias to different upstream models, and the merge needs
     // to see both claims to pick the larger window.
-    for capability in capabilities {
+    for member in members {
+        let capability = &member.capability;
         let fallback_target = capability
             .mappings
             .iter()
@@ -437,12 +538,14 @@ pub(crate) fn advertised_model_catalog_entries(
             continue;
         }
         for model in default_client_models(platform) {
+            let id = catalog_entry_id(mode, member, model);
             push_unique_model(
                 platform,
                 &mut models,
                 &mut seen,
                 ModelContribution {
-                    id: model,
+                    id: &id,
+                    base_id: model,
                     description: model,
                     // A catch-all rewrites every alias to one upstream model, so
                     // that is what serves this baseline entry and what its
@@ -457,8 +560,8 @@ pub(crate) fn advertised_model_catalog_entries(
         }
     }
 
-    for capability in capabilities {
-        for mapping in &capability.mappings {
+    for member in members {
+        for mapping in &member.capability.mappings {
             // The catch-all sentinel is not a model id — advertising it would put
             // `FALLBACK_MODEL_ALIAS` in front of users as if it were something
             // they could pick. Its baseline contribution is handled above.
@@ -472,8 +575,10 @@ pub(crate) fn advertised_model_catalog_entries(
             } else {
                 format!("映射的上游模型：{to}")
             };
+            let id = catalog_entry_id(mode, member, from);
             let contribution = ModelContribution {
-                id: from,
+                id: &id,
+                base_id: from,
                 description: &description,
                 upstream_model: to,
                 context_window: mapping.context_window,
@@ -485,12 +590,14 @@ pub(crate) fn advertised_model_catalog_entries(
                 let base = strip_one_m_suffix_for_route_lookup(&mapping.from);
                 if is_claude_route_model(base) {
                     let one_m = format!("{base}[1m]");
+                    let one_m_id = catalog_entry_id(mode, member, &one_m);
                     push_unique_model(
                         platform,
                         &mut models,
                         &mut seen,
                         ModelContribution {
-                            id: &one_m,
+                            id: &one_m_id,
+                            base_id: &one_m,
                             ..contribution
                         },
                     );
@@ -500,6 +607,16 @@ pub(crate) fn advertised_model_catalog_entries(
     }
 
     models
+}
+
+/// The id one member contributes for one alias. Precise mode is the only place a
+/// prefix appears, so aggregate output stays byte-identical to what the pool
+/// advertised before the mode existed.
+fn catalog_entry_id(mode: PoolModelMode, member: &ModelCatalogMember, alias: &str) -> String {
+    match mode {
+        PoolModelMode::Aggregate => alias.to_string(),
+        PoolModelMode::Precise => format!("{}/{}", member.prefix, alias),
+    }
 }
 
 fn default_client_models(platform: &str) -> &'static [&'static str] {
@@ -522,6 +639,9 @@ fn default_client_models(platform: &str) -> &'static [&'static str] {
 #[derive(Clone, Copy)]
 struct ModelContribution<'a> {
     id: &'a str,
+    /// `id` without the account prefix — the name any model-name table is keyed
+    /// by.
+    base_id: &'a str,
     description: &'a str,
     upstream_model: &'a str,
     context_window: Option<u32>,
@@ -570,6 +690,7 @@ fn push_unique_model(
     if seen.insert(key) {
         models.push(AdvertisedModel {
             id: trimmed.to_string(),
+            base_id: contribution.base_id.trim().to_string(),
             description: contribution.description.to_string(),
             upstream_model: contribution.upstream_model.trim().to_string(),
             context_window: claimed_window,
@@ -579,7 +700,7 @@ fn push_unique_model(
         .iter_mut()
         .find(|entry| entry.id.eq_ignore_ascii_case(trimmed))
     {
-        if existing.description == existing.id && contribution.description != trimmed {
+        if existing.description == existing.base_id && contribution.description != trimmed {
             existing.description = contribution.description.to_string();
         }
         // A baseline contribution names itself as its own upstream, because a
@@ -587,8 +708,15 @@ fn push_unique_model(
         // a real mapping so the entry names the model that actually serves the
         // request. The advertised window no longer rides on winning this race:
         // every contribution resolves its own default before the merge.
-        if existing.upstream_model.eq_ignore_ascii_case(&existing.id)
-            && !contribution.upstream_model.eq_ignore_ascii_case(trimmed)
+        //
+        // Compared against `base_id` rather than `id` so precise mode behaves the
+        // same: there the id carries an account prefix the upstream name never has.
+        if existing
+            .upstream_model
+            .eq_ignore_ascii_case(&existing.base_id)
+            && !contribution
+                .upstream_model
+                .eq_ignore_ascii_case(contribution.base_id)
         {
             existing.upstream_model = contribution.upstream_model.trim().to_string();
         }
@@ -678,15 +806,65 @@ fn is_claude_route_model(model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        advertised_model_catalog_entries, advertised_model_ids, alias_for_model_key,
-        codex_default_context_window, codex_effective_context_window, codex_model_catalog_payload,
-        codex_reasoning_levels, codex_reasoning_metadata, codex_reasoning_profile,
-        known_upstream_models, model_state_key, parse_model_capability, requested_model_from_body,
-        resolve_mapping_target, supports_requested_model, ModelCapability,
+        alias_for_model_key, catalog_members, codex_default_context_window,
+        codex_effective_context_window, codex_reasoning_levels, codex_reasoning_metadata,
+        codex_reasoning_profile, known_upstream_models, model_state_key, parse_model_capability,
+        requested_model_from_body, resolve_mapping_target, supports_requested_model,
+        AdvertisedModel, CatalogMemberInput, ModelCapability, ModelCatalogMember,
         CODEX_ONE_M_CONTEXT_WINDOW,
     };
     use crate::models::route_credential::{ModelMapping, FALLBACK_MODEL_ALIAS};
+    use crate::services::route_pool_model_mode::PoolModelMode;
     use serde_json::Value;
+
+    /// Each capability as its own API account. Aggregate mode ignores kinds and
+    /// prefixes, so this describes exactly the pool the pre-mode tests meant.
+    fn api_members(capabilities: &[ModelCapability]) -> Vec<ModelCatalogMember> {
+        capabilities
+            .iter()
+            .map(|capability| ModelCatalogMember {
+                kind: "api".to_string(),
+                prefix: "acct".to_string(),
+                capability: capability.clone(),
+            })
+            .collect()
+    }
+
+    // The pre-mode signatures, kept so every assertion written against the
+    // aggregated word list keeps proving that list did not move.
+    fn advertised_model_ids(platform: &str, capabilities: &[ModelCapability]) -> Vec<String> {
+        super::advertised_model_ids(
+            platform,
+            &api_members(capabilities),
+            PoolModelMode::Aggregate,
+        )
+    }
+
+    fn advertised_model_catalog_entries(
+        platform: &str,
+        capabilities: &[ModelCapability],
+    ) -> Vec<AdvertisedModel> {
+        super::advertised_model_catalog_entries(
+            platform,
+            &api_members(capabilities),
+            PoolModelMode::Aggregate,
+        )
+    }
+
+    fn codex_model_catalog_payload(capabilities: &[ModelCapability]) -> Value {
+        super::codex_model_catalog_payload(&api_members(capabilities), PoolModelMode::Aggregate)
+    }
+
+    /// One pool member for the precise-mode tests, which do care about kinds.
+    fn member(id: &str, display_name: &str, kind: &str, config_json: &str) -> ModelCatalogMember {
+        catalog_members(&[CatalogMemberInput {
+            id,
+            display_name,
+            kind,
+            config_json,
+        }])
+        .remove(0)
+    }
 
     #[test]
     fn codex_baseline_models_use_distinct_reasoning_profiles() {
@@ -1461,5 +1639,152 @@ mod tests {
             Some("gpt-5.6-sol")
         );
         assert!(alias_for_model_key(&capability, "unknown").is_none());
+    }
+
+    #[test]
+    fn precise_mode_keeps_each_api_account_separate() {
+        let grox = member(
+            "id-grox",
+            "Grox",
+            "api",
+            r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"deepseek-v4-flash-0731"}]}"#,
+        );
+        let kan = member(
+            "id-kan",
+            "247Kan",
+            "api",
+            r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"relay-sol","context_window":200000}]}"#,
+        );
+
+        let entries =
+            super::advertised_model_catalog_entries("codex", &[grox, kan], PoolModelMode::Precise);
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Grox/gpt-5.6-sol", "247Kan/gpt-5.6-sol"]
+        );
+        // No cross-account merge, so no maximum is taken: each entry advertises
+        // the window its own account actually serves.
+        assert_eq!(entries[0].context_window, Some(CODEX_ONE_M_CONTEXT_WINDOW));
+        assert_eq!(entries[1].context_window, Some(200_000));
+        // The bare alias travels along for every table keyed by a model name.
+        assert!(entries.iter().all(|entry| entry.base_id == "gpt-5.6-sol"));
+    }
+
+    #[test]
+    fn precise_mode_merges_official_accounts_under_the_reserved_prefix() {
+        let first = member(
+            "id-one",
+            "ChatGPT 一号",
+            "official",
+            r#"{"model_mappings":[]}"#,
+        );
+        let second = member(
+            "id-two",
+            "ChatGPT 二号",
+            "official",
+            r#"{"model_mappings":[]}"#,
+        );
+
+        let ids = super::advertised_model_ids("codex", &[first, second], PoolModelMode::Precise);
+
+        // One entry set for the whole official group: they are pooled for quota
+        // rotation, so expanding them per account would be N identical rows.
+        assert_eq!(
+            ids,
+            vec![
+                "official/gpt-5.6-sol",
+                "official/gpt-5.6-terra",
+                "official/gpt-5.6-luna",
+                "official/gpt-5.5",
+            ]
+        );
+    }
+
+    #[test]
+    fn official_members_never_advertise_a_synthetic_alias() {
+        // `claude-subagent` is ours, not the vendor's, and an official account
+        // forwards the name unrewritten — so advertising it would promise a model
+        // the router refuses to serve.
+        let official = member(
+            "id-one",
+            "Claude 官方",
+            "official",
+            r#"{"model_mappings":[{"from":"claude-subagent","to":"claude-sonnet-5"}]}"#,
+        );
+
+        let ids = super::advertised_model_ids("claude", &[official], PoolModelMode::Aggregate);
+
+        assert!(!ids.iter().any(|id| id == "claude-subagent"), "ids={ids:?}");
+        // With its only mapping gone it is a baseline wildcard again.
+        assert!(
+            ids.contains(&"claude-sonnet-alias".to_string()),
+            "ids={ids:?}"
+        );
+    }
+
+    #[test]
+    fn precise_mode_prefixes_the_claude_one_m_twin() {
+        let account = member(
+            "id-one",
+            "TaBiAI",
+            "api",
+            r#"{"model_mappings":[{"from":"claude-opus-alias","to":"claude-opus-5","supports_1m":true}]}"#,
+        );
+
+        let ids = super::advertised_model_ids("claude", &[account], PoolModelMode::Precise);
+
+        assert_eq!(
+            ids,
+            vec!["TaBiAI/claude-opus-alias", "TaBiAI/claude-opus-alias[1m]"]
+        );
+    }
+
+    #[test]
+    fn precise_mode_prefixes_the_baseline_a_wildcard_account_contributes() {
+        let wildcard = member("id-one", "Grox", "api", r#"{"model_mappings":[]}"#);
+        let catch_all = member(
+            "id-two",
+            "sink",
+            "api",
+            &format!(
+                r#"{{"model_mappings":[{{"from":"{FALLBACK_MODEL_ALIAS}","to":"catch-all-upstream"}}]}}"#
+            ),
+        );
+
+        let ids =
+            super::advertised_model_ids("grok", &[wildcard, catch_all], PoolModelMode::Precise);
+
+        assert_eq!(ids, vec!["Grox/grok-4.5", "sink/grok-4.5"]);
+    }
+
+    #[test]
+    fn same_named_api_accounts_get_distinct_precise_ids() {
+        let members = catalog_members(&[
+            CatalogMemberInput {
+                id: "aaaaaa1111",
+                display_name: "TaBiAI",
+                kind: "api",
+                config_json: r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"a"}]}"#,
+            },
+            CatalogMemberInput {
+                id: "bbbbbb2222",
+                display_name: "TaBiAI",
+                kind: "api",
+                config_json: r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"b"}]}"#,
+            },
+        ]);
+
+        let ids = super::advertised_model_ids("codex", &members, PoolModelMode::Precise);
+
+        // Both suffixed, so neither id depends on which sibling happens to be
+        // healthy when the catalog is written.
+        assert_eq!(
+            ids,
+            vec!["TaBiAI-aaaaaa/gpt-5.6-sol", "TaBiAI-bbbbbb/gpt-5.6-sol"]
+        );
     }
 }

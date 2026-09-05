@@ -209,6 +209,8 @@ For the Claude platform, use `/v1/messages` and an Anthropic Messages body.
 
 The proxy also serves an OpenAI-style model list. A `GET` to the models path returns the deduplicated client-facing model ids aggregated across every account in the pool, without forwarding upstream. That's what 查看模型列表 ("view model list") in the menu shows.
 
+To send a request to one specific account, switch the model list at the top of the 「接入算力池」 dialog to **精确模式** ("precise mode"): the list becomes `account/model` (official accounts merge into `official/model`), and whichever entry you pick is the account that serves the request. See [Protocol & Routing](/en/guide/protocol-routing#precise-mode-pin-a-request-to-one-account).
+
 ## Step 5: Confirm billing in the usage stats
 
 Switch the bottom view to **「统计」** ("stats").

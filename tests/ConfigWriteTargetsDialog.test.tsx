@@ -305,4 +305,46 @@ describe("ConfigWriteTargetsDialog", () => {
 
     expect(screen.getByLabelText("Base URL")).toHaveValue("http://127.0.0.1:19527");
   });
+
+  it("shows the model list mode and reports a switch", async () => {
+    const user = userEvent.setup();
+    const onModelModeChange = vi.fn();
+    setup({ modelMode: "aggregate", onModelModeChange });
+
+    // Above the tabs, because the mode also decides what a client that discovers
+    // models over /v1/models sees.
+    expect(screen.getByRole("radio", { name: "聚合模式" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByText(/请求在池内轮换/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: "精确模式" }));
+
+    expect(onModelModeChange).toHaveBeenCalledWith("precise");
+  });
+
+  it("explains precise mode, official accounts included", () => {
+    setup({ modelMode: "precise", onModelModeChange: vi.fn() });
+
+    expect(screen.getByRole("radio", { name: "精确模式" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByText(/官方账号合并为「official\/模型」继续轮换/)).toBeInTheDocument();
+  });
+
+  it("freezes the mode picker while a switch is saving", () => {
+    setup({ modelMode: "aggregate", modelModeSaving: true, onModelModeChange: vi.fn() });
+
+    expect(screen.getByRole("radio", { name: "精确模式" })).toBeDisabled();
+  });
+
+  it("hides the mode picker when the screen cannot save one", () => {
+    // No callback means no owner for the setting, and a control that silently
+    // does nothing is worse than no control.
+    setup();
+
+    expect(screen.queryByRole("radiogroup", { name: "模型清单模式" })).not.toBeInTheDocument();
+  });
 });

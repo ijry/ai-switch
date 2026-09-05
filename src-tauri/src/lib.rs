@@ -51,7 +51,8 @@ use commands::route_credential_transfer_commands::{
 };
 use commands::route_pool_commands::{
     fetch_route_models, get_route_pool, route_pool_route_once, route_pool_test_model,
-    set_route_pool_members, subscribe_route_proxy_live_log, unsubscribe_route_proxy_live_log,
+    set_route_pool_members, set_route_pool_model_mode, subscribe_route_proxy_live_log,
+    unsubscribe_route_proxy_live_log,
 };
 use commands::route_proxy_commands::{
     get_route_proxy_key, get_route_proxy_status, route_config_write_is_stale, start_route_proxy,
@@ -561,6 +562,7 @@ pub fn run() {
             import_example_json,
             get_route_pool,
             set_route_pool_members,
+            set_route_pool_model_mode,
             route_pool_route_once,
             route_pool_test_model,
             fetch_route_models,

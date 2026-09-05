@@ -19,8 +19,8 @@ use crate::services::config_write_service::{
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_model_capability::{
-    advertised_model_catalog_entries, codex_default_context_window, codex_model_catalog_payload,
-    parse_model_capability,
+    advertised_model_catalog_entries, catalog_member_inputs, catalog_members,
+    codex_default_context_window, codex_model_catalog_payload, parse_model_capability,
 };
 use crate::services::settings_service::SettingsService;
 use directories::BaseDirs;
@@ -547,28 +547,17 @@ impl RouteConfigService {
         pool: &SqlitePool,
         platform: PlatformId,
     ) -> Result<Vec<ClientModel>, AppError> {
-        let ids = RoutePoolRepository::list_member_ids(pool, platform.as_str()).await?;
-        let credentials = RouteCredentialRepository::list_by_ids(
-            pool,
-            &ids,
-            &RouteCredentialSelectionContext {
-                platform: platform.as_str().to_string(),
-                pool_scope: RouteCredentialPoolScope::InPool,
-            },
-        )
-        .await?;
-        let capabilities = credentials
-            .iter()
-            .map(|credential| parse_model_capability(&credential.config_json))
-            .collect::<Vec<_>>();
+        let credentials = Self::pool_member_credentials(pool, platform).await?;
+        let members = catalog_members(&catalog_member_inputs(&credentials));
+        let mode = RoutePoolRepository::model_mode(pool, platform.as_str()).await?;
 
         Ok(
-            advertised_model_catalog_entries(platform.as_str(), &capabilities)
+            advertised_model_catalog_entries(platform.as_str(), &members, mode)
                 .into_iter()
                 .map(|model| ClientModel {
                     context_window: client_model_context_window(
                         platform,
-                        &model.id,
+                        &model.base_id,
                         model.context_window,
                         &model.upstream_model,
                     ),
@@ -577,6 +566,23 @@ impl RouteConfigService {
                 })
                 .collect(),
         )
+    }
+
+    /// The pool's enabled members for this platform, as full credential rows.
+    async fn pool_member_credentials(
+        pool: &SqlitePool,
+        platform: PlatformId,
+    ) -> Result<Vec<crate::models::route_credential::RouteCredential>, AppError> {
+        let ids = RoutePoolRepository::list_member_ids(pool, platform.as_str()).await?;
+        RouteCredentialRepository::list_by_ids(
+            pool,
+            &ids,
+            &RouteCredentialSelectionContext {
+                platform: platform.as_str().to_string(),
+                pool_scope: RouteCredentialPoolScope::InPool,
+            },
+        )
+        .await
     }
 
     /// Builds the Claude-only env plan for a config write. Non-Claude platforms
@@ -611,21 +617,10 @@ impl RouteConfigService {
     }
 
     async fn write_codex_model_catalog(pool: &SqlitePool, home: &Path) -> Result<(), AppError> {
-        let ids = RoutePoolRepository::list_member_ids(pool, PlatformId::Codex.as_str()).await?;
-        let credentials = RouteCredentialRepository::list_by_ids(
-            pool,
-            &ids,
-            &RouteCredentialSelectionContext {
-                platform: PlatformId::Codex.as_str().to_string(),
-                pool_scope: RouteCredentialPoolScope::InPool,
-            },
-        )
-        .await?;
-        let capabilities = credentials
-            .iter()
-            .map(|credential| parse_model_capability(&credential.config_json))
-            .collect::<Vec<_>>();
-        let payload = codex_model_catalog_payload(&capabilities);
+        let credentials = Self::pool_member_credentials(pool, PlatformId::Codex).await?;
+        let members = catalog_members(&catalog_member_inputs(&credentials));
+        let mode = RoutePoolRepository::model_mode(pool, PlatformId::Codex.as_str()).await?;
+        let payload = codex_model_catalog_payload(&members, mode);
         let bytes = serde_json::to_vec_pretty(&payload).map_err(|err| AppError::Validation {
             code: "validation.codex_model_catalog_serialization",
             message: "Could not serialize Codex model catalog".to_string(),
@@ -796,6 +791,7 @@ mod tests {
     use crate::database::{create_memory_pool, run_migrations};
     use crate::models::settings::AppSettings;
     use crate::services::config_write_service::ConfigWriteRuntimeState;
+    use crate::services::route_pool_model_mode::PoolModelMode;
     use chrono::Utc;
 
     const BASE_URL: &str = "http://127.0.0.1:43111";
@@ -2034,17 +2030,37 @@ command = "npx"
         seed_pool_member(pool, "codex", config_json).await;
     }
 
+    /// A codex pool member whose display name matters, for the precise-mode
+    /// tests: the account prefix is derived from it.
+    async fn seed_named_codex_pool_member(pool: &SqlitePool, display_name: &str, model: &str) {
+        let config_json = serde_json::json!({
+            "model_mappings": [{ "from": model, "to": model }]
+        })
+        .to_string();
+        seed_named_pool_member(pool, "codex", display_name, &config_json).await;
+    }
+
     /// An in-pool api credential on `platform`, advertising whatever
     /// `config_json`'s mappings declare.
     async fn seed_pool_member(pool: &SqlitePool, platform: &str, config_json: &str) {
+        seed_named_pool_member(pool, platform, "seed", config_json).await;
+    }
+
+    async fn seed_named_pool_member(
+        pool: &SqlitePool,
+        platform: &str,
+        display_name: &str,
+        config_json: &str,
+    ) {
         let credential_id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             "INSERT INTO route_credentials (id, platform, kind, display_name, secret_payload_json, config_json, preview_json, created_at, updated_at)
-             VALUES (?, ?, 'api', 'seed', '{}', ?, '{}', ?, ?)",
+             VALUES (?, ?, 'api', ?, '{}', ?, '{}', ?, ?)",
         )
         .bind(&credential_id)
         .bind(platform)
+        .bind(display_name)
         .bind(config_json)
         .bind(&now)
         .bind(&now)
@@ -2262,6 +2278,75 @@ command = "npx"
         // Same Codex default the CLI catalog writes for a passthrough gpt id.
         assert_eq!(entry["models"]["gpt-5.6-sol"]["limit"]["context"], 128000);
         assert_eq!(entry["aiSwitch"]["platform"], "codex");
+    }
+
+    #[tokio::test]
+    async fn precise_mode_writes_account_prefixed_models_to_every_client() {
+        let fixture = ServiceFixture::new().await;
+        seed_named_codex_pool_member(&fixture.pool, "Grox", "gpt-5.6-sol").await;
+        seed_named_codex_pool_member(&fixture.pool, "247 Kan", "gpt-5.6-sol").await;
+        RoutePoolRepository::save_model_mode(&fixture.pool, "codex", PoolModelMode::Precise)
+            .await
+            .expect("save mode");
+
+        RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            BASE_URL,
+            "codex",
+            &fixture.home,
+            Some(&["zcode".to_string(), "codex".to_string()]),
+        )
+        .await
+        .expect("write");
+
+        let raw = tokio::fs::read(fixture.home.join(".zcode/v2/config.json"))
+            .await
+            .expect("read");
+        let json: Value = serde_json::from_slice(&raw).expect("json");
+        let models = json["provider"]["ai-switch-codex"]["models"]
+            .as_object()
+            .expect("models");
+        // One entry per account, so a request names the account it wants. The
+        // aggregated id is gone: keeping it would leave a rotating door open.
+        assert!(models.contains_key("Grox/gpt-5.6-sol"), "models={models:?}");
+        assert!(
+            models.contains_key("247-Kan/gpt-5.6-sol"),
+            "models={models:?}"
+        );
+        assert!(!models.contains_key("gpt-5.6-sol"), "models={models:?}");
+
+        // The Codex CLI reads its own catalog file, which has to agree — a bare
+        // `--model` would otherwise not be in the list the CLI offers.
+        let catalog: Value = serde_json::from_slice(
+            &tokio::fs::read(codex_model_catalog_path(&fixture.home))
+                .await
+                .expect("read catalog"),
+        )
+        .expect("catalog json");
+        let slugs: Vec<&str> = catalog["models"]
+            .as_array()
+            .expect("catalog models")
+            .iter()
+            .filter_map(|model| model["slug"].as_str())
+            .collect();
+        assert!(slugs.contains(&"Grox/gpt-5.6-sol"), "slugs={slugs:?}");
+        // Read off the bare alias, not the prefixed id, or the model would lose
+        // its reasoning tiers.
+        let sol = catalog["models"]
+            .as_array()
+            .expect("catalog models")
+            .iter()
+            .find(|model| model["slug"] == "Grox/gpt-5.6-sol")
+            .expect("sol entry");
+        assert_eq!(
+            sol["supported_reasoning_levels"]
+                .as_array()
+                .expect("levels")
+                .len(),
+            6
+        );
     }
 
     #[tokio::test]

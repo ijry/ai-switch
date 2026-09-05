@@ -4,9 +4,11 @@ use crate::error::AppError;
 use crate::models::platform::{PlatformId, PlatformOperation};
 use crate::models::route_pool::{
     RoutePoolRouteOutcome, RoutePoolRouteRequest, RoutePoolState, SetRoutePoolMembersInput,
+    SetRoutePoolModelModeInput,
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_credential_activity::RouteCredentialActivityRegistry;
+use crate::services::route_pool_model_mode::PoolModelMode;
 use chrono::DateTime;
 use sqlx::SqlitePool;
 use std::collections::{BTreeMap, HashSet};
@@ -35,6 +37,31 @@ impl RoutePoolService {
             since.as_deref(),
             pagination.page,
             pagination.page_size,
+        )
+        .await
+    }
+
+    /// Switch how this platform names the models it advertises. Stored per
+    /// platform because the dialog that offers it always opens in one platform's
+    /// context, and one agent tab may want pinning while another wants rotation.
+    pub async fn set_model_mode(
+        pool: &SqlitePool,
+        input: SetRoutePoolModelModeInput,
+    ) -> Result<RoutePoolState, AppError> {
+        let platform = PlatformId::parse(&input.platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
+        RoutePoolRepository::save_model_mode(
+            pool,
+            platform.as_str(),
+            PoolModelMode::parse(&input.mode),
+        )
+        .await?;
+        Self::state(
+            pool,
+            platform.as_str(),
+            None,
+            DEFAULT_REQUEST_PAGE,
+            DEFAULT_REQUEST_PAGE_SIZE,
         )
         .await
     }
@@ -228,6 +255,10 @@ impl RoutePoolService {
         Ok(RoutePoolState {
             platform: platform.to_string(),
             account_ids: RoutePoolRepository::list_member_ids(pool, platform).await?,
+            model_mode: RoutePoolRepository::model_mode(pool, platform)
+                .await?
+                .as_str()
+                .to_string(),
             stats: RoutePoolRepository::stats(
                 pool,
                 platform,

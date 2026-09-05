@@ -117,7 +117,18 @@ pub struct RoutePoolState {
     pub platform: String,
     /// Selected route_credentials.id values, independent of current credential status.
     pub account_ids: Vec<String>,
+    /// How this platform names the models it advertises: `"aggregate"` merges the
+    /// pool into one word list, `"precise"` expands it per API account. A string
+    /// rather than an enum because it crosses to the UI as one.
+    pub model_mode: String,
     pub stats: RoutePoolStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SetRoutePoolModelModeInput {
+    pub platform: String,
+    /// `"aggregate"` or `"precise"`; anything else is read as `"aggregate"`.
+    pub mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

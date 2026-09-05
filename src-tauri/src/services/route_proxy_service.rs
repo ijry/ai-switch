@@ -34,9 +34,13 @@ use crate::services::route_credential_activity::{
 };
 use crate::services::route_failure_scope::is_account_scoped_failure;
 use crate::services::route_model_capability::{
-    advertised_model_catalog_entries, codex_effective_context_window, codex_reasoning_metadata,
-    known_upstream_models, model_state_key, parse_model_capability, parse_model_capability_value,
-    requested_model_from_body, resolve_mapping_target, supports_requested_model,
+    advertised_model_catalog_entries, catalog_members, codex_effective_context_window,
+    codex_reasoning_metadata, known_upstream_models, model_state_key, parse_model_capability,
+    parse_model_capability_value, requested_model_from_body, resolve_mapping_target,
+    supports_requested_model, CatalogMemberInput, ModelCapability,
+};
+use crate::services::route_pool_model_mode::{
+    accepted_prefixes, is_official_model_prefix, split_prefixed_model, PoolModelMode,
 };
 use crate::services::route_protocol_bridge::{
     is_anthropic_count_tokens_path, prepare_request as prepare_protocol_bridge_request,
@@ -651,9 +655,13 @@ async fn forward_request(
             .map_err(|err| err.to_string())?;
         let candidates = filter_candidates_for_rule(candidates, &routing_rule);
         let credentials = partition_by_cooldown(candidates, &HashMap::new(), Utc::now());
+        let mode = RoutePoolRepository::model_mode(pool, &platform)
+            .await
+            .map_err(|err| err.to_string())?;
         return Ok(json_models_list_response(
             &platform,
             &credentials,
+            mode,
             query.as_deref(),
         ));
     }
@@ -693,6 +701,11 @@ async fn forward_request(
     if candidates.is_empty() {
         return Err("No enabled route credentials in pool".to_string());
     }
+    // Precise-mode addressing, before anything reads the model name: a
+    // `<账号>/<别名>` request pins the pool to that one account and continues as if
+    // the client had asked for the bare alias.
+    let (candidates, requested_model, body_bytes) =
+        resolve_account_scoped_model(&platform, candidates, requested_model, body_bytes);
     // Model filtering must run before cooldown partitioning: the model a request
     // asks for decides which cooldown applies, so an account cannot be judged
     // before its model key is known. It also means the all-cooling probe below
@@ -2966,6 +2979,132 @@ fn filter_candidates_for_rule(
     candidates
 }
 
+/// The capability the router judges a candidate by.
+///
+/// `official` accounts lose their synthetic aliases: `build_official_upstream_request`
+/// never applies model mappings, so an invented alias would reach the vendor
+/// verbatim and 404. Dropping those entries keeps an alias-only official config
+/// collapsed to the baseline-only wildcard it behaved as before the aliases
+/// existed.
+fn candidate_capability(candidate: &PoolCandidate) -> ModelCapability {
+    let mut capability = parse_model_capability(&candidate.credential.config_json);
+    if candidate.credential.kind == "official" {
+        capability
+            .mappings
+            .retain(|mapping| !is_synthetic_route_alias(&mapping.from));
+    }
+    capability
+}
+
+/// Resolve a precise-mode model id (`<账号前缀>/<别名>`) to the one account it names.
+///
+/// Returns the candidates that may serve the request, the model name the rest of
+/// the pipeline should use, and the body to forward. Accepted in every mode, so
+/// switching a platform back to aggregate never strands a client config that was
+/// written while it was precise, and a hand-typed prefix works too.
+///
+/// **Order matters.** The prefix interpretation is tried *first* because an
+/// account carrying a catch-all mapping accepts any model name — asking "can
+/// anyone serve `Grox/gpt-5.6-sol` as written" would let that account swallow the
+/// request and send the prefixed name upstream. And it *falls back* to the whole
+/// string, because relays publish vendor-pathed model names of their own
+/// (`z-ai/glm-5.3`) that must keep working whether or not an account happens to
+/// share the first segment's name.
+fn resolve_account_scoped_model(
+    platform: &str,
+    candidates: Vec<PoolCandidate>,
+    requested_model: Option<String>,
+    body: axum::body::Bytes,
+) -> (Vec<PoolCandidate>, Option<String>, axum::body::Bytes) {
+    let Some(model) = requested_model else {
+        return (candidates, None, body);
+    };
+    let Some((prefix, alias)) = split_prefixed_model(&model) else {
+        return (candidates, Some(model), body);
+    };
+
+    let official_group = is_official_model_prefix(prefix);
+    let matched: Vec<bool> = candidates
+        .iter()
+        .map(|candidate| {
+            let is_official = candidate.credential.kind == "official";
+            if official_group {
+                // Every official account answers to the reserved prefix: they are
+                // pooled for quota rotation, and pinning one would cancel it.
+                return is_official;
+            }
+            !is_official
+                && accepted_prefixes(&candidate.credential.display_name, &candidate.credential.id)
+                    .iter()
+                    .any(|accepted| accepted.eq_ignore_ascii_case(prefix))
+        })
+        .collect();
+
+    let servable = candidates
+        .iter()
+        .zip(matched.iter())
+        .any(|(candidate, hit)| {
+            *hit && supports_requested_model(
+                platform,
+                &candidate_capability(candidate),
+                Some(alias),
+            )
+        });
+    if !servable {
+        return (candidates, Some(model), body);
+    }
+
+    let alias = alias.to_string();
+    let body = axum::body::Bytes::from(strip_model_prefix_in_body(&body, &model, &alias));
+    let candidates = candidates
+        .into_iter()
+        .zip(matched)
+        .filter(|(_, hit)| *hit)
+        .map(|(candidate, _)| candidate)
+        .collect();
+    (candidates, Some(alias), body)
+}
+
+/// Rewrite every `model` field that spells the prefixed name back to the bare
+/// alias.
+///
+/// Has to happen before the request is built, not inside the API branch:
+/// `build_official_upstream_request` forwards the body untouched, so an official
+/// account would otherwise receive an account-prefixed model name. Recurses like
+/// [`rewrite_model_value`] because clients repeat the model inside nested
+/// structures.
+fn strip_model_prefix_in_body(body: &[u8], prefixed: &str, alias: &str) -> Vec<u8> {
+    let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
+        return body.to_vec();
+    };
+    rewrite_matching_model_value(&mut value, prefixed.trim(), alias);
+    serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec())
+}
+
+fn rewrite_matching_model_value(value: &mut Value, prefixed: &str, alias: &str) {
+    match value {
+        Value::Object(object) => {
+            if object
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_some_and(|model| model == prefixed)
+            {
+                object.insert("model".to_string(), Value::String(alias.to_string()));
+            }
+            for child in object.values_mut() {
+                rewrite_matching_model_value(child, prefixed, alias);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                rewrite_matching_model_value(child, prefixed, alias);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Drop candidates that cannot serve the requested model, and record the model
 /// key the survivors will be charged under. Both happen in one pass because both
 /// need the same parsed capability.
@@ -2981,17 +3120,7 @@ fn filter_candidates_for_model(
     candidates
         .into_iter()
         .filter_map(|mut candidate| {
-            let mut capability = parse_model_capability(&candidate.credential.config_json);
-            if candidate.credential.kind == "official" {
-                // build_official_upstream_request never applies model mappings, so a
-                // synthetic alias would reach the vendor verbatim and 404. Ignoring
-                // those entries here keeps official accounts on exactly their
-                // pre-feature semantics (an alias-only config collapses to the
-                // baseline-only wildcard).
-                capability
-                    .mappings
-                    .retain(|mapping| !is_synthetic_route_alias(&mapping.from));
-            }
+            let capability = candidate_capability(&candidate);
             if !supports_requested_model(platform, &capability, Some(requested_model)) {
                 return None;
             }
@@ -4712,13 +4841,23 @@ fn is_models_list_path(path: &str) -> bool {
     matches!(path.trim().trim_end_matches('/'), "/models" | "/v1/models")
 }
 
-fn build_models_list_payload(platform: &str, credentials: &[SelectedCredential]) -> Value {
+fn build_models_list_payload(
+    platform: &str,
+    credentials: &[SelectedCredential],
+    mode: PoolModelMode,
+) -> Value {
     let created = Utc::now().timestamp();
-    let capabilities = credentials
+    let inputs = credentials
         .iter()
-        .map(|credential| parse_model_capability(&credential.config_json))
+        .map(|credential| CatalogMemberInput {
+            id: &credential.id,
+            display_name: &credential.display_name,
+            kind: &credential.kind,
+            config_json: &credential.config_json,
+        })
         .collect::<Vec<_>>();
-    let data: Vec<Value> = advertised_model_catalog_entries(platform, &capabilities)
+    let members = catalog_members(&inputs);
+    let data: Vec<Value> = advertised_model_catalog_entries(platform, &members, mode)
         .into_iter()
         .map(|entry| {
             let mut model = json!({
@@ -4729,7 +4868,7 @@ fn build_models_list_payload(platform: &str, credentials: &[SelectedCredential])
             });
             if platform.eq_ignore_ascii_case("codex") {
                 let (supported_reasoning_levels, default_reasoning_level) =
-                    codex_reasoning_metadata(&entry.id, entry.reasoning_levels.as_deref());
+                    codex_reasoning_metadata(&entry.base_id, entry.reasoning_levels.as_deref());
                 if let Some(object) = model.as_object_mut() {
                     object.insert(
                         "supported_reasoning_levels".to_string(),
@@ -4761,16 +4900,21 @@ fn build_models_list_payload(platform: &str, credentials: &[SelectedCredential])
     })
 }
 
-fn build_route_models_list_payload(platform: &str, credentials: &[SelectedCredential]) -> Value {
-    build_models_list_payload(platform, credentials)
+fn build_route_models_list_payload(
+    platform: &str,
+    credentials: &[SelectedCredential],
+    mode: PoolModelMode,
+) -> Value {
+    build_models_list_payload(platform, credentials, mode)
 }
 
 fn json_models_list_response(
     platform: &str,
     credentials: &[SelectedCredential],
+    mode: PoolModelMode,
     _query: Option<&str>,
 ) -> Response {
-    let payload = build_route_models_list_payload(platform, credentials);
+    let payload = build_route_models_list_payload(platform, credentials, mode);
     (
         StatusCode::OK,
         [("content-type", "application/json")],
@@ -5676,6 +5820,18 @@ async fn insert_route_credential_request_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The pre-mode signatures: these assertions are about the aggregated list.
+    fn build_models_list_payload(platform: &str, credentials: &[SelectedCredential]) -> Value {
+        super::build_models_list_payload(platform, credentials, PoolModelMode::Aggregate)
+    }
+
+    fn build_route_models_list_payload(
+        platform: &str,
+        credentials: &[SelectedCredential],
+    ) -> Value {
+        super::build_route_models_list_payload(platform, credentials, PoolModelMode::Aggregate)
+    }
     use crate::database::{create_memory_pool, run_migrations};
     use crate::models::route_credential::{
         DEFAULT_ROUTE_CREDENTIAL_RETRY_COUNT, FALLBACK_MODEL_ALIAS,
@@ -6899,6 +7055,90 @@ mod tests {
         assert_eq!(captured_sse.path, "/v1/chat/completions");
         assert_eq!(captured_sse.body["stream"], true);
         assert!(captured_sse.body["stream_options"]["include_usage"] == true);
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn precise_mode_serves_a_prefixed_model_end_to_end() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let (first_upstream, mut first_requests) = start_recording_chat_upstream().await;
+        let (second_upstream, mut second_requests) = start_recording_chat_upstream().await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let grox = create_proxy_api_credential_with_mappings(
+            &pool,
+            "Grox",
+            &first_upstream,
+            json!([{"from":"gpt-5.6-sol","to":"grox-sol"}]),
+        )
+        .await;
+        let kan = create_proxy_api_credential_with_mappings(
+            &pool,
+            "247 Kan",
+            &second_upstream,
+            json!([{"from":"gpt-5.6-sol","to":"kan-sol"}]),
+        )
+        .await;
+        RoutePoolRepository::replace_members(&pool, "codex", &[grox, kan])
+            .await
+            .expect("pool members");
+        RoutePoolRepository::save_model_mode(&pool, "codex", PoolModelMode::Precise)
+            .await
+            .expect("precise mode");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
+            .await
+            .expect("start proxy");
+        let base_url = proxy.base_url.as_deref().expect("base url").to_string();
+        let client = reqwest::Client::new();
+
+        let listed: Value = client
+            .get(format!("{base_url}/v1/models"))
+            .bearer_auth(&route_key)
+            .send()
+            .await
+            .expect("models response")
+            .json()
+            .await
+            .expect("models json");
+        let ids: Vec<&str> = listed["data"]
+            .as_array()
+            .expect("data")
+            .iter()
+            .filter_map(|entry| entry["id"].as_str())
+            .collect();
+        assert_eq!(ids, vec!["Grox/gpt-5.6-sol", "247-Kan/gpt-5.6-sol"]);
+
+        // Ask for the second account by name, twice. Aggregate mode would have
+        // rotated to the first one on one of these turns.
+        for _ in 0..2 {
+            let response = client
+                .post(format!("{base_url}/v1/chat/completions"))
+                .bearer_auth(&route_key)
+                .json(&json!({"model":"247-Kan/gpt-5.6-sol","messages":[]}))
+                .send()
+                .await
+                .expect("proxy response");
+            assert_eq!(response.status(), reqwest::StatusCode::OK);
+        }
+
+        let first = second_requests.recv().await.expect("first captured");
+        let second = second_requests.recv().await.expect("second captured");
+        // The prefix is gone and the account's own mapping applied, so the relay
+        // sees a model it knows.
+        assert_eq!(first.body["model"], "kan-sol");
+        assert_eq!(second.body["model"], "kan-sol");
+        assert!(
+            first_requests.try_recv().is_err(),
+            "the unnamed account must never be reached"
+        );
 
         RouteProxyService::stop(&runtime).await.expect("stop proxy");
     }
@@ -11413,6 +11653,277 @@ data: [DONE]\n\n";
         .collect()
     }
 
+    /// The precise-mode step as the forward path runs it: names in, the surviving
+    /// accounts plus the model name and body the rest of the pipeline sees out.
+    fn resolve_scoped(
+        platform: &str,
+        credentials: Vec<SelectedCredential>,
+        requested_model: &str,
+        body: &str,
+    ) -> (Vec<String>, Option<String>, Value) {
+        let (candidates, model, body) = resolve_account_scoped_model(
+            platform,
+            credentials
+                .into_iter()
+                .map(|credential| PoolCandidate {
+                    credential,
+                    cooldown_until: None,
+                    model_key: None,
+                })
+                .collect(),
+            Some(requested_model.to_string()),
+            axum::body::Bytes::from(body.to_string()),
+        );
+        (
+            candidates
+                .into_iter()
+                .map(|candidate| candidate.credential.display_name)
+                .collect(),
+            model,
+            serde_json::from_slice(&body).unwrap_or(Value::Null),
+        )
+    }
+
+    fn official_credential(name: &str) -> SelectedCredential {
+        let mut credential = api_credential(name, "openai");
+        credential.kind = "official".to_string();
+        credential.config_json = r#"{"model_mappings":[]}"#.to_string();
+        credential
+    }
+
+    #[test]
+    fn a_prefixed_model_pins_the_pool_to_that_account() {
+        let grox = api_credential_with_config(
+            "Grox",
+            r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"sol-upstream"}]}"#,
+        );
+        let kan = api_credential_with_config(
+            "247Kan",
+            r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"other-upstream"}]}"#,
+        );
+
+        let (accounts, model, body) = resolve_scoped(
+            "codex",
+            vec![grox, kan],
+            "Grox/gpt-5.6-sol",
+            r#"{"model":"Grox/gpt-5.6-sol"}"#,
+        );
+
+        assert_eq!(accounts, vec!["Grox".to_string()]);
+        assert_eq!(model.as_deref(), Some("gpt-5.6-sol"));
+        // The body has to carry the bare alias: the API branch maps it per account
+        // and the official branch forwards it untouched.
+        assert_eq!(body["model"], "gpt-5.6-sol");
+    }
+
+    #[test]
+    fn the_official_prefix_pins_the_pool_to_every_official_account() {
+        let api = api_credential_with_config("Grox", r#"{"model_mappings":[]}"#);
+        let first = official_credential("chatgpt-one");
+        let second = official_credential("chatgpt-two");
+
+        let (accounts, model, _) = resolve_scoped(
+            "codex",
+            vec![api, first, second],
+            "official/gpt-5.6-sol",
+            r#"{"model":"official/gpt-5.6-sol"}"#,
+        );
+
+        // Both, so quota rotation — the only reason official accounts are pooled —
+        // still happens between them.
+        assert_eq!(
+            accounts,
+            vec!["chatgpt-one".to_string(), "chatgpt-two".to_string()]
+        );
+        assert_eq!(model.as_deref(), Some("gpt-5.6-sol"));
+    }
+
+    #[test]
+    fn an_unknown_prefix_falls_back_to_the_whole_model_name() {
+        let grox = api_credential_with_config("Grox", r#"{"model_mappings":[]}"#);
+
+        let (accounts, model, body) = resolve_scoped(
+            "codex",
+            vec![grox],
+            "Nobody/gpt-5.6-sol",
+            r#"{"model":"Nobody/gpt-5.6-sol"}"#,
+        );
+
+        assert_eq!(accounts, vec!["Grox".to_string()]);
+        assert_eq!(model.as_deref(), Some("Nobody/gpt-5.6-sol"));
+        assert_eq!(body["model"], "Nobody/gpt-5.6-sol");
+    }
+
+    #[test]
+    fn a_vendor_pathed_model_name_survives_an_account_of_the_same_name() {
+        // Relays publish `z-ai/glm-5.3` as a model id of its own. An account that
+        // happens to be called `z-ai` must not turn that into a pin — it cannot
+        // serve the remainder, so the whole string has to stay the model name.
+        let z_ai = api_credential_with_config(
+            "z-ai",
+            r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"sol"}]}"#,
+        );
+        let relay = api_credential_with_config(
+            "relay",
+            r#"{"model_mappings":[{"from":"z-ai/glm-5.3","to":"z-ai/glm-5.3"}]}"#,
+        );
+
+        let (accounts, model, body) = resolve_scoped(
+            "codex",
+            vec![z_ai, relay],
+            "z-ai/glm-5.3",
+            r#"{"model":"z-ai/glm-5.3"}"#,
+        );
+
+        assert_eq!(accounts, vec!["z-ai".to_string(), "relay".to_string()]);
+        assert_eq!(model.as_deref(), Some("z-ai/glm-5.3"));
+        assert_eq!(body["model"], "z-ai/glm-5.3");
+    }
+
+    #[test]
+    fn a_catch_all_account_cannot_swallow_a_prefixed_model() {
+        // A fallback mapping accepts any model name, so trying the whole string
+        // first would route `Grox/gpt-5.6-sol` here and send that name upstream.
+        let catch_all = api_credential_with_config(
+            "sink",
+            r#"{"model_mappings":[{"from":"claude-model","to":"catch-all-upstream"}]}"#,
+        );
+        let grox = api_credential_with_config(
+            "Grox",
+            r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"sol-upstream"}]}"#,
+        );
+
+        let (accounts, model, _) = resolve_scoped(
+            "codex",
+            vec![catch_all, grox],
+            "Grox/gpt-5.6-sol",
+            r#"{"model":"Grox/gpt-5.6-sol"}"#,
+        );
+
+        assert_eq!(accounts, vec!["Grox".to_string()]);
+        assert_eq!(model.as_deref(), Some("gpt-5.6-sol"));
+    }
+
+    #[test]
+    fn stripping_the_prefix_reaches_nested_model_fields() {
+        let grox = api_credential_with_config("Grox", r#"{"model_mappings":[]}"#);
+
+        let (_, _, body) = resolve_scoped(
+            "codex",
+            vec![grox],
+            "Grox/gpt-5.6-sol",
+            r#"{"model":"Grox/gpt-5.6-sol","nested":{"model":"Grox/gpt-5.6-sol"},"other":{"model":"gpt-5.5"}}"#,
+        );
+
+        assert_eq!(body["model"], "gpt-5.6-sol");
+        assert_eq!(body["nested"]["model"], "gpt-5.6-sol");
+        // A model that was never prefixed is left exactly as the client sent it.
+        assert_eq!(body["other"]["model"], "gpt-5.5");
+    }
+
+    #[test]
+    fn a_prefixed_claude_model_keeps_its_one_m_suffix() {
+        let account = {
+            let mut credential = api_credential_with_config(
+                "TaBiAI",
+                r#"{"model_mappings":[{"from":"claude-opus-alias","to":"claude-opus-5","supports_1m":true}]}"#,
+            );
+            credential.platform = "claude".to_string();
+            credential
+        };
+
+        let (accounts, model, body) = resolve_scoped(
+            "claude",
+            vec![account],
+            "TaBiAI/claude-opus-alias[1m]",
+            r#"{"model":"TaBiAI/claude-opus-alias[1m]"}"#,
+        );
+
+        assert_eq!(accounts, vec!["TaBiAI".to_string()]);
+        // The suffix belongs to the alias, so the context-tier logic downstream
+        // still sees it.
+        assert_eq!(model.as_deref(), Some("claude-opus-alias[1m]"));
+        assert_eq!(body["model"], "claude-opus-alias[1m]");
+    }
+
+    #[test]
+    fn an_official_account_never_answers_to_an_account_prefix() {
+        // Its body is forwarded unrewritten, and it shares the reserved prefix,
+        // so a per-account name must not resolve to it.
+        let official = official_credential("chatgpt-one");
+
+        let (accounts, model, _) = resolve_scoped(
+            "codex",
+            vec![official],
+            "chatgpt-one/gpt-5.6-sol",
+            r#"{"model":"chatgpt-one/gpt-5.6-sol"}"#,
+        );
+
+        assert_eq!(accounts, vec!["chatgpt-one".to_string()]);
+        assert_eq!(model.as_deref(), Some("chatgpt-one/gpt-5.6-sol"));
+    }
+
+    #[test]
+    fn precise_mode_lists_one_entry_per_api_account_and_one_for_the_official_group() {
+        let grox = api_credential_with_config(
+            "Grox",
+            r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"sol-upstream"}]}"#,
+        );
+        let kan = api_credential_with_config(
+            "247 Kan",
+            r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"other-upstream"}]}"#,
+        );
+        let official = official_credential("chatgpt-one");
+
+        let payload = super::build_models_list_payload(
+            "codex",
+            &[grox, kan, official],
+            PoolModelMode::Precise,
+        );
+        let ids: Vec<&str> = payload["data"]
+            .as_array()
+            .expect("data")
+            .iter()
+            .filter_map(|entry| entry["id"].as_str())
+            .collect();
+
+        assert!(ids.contains(&"Grox/gpt-5.6-sol"), "ids={ids:?}");
+        // Whitespace in the account name would break config keys and shells.
+        assert!(ids.contains(&"247-Kan/gpt-5.6-sol"), "ids={ids:?}");
+        assert!(ids.contains(&"official/gpt-5.6-sol"), "ids={ids:?}");
+        // Nothing unprefixed survives: an aggregated id would rotate, which is
+        // the opposite of what this mode is for.
+        assert!(!ids.contains(&"gpt-5.6-sol"), "ids={ids:?}");
+        // The official group merges rather than expanding per account.
+        assert_eq!(
+            ids.iter().filter(|id| id.starts_with("official/")).count(),
+            4,
+            "ids={ids:?}"
+        );
+    }
+
+    #[test]
+    fn precise_mode_reads_reasoning_levels_off_the_bare_alias() {
+        let grox = api_credential_with_config(
+            "Grox",
+            r#"{"model_mappings":[{"from":"gpt-5.6-luna","to":"luna-upstream"}]}"#,
+        );
+
+        let payload = super::build_models_list_payload("codex", &[grox], PoolModelMode::Precise);
+        let entry = &payload["data"][0];
+
+        assert_eq!(entry["id"], "Grox/gpt-5.6-luna");
+        // Keyed by `gpt-5.6-luna`: the prefixed id matches no profile and would
+        // silently drop the model to the generic three-tier default.
+        assert_eq!(
+            entry["supported_reasoning_levels"]
+                .as_array()
+                .expect("levels")
+                .len(),
+            5
+        );
+    }
+
     #[test]
     fn a_cooling_model_does_not_park_its_siblings_on_the_same_account() {
         let now = now_for_partition();
@@ -12014,7 +12525,7 @@ data: [DONE]\n\n";
         assert_eq!(data[0]["context_window"].as_u64(), Some(128_000));
         assert!(payload.get("models").is_none());
 
-        let response = json_models_list_response("codex", &[], None);
+        let response = json_models_list_response("codex", &[], PoolModelMode::Aggregate, None);
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -12098,9 +12609,15 @@ data: [DONE]\n\n";
         })
         .to_string();
 
-        let capability = parse_model_capability(&credential.config_json);
-        let payload =
-            crate::services::route_model_capability::codex_model_catalog_payload(&[capability]);
+        let payload = crate::services::route_model_capability::codex_model_catalog_payload(
+            &crate::services::route_model_capability::catalog_members(&[CatalogMemberInput {
+                id: &credential.id,
+                display_name: &credential.display_name,
+                kind: &credential.kind,
+                config_json: &credential.config_json,
+            }]),
+            PoolModelMode::Aggregate,
+        );
         let models = payload
             .get("models")
             .and_then(Value::as_array)

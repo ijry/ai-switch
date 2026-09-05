@@ -33,7 +33,7 @@ use crate::models::route_credential_transfer::{
 };
 use crate::models::route_pool::{
     RouteModelsFetchRequest, RoutePoolModelTestRequest, RoutePoolRouteRequest,
-    SetRoutePoolMembersInput,
+    SetRoutePoolMembersInput, SetRoutePoolModelModeInput,
 };
 use crate::models::settings::AppSettings;
 use crate::services::agent_launch_service::AgentLaunchService;
@@ -781,6 +781,14 @@ pub async fn dispatch_command(
             let input: SetRoutePoolMembersInput = parse_arg(&args, "input")?;
             to_value(
                 RoutePoolService::set_members(&state.pool, input)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "set_route_pool_model_mode" => {
+            let input: SetRoutePoolModelModeInput = parse_arg(&args, "input")?;
+            to_value(
+                RoutePoolService::set_model_mode(&state.pool, input)
                     .await
                     .map_err(to_error)?,
             )

@@ -151,6 +151,25 @@ The `/models` and `/v1/models` paths are not forwarded upstream. The proxy aggre
 
 Fetching an **upstream** account's real model list is a different thing entirely — see [Model Connectivity Tests](/en/guide/model-test).
 
+### Precise mode: pin a request to one account
+
+The shape of that list is decided per platform by its **model list mode**, switched at the top of the 「接入算力池」 dialog. Aggregate is the default:
+
+| Mode | List shape | Selection |
+| --- | --- | --- |
+| Aggregate | `gpt-5.6-sol` | rotates across the pool |
+| Precise | `Grox/gpt-5.6-sol`, `official/gpt-5.6-sol` | the first pins the API account named Grox; the second rotates across every official account |
+
+Precise mode expands **API accounts only**. Official accounts merge into one entry set under the reserved `official/` prefix: their bodies are forwarded without model rewriting, so every one of them serves the same model set, and pooling them exists for quota rotation — pinning one would cancel it.
+
+The prefix is the account name sanitized: whitespace, `/`, and `:` become `-`, CJK survives, capped at 32 characters. When two accounts sanitize to the same prefix, **both** get the first 6 characters of their credential id appended (`TaBiAI-a1b2c3`). Renaming an account means rewriting the client config — the old name no longer resolves.
+
+Three behaviors worth remembering:
+
+- The proxy accepts prefixed model names **in either mode**, so switching back to aggregate never strands a config that was written while it was precise, and typing `account/model` by hand works too.
+- When the prefix resolves to no account — or that account cannot serve the remaining alias — the whole string continues as the model name. Vendor-pathed relay model names like `z-ai/glm-5.3` are unaffected.
+- Claude Code's four `/model` slots are untouched: a slot carries a single alias rather than a list, so it keeps rotating. Gemini's native path carries the model in the URL and no prefix is parsed there.
+
 ## The full order of one forward
 
 ```text
@@ -158,6 +177,8 @@ CLI request
   ├─ identify platform (proxy key → x-ai-switch-platform)
   ├─ /models path? → aggregate the pool's model list and return directly
   ├─ read the body (32 MiB cap), parse the requested model name
+  ├─ model name shaped `account/alias` whose prefix resolves? → keep only that
+  │  account, and continue with the bare alias
   ├─ select an account: in pool, status=ok, not archived, not cooling, quota not exhausted,
   │  round-robin within priority groups
   ├─ filter again by platform capability rules and the model name

@@ -36,6 +36,7 @@ import {
   setRouteCredentialCooldown,
   setRouteCredentialStatuses,
   setRoutePoolMembers,
+  setRoutePoolModelMode,
   startRouteProxy,
   stopRouteProxy,
   subscribeRouteProxyLiveLog,
@@ -109,6 +110,7 @@ vi.mock("../src/lib/api/client", () => ({
   setRouteCredentialCooldown: vi.fn(),
   setRouteCredentialStatuses: vi.fn(),
   setRoutePoolMembers: vi.fn(),
+  setRoutePoolModelMode: vi.fn(),
   startRouteProxy: vi.fn(),
   stopRouteProxy: vi.fn(),
   subscribeRouteProxyLiveLog: vi.fn(),
@@ -630,6 +632,7 @@ describe("AccountsScreen", () => {
     vi.mocked(getRoutePool).mockImplementation(async (platform) => ({
       platform,
       account_ids: [...(poolStateByPlatform.get(platform) ?? [])],
+      model_mode: "aggregate",
       stats: statsFixture({
         member_count: (poolStateByPlatform.get(platform) ?? []).length,
       }),
@@ -692,6 +695,7 @@ describe("AccountsScreen", () => {
       return {
         platform: input.platform,
         account_ids: [...input.account_ids],
+        model_mode: "aggregate",
         stats: statsFixture({
           member_count: input.account_ids.length,
           request_count: 1,
@@ -2069,6 +2073,7 @@ describe("AccountsScreen", () => {
     vi.mocked(getRoutePool).mockResolvedValue({
       platform: "hermes",
       account_ids: hermesCredentials.map((credential) => credential.id),
+      model_mode: "aggregate",
       stats: statsFixture({ member_count: 2 }),
     });
     vi.mocked(getRouteProxyStatus).mockResolvedValue({
@@ -2404,6 +2409,7 @@ describe("AccountsScreen", () => {
       poolStateByPlatform.set(platform, [...account_ids]);
       return {
         platform,
+        model_mode: "aggregate",
         account_ids: [...account_ids],
         stats: statsFixture({ member_count: account_ids.length }),
       };
@@ -5288,6 +5294,39 @@ describe("AccountsScreen", () => {
         expect.objectContaining({
           config_write_clients_json: JSON.stringify({ codex: ["codex", "zcode"] }),
         }),
+      ),
+    );
+  });
+
+  it("switches the model list mode from the write dialog", async () => {
+    vi.mocked(setRoutePoolModelMode).mockImplementation(async ({ platform, mode }) => ({
+      platform,
+      account_ids: [...(poolStateByPlatform.get(platform) ?? [])],
+      model_mode: mode,
+      stats: statsFixture({}),
+    }));
+    renderScreen();
+
+    await screen.findByText("本地代理：未启动");
+    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
+    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("写入路由配置文件"));
+    await screen.findByText("接入算力池");
+    await userEvent.click(screen.getByRole("radio", { name: "精确模式" }));
+
+    // Saved on toggle: the pool's own /v1/models changes at once, and a user whose
+    // clients discover models over HTTP never clicks 写入 at all.
+    await waitFor(() =>
+      expect(setRoutePoolModelMode).toHaveBeenCalledWith({
+        platform: "codex",
+        mode: "precise",
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("radio", { name: "精确模式" })).toHaveAttribute(
+        "aria-checked",
+        "true",
       ),
     );
   });

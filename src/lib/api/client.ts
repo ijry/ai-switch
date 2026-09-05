@@ -40,6 +40,7 @@ import type {
   RouteModelsFetchRequest,
   RoutePoolModelTestOutcome,
   RoutePoolModelTestRequest,
+  RoutePoolModelMode,
   RoutePoolRouteOutcome,
   RoutePoolRouteRequest,
   RoutePoolState,
@@ -174,6 +175,18 @@ export function setRoutePoolMembers(input: {
   account_ids: string[];
 }): Promise<RoutePoolState> {
   return invoke("set_route_pool_members", { input });
+}
+
+/**
+ * Switch the platform's model catalog mode. Takes effect immediately for the
+ * pool's own `/v1/models`; client config files carry the new ids only after the
+ * next config write.
+ */
+export function setRoutePoolModelMode(input: {
+  platform: string;
+  mode: RoutePoolModelMode;
+}): Promise<RoutePoolState> {
+  return invoke("set_route_pool_model_mode", { input });
 }
 
 /**
