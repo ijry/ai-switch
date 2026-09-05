@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ImportPanel } from "../components/imports/ImportPanel";
+import { DismissButton } from "../components/ui/DismissButton";
 import { importExampleJson } from "../lib/api/client";
 
 export function ImportsScreen() {
@@ -17,11 +18,19 @@ export function ImportsScreen() {
       </div>
       <ImportPanel onImport={(request) => importMutation.mutateAsync(request).then(() => undefined)} />
       {importMutation.data && (
-        <p className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-[13px] font-medium text-emerald-700">
-          Imported {importMutation.data.success_count} records into batch {importMutation.data.batch_id}.
-        </p>
+        <div className="flex items-start justify-between gap-3 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-[13px] font-medium text-emerald-700">
+          <p>
+            Imported {importMutation.data.success_count} records into batch {importMutation.data.batch_id}.
+          </p>
+          <DismissButton ariaLabel="Dismiss import result" onClick={() => importMutation.reset()} />
+        </div>
       )}
-      {importMutation.error && <p className="text-[13px] font-medium text-red-700">Import failed.</p>}
+      {importMutation.error && (
+        <div className="flex items-start justify-between gap-3 text-[13px] font-medium text-red-700">
+          <p>Import failed.</p>
+          <DismissButton ariaLabel="Dismiss import error" onClick={() => importMutation.reset()} />
+        </div>
+      )}
     </section>
   );
 }

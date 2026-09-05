@@ -47,6 +47,7 @@ import {
   type ChangeEvent,
   type ReactNode,
 } from "react";
+import { DismissButton } from "../components/ui/DismissButton";
 import { PlatformSupportBadge } from "../components/platform/PlatformSupportBadge";
 import { baselineModelsForPlatform, expandDisplayModelMappings, ModelMappingSummary, modelSummaryLine } from "../components/accounts/ModelMappingSummary";
 import {
@@ -241,6 +242,11 @@ type RoutePoolMutationInput = {
 
 const DEFAULT_ROUTE_CREDENTIAL_COOLDOWN_SECONDS = 10;
 const MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS = 86_400;
+
+// How long a finished 真实生成测试 stays on screen before tidying itself away.
+// Long enough to read the verdict and the routing chain, and the × is still
+// there for anyone who wants it gone sooner.
+const MODEL_TEST_AUTO_CLOSE_SECONDS = 30;
 
 const defaultRouteCredentialFailurePolicy: RouteCredentialFailurePolicy = {
   retry_count: 2,
@@ -2775,6 +2781,7 @@ export function AccountsScreen({
   >({});
   const autoQuotaRefreshedPlatform = useRef<string | null>(null);
   const [modelTestOutcome, setModelTestOutcome] = useState<RoutePoolModelTestOutcome | null>(null);
+  const [modelTestAutoCloseIn, setModelTestAutoCloseIn] = useState<number | null>(null);
   const [configWriteOutcomes, setConfigWriteOutcomes] = useState<ConfigWriteOutcome[]>([]);
   const [configWriteError, setConfigWriteError] = useState<string | null>(null);
   const [configWriteDialogOpen, setConfigWriteDialogOpen] = useState(false);
@@ -4982,6 +4989,49 @@ export function AccountsScreen({
     modelTestMutation.reset();
   };
 
+  // Arm the 真实生成测试 countdown whenever a verdict lands, and tear it down the
+  // moment another test is in flight — what is on screen no longer describes
+  // what the user is waiting for. The next verdict re-runs this effect, so it
+  // gets a fresh 30 seconds rather than the remainder of the old one.
+  useEffect(() => {
+    const hasVerdict = Boolean(modelTestOutcome) || modelTestMutation.isError;
+    if (!hasVerdict || modelTestMutation.isPending) {
+      setModelTestAutoCloseIn(null);
+      return;
+    }
+    setModelTestAutoCloseIn(MODEL_TEST_AUTO_CLOSE_SECONDS);
+    const timer = window.setInterval(() => {
+      setModelTestAutoCloseIn((current) => (current === null ? null : Math.max(0, current - 1)));
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [modelTestOutcome, modelTestMutation.isError, modelTestMutation.isPending]);
+
+  // Reaching zero is what dismisses the panel. Closing from inside the tick
+  // would put a side effect in a state updater, and React is free to run those
+  // more than once.
+  useEffect(() => {
+    if (modelTestAutoCloseIn !== 0) {
+      return;
+    }
+    closeModelTestOutcome();
+    // closeModelTestOutcome is a fresh closure every render; depending on it
+    // would restart the countdown forever.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelTestAutoCloseIn]);
+
+  // Deliberately outside any aria-live region: the panel announces itself once,
+  // and a per-second tick in a live region would talk over everything else.
+  const modelTestAutoCloseCountdown =
+    modelTestAutoCloseIn !== null && modelTestAutoCloseIn > 0 ? (
+      <span
+        className="shrink-0 whitespace-nowrap text-[11px] opacity-70"
+        data-testid="model-test-auto-close-countdown"
+      >
+        {modelTestAutoCloseIn} 秒后自动关闭
+      </span>
+    ) : null;
+
   const selectAccountView = (view: AccountView) => {
     if (view === accountView) {
       return;
@@ -5511,7 +5561,13 @@ export function AccountsScreen({
         >
         {configWriteOutcomes.length > 0 && (
           <div className="mx-4 mb-3 space-y-1 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] text-stone-600">
-            <p className="font-semibold text-stone-950">配置写入结果</p>
+            <div className="flex items-start justify-between gap-3">
+              <p className="font-semibold text-stone-950">配置写入结果</p>
+              <DismissButton
+                ariaLabel="关闭配置写入结果"
+                onClick={() => setConfigWriteOutcomes([])}
+              />
+            </div>
             {configWriteOutcomes.map((outcome) => (
               <div
                 className="rounded-lg border border-stone-200 bg-white px-2.5 py-2"
@@ -5555,12 +5611,13 @@ export function AccountsScreen({
         {/* The dialog stays open on failure and shows this same sentence, so
             rendering it here too would duplicate it on screen. */}
         {configWriteError && !configWriteDialogOpen ? (
-          <p
-            className="mx-4 mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700"
-            role="alert"
-          >
-            {configWriteError}
-          </p>
+          <div className="mx-4 mb-3 flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700">
+            <p role="alert">{configWriteError}</p>
+            <DismissButton
+              ariaLabel="关闭配置写入错误"
+              onClick={() => setConfigWriteError(null)}
+            />
+          </div>
         ) : null}
         {modelTestMutation.isPending ? (
           <div
@@ -5608,14 +5665,11 @@ export function AccountsScreen({
               </div>
               <div className="flex items-center gap-2">
                 <p className="font-mono text-[11px]">{modelTestStatusLine(modelTestOutcome)}</p>
-                <button
-                  aria-label="关闭真实生成测试结果"
-                  className="grid h-7 w-7 place-items-center rounded-lg text-current opacity-70 motion-control hover:bg-white/70 hover:opacity-100"
+                {modelTestAutoCloseCountdown}
+                <DismissButton
+                  ariaLabel="关闭真实生成测试结果"
                   onClick={closeModelTestOutcome}
-                  type="button"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
+                />
               </div>
             </div>
 
@@ -5693,14 +5747,13 @@ export function AccountsScreen({
                 "请检查算力池账号和网络。",
               )}
             </p>
-            <button
-              aria-label="关闭真实生成测试错误"
-              className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-red-800 opacity-70 motion-control hover:bg-white/70 hover:opacity-100"
-              onClick={closeModelTestOutcome}
-              type="button"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              {modelTestAutoCloseCountdown}
+              <DismissButton
+                ariaLabel="关闭真实生成测试错误"
+                onClick={closeModelTestOutcome}
+              />
+            </div>
           </div>
         ) : null}
       <>
@@ -6107,14 +6160,22 @@ export function AccountsScreen({
             </div>
           )}
           {quotaRefreshMessage && (
-            <p className="rounded-xl bg-violet-50 px-3 py-2 text-[12px] font-medium text-violet-800">
-              {quotaRefreshMessage}
-            </p>
+            <div className="flex items-start justify-between gap-3 rounded-xl bg-violet-50 px-3 py-2 text-[12px] font-medium text-violet-800">
+              <p>{quotaRefreshMessage}</p>
+              <DismissButton
+                ariaLabel="关闭额度刷新提示"
+                onClick={() => setQuotaRefreshMessage(null)}
+              />
+            </div>
           )}
           {relayBalanceMessage && (
-            <p className="rounded-xl bg-teal-50 px-3 py-2 text-[12px] font-medium text-teal-800">
-              {relayBalanceMessage}
-            </p>
+            <div className="flex items-start justify-between gap-3 rounded-xl bg-teal-50 px-3 py-2 text-[12px] font-medium text-teal-800">
+              <p>{relayBalanceMessage}</p>
+              <DismissButton
+                ariaLabel="关闭余额查询提示"
+                onClick={() => setRelayBalanceMessage(null)}
+              />
+            </div>
           )}
           {credentialsQuery.isLoading && <p className="rounded-xl bg-stone-50 p-4 text-sm text-stone-500">正在加载账号...</p>}
           {credentialsQuery.error && <p className="rounded-xl bg-red-50 p-4 text-sm text-red-700">账号加载失败。</p>}
@@ -6127,9 +6188,13 @@ export function AccountsScreen({
             </div>
           )}
           {batchStatusMutation.error && (
-            <p className="rounded-xl bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700">
-              {formatApiError(batchStatusMutation.error, "批量设置状态失败。")}
-            </p>
+            <div className="flex items-start justify-between gap-3 rounded-xl bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700">
+              <p>{formatApiError(batchStatusMutation.error, "批量设置状态失败。")}</p>
+              <DismissButton
+                ariaLabel="关闭批量设置状态错误"
+                onClick={() => batchStatusMutation.reset()}
+              />
+            </div>
           )}
           <div
             className={
@@ -6892,22 +6957,38 @@ export function AccountsScreen({
               </div>
             </div>
           )}
+          {/* role="alert" sits on the sentence, not the row: a screen reader
+              should announce what went wrong, not the × next to it. Dismissing
+              resets the mutation, which is the only way to clear an error
+              react-query owns. */}
           {archiveMutation.error ? (
-            <p className="rounded-xl bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700" role="alert">
-              {formatApiError(archiveMutation.error, "归档账号失败。")}
-            </p>
+            <div className="flex items-start justify-between gap-3 rounded-xl bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700">
+              <p role="alert">{formatApiError(archiveMutation.error, "归档账号失败。")}</p>
+              <DismissButton
+                ariaLabel="关闭归档账号错误"
+                onClick={() => archiveMutation.reset()}
+              />
+            </div>
           ) : null}
           {restoreMutation.error ? (
-            <p className="rounded-xl bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700" role="alert">
-              {formatApiError(restoreMutation.error, "恢复账号失败。")}
-            </p>
+            <div className="flex items-start justify-between gap-3 rounded-xl bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700">
+              <p role="alert">{formatApiError(restoreMutation.error, "恢复账号失败。")}</p>
+              <DismissButton
+                ariaLabel="关闭恢复账号错误"
+                onClick={() => restoreMutation.reset()}
+              />
+            </div>
           ) : null}
           {/* A rejected reorder only snaps the row back, which reads as a dead
               drag handle. Say why instead. */}
           {reorderMutation.error ? (
-            <p className="rounded-xl bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700" role="alert">
-              {formatApiError(reorderMutation.error, "保存账号顺序失败。")}
-            </p>
+            <div className="flex items-start justify-between gap-3 rounded-xl bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700">
+              <p role="alert">{formatApiError(reorderMutation.error, "保存账号顺序失败。")}</p>
+              <DismissButton
+                ariaLabel="关闭账号排序错误"
+                onClick={() => reorderMutation.reset()}
+              />
+            </div>
           ) : null}
         </div>
       </section>
@@ -6947,13 +7028,20 @@ export function AccountsScreen({
             })}
           </div>
           {routePoolFeedback ? (
-            <span
-              aria-live="polite"
-              className={`min-w-0 flex-1 truncate px-2 text-[11px] ${routePoolFeedback.type === "error" ? "text-red-700" : "text-emerald-700"}`}
-              role={routePoolFeedback.type === "error" ? "alert" : "status"}
-            >
-              {routePoolFeedback.message}
-            </span>
+            <div className="flex min-w-0 flex-1 items-center gap-1 px-2">
+              <span
+                aria-live="polite"
+                className={`min-w-0 flex-1 truncate text-[11px] ${routePoolFeedback.type === "error" ? "text-red-700" : "text-emerald-700"}`}
+                role={routePoolFeedback.type === "error" ? "alert" : "status"}
+              >
+                {routePoolFeedback.message}
+              </span>
+              <DismissButton
+                ariaLabel="关闭算力池提示"
+                onClick={() => setRoutePoolFeedback(null)}
+                size="sm"
+              />
+            </div>
           ) : <span className="min-w-0 flex-1" />}
           <div className="flex min-w-0 items-center gap-1">
                 <span className="hidden truncate sm:inline">{accountPageData?.total ?? 0} 个账号</span>

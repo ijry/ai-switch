@@ -28,6 +28,7 @@ import type {
 } from "../../lib/api/types";
 import { useI18n } from "../../lib/i18n";
 import { isDesktop } from "../../lib/transport";
+import { DismissButton } from "../ui/DismissButton";
 
 const queryKeys = {
   https: ["route-proxy-https-status"],
@@ -120,6 +121,18 @@ export function RouteProxyHttpsSettings() {
     deleteMutation.error,
     openDirectoryMutation.error,
   ].find(Boolean);
+
+  // The banner reports whichever of the seven failed, so dismissing has to clear
+  // all of them — otherwise the next one in the list would take its place.
+  const dismissMutationError = () => {
+    enableMutation.reset();
+    disableMutation.reset();
+    reimportMutation.reset();
+    regenerateMutation.reset();
+    uninstallMutation.reset();
+    deleteMutation.reset();
+    openDirectoryMutation.reset();
+  };
 
   const confirmAndRun = (message: string, action: () => void) => {
     if (window.confirm(message)) {
@@ -320,9 +333,13 @@ export function RouteProxyHttpsSettings() {
           </div>
 
           {mutationError ? (
-            <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700">
-              {actionError(mutationError)}
-            </p>
+            <div className="flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700">
+              <p>{actionError(mutationError)}</p>
+              <DismissButton
+                ariaLabel={t("common.dismissNotice")}
+                onClick={dismissMutationError}
+              />
+            </div>
           ) : null}
         </>
       )}

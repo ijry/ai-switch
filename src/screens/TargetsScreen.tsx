@@ -9,6 +9,7 @@ import {
 } from "../lib/api/client";
 import type { ConfigSnapshotSummary, TargetConfigStatus } from "../lib/api/types";
 import { MotionCollapse, MotionListItem } from "../components/motion/MotionPrimitives";
+import { DismissButton } from "../components/ui/DismissButton";
 
 export function TargetsScreen() {
   const statusesQuery = useQuery({
@@ -130,9 +131,13 @@ function TargetStatusRow({ status }: { status: TargetConfigStatus }) {
             ))}
           </div>
           {rollbackMutation.error ? (
-            <p className="mt-2 text-[12px] text-red-700" role="alert">
-              {errorMessage(rollbackMutation.error)}
-            </p>
+            <div className="mt-2 flex items-start justify-between gap-3 text-[12px] text-red-700">
+              <p role="alert">{errorMessage(rollbackMutation.error)}</p>
+              <DismissButton
+                ariaLabel="Dismiss rollback error"
+                onClick={() => rollbackMutation.reset()}
+              />
+            </div>
           ) : null}
         </div>
       </MotionCollapse>

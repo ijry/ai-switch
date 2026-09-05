@@ -25,6 +25,7 @@ import { useI18n, type Language } from "../lib/i18n";
 import type { SessionMessage, SessionMeta } from "../lib/api/types";
 import { isDesktop } from "../lib/transport";
 import { MotionMenu } from "../components/motion/MotionPrimitives";
+import { DismissButton } from "../components/ui/DismissButton";
 
 type SessionsScreenProps = {
   initialPlatform?: string | null;
@@ -630,14 +631,22 @@ export function SessionsScreen({ initialPlatform = null }: SessionsScreenProps) 
                 </div>
               </div>
               {copyError && (
-                <p aria-live="polite" className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-medium text-red-700">
-                  {copyError}
-                </p>
+                <div className="mt-3 flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-medium text-red-700">
+                  <p aria-live="polite">{copyError}</p>
+                  <DismissButton
+                    ariaLabel={t("common.dismissNotice")}
+                    onClick={() => setCopyError(null)}
+                  />
+                </div>
               )}
               {terminalError && (
-                <p aria-live="polite" className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-medium text-red-700">
-                  {terminalError}
-                </p>
+                <div className="mt-3 flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-medium text-red-700">
+                  <p aria-live="polite">{terminalError}</p>
+                  <DismissButton
+                    ariaLabel={t("common.dismissNotice")}
+                    onClick={() => setTerminalError(null)}
+                  />
+                </div>
               )}
 
             </div>

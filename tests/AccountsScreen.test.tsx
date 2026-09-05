@@ -353,6 +353,19 @@ async function openFormTab(name: "基础" | "高级" | "故障处理" | "其他"
   await userEvent.click(await screen.findByRole("tab", { name }));
 }
 
+/**
+ * Let a settled 真实生成测试 reach the screen while fake timers are installed.
+ *
+ * React Query hands cache updates to its subscribers on a zero-delay timer, so
+ * awaiting microtasks alone leaves the panel unrendered and the assertion looks
+ * like a product bug.
+ */
+async function flushModelTest() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
+}
+
 // jsdom has no layout, and the pointer drag reads row geometry to decide where the
 // placeholder goes, so the rows under test get their rects handed to them.
 function stubRect(
@@ -4932,6 +4945,87 @@ describe("AccountsScreen", () => {
     );
   });
 
+  it("counts the model connectivity result down and closes it at zero", async () => {
+    poolStateByPlatform.set("codex", ["cred-official-1"]);
+    renderScreen("codex", "in_pool");
+
+    await userEvent.click(await screen.findByLabelText("真实生成测试算力池路由"));
+
+    // Swap in fake timers before the request resolves, so the countdown interval
+    // the result arms is a fake one this test can drive.
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByLabelText("开始真实生成测试"));
+    await flushModelTest();
+
+    expect(screen.getByLabelText("真实生成测试结果")).toBeInTheDocument();
+    expect(screen.getByTestId("model-test-auto-close-countdown")).toHaveTextContent(
+      "30 秒后自动关闭",
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(29_000);
+    });
+    expect(screen.getByTestId("model-test-auto-close-countdown")).toHaveTextContent(
+      "1 秒后自动关闭",
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(screen.queryByLabelText("真实生成测试结果")).not.toBeInTheDocument();
+  });
+
+  it("drops the countdown while the next model test runs and restarts it on the result", async () => {
+    poolStateByPlatform.set("codex", ["cred-official-1"]);
+    renderScreen("codex", "in_pool");
+
+    await userEvent.click(await screen.findByLabelText("真实生成测试算力池路由"));
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByLabelText("开始真实生成测试"));
+    await flushModelTest();
+    expect(screen.getByTestId("model-test-auto-close-countdown")).toHaveTextContent(
+      "30 秒后自动关闭",
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(screen.getByTestId("model-test-auto-close-countdown")).toHaveTextContent(
+      "10 秒后自动关闭",
+    );
+
+    // Hold the second test open: the countdown has to be gone while a request is
+    // in flight, not run down what is left of the previous one.
+    let releaseSecondTest: (outcome: RoutePoolModelTestOutcome) => void = () => undefined;
+    vi.mocked(routePoolTestModel).mockReturnValue(
+      new Promise<RoutePoolModelTestOutcome>((resolve) => {
+        releaseSecondTest = resolve;
+      }),
+    );
+
+    fireEvent.click(screen.getByLabelText("真实生成测试算力池路由"));
+    fireEvent.click(screen.getByLabelText("开始真实生成测试"));
+    await flushModelTest();
+
+    expect(screen.getByLabelText("真实生成测试进行中")).toBeInTheDocument();
+    expect(screen.queryByTestId("model-test-auto-close-countdown")).not.toBeInTheDocument();
+
+    // A whole countdown's worth of time passing mid-request must not dismiss the
+    // result that lands afterwards.
+    act(() => {
+      vi.advanceTimersByTime(45_000);
+    });
+
+    releaseSecondTest(modelTestOutcomeFixture({ duration_ms: 456 }));
+    await flushModelTest();
+
+    expect(screen.getByLabelText("真实生成测试结果")).toBeInTheDocument();
+    expect(screen.getByTestId("model-test-auto-close-countdown")).toHaveTextContent(
+      "30 秒后自动关闭",
+    );
+  });
+
   it("shows model connectivity failure details from the route test", async () => {
     vi.mocked(routePoolTestModel).mockResolvedValue(
       modelTestOutcomeFixture({
@@ -5012,6 +5106,25 @@ describe("AccountsScreen", () => {
       vi.advanceTimersByTime(1);
     });
     expect(screen.queryByText("配置写入结果")).not.toBeInTheDocument();
+  });
+
+  it("dismisses the route config write results on demand", async () => {
+    renderScreen();
+
+    await screen.findByText("本地代理：未启动");
+    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
+    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("写入路由配置文件"));
+    await screen.findByText("接入算力池");
+    await userEvent.click(screen.getByRole("button", { name: "写入" }));
+    expect(await screen.findByText("配置写入结果")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("关闭配置写入结果"));
+
+    await waitFor(() =>
+      expect(screen.queryByText("配置写入结果")).not.toBeInTheDocument(),
+    );
   });
 
   it("opens the client dialog instead of writing immediately", async () => {
