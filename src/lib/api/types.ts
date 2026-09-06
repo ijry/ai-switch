@@ -1055,6 +1055,7 @@ export type AppSettings = {
    * platform's native CLI only.
    */
   config_write_clients_json?: string | null;
+  notification_config_json?: string | null;
 };
 
 export type AppSettingsView = AppSettings & {

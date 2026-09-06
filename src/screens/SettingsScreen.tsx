@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "motion/react";
 import {
+  Bell,
   Layers3,
   LockKeyhole,
   Network,
@@ -12,20 +13,20 @@ import { getSettings, saveSettings } from "../lib/api/client";
 import { normalizeLanguage, supportedLanguages, useI18n, type Language } from "../lib/i18n";
 import { AutostartSettings } from "../components/settings/autostart-settings";
 import { RouteProxyHttpsSettings } from "../components/settings/route-proxy-https-settings";
+import { NotificationSettings } from "../components/settings/notification-settings";
 import { WebServiceSettings } from "../components/settings/web-service-settings";
 import { useState } from "react";
 import { MotionPresence } from "../components/motion/MotionPrimitives";
 
 type FeatureEntry = {
   screen?: string;
-  section?: "webService" | "https";
-  titleKey: "nav.sessions" | "nav.updates" | "nav.log" | "nav.webService" | "settings.https.title";
-  descriptionKey:
+  section?: "webService" | "https" | "notification";    titleKey: "nav.sessions" | "nav.updates" | "nav.log" | "nav.webService" | "settings.https.title" | "notification.title";    descriptionKey:
     | "settings.feature.sessions"
     | "settings.feature.updates"
     | "settings.feature.log"
     | "settings.feature.webService"
-    | "settings.feature.https";
+    | "settings.feature.https"
+    | "notification.subtitle";
   icon: ComponentType<{ className?: string }>;
 };
 
@@ -61,6 +62,12 @@ const featureEntries: FeatureEntry[] = [
     descriptionKey: "settings.feature.https",
     icon: LockKeyhole,
   },
+  {
+    section: "notification",
+    titleKey: "notification.title",
+    descriptionKey: "notification.subtitle",
+    icon: Bell,
+  },
 ];
 
 type SettingsScreenProps = {
@@ -70,7 +77,7 @@ type SettingsScreenProps = {
 export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
   const queryClient = useQueryClient();
   const { language, setLanguage, t } = useI18n();
-  const [activeSection, setActiveSection] = useState<"webService" | "https">("webService");
+  const [activeSection, setActiveSection] = useState<"webService" | "https" | "notification">("webService");
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const saveMutation = useMutation({
     mutationFn: saveSettings,
@@ -143,7 +150,7 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
       </div>
 
       <MotionPresence>
-        {activeSection === "webService" ? (
+        {activeSection === "webService" && (
           <motion.div
             key="settings-web-service"
             initial={{ opacity: 0, y: 8 }}
@@ -153,7 +160,8 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
           >
             <WebServiceSettings />
           </motion.div>
-        ) : (
+        )}
+        {activeSection === "https" && (
           <motion.div
             key="settings-https"
             initial={{ opacity: 0, y: 8 }}
@@ -162,6 +170,17 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
             transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
           >
             <RouteProxyHttpsSettings />
+          </motion.div>
+        )}
+        {activeSection === "notification" && (
+          <motion.div
+            key="settings-notification"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <NotificationSettings settings={settings} />
           </motion.div>
         )}
       </MotionPresence>

@@ -757,3 +757,12 @@ export function skillsUninstallPackage(input: {
     skillIds: input.skillIds ?? null,
   });
 }
+
+export type NotificationChannelKind =
+  | { type: "feishu"; webhook_url: string }
+  | { type: "bark"; server_url: string; device_key: string }
+  | { type: "webhook"; url: string };
+
+export function testNotification(kind: NotificationChannelKind): Promise<void> {
+  return invoke("test_notification", { kind });
+}

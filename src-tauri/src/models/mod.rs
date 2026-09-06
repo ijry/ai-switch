@@ -4,6 +4,7 @@ pub mod config_snapshot;
 pub mod disk_space;
 pub mod external_client_import;
 pub mod import_job;
+pub mod notification;
 pub mod platform;
 pub mod provider;
 pub mod route_credential;

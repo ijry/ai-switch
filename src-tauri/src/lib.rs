@@ -65,6 +65,7 @@ use commands::route_proxy_https_commands::{
     uninstall_route_proxy_root_ca,
 };
 use commands::session_commands::{get_session_messages, list_sessions, open_session_terminal};
+use commands::notification_commands::test_notification;
 use commands::settings_commands::{get_settings, save_settings};
 use commands::target_commands::{
     list_config_snapshots, list_config_write_clients, list_target_apps,
@@ -627,7 +628,8 @@ pub fn run() {
             skills_list_packages,
             skills_read_package,
             skills_install_package,
-            skills_uninstall_package
+            skills_uninstall_package,
+            test_notification
         ])
         .build(tauri::generate_context!())
         .expect("failed to build AI Switch")

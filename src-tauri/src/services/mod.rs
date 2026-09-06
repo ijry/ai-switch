@@ -16,6 +16,7 @@ pub mod http_client;
 pub mod import_service;
 pub mod mobile_pairing;
 pub mod model_pricing;
+pub mod notification_service;
 pub mod official_agent_identity_service;
 pub mod platform_capability_service;
 pub mod remote_probe;

@@ -33,6 +33,10 @@ pub struct AppSettings {
     /// platform's native CLI only.
     #[serde(default)]
     pub config_write_clients_json: Option<String>,
+    /// Notification channel configuration (Feishu, Bark, Webhook), serialized as
+    /// a JSON object string. Absent means no notifications configured.
+    #[serde(default)]
+    pub notification_config_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -48,6 +52,7 @@ pub struct AppSettingsView {
     pub close_to_tray: bool,
     pub claude_client_config_json: Option<String>,
     pub config_write_clients_json: Option<String>,
+    pub notification_config_json: Option<String>,
 }
 
 impl AppSettingsView {
@@ -64,6 +69,7 @@ impl AppSettingsView {
             close_to_tray: settings.close_to_tray,
             claude_client_config_json: settings.claude_client_config_json,
             config_write_clients_json: settings.config_write_clients_json,
+            notification_config_json: settings.notification_config_json,
         }
     }
 }
@@ -81,6 +87,7 @@ impl AppSettings {
             close_to_tray: true,
             claude_client_config_json: None,
             config_write_clients_json: None,
+            notification_config_json: None,
         }
     }
 }

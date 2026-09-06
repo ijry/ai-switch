@@ -63,6 +63,7 @@ mod tests {
             close_to_tray: false,
             claude_client_config_json: Some(r#"{"includeCoAuthoredBy":false}"#.to_string()),
             config_write_clients_json: None,
+            notification_config_json: None,
         };
 
         SettingsService::save(&paths, &settings)
