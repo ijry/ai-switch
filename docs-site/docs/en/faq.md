@@ -96,6 +96,41 @@ Recovery is driven by a background scheduler that can re-enable accounts on a sc
 Official accounts and some third-party endpoints are sensitive to concurrency: parallel requests on a single account tend to trigger rate limiting, and sometimes get flagged as abnormal usage. For those upstreams, set the account's limit to 1 or 2 so AI Switch **spreads concurrency across accounts** — which is the whole point of a pool — rather than piling it onto one.
 :::
 
+## What does "insufficient permissions ... Missing scopes" mean?
+
+The full error reads:
+
+> You have insufficient permissions for this operation. Missing scopes: api.responses.write. Check that you have the correct role in your organization (Reader, Writer, Owner) and project (Member, Owner), and if you're using a restricted API key, that it has the necessary scopes.
+
+**Check whether the account is an API key or an official (OAuth) account first** — the cause is completely different.
+
+### API key accounts: the key lacks the permission
+
+OpenAI's **restricted** API keys grant permissions item by item, and whatever follows `Missing scopes:` is the item this key does not have. `api.responses.write` covers `/v1/responses`; `model.request` covers the older chat/completions-style endpoints. The error's second half mentions organization and project roles, which sends most people auditing their team's permissions — but the problem is almost always the key itself.
+
+Two ways out:
+
+- In the console that issued the key, set its permissions to **All**, or grant just the item the error names.
+- If the missing item is `api.responses.write`, switch the account's **interface format** to `OpenAI Chat Completions`. "Model capabilities" and "Responses" are separate permissions, so a key missing only the latter can usually still serve chat/completions.
+
+### Official accounts: before v0.8.5, AI Switch used the wrong host
+
+An official Codex account holds a **ChatGPT subscription seat**, not Platform API credit, and the two live on different hosts: subscriptions are served by `https://chatgpt.com/backend-api/codex`, the Platform API by `https://api.openai.com`. The latter only accepts API keys and judges them by scope, so a subscription token sent there is always answered with this "missing api.responses.write" — a verdict on a key the account does not have.
+
+Before v0.8.5, an official Codex account whose Config JSON had no `base_url` (the import examples and most auth files carry none) was sent to `api.openai.com`, so a perfectly healthy subscription reported this error forever while the same login worked in every other tool. Since v0.8.5 the default is ChatGPT's backend.
+
+On an older version you can work around it by hand: edit the account and add to its Config JSON
+
+```json
+"base_url": "https://chatgpt.com/backend-api/codex"
+```
+
+Relay-hosted OAuth accounts are unaffected — their config already names the relay's own `base_url`, and an explicit value still wins.
+
+### How AI Switch handles the error
+
+The account is marked abnormal **on the first occurrence**, rather than waiting for a streak, because a missing permission holds for every model on that credential — rotating accounts, switching models, and waiting out a cooldown all change nothing. The upstream sentence is kept in the account list's failure hint and in the real-generation test panel, alongside a hint in the UI language. To tell which case you are in, run the real-generation test, expand "view input/output", and check which host `target_url` points at.
+
 ## Can I use it from my phone?
 
 Yes. Enable the web service, open it in your phone's browser, and enter the access token. Desktop and browser run the same UI — there is no stripped-down mobile version.

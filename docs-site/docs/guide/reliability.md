@@ -117,7 +117,7 @@ pub enum ProxyFailureKind {
 
 401/403 被算作瞬时失败，是因为第三方网关经常用它们表达"这个 key 临时被限流/风控"，而不一定是"key 已废"。真正的凭据作废由上面的永久性判定捕获。
 
-不过状态码只是其中一层：401/403 的响应体如果本身就是确定性的失败（例如下文的 new-api 余额耗尽），会先被语义规则接住并直接置异常，不再按瞬时失败退避。
+不过状态码只是其中一层：401/403 的响应体如果本身就是确定性的失败（例如下文的 new-api 余额耗尽、缺 scope 的权限不足），会先被语义规则接住并直接置异常，不再按瞬时失败退避。
 
 ### 不算失败（None）
 
@@ -162,6 +162,28 @@ pub enum ProxyFailureKind {
 ```
 
 整个信封里没有 `error.code`，所以第一条依据看不到它；而消息文本单独用又不够安全——同一个中转站也会把上游的 `用户额度不足` 原样转发出来。两个条件同时要求才把范围收窄到"这个中转站账号自己的余额没了"。判定只看 `error` 对象里的 `type`，顶层那个 `type` 描述的是信封而不是错误类别。走到这一步时剩余额度已经是负数，和额度重置边界一样确定，所以直接置异常而不是退避重试。
+
+### 权限不足（缺 scope）也走这条通道
+
+另一类同样确定的失败是**密钥权限不够**。OpenAI 的受限 API Key 可以只勾选一部分权限，缺少 `/v1/responses` 需要的那一项时，上游回的是 401 加这样的信封：
+
+```json
+{
+  "error": {
+    "message": "You have insufficient permissions for this operation. Missing scopes: api.responses.write. Check that you have the correct role in your organization (Reader, Writer, Owner) and project (Member, Owner), and if you're using a restricted API key, that it has the necessary scopes.",
+    "type": "invalid_request_error",
+    "code": "insufficient_permissions"
+  }
+}
+```
+
+判定依据是 `error.code` 归一化后含 `insufficientpermissions`，或消息里**同时**出现 `insufficient permissions` 和 `missing scopes`——只认前半句会把文件、容器一类的 ACL 报错也算进来。
+
+它和配额耗尽一样以阈值 **1** 记一次语义失败，一次置 `error`。缺的权限只能由密钥持有者去签发平台补上，换号、换模型、等冷却都改变不了结果；若按普通语义失败处理，就会按模型逐个记账——账号看着还"正常"，模型却一个个被停用，而唯一说明该改什么的那句话被压在"所有账号都失败了"的聚合错误里。
+
+上游那句原话会连同响应体一起存进失败详情：账号列表悬浮的失败提示、真实生成测试的结果面板都会显示它，并附一条中文提醒指出两条出路——把该 Key 的权限改成 All（或补上消息里点名的那一项），或者把这个账号的接口格式改成 OpenAI Chat Completions。后者是因为"模型调用"和"Responses"在受限 Key 上是两个独立权限项，缺的正好是 `api.responses.write` 时，走 chat/completions 通常还能用。
+
+一般 401 的错误消息不会进测试结果面板（`HTTP 401` 已经说完了同一件事），缺 scope 是唯一的例外：那句话是用户能读到缺哪一项的唯一地方。
 
 ### 指纹连击机制
 
@@ -275,6 +297,7 @@ pub(crate) fn is_account_scoped_failure(kind: &str, status: Option<u16>) -> bool
 | `upstream_status` / `model_test_status` 的其他状态码（400/404/408/429/5xx） | 模型 | 这是上游对这一个模型的裁决 |
 | `semantic_response_transient` / `response_transform` | 模型 | 上游针对这个模型的响应内容有问题 |
 | 配额耗尽 | 账号 | 配额是账号属性 |
+| 权限不足（缺 scope） | 账号 | 权限是密钥属性，缺一项就对所有模型都缺 |
 | 未知分类 | 账号 | 宁可多冷却一点：过度冷却可恢复，让坏凭证继续服务不可恢复 |
 
 **拿不到请求模型名时降级为账号级。** Gemini 把模型放在 URL 路径里，还有些路由本来就不带模型；这种请求选号时不查模型状态，失败也写账号级，保底不丢保护。
@@ -379,7 +402,7 @@ let cooldown_seconds = policy.cooldown_enabled.then_some(policy.cooldown_seconds
 | `response_transform` | 上游有响应，但桥接的反向转换失败 | 模型 |
 | `upstream_status` | 上游返回可重试的非 2xx 状态码 | 401/403 归账号，其余归模型 |
 | `semantic_response_transient` | 语义失败（走瞬时退避这条路时） | 模型 |
-| `semantic_response_failed` | 语义失败（走指纹连击那条路时，即配额耗尽通道） | 账号 |
+| `semantic_response_failed` | 语义失败（走指纹连击那条路时，即配额耗尽与权限不足通道） | 账号 |
 | `model_test_status` | 模型测试收到非 2xx 状态码 | 401/403 归账号，其余归模型 |
 | `model_test` | 模型测试的其他可重试失败（传输层） | 账号 |
 

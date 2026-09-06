@@ -82,6 +82,41 @@ pub fn is_quota_exhaustion_failure(failure: &SemanticResponseFailure) -> bool {
         || message.contains("free usage exhausted")
 }
 
+/// Returns whether an upstream refused the credential for lacking a permission
+/// it needs — an OpenAI restricted key without the scope the endpoint requires
+/// (`api.responses.write` for `/v1/responses`, `model.request` for the older
+/// endpoints) — rather than for anything about this request.
+///
+/// This is as deterministic as quota exhaustion and less recoverable: the missing
+/// permission has to be granted in the provider's console, so every model on the
+/// key is refused identically and no retry, model swap or cooldown can change the
+/// answer. Charging it to one model would park the pool a model at a time while
+/// the account still reads as healthy, and bury the one sentence that names the
+/// fix under the aggregated "all route credentials failed" error.
+///
+/// `error.code` is the reliable signal; the message pair backs it up for gateways
+/// that relay the sentence without the code. Both phrases are required because
+/// "insufficient permissions" on its own is also how file, container and console
+/// ACL errors open, and those say nothing about the key's scopes.
+pub fn is_insufficient_permissions_failure(failure: &SemanticResponseFailure) -> bool {
+    let code = failure
+        .code
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .replace(['_', '-', ':', ' '], "");
+    if code.contains("insufficientpermissions") {
+        return true;
+    }
+    let message = failure
+        .message
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    message.contains("insufficient permissions") && message.contains("missing scopes")
+}
+
 /// Returns whether an upstream rejected a `thinking` block that the client
 /// replayed from an earlier turn.
 ///
@@ -391,6 +426,47 @@ data: {"type":"response.failed","error":{"message":"down"}}
         )
         .expect("semantic failure");
         assert!(!is_quota_exhaustion_failure(&prefix_only_in_the_middle));
+    }
+
+    /// The body OpenAI returns for a restricted key that may call the older
+    /// endpoints but was never granted the Responses API. Nothing about it is
+    /// specific to the model that was asked for, so it has to settle the account.
+    #[test]
+    fn treats_a_missing_scope_rejection_as_a_permission_failure() {
+        let failure = detect_response_failed(
+            r#"{"error":{"message":"You have insufficient permissions for this operation. Missing scopes: api.responses.write. Check that you have the correct role in your organization (Reader, Writer, Owner) and project (Member, Owner), and if you're using a restricted API key, that it has the necessary scopes.","type":"invalid_request_error","param":null,"code":"insufficient_permissions"}}"#
+                .as_bytes(),
+        )
+        .expect("semantic failure");
+        assert!(is_insufficient_permissions_failure(&failure));
+        // The key still has budget and the model is fine — only the scope is
+        // missing, so neither of the neighbouring rules may claim it.
+        assert!(!is_quota_exhaustion_failure(&failure));
+        assert!(!is_thinking_signature_failure(&failure.message));
+    }
+
+    #[test]
+    fn permission_rule_reads_the_message_when_a_gateway_drops_the_code() {
+        let relayed = detect_response_failed(
+            r#"{"error":{"message":"upstream error: You have insufficient permissions for this operation.\nMissing scopes: model.request.","type":"upstream_error"}}"#
+                .as_bytes(),
+        )
+        .expect("semantic failure");
+        assert!(is_insufficient_permissions_failure(&relayed));
+
+        // "insufficient permissions" opens plenty of errors that have nothing to
+        // do with the key's scopes; without the second phrase it stays generic.
+        let unrelated = detect_response_failed(
+            br#"{"error":{"message":"insufficient permissions to write /var/lib/model-cache"}}"#,
+        )
+        .expect("semantic failure");
+        assert!(!is_insufficient_permissions_failure(&unrelated));
+
+        let quota = detect_response_failed(
+            br#"{"error":{"code":"insufficient_quota","message":"You exceeded your current quota."}}"#,
+        )
+        .expect("semantic failure");
+        assert!(!is_insufficient_permissions_failure(&quota));
     }
 
     /// The body a Bedrock-backed relay returns once Claude Code replays a

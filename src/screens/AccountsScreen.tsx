@@ -2224,6 +2224,27 @@ const SENSITIVE_WORDS_ERROR_CODE = "sensitive_words_detected";
  * varies (plain JSON, an SSE frame, truncated at 8 KiB) too much to re-parse.
  */
 const BUDGET_POOL_EXHAUSTED_MESSAGE = "budget pool quota has been exhausted";
+/**
+ * How OpenAI opens `error.message` when the key is valid but was never granted
+ * the scope the endpoint needs — `api.responses.write` for `/v1/responses`,
+ * `model.request` for the older ones. Worth its own hint because the sentence
+ * reads like an organization-role problem, so users go auditing their team's
+ * roles when the fix is one toggle on the key itself.
+ *
+ * Two phrases, both required: "insufficient permissions" on its own also opens
+ * plenty of unrelated ACL errors. Matched anywhere in the stored failure, the way
+ * the other rules here are, because relays wrap the sentence in their own prose.
+ */
+const MISSING_SCOPE_MESSAGES = ["insufficient permissions", "missing scopes"];
+const MISSING_SCOPE_HINT =
+  "友情提醒：上游拒的是这个 API Key 的权限，不是 ai-switch 或网络的问题。请到签发这个 Key 的平台，把它的权限改成 All，或补上上面消息里点名的那一项（受限 Key 需要逐项勾选）。若缺的是 api.responses.write，也可以把这个账号的接口格式改成 OpenAI Chat Completions 绕开。";
+
+function looksLikeMissingScope(...values: Array<string | null | undefined>) {
+  return values.some((value) => {
+    const text = value?.toLowerCase();
+    return MISSING_SCOPE_MESSAGES.every((phrase) => text?.includes(phrase));
+  });
+}
 
 function CredentialFailureTooltip({
   credential,
@@ -2243,6 +2264,7 @@ function CredentialFailureTooltip({
   const budgetPoolExhausted = [response, credential.last_failure_message].some((value) =>
     value?.toLowerCase().includes(BUDGET_POOL_EXHAUSTED_MESSAGE),
   );
+  const missingScope = looksLikeMissingScope(response, credential.last_failure_message);
 
   return (
     <span
@@ -2281,6 +2303,14 @@ function CredentialFailureTooltip({
               data-testid={`credential-budget-pool-hint-${credential.id}`}
             >
               友情提醒：当前中转站公共池额度耗尽，并非你个人额度耗尽，请等待下一次公共池补充额度。
+            </span>
+          ) : null}
+          {missingScope ? (
+            <span
+              className="mt-2 block rounded-md border border-amber-400/60 bg-amber-500/15 px-2 py-1.5 text-amber-100"
+              data-testid={`credential-missing-scope-hint-${credential.id}`}
+            >
+              {MISSING_SCOPE_HINT}
             </span>
           ) : null}
           <pre className="mt-2 select-text whitespace-pre-wrap break-words font-mono text-[10px] leading-4 text-stone-100">
@@ -5821,6 +5851,18 @@ export function AccountsScreen({
             {modelTestOutcome.error_message ? (
               <p className="rounded-lg bg-white/80 px-2 py-1 font-mono text-[11px] text-red-800">
                 {modelTestOutcome.error_message}
+              </p>
+            ) : null}
+
+            {looksLikeMissingScope(
+              modelTestOutcome.error_message,
+              modelTestOutcome.response_body,
+            ) ? (
+              <p
+                className="rounded-lg bg-amber-100/80 px-2 py-1.5 text-[11px] leading-5 text-amber-900"
+                data-testid="model-test-missing-scope-hint"
+              >
+                {MISSING_SCOPE_HINT}
               </p>
             ) : null}
 
