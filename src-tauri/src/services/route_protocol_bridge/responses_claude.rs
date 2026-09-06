@@ -419,9 +419,10 @@ mod tests {
 }
 
 use super::common::{
-    anthropic_thinking_budget, flatten_responses_function_tools, is_reasoning_input_item,
-    response_tool_name, response_tool_namespace, response_tool_parameters,
-    responses_reasoning_effort, ResponsesToolNamespaces,
+    anthropic_thinking_budget, codex_agent_message_as_message, flatten_responses_function_tools,
+    is_droppable_codex_control_item, is_reasoning_input_item, response_tool_name,
+    response_tool_namespace, response_tool_parameters, responses_reasoning_effort,
+    ResponsesToolNamespaces,
 };
 use super::{common::parse_base64_data_url, sse, TransformedBridgeResponse};
 use serde_json::{json, Map, Value};
@@ -1002,6 +1003,25 @@ fn convert_input_item(
                 .transpose()?
                 .unwrap_or_else(Vec::new);
             messages.push(json!({"role": role, "content": content}));
+        }
+        // Codex control items with no conversable content.
+        Some(_) if is_droppable_codex_control_item(item) => {
+            pending.flush(messages);
+        }
+        // Carries prose, so it is restated rather than dropped.
+        Some("agent_message") => {
+            pending.flush(messages);
+            let Some(restated) = codex_agent_message_as_message(item) else {
+                return Ok(());
+            };
+            let content = restated
+                .get("content")
+                .map(convert_message_content)
+                .transpose()?
+                .unwrap_or_else(Vec::new);
+            if !content.is_empty() {
+                messages.push(json!({"role": "user", "content": content}));
+            }
         }
         Some(other) => return Err(format!("Unsupported Responses input item type: {other}")),
         None => return Err("Responses input item is missing role or type".to_string()),

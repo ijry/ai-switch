@@ -84,6 +84,79 @@ pub(super) fn flatten_responses_function_tools(
     Ok(flattened)
 }
 
+/// Codex control items that carry no conversation content, so every bridge can
+/// drop them instead of failing the turn.
+///
+/// - `compaction` / `context_compaction` hold an `encrypted_content` blob only
+///   the issuing upstream can read. It is the same class of problem as a
+///   thinking signature: replayed to a different account or a different provider
+///   it is at best meaningless, at worst a hard error.
+/// - `configuration_update` is a durable reasoning-effort control the backend
+///   interprets at its position in history. Effort is already carried on the
+///   request itself by each bridge's reasoning conversion.
+/// - `compaction_trigger` is an empty marker (`{}`).
+/// - `image_generation_call` replays a hosted-tool result. Hosted tools are
+///   filtered out of the declaration the upstream receives, so replaying the
+///   call names a tool it was never told about — same reason the
+///   `web_search_call` family is dropped.
+pub(super) fn is_droppable_codex_control_item(item: &Value) -> bool {
+    item.get("type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|item_type| {
+            matches!(
+                item_type,
+                "compaction"
+                    | "compaction_summary"
+                    | "context_compaction"
+                    | "configuration_update"
+                    | "compaction_trigger"
+                    | "image_generation_call"
+            )
+        })
+}
+
+/// Restate an `agent_message` as an ordinary `message` item.
+///
+/// Codex emits this for multi-agent turns. Unlike the control items above it
+/// **carries prose** in `content[]`, so dropping it silently deletes part of the
+/// conversation — the model then answers as though a turn had never happened.
+/// Returning it in the shape every bridge already converts is the only option
+/// that neither errors nor loses text.
+///
+/// `role` is `user`: the fields Codex uses instead are `author` / `recipient`,
+/// which have no equivalent here, and the text is input *to* the model whichever
+/// agent produced it. `encrypted_content` parts are skipped rather than inlined
+/// as text — they are opaque to anything but the issuing upstream, and pasting
+/// the ciphertext into the prompt would be worse than omitting it. `None` means
+/// the item was not an `agent_message`.
+pub(super) fn codex_agent_message_as_message(item: &Value) -> Option<Value> {
+    if item.get("type").and_then(Value::as_str).map(str::trim) != Some("agent_message") {
+        return None;
+    }
+    let content = match item.get("content") {
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter(|part| {
+                part.get("type").and_then(Value::as_str).map(str::trim) != Some("encrypted_content")
+            })
+            .filter_map(|part| {
+                let text = part.get("text").and_then(Value::as_str)?;
+                (!text.is_empty()).then(|| serde_json::json!({"type": "input_text", "text": text}))
+            })
+            .collect(),
+        Some(Value::String(text)) if !text.is_empty() => {
+            vec![serde_json::json!({"type": "input_text", "text": text})]
+        }
+        _ => Vec::new(),
+    };
+    Some(serde_json::json!({
+        "type": "message",
+        "role": "user",
+        "content": Value::Array(content)
+    }))
+}
+
 pub(super) fn is_responses_additional_tools_item(item: &Value) -> bool {
     item.get("type")
         .and_then(Value::as_str)
@@ -548,8 +621,9 @@ fn is_version_segment(segment: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        anthropic_thinking_budget, chat_reasoning_effort, gemini_thinking_config, is_create_path,
-        is_create_subpath, promote_responses_additional_tools, responses_tool_namespaces_from_body,
+        anthropic_thinking_budget, chat_reasoning_effort, codex_agent_message_as_message,
+        gemini_thinking_config, is_create_path, is_create_subpath, is_droppable_codex_control_item,
+        promote_responses_additional_tools, responses_tool_namespaces_from_body,
         stringify_tool_result_content,
     };
     use serde_json::json;
@@ -814,5 +888,76 @@ mod tests {
 
         assert!(value.get("tools").is_none(), "value={value}");
         assert_eq!(value["input"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn droppable_control_items_are_exactly_the_contentless_ones() {
+        for item_type in [
+            "compaction",
+            "compaction_summary",
+            "context_compaction",
+            "configuration_update",
+            "compaction_trigger",
+            "image_generation_call",
+        ] {
+            assert!(
+                is_droppable_codex_control_item(&json!({"type": item_type})),
+                "{item_type} should be droppable"
+            );
+        }
+        // Anything that carries conversation must not be swept up by this.
+        for item_type in [
+            "agent_message",
+            "message",
+            "function_call",
+            "function_call_output",
+            "custom_tool_call",
+            "reasoning",
+        ] {
+            assert!(
+                !is_droppable_codex_control_item(&json!({"type": item_type})),
+                "{item_type} must not be dropped"
+            );
+        }
+    }
+
+    /// The whole point of restating rather than dropping: the text has to come
+    /// out the other side. The ciphertext part must not — it is readable only by
+    /// the upstream that issued it, so inlining it as prose would feed the model
+    /// a base64 blob.
+    #[test]
+    fn agent_message_keeps_prose_and_omits_encrypted_parts() {
+        let restated = codex_agent_message_as_message(&json!({
+            "type": "agent_message",
+            "id": "am_1",
+            "author": "planner",
+            "recipient": "coder",
+            "content": [
+                {"type": "input_text", "text": "REVIEW"},
+                {"type": "encrypted_content", "encrypted_content": "OPAQUE"},
+                {"type": "input_text", "text": "THE DIFF"}
+            ]
+        }))
+        .expect("an agent_message is restated");
+
+        assert_eq!(
+            restated,
+            json!({
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "REVIEW"},
+                    {"type": "input_text", "text": "THE DIFF"}
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn agent_message_restatement_ignores_other_item_types() {
+        assert!(
+            codex_agent_message_as_message(&json!({"type": "message", "role": "user"})).is_none()
+        );
+        assert!(codex_agent_message_as_message(&json!({"type": "compaction"})).is_none());
     }
 }

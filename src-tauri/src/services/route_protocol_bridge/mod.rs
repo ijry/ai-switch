@@ -1981,4 +1981,112 @@ mod tests {
             );
         }
     }
+
+    /// The rest of Codex's `ResponseItem` enum. Each of these used to hit the
+    /// same `Unsupported Responses input item type` arm as `additional_tools`,
+    /// with the same blast radius: one unconvertible item fails the turn, and the
+    /// failure is charged to whichever credential it was retried against, so the
+    /// whole pool reports as broken. They divide in two — control items carry
+    /// nothing conversable and are dropped, `agent_message` carries prose and
+    /// must survive.
+    #[test]
+    fn remaining_codex_control_items_do_not_fail_the_turn() {
+        let control_items = [
+            json!({"type": "compaction", "id": "c_1", "encrypted_content": "OPAQUE-BLOB"}),
+            json!({"type": "context_compaction", "id": "cc_1", "encrypted_content": "OPAQUE-BLOB"}),
+            json!({"type": "configuration_update", "reasoning": {"effort": "high"}}),
+            json!({"type": "compaction_trigger"}),
+            json!({"type": "image_generation_call", "id": "ig_1", "status": "completed", "result": "BASE64"}),
+        ];
+
+        for dialect in [
+            ApiDialect::OpenAi,
+            ApiDialect::OpenAiResponses,
+            ApiDialect::Anthropic,
+            ApiDialect::Gemini,
+        ] {
+            let input: Vec<Value> = control_items
+                .iter()
+                .cloned()
+                .chain(std::iter::once(json!({
+                    "type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": "carry on"}]
+                })))
+                .collect();
+            let body =
+                serde_json::to_vec(&json!({"model": "gpt-6-astra", "input": input})).unwrap();
+
+            let prepared = prepare_request(PlatformId::Codex, dialect, "/v1/responses", &body)
+                .unwrap_or_else(|error| panic!("{dialect:?} rejected a control item: {error}"));
+            let rendered = String::from_utf8_lossy(&prepared.body).to_string();
+
+            // The surviving user turn proves the items were skipped rather than
+            // the whole conversion bailing early.
+            assert!(
+                rendered.contains("carry on"),
+                "{dialect:?} lost the real turn: {rendered}"
+            );
+            // The converting bridges must not carry the encrypted blob into a
+            // dialect that has nowhere to put it. The native Responses path is
+            // exempt: it forwards input items verbatim, which is also why it
+            // never rejected these items in the first place — dropping them
+            // there would change a working request for no reason.
+            if dialect != ApiDialect::OpenAiResponses {
+                assert!(
+                    !rendered.contains("OPAQUE-BLOB"),
+                    "{dialect:?} forwarded an encrypted compaction blob: {rendered}"
+                );
+            }
+        }
+    }
+
+    /// `agent_message` is the one item in that group that must not be dropped:
+    /// it holds prose from a multi-agent turn, so losing it deletes part of the
+    /// conversation and the model answers as though the turn never happened.
+    #[test]
+    fn agent_message_prose_survives_every_upstream_dialect() {
+        let body = serde_json::to_vec(&json!({
+            "model": "gpt-6-astra",
+            "input": [
+                {
+                    "type": "agent_message",
+                    "id": "am_1",
+                    "author": "planner",
+                    "recipient": "coder",
+                    "content": [
+                        {"type": "input_text", "text": "REVIEW-THE-DIFF"},
+                        {"type": "encrypted_content", "encrypted_content": "OPAQUE-BLOB"}
+                    ]
+                },
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "ok"}]}
+            ]
+        }))
+        .unwrap();
+
+        for dialect in [
+            ApiDialect::OpenAi,
+            ApiDialect::OpenAiResponses,
+            ApiDialect::Anthropic,
+            ApiDialect::Gemini,
+        ] {
+            let prepared = prepare_request(PlatformId::Codex, dialect, "/v1/responses", &body)
+                .unwrap_or_else(|error| panic!("{dialect:?} rejected an agent_message: {error}"));
+            let rendered = String::from_utf8_lossy(&prepared.body).to_string();
+
+            assert!(
+                rendered.contains("REVIEW-THE-DIFF"),
+                "{dialect:?} dropped agent_message prose: {rendered}"
+            );
+            // The ciphertext part is opaque to anything but the issuing upstream,
+            // so a converting bridge must not paste it into the prompt as text.
+            // The native Responses path forwards the item untouched — see the
+            // control-item test above for why that is left alone.
+            if dialect != ApiDialect::OpenAiResponses {
+                assert!(
+                    !rendered.contains("OPAQUE-BLOB"),
+                    "{dialect:?} inlined encrypted content as prose: {rendered}"
+                );
+            }
+        }
+    }
 }

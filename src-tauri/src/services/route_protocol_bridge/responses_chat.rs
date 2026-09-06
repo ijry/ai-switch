@@ -1,7 +1,8 @@
 use super::common::{
-    chat_reasoning_effort, flatten_responses_function_tools, is_responses_builtin_tool_type,
-    response_tool_name, response_tool_namespace, response_tool_parameters,
-    responses_reasoning_effort, responses_tool_namespaces, ResponsesToolNamespaces,
+    chat_reasoning_effort, codex_agent_message_as_message, flatten_responses_function_tools,
+    is_droppable_codex_control_item, is_responses_builtin_tool_type, response_tool_name,
+    response_tool_namespace, response_tool_parameters, responses_reasoning_effort,
+    responses_tool_namespaces, ResponsesToolNamespaces,
 };
 use super::TransformedBridgeResponse;
 use serde_json::{json, Map, Value};
@@ -1406,6 +1407,38 @@ fn convert_input_item(
             flush_pending_tool_calls(
                 messages,
                 pending_tool_calls,
+                pending_reasoning,
+                last_assistant_index,
+            );
+        }
+        // Codex control items with no conversable content.
+        Some(_) if is_droppable_codex_control_item(item) => {
+            flush_pending_tool_calls(
+                messages,
+                pending_tool_calls,
+                pending_reasoning,
+                last_assistant_index,
+            );
+        }
+        // Carries prose, so it is restated rather than dropped.
+        Some("agent_message") => {
+            flush_pending_tool_calls(
+                messages,
+                pending_tool_calls,
+                pending_reasoning,
+                last_assistant_index,
+            );
+            let Some(restated) = codex_agent_message_as_message(item) else {
+                return Ok(());
+            };
+            let content = restated
+                .get("content")
+                .map(convert_message_content)
+                .transpose()?
+                .unwrap_or(Value::String(String::new()));
+            append_message_with_reasoning(
+                messages,
+                json!({"role": "user", "content": content}),
                 pending_reasoning,
                 last_assistant_index,
             );

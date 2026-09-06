@@ -330,9 +330,9 @@ mod tests {
 }
 
 use super::common::{
-    flatten_responses_function_tools, gemini_thinking_config, is_reasoning_input_item,
-    response_tool_name, response_tool_namespace, responses_reasoning_effort,
-    ResponsesToolNamespaces,
+    codex_agent_message_as_message, flatten_responses_function_tools, gemini_thinking_config,
+    is_droppable_codex_control_item, is_reasoning_input_item, response_tool_name,
+    response_tool_namespace, responses_reasoning_effort, ResponsesToolNamespaces,
 };
 use super::{common::parse_base64_data_url, sse, TransformedBridgeResponse};
 use serde_json::{json, Map, Value};
@@ -591,6 +591,22 @@ fn convert_input(input: &Value) -> Result<Value, String> {
                             "role": if role == "assistant" { "model" } else { "user" },
                             "parts": convert_message_content(&Value::Array(vec![item.clone()]))?
                         }));
+                    }
+                    // Codex control items with no conversable content.
+                    Some(_) if is_droppable_codex_control_item(item) => {}
+                    // Carries prose, so it is restated rather than dropped.
+                    Some("agent_message") => {
+                        let Some(restated) = codex_agent_message_as_message(item) else {
+                            continue;
+                        };
+                        let parts = restated
+                            .get("content")
+                            .map(convert_message_content)
+                            .transpose()?
+                            .unwrap_or_default();
+                        if !parts.is_empty() {
+                            contents.push(json!({"role": "user", "parts": parts}));
+                        }
                     }
                     Some(other) => {
                         return Err(format!("Unsupported Responses input item type: {other}"));
