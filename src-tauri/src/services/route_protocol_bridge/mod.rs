@@ -83,6 +83,11 @@ pub fn prepare_request(
     let is_messages = common::is_create_path(&normalized_path, "messages");
 
     if platform == PlatformId::Codex && is_responses {
+        // Lift a Responses Lite `additional_tools` carrier before anything else
+        // looks at the body, so all four dialects and the namespace map below
+        // see one shape. `None` keeps the caller's bytes as they were.
+        let lifted = common::promote_responses_additional_tools(body)?;
+        let body = lifted.as_deref().unwrap_or(body);
         return match upstream_dialect {
             ApiDialect::OpenAi => Ok(PreparedBridgeRequest {
                 kind: Some(ProtocolBridgeKind::ResponsesToChat),
@@ -1907,5 +1912,73 @@ mod tests {
             return value["response"].clone();
         }
         panic!("no response.completed event found in stream");
+    }
+
+    /// Codex "Responses Lite" sends no top-level `tools`; the catalogue rides in
+    /// an `additional_tools` input item. Three of these four bridges used to
+    /// reject that item outright, and because a conversion failure is charged to
+    /// the credential it was retried against, one unconvertible turn reported
+    /// every account in the pool as broken. The fourth forwarded a request whose
+    /// tools nothing could see. Every dialect has to come out of `prepare_request`
+    /// with the two function tools intact.
+    #[test]
+    fn responses_lite_additional_tools_reach_every_upstream_dialect() {
+        let body = serde_json::to_vec(&json!({
+            "model": "gpt-6-astra",
+            "stream": true,
+            "input": [
+                {
+                    "type": "additional_tools",
+                    "id": "at_1",
+                    "role": "developer",
+                    "tools": [{
+                        "type": "namespace",
+                        "name": "functions",
+                        "tools": [
+                            {"type": "function", "name": "shell", "description": "run", "parameters": {"type": "object", "properties": {}}},
+                            {"type": "function", "name": "apply_patch", "description": "edit", "parameters": {"type": "object", "properties": {}}}
+                        ]
+                    }]
+                },
+                {"type": "message", "id": "msg_1", "role": "developer", "content": [{"type": "input_text", "text": "BASE"}]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+            ]
+        }))
+        .unwrap();
+
+        for dialect in [
+            ApiDialect::OpenAi,
+            ApiDialect::OpenAiResponses,
+            ApiDialect::Anthropic,
+            ApiDialect::Gemini,
+        ] {
+            let prepared = prepare_request(PlatformId::Codex, dialect, "/v1/responses", &body)
+                .unwrap_or_else(|error| panic!("{dialect:?} rejected a Lite turn: {error}"));
+            let converted: Value = serde_json::from_slice(&prepared.body).expect("converted json");
+
+            // Whatever the target tool shape is, both names have to survive.
+            let rendered = converted.to_string();
+            for name in ["shell", "apply_patch"] {
+                assert!(
+                    rendered.contains(name),
+                    "{dialect:?} dropped {name}: {rendered}"
+                );
+            }
+            // And the carrier must not be forwarded as a conversation item.
+            assert!(
+                !rendered.contains("additional_tools"),
+                "{dialect:?} forwarded the carrier: {rendered}"
+            );
+            // The namespace map has to be populated or the tool call cannot be
+            // renamed back on the way home.
+            assert_eq!(
+                prepared
+                    .tool_namespaces
+                    .get("functions__shell")
+                    .map(String::as_str),
+                Some("functions"),
+                "{dialect:?} lost the namespace map"
+            );
+        }
     }
 }

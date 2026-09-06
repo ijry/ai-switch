@@ -1,5 +1,5 @@
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) type ResponsesToolNamespaces = BTreeMap<String, String>;
 
@@ -82,6 +82,120 @@ pub(super) fn flatten_responses_function_tools(
     let mut flattened = Vec::new();
     collect_responses_function_tools(tools, None, &mut flattened)?;
     Ok(flattened)
+}
+
+pub(super) fn is_responses_additional_tools_item(item: &Value) -> bool {
+    item.get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|item_type| item_type.trim().eq_ignore_ascii_case("additional_tools"))
+}
+
+/// Codex "Responses Lite" stops sending a top-level `tools` array. The tool
+/// catalogue instead rides inside `input` as an `additional_tools` carrier item
+/// (and `instructions` becomes a `developer` message, which every bridge already
+/// understands). The switch is keyed purely on model metadata upstream — there
+/// is no provider check — so a pool pointed at any relay receives this shape.
+///
+/// Nothing here recognised the carrier: the chat / anthropic / gemini bridges
+/// rejected the turn on the first request of a session, and because that error
+/// is charged as a per-credential `request_build` failure the retry loop walked
+/// the whole pool and reported every account as broken. The native Responses
+/// path did not error but only ever flattened a *top-level* `tools`, so it
+/// forwarded a catalogue that neither the flattener nor the upstream could see.
+///
+/// Lifting the carrier back to a top-level `tools` puts all four paths on the
+/// shape they already handle, including the `namespace` grouping inside it.
+/// Top-level order is preserved and carrier tools are appended de-duplicated so
+/// a request carrying both stays stable. `Ok(None)` means no carrier was
+/// present and the caller's bytes are left untouched.
+pub(super) fn promote_responses_additional_tools(body: &[u8]) -> Result<Option<Vec<u8>>, String> {
+    // A body we cannot parse is not ours to report: the per-bridge converters
+    // produce their own message, and the passthrough path stays byte-exact.
+    let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
+        return Ok(None);
+    };
+    let carries_tools = value
+        .get("input")
+        .and_then(Value::as_array)
+        .is_some_and(|input| input.iter().any(is_responses_additional_tools_item));
+    if !carries_tools {
+        return Ok(None);
+    }
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "Responses request body must be a JSON object".to_string())?;
+
+    let mut merged: Vec<Value> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    if let Some(tools) = object.get("tools").and_then(Value::as_array) {
+        for tool in tools {
+            seen.insert(responses_tool_dedup_key(tool));
+            merged.push(tool.clone());
+        }
+    }
+
+    let input = object
+        .get_mut("input")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "Responses input must be an array".to_string())?;
+    let mut kept = Vec::with_capacity(input.len());
+    for item in std::mem::take(input) {
+        if !is_responses_additional_tools_item(&item) {
+            kept.push(item);
+            continue;
+        }
+        let Some(tools) = item.get("tools").and_then(Value::as_array) else {
+            continue;
+        };
+        for tool in tools {
+            if seen.insert(responses_tool_dedup_key(tool)) {
+                merged.push(tool.clone());
+            }
+        }
+    }
+    *input = kept;
+
+    // An empty `tools: []` is rejected by some relays, so only write the key
+    // when the lift actually produced something.
+    if !merged.is_empty() {
+        object.insert("tools".to_string(), Value::Array(merged));
+    }
+
+    serde_json::to_vec(&value)
+        .map(Some)
+        .map_err(|error| format!("Responses request could not be re-encoded: {error}"))
+}
+
+/// Stable identity for a tool so the same entry appearing both top-level and in
+/// the carrier is only kept once: `(type, name)`, `(mcp, server_label)`, or the
+/// serialized tool when it has neither.
+fn responses_tool_dedup_key(tool: &Value) -> String {
+    let tool_type = tool
+        .get("type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if !tool_type.is_empty() {
+        if let Some(name) = tool
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            return format!("type:{tool_type}\u{0}name:{name}");
+        }
+        if tool_type == "mcp" {
+            if let Some(label) = tool
+                .get("server_label")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|label| !label.is_empty())
+            {
+                return format!("type:mcp\u{0}server_label:{label}");
+            }
+        }
+    }
+    format!("json:{tool}")
 }
 
 pub(super) fn responses_tool_namespaces_from_body(
@@ -435,7 +549,8 @@ fn is_version_segment(segment: &str) -> bool {
 mod tests {
     use super::{
         anthropic_thinking_budget, chat_reasoning_effort, gemini_thinking_config, is_create_path,
-        is_create_subpath, stringify_tool_result_content,
+        is_create_subpath, promote_responses_additional_tools, responses_tool_namespaces_from_body,
+        stringify_tool_result_content,
     };
     use serde_json::json;
 
@@ -552,5 +667,152 @@ mod tests {
             "messages",
             "count_tokens"
         ));
+    }
+
+    /// A Responses Lite request shaped the way Codex sends it: no top-level
+    /// `tools`, the catalogue in an `additional_tools` carrier, instructions
+    /// demoted to a `developer` message.
+    fn responses_lite_body() -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "model": "gpt-6-astra",
+            "input": [
+                {
+                    "type": "additional_tools",
+                    "id": "at_1",
+                    "role": "developer",
+                    "tools": [{
+                        "type": "namespace",
+                        "name": "functions",
+                        "tools": [
+                            {"type": "function", "name": "shell", "parameters": {"type": "object"}},
+                            {"type": "function", "name": "apply_patch", "parameters": {"type": "object"}}
+                        ]
+                    }]
+                },
+                {"type": "message", "id": "msg_1", "role": "developer", "content": [{"type": "input_text", "text": "BASE"}]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+            ]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn additional_tools_carrier_becomes_top_level_tools() {
+        let lifted = promote_responses_additional_tools(&responses_lite_body())
+            .expect("carrier lifts cleanly")
+            .expect("a carrier was present, so the body changed");
+        let value: serde_json::Value = serde_json::from_slice(&lifted).unwrap();
+
+        assert_eq!(
+            value["tools"],
+            json!([{
+                "type": "namespace",
+                "name": "functions",
+                "tools": [
+                    {"type": "function", "name": "shell", "parameters": {"type": "object"}},
+                    {"type": "function", "name": "apply_patch", "parameters": {"type": "object"}}
+                ]
+            }])
+        );
+
+        // The carrier itself must go: it is not a conversable input item, and
+        // leaving it behind is what the bridges choked on.
+        let input = value["input"].as_array().expect("input survives");
+        assert_eq!(input.len(), 2, "only the carrier is removed: {input:?}");
+        assert!(input.iter().all(|item| item["type"] != "additional_tools"));
+        // Order of the remaining turn is untouched.
+        assert_eq!(input[0]["role"], "developer");
+        assert_eq!(input[1]["role"], "user");
+    }
+
+    /// The namespace map is what turns `functions__shell` back into `shell` on
+    /// the way home. It only ever read the top-level `tools`, so before the lift
+    /// a Lite turn produced an empty map and every tool call came back to Codex
+    /// under a name it had never advertised.
+    #[test]
+    fn lifted_carrier_feeds_the_tool_namespace_map() {
+        let body = responses_lite_body();
+        assert!(
+            responses_tool_namespaces_from_body(&body)
+                .unwrap()
+                .is_empty(),
+            "carrier tools are invisible to the map until they are lifted"
+        );
+
+        let lifted = promote_responses_additional_tools(&body).unwrap().unwrap();
+        let namespaces = responses_tool_namespaces_from_body(&lifted).unwrap();
+
+        assert_eq!(
+            namespaces.get("functions__shell").map(String::as_str),
+            Some("functions")
+        );
+        assert_eq!(
+            namespaces.get("shell").map(String::as_str),
+            Some("functions")
+        );
+    }
+
+    #[test]
+    fn carrier_tools_are_appended_after_existing_tools_and_deduped() {
+        let body = serde_json::to_vec(&json!({
+            "input": [
+                {"type": "message", "role": "user", "content": "hi"},
+                {"type": "additional_tools", "tools": [
+                    {"type": "function", "name": "shell"},
+                    {"type": "function", "name": "web_fetch"}
+                ]}
+            ],
+            "tools": [{"type": "function", "name": "shell"}]
+        }))
+        .unwrap();
+
+        let lifted = promote_responses_additional_tools(&body).unwrap().unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&lifted).unwrap();
+
+        assert_eq!(
+            value["tools"],
+            json!([
+                {"type": "function", "name": "shell"},
+                {"type": "function", "name": "web_fetch"}
+            ]),
+            "the duplicate is dropped and the new tool is appended"
+        );
+    }
+
+    /// Every non-Lite Codex request goes through this too, so a body with no
+    /// carrier has to come back untouched rather than re-serialized — the
+    /// passthrough and prompt-cache paths depend on the bytes not moving.
+    #[test]
+    fn body_without_a_carrier_is_left_alone() {
+        let body = serde_json::to_vec(&json!({
+            "input": [{"type": "message", "role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "name": "shell"}]
+        }))
+        .unwrap();
+
+        assert!(promote_responses_additional_tools(&body).unwrap().is_none());
+        // Including bodies this helper cannot parse at all.
+        assert!(promote_responses_additional_tools(b"not json")
+            .unwrap()
+            .is_none());
+    }
+
+    /// An empty carrier must not leave `tools: []` behind — several relays 400
+    /// on an empty tool array, which would turn a harmless no-op into an outage.
+    #[test]
+    fn empty_carrier_does_not_introduce_an_empty_tools_array() {
+        let body = serde_json::to_vec(&json!({
+            "input": [
+                {"type": "additional_tools", "tools": []},
+                {"type": "message", "role": "user", "content": "hi"}
+            ]
+        }))
+        .unwrap();
+
+        let lifted = promote_responses_additional_tools(&body).unwrap().unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&lifted).unwrap();
+
+        assert!(value.get("tools").is_none(), "value={value}");
+        assert_eq!(value["input"].as_array().map(Vec::len), Some(1));
     }
 }
