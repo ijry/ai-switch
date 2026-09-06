@@ -16,6 +16,9 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::app_state::AppState;
 use crate::error::ApiError;
 use crate::services::mobile_pairing::MobileTokenRegistry;
+use crate::services::route_proxy_service::{
+    build_proxy_state, is_shared_model_api_path, proxy_handler, ProxyAppState,
+};
 use crate::services::web_service::WebService;
 use crate::web::auth::{authorize_api_request, ApiAuthState, WebAuthLevel};
 use crate::web::handlers::{dispatch_command, is_sensitive_command, mask_listed_secret_payloads};
@@ -30,6 +33,9 @@ pub struct WebServerContext {
     pub mobile_tokens: MobileTokenRegistry,
     pub static_dir: PathBuf,
     pub sensitive_command_gate: Arc<AtomicBool>,
+    /// Shared by all model API requests in standalone mode so proxy key caches
+    /// and request telemetry survive across requests.
+    pub proxy: Option<ProxyAppState>,
 }
 
 pub const SENSITIVE_COMMAND_BODY_LIMIT: usize = 12 * 1024 * 1024;
@@ -43,6 +49,22 @@ fn h5_cors_layer() -> CorsLayer {
 
 pub fn build_router(state: Arc<AppState>, token: String, static_dir: PathBuf) -> Router {
     build_router_with_sensitive_commands(state, token, static_dir, true)
+}
+
+fn make_context(
+    state: Arc<AppState>,
+    token: String,
+    static_dir: PathBuf,
+    sensitive_command_gate: Arc<AtomicBool>,
+) -> WebServerContext {
+    WebServerContext {
+        mobile_tokens: WebService::mobile_token_registry(&state.web_service),
+        state,
+        token: Arc::new(token),
+        static_dir,
+        sensitive_command_gate,
+        proxy: None,
+    }
 }
 
 pub(crate) fn build_router_with_sensitive_commands(
@@ -65,13 +87,32 @@ pub(crate) fn build_router_with_sensitive_command_gate(
     static_dir: PathBuf,
     sensitive_command_gate: Arc<AtomicBool>,
 ) -> Router {
-    let context = WebServerContext {
-        mobile_tokens: WebService::mobile_token_registry(&state.web_service),
-        state,
-        token: Arc::new(token),
-        static_dir,
-        sensitive_command_gate,
-    };
+    let context = make_context(state, token, static_dir, sensitive_command_gate);
+    build_panel_routes(context.clone())
+        .fallback(static_fallback)
+        .with_state(context)
+}
+
+/// The standalone server owns one listener for both the browser panel and the
+/// compute-pool API. Exact panel routes are registered first; only model API
+/// paths reach the route proxy fallback, while other unknown paths retain the
+/// normal static-asset behavior.
+pub(crate) fn build_shared_server_router(
+    state: Arc<AppState>,
+    token: String,
+    static_dir: PathBuf,
+) -> Router {
+    let mut context = make_context(state, token, static_dir, Arc::new(AtomicBool::new(true)));
+    context.proxy = Some(build_proxy_state(
+        context.state.pool.clone(),
+        &context.state.route_proxy,
+    ));
+    build_panel_routes(context.clone())
+        .fallback(shared_fallback)
+        .with_state(context)
+}
+
+fn build_panel_routes(context: WebServerContext) -> Router<WebServerContext> {
     let api_router = Router::new()
         .route("/:command", post(api_command))
         .layer(DefaultBodyLimit::max(SENSITIVE_COMMAND_BODY_LIMIT))
@@ -97,9 +138,30 @@ pub(crate) fn build_router_with_sensitive_command_gate(
         .route("/ws/events", get(events_socket))
         .route("/ws/terminal/:session_id", get(terminal_socket))
         .nest("/api", api_router)
-        .fallback(static_fallback)
-        .with_state(context)
         .layer(h5_cors_layer())
+}
+
+async fn shared_fallback(
+    State(context): State<WebServerContext>,
+    method: Method,
+    headers: axum::http::HeaderMap,
+    uri: Uri,
+    body: Body,
+) -> Response {
+    if is_shared_model_api_path(uri.path()) {
+        let Some(proxy_state) = context.proxy.clone() else {
+            return static_fallback(State(context), uri).await;
+        };
+        return proxy_handler(
+            axum::extract::State(proxy_state),
+            method,
+            headers,
+            uri,
+            body,
+        )
+        .await;
+    }
+    static_fallback(State(context), uri).await
 }
 
 async fn health() -> Json<Value> {
@@ -375,6 +437,35 @@ mod tests {
             axum::serve(listener, router).await.unwrap();
         });
         (address, handle, state, temp)
+    }
+
+    async fn spawn_shared_test_router(
+        token: &str,
+    ) -> (SocketAddr, tokio::task::JoinHandle<()>, TempDir) {
+        let temp = tempdir().unwrap();
+        let pool = create_memory_pool().await.unwrap();
+        run_migrations(&pool).await.unwrap();
+        let state = Arc::new(AppState {
+            paths: crate::paths::AppPaths::from_data_dir(temp.path().join("app-data")),
+            pool,
+            config_writes: ConfigWriteRuntimeState::default(),
+            deeplink_protocols: DeepLinkProtocolRuntime::default(),
+            close_to_tray: crate::app_state::CloseToTrayRuntime::default(),
+            route_proxy: RouteProxyRuntimeState::default(),
+            web_service: WebServiceRuntimeState::default(),
+            tailscale: TailscaleRuntimeState::default(),
+            terminals: TerminalManager::default(),
+            terminal_hub: Arc::new(crate::web::terminal_hub::TerminalHub::default()),
+            event_broadcaster: Arc::new(WebEventBroadcaster::default()),
+        });
+        let router =
+            build_shared_server_router(state, token.to_string(), temp.path().to_path_buf());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (address, handle, temp)
     }
 
     fn assert_sensitive_cache_headers(response: &reqwest::Response) {
@@ -1191,6 +1282,57 @@ mod tests {
             let response = request.send().await.unwrap();
             assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
         }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn shared_listener_preserves_panel_routes_and_dispatches_model_routes() {
+        let (address, server, _temp) = spawn_shared_test_router("primary-secret").await;
+        let client = reqwest::Client::new();
+
+        let health = client
+            .get(format!("http://{address}/health"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+        assert_eq!(health.json::<Value>().await.unwrap()["ok"], true);
+
+        let panel = client
+            .post(format!("http://{address}/api/get_settings"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(panel.status(), StatusCode::UNAUTHORIZED);
+
+        // No panel token can accidentally satisfy the compute-pool API. The
+        // model endpoint must be handled by the proxy and fail with its own
+        // API-key/platform authentication error.
+        let models = client
+            .get(format!("http://{address}/v1/models"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(models.status(), StatusCode::UNAUTHORIZED);
+        assert!(models.text().await.unwrap().contains("route_proxy"));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn shared_listener_keeps_unknown_browser_routes_on_static_fallback() {
+        let (address, server, _temp) = spawn_shared_test_router("primary-secret").await;
+        let response = reqwest::get(format!("http://{address}/settings/general"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/html; charset=utf-8")
+        );
         server.abort();
     }
 

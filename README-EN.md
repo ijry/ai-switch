@@ -131,7 +131,7 @@ Desktop and browser share one React UI. Desktop uses Tauri IPC. Browser mode use
 4. Start the service
 5. Optionally enable Tailscale, choose private or public access, and click **Login with Tailscale**
 
-Default bind is `127.0.0.1:3090`. Binding to `0.0.0.0` must be explicit.
+Default bind is `127.0.0.1:19527`. Binding to `0.0.0.0` must be explicit.
 
 For private access, the desktop publishes `https://<magicdns-name>:<port>` through Tailscale `ListenTLS`. Enable MagicDNS and HTTPS certificates in the Tailscale admin console; do not use the `100.x.y.z` IP as the mobile URL because the certificate is issued for the MagicDNS name. The phone must have the official Tailscale App signed in to the same tailnet. The uni-app client does not embed a Tailscale SDK.
 
@@ -150,7 +150,7 @@ Run:
 
 ```powershell
 $env:AI_SWITCH_HOST = "127.0.0.1"
-$env:AI_SWITCH_PORT = "3090"
+$env:AI_SWITCH_PORT = "19527"
 $env:AI_SWITCH_TOKEN = [guid]::NewGuid().ToString()
 $env:AI_SWITCH_STATIC_DIR = "$PWD\dist"
 .\src-tauri\target\debug\ai-switch-server.exe
@@ -165,11 +165,25 @@ src-tauri/target/release/ai-switch-server.exe
 Optional environment variables:
 
 - `AI_SWITCH_HOST` default `127.0.0.1`
-- `AI_SWITCH_PORT` default `3090`
+- `AI_SWITCH_PORT` default `19527`
 - `AI_SWITCH_TOKEN` required for API and WebSocket access, at least 16 characters; the server refuses to start without it
 - `AI_SWITCH_STATIC_DIR` frontend `dist` directory for browser UI (only needed if you moved it)
 
 The release archive `ai-switch-server_<tag>_<platform>.zip` already contains the binary, the Tailscale sidecar and a sibling `web/` directory, so unzip-and-run serves the browser UI with no extra configuration. Installed desktop builds ship the same assets under `web/` next to the executable.
+
+### Shared port and one-click Linux installation
+
+The standalone server listens on `19527` by default, with the panel and compute-pool API on the same port. `/api/*`, `/ws/*`, and panel pages use `AI_SWITCH_TOKEN`; `/models`, `/v1/*`, `/v1beta/*`, `/messages`, and `/responses` are forwarded to the compute pool and use a separate route-proxy API key. The two credentials are not interchangeable.
+
+Plain HTTP on non-loopback binds is disabled by default. With Nginx or Caddy terminating HTTPS and proxying to `127.0.0.1:19527`, built-in TLS is not needed. Only set `AI_SWITCH_ALLOW_INSECURE_HTTP=1` when a trusted network boundary explicitly permits plaintext; API authentication remains enabled and direct public exposure is unsafe.
+
+On x86_64 Linux, install with one command:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ijry/ai-switch/main/scripts/install-server.sh)"
+```
+
+The installer creates the `ai-switch` system user, installs under `/opt/ai-switch`, persists `/etc/ai-switch/server.env`, and enables the systemd service. Re-running it preserves the existing token and data. It does not configure Nginx, Certbot, or firewall rules.
 
 ### Security notes
 

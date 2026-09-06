@@ -131,7 +131,7 @@ tag 去掉 `v` 前缀后的版本号，必须与 `package.json` 和 `src-tauri/t
 4. 启动服务
 5. 可选：启用安全网络（Tailscale），选择访问模式（仅私网 / 公网访问），再点**使用 OAuth 登录**
 
-默认绑定 `127.0.0.1:3090`。绑定到 `0.0.0.0` 必须显式设置。
+默认绑定 `127.0.0.1:19527`。绑定到 `0.0.0.0` 必须显式设置。
 
 私网访问时，桌面端通过 Tailscale `ListenTLS` 发布 `https://<magicdns-名称>:<端口>`。请先在 Tailscale 管理后台启用 MagicDNS 和 HTTPS 证书；不要把 `100.x.y.z` 这个 IP 填成移动端 URL，因为证书是按 MagicDNS 名称签发的。手机上必须已经用官方 Tailscale App 登录同一个 tailnet。uni-app 客户端本身不内嵌 Tailscale SDK。
 
@@ -150,7 +150,7 @@ pnpm server:build
 
 ```powershell
 $env:AI_SWITCH_HOST = "127.0.0.1"
-$env:AI_SWITCH_PORT = "3090"
+$env:AI_SWITCH_PORT = "19527"
 $env:AI_SWITCH_TOKEN = [guid]::NewGuid().ToString()
 $env:AI_SWITCH_STATIC_DIR = "$PWD\dist"
 .\src-tauri\target\debug\ai-switch-server.exe
@@ -165,11 +165,25 @@ src-tauri/target/release/ai-switch-server.exe
 可选的环境变量：
 
 - `AI_SWITCH_HOST` 默认 `127.0.0.1`
-- `AI_SWITCH_PORT` 默认 `3090`
+- `AI_SWITCH_PORT` 默认 `19527`
 - `AI_SWITCH_TOKEN` 访问 API 和 WebSocket 的必填令牌，至少 16 个字符；未设置时服务拒绝启动
 - `AI_SWITCH_STATIC_DIR` 浏览器界面用的前端 `dist` 目录（只有你挪动过它才需要设置）
 
 发布包 `ai-switch-server_<tag>_<platform>.zip` 里已经带了二进制、Tailscale sidecar 和同级的 `web/` 目录，所以解压即用，不需要额外配置就能提供浏览器界面。安装版桌面端也会把同一套资源放在可执行文件旁边的 `web/` 下。
+
+### 共享端口与 Linux 一键安装
+
+独立服务器默认只监听 `19527`，面板与算力池共用此端口。`/api/*`、`/ws/*` 和面板页面使用 `AI_SWITCH_TOKEN`；`/models`、`/v1/*`、`/v1beta/*`、`/messages`、`/responses` 转发到算力池并使用独立的路由代理 API key。两套凭据都不会互相替代。
+
+非环回地址默认禁止明文 HTTP。使用 Nginx 或 Caddy 在前端终止 HTTPS、反代到 `127.0.0.1:19527` 时，无需启用内置 TLS。确实需要可信网络内裸 HTTP 时才设置 `AI_SWITCH_ALLOW_INSECURE_HTTP=1`，这不会关闭任何 API 鉴权，也不适合直接暴露公网。
+
+Linux x86_64 可以一键安装：
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ijry/ai-switch/main/scripts/install-server.sh)"
+```
+
+安装器会创建 `ai-switch` 系统用户、安装到 `/opt/ai-switch`，持久化 `/etc/ai-switch/server.env`，并启用 systemd 服务；重复运行保留现有令牌和数据。它不会自动配置 Nginx、Certbot 或防火墙。
 
 ### 安全说明
 

@@ -198,20 +198,44 @@ struct ProxyListener {
 struct RouteProxyInner {
     http: Option<ProxyListener>,
     https: Option<ProxyListener>,
+    /// The standalone server owns the listener that serves both the panel and
+    /// model APIs. It is tracked separately because the desktop route proxy
+    /// listener has its own shutdown handle and must remain independently
+    /// controllable.
+    shared: Option<SharedListenerStatus>,
     /// Why the HTTPS listener is absent while HTTP serves on.
     https_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SharedListenerStatus {
+    bind_host: String,
+    port: u16,
+    base_url: String,
 }
 
 impl RouteProxyInner {
     /// Derived from whether a listener actually exists rather than kept as its own
     /// bool, which could disagree with reality.
     fn running(&self) -> bool {
-        self.http.is_some() || self.https.is_some()
+        self.http.is_some() || self.https.is_some() || self.shared.is_some()
     }
 
     fn status(&self) -> RouteProxyStatus {
+        if let Some(shared) = &self.shared {
+            return RouteProxyStatus {
+                running: true,
+                bind_host: shared.bind_host.clone(),
+                port: Some(shared.port),
+                base_url: Some(shared.base_url.clone()),
+                https_port: None,
+                https_base_url: None,
+                https_error: None,
+            };
+        }
+
         RouteProxyStatus {
-            running: self.running(),
+            running: self.http.is_some() || self.https.is_some(),
             bind_host: BIND_HOST.to_string(),
             port: self.http.as_ref().map(|listener| listener.port),
             base_url: self.http.as_ref().map(|listener| listener.base_url.clone()),
@@ -229,12 +253,13 @@ impl RouteProxyInner {
             let _ = listener.shutdown.send(());
             let _ = listener.join_handle.await;
         }
+        self.shared = None;
         self.https_error = None;
     }
 }
 
 #[derive(Clone)]
-struct ProxyAppState {
+pub(crate) struct ProxyAppState {
     pool: SqlitePool,
     key_cache: Arc<Mutex<RouteProxyKeyCache>>,
     activity: RouteCredentialActivityRegistry,
@@ -308,6 +333,20 @@ impl RouteProxyKeyCache {
 
 pub struct RouteProxyService;
 
+pub(crate) fn build_proxy_state(
+    pool: SqlitePool,
+    runtime: &RouteProxyRuntimeState,
+) -> ProxyAppState {
+    ProxyAppState {
+        pool,
+        key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
+        activity: runtime.activity.clone(),
+        live_log: runtime.live_log.clone(),
+        codex_history: CodexReasoningCache::default(),
+        upstream_timeouts: ProxyAppState::default_upstream_timeouts(),
+    }
+}
+
 impl RouteProxyService {
     pub async fn get_or_create_platform_key(
         pool: &SqlitePool,
@@ -344,6 +383,29 @@ impl RouteProxyService {
 
     pub async fn status(state: &RouteProxyRuntimeState) -> RouteProxyStatus {
         state.inner.lock().await.status()
+    }
+
+    /// Records the standalone server's shared panel/API listener so status
+    /// requests and client-config actions see the real endpoint without
+    /// starting a second route-proxy listener.
+    pub async fn mark_shared_listener(
+        state: &RouteProxyRuntimeState,
+        bind_host: impl Into<String>,
+        port: u16,
+        base_url: impl Into<String>,
+    ) {
+        let mut inner = state.inner.lock().await;
+        inner.shared = Some(SharedListenerStatus {
+            bind_host: bind_host.into(),
+            port,
+            base_url: base_url.into(),
+        });
+    }
+
+    /// Clears the standalone listener status after its server loop exits.
+    pub async fn clear_shared_listener(state: &RouteProxyRuntimeState) {
+        let mut inner = state.inner.lock().await;
+        inner.shared = None;
     }
 
     pub async fn start(
@@ -384,12 +446,8 @@ impl RouteProxyService {
         }
 
         let app_state = ProxyAppState {
-            pool,
-            key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
-            activity: state.activity.clone(),
-            live_log: state.live_log.clone(),
-            codex_history: CodexReasoningCache::default(),
             upstream_timeouts,
+            ..build_proxy_state(pool, state)
         };
         let app = Router::new()
             .fallback(any(proxy_handler))
@@ -427,6 +485,12 @@ impl RouteProxyService {
 
     pub async fn stop(state: &RouteProxyRuntimeState) -> Result<RouteProxyStatus, AppError> {
         let mut inner = state.inner.lock().await;
+        // In standalone mode the panel and compute-pool API share the process
+        // listener. The route-proxy command cannot stop that listener without
+        // also taking the panel down, so leave the shared status intact.
+        if inner.shared.is_some() && inner.http.is_none() && inner.https.is_none() {
+            return Ok(inner.status());
+        }
         inner.shutdown_all().await;
         Ok(inner.status())
     }
@@ -527,7 +591,7 @@ async fn spawn_listener(
     })
 }
 
-async fn proxy_handler(
+pub(crate) async fn proxy_handler(
     AxumState(state): AxumState<ProxyAppState>,
     method: Method,
     headers: HeaderMap,
@@ -4900,6 +4964,21 @@ fn responses_tool_name(tool: &Value) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+pub(crate) fn is_shared_model_api_path(path: &str) -> bool {
+    let normalized = path.trim_end_matches('/');
+    normalized == "/models"
+        || normalized == "/messages"
+        || normalized == "/responses"
+        || normalized.ends_with("/messages")
+        || normalized.ends_with("/responses")
+        || normalized == "/v1"
+        || normalized.starts_with("/v1/")
+        || normalized == "/v1beta"
+        || normalized.starts_with("/v1beta/")
+        || normalized == "/v1alpha"
+        || normalized.starts_with("/v1alpha/")
 }
 
 fn is_models_list_path(path: &str) -> bool {

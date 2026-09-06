@@ -1,0 +1,18 @@
+[Unit]
+Description=AI Switch standalone server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ai-switch
+Group=ai-switch
+WorkingDirectory=/opt/ai-switch
+Environment=HOME=/var/lib/ai-switch
+EnvironmentFile=/etc/ai-switch/server.env
+ExecStart=/opt/ai-switch/ai-switch-server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
