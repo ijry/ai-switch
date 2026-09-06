@@ -59,7 +59,7 @@ Every runtime parameter comes from an environment variable. There are no command
 | Variable | Default | Required | Notes |
 | --- | --- | --- | --- |
 | `AI_SWITCH_HOST` | `127.0.0.1` | No | Bind address. A non-loopback address **requires** TLS or startup fails |
-| `AI_SWITCH_PORT` | `3090` | No | Listening port. A value that does not parse as a port silently falls back to `3090` |
+| `AI_SWITCH_PORT` | `19527` | No | Listening port. A value that does not parse as a port silently falls back to `19527` |
 | `AI_SWITCH_TOKEN` | none | **Yes** | Access token, at least 16 characters. The server refuses to start if it is missing or too short |
 | `AI_SWITCH_STATIC_DIR` | none | No | Frontend `dist` directory. Only honoured if it contains `index.html`; otherwise the built-in candidates apply |
 | `AI_SWITCH_TLS_CERT_PATH` | none | Paired with the next | Path to the certificate chain PEM |
@@ -91,14 +91,14 @@ C:\ai-switch\ai-switch-server.exe
 On success it prints the listening address:
 
 ```text
-AI Switch server listening on http://127.0.0.1:3090
+AI Switch server listening on http://127.0.0.1:19527
 ```
 
-Serving other hosts (non-loopback, so TLS is required):
+Serving other hosts (non-loopback plaintext is disabled by default; explicitly allow it only behind an HTTPS reverse proxy):
 
 ```bash
 export AI_SWITCH_HOST=0.0.0.0
-export AI_SWITCH_PORT=3090
+export AI_SWITCH_PORT=19527
 export AI_SWITCH_TOKEN="$(openssl rand -hex 32)"
 export AI_SWITCH_STATIC_DIR=/opt/ai-switch/dist
 export AI_SWITCH_TLS_CERT_PATH=/etc/ai-switch/fullchain.pem
@@ -108,7 +108,7 @@ export AI_SWITCH_TLS_KEY_PATH=/etc/ai-switch/privkey.pem
 
 ```powershell
 $env:AI_SWITCH_HOST = "0.0.0.0"
-$env:AI_SWITCH_PORT = "3090"
+$env:AI_SWITCH_PORT = "19527"
 $env:AI_SWITCH_TOKEN = "<your-random-token>"
 $env:AI_SWITCH_STATIC_DIR = "C:\ai-switch\dist"
 $env:AI_SWITCH_TLS_CERT_PATH = "C:\ai-switch\certs\fullchain.pem"
@@ -120,6 +120,31 @@ If you would rather not terminate TLS in the server, keep `AI_SWITCH_HOST=127.0.
 
 Once running, the endpoints and browser behaviour are identical to the desktop web service: `POST /api/:command`, `GET /ws/events`, and the unauthenticated `GET /health`. See [Web Service Mode](/en/deploy/web-service).
 
+## Shared panel and compute-pool port
+
+The standalone server owns one listener, `19527` by default. The browser panel and compute-pool API share it:
+
+- panel routes (`/api/*`, `/ws/*`, `/health`, and frontend pages) keep panel access-token authentication;
+- model API routes (`/models`, `/v1/*`, `/v1beta/*`, `/messages`, and `/responses`) go to the compute-pool proxy and require its separate route-proxy API key;
+- the panel token and compute-pool API key are different credentials and cannot substitute for each other.
+
+For `0.0.0.0` or another non-loopback bind, plaintext HTTP is rejected by default. The recommended setup is to terminate HTTPS in Nginx or Caddy and reverse proxy to `127.0.0.1:19527`. If you explicitly accept a trusted-network plaintext boundary, set:
+
+```bash
+export AI_SWITCH_ALLOW_INSECURE_HTTP=1
+```
+
+This only permits startup; it does not disable panel-token or compute-pool API-key authentication. Plain HTTP can expose tokens and request contents, so do not publish it directly to the internet. Built-in HTTPS remains available with `AI_SWITCH_TLS_CERT_PATH` and `AI_SWITCH_TLS_KEY_PATH`, but is optional when a reverse proxy terminates TLS.
+
+## One-click Linux installation
+
+On an x86_64 Linux server, install the latest Release with:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ijry/ai-switch/main/scripts/install-server.sh)"
+```
+
+The installer creates the `ai-switch` system user, installs the program under `/opt/ai-switch`, persists the token and port in `/etc/ai-switch/server.env`, and installs/enables `ai-switch-server.service`. Re-running it preserves the existing token, environment configuration, and `~/.ai-switch` data. It does not modify Nginx, Certbot, UFW, or firewall rules; configure HTTPS reverse proxying separately.
 ## How the frontend is located
 
 `AI_SWITCH_STATIC_DIR` is not the only route. The resolution order is below; the first candidate containing `index.html` wins:
@@ -158,7 +183,7 @@ Because the standalone server does not gate sensitive commands dynamically, cred
 ::: warning Before you deploy
 - **`AI_SWITCH_TOKEN` must be set (the server will not start without it).** The standalone server does not downgrade sensitive commands, so the token is the only access control there is.
 - **The token is equivalent to shell access.** The web API includes terminal session commands, so whoever holds the token can run commands on that server.
-- **Non-loopback binds require TLS** or the server refuses to start. That is deliberate — do not try to work around it.
+- **Non-loopback plaintext HTTP is disabled by default.** Use Nginx/Caddy to terminate HTTPS, or explicitly set `AI_SWITCH_ALLOW_INSECURE_HTTP=1` only inside a trusted network. Authentication remains enabled, and direct public exposure is unsafe.
 - **The data directory follows the service account.** The server always uses `~/.ai-switch` under the running user's home. Its SQLite database holds API keys and account credentials, so treat it as a credential directory.
 - **Sharing means sharing everything.** Everyone on one instance sees the same accounts, the same usage, and the same sessions. There is no per-user permission model.
 :::

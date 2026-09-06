@@ -270,6 +270,12 @@ jobs:
           if (-not (Test-Path (Join-Path $serverStage "web/index.html"))) {
             throw "Server bundle is missing web/index.html"
           }
+          # The installer and systemd unit are Linux deployment helpers. Keep
+          # them out of desktop-platform archives, where they are not usable.
+          if ("${{ matrix.label }}" -eq "Linux") {
+            Copy-Item scripts/install-server.sh (Join-Path $serverStage "install-server.sh")
+            Copy-Item deploy/ai-switch-server.service (Join-Path $serverStage "ai-switch-server.service")
+          }
 
           $serverArchive = Join-Path $dest "ai-switch-server_${tag}_$env:UPDATER_PLATFORM.zip"
           $sidecarArchive = Join-Path $dest "ai-switch-tsnet_${tag}_$env:UPDATER_PLATFORM.zip"

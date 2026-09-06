@@ -58,8 +58,8 @@ ai-switch-server_v0.7.3_windows-x86_64/
 
 | 变量 | 默认值 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `AI_SWITCH_HOST` | `127.0.0.1` | 否 | 监听地址。设为非环回地址时**必须**同时配置 TLS，否则启动失败 |
-| `AI_SWITCH_PORT` | `3090` | 否 | 监听端口。值无法解析为端口号时静默回退到 `3090` |
+| `AI_SWITCH_HOST` | `127.0.0.1` | 否 | 监听地址。设为非环回地址时默认拒绝明文 HTTP；若由 Nginx/Caddy 等可信 HTTPS 反代保护，可显式设置 `AI_SWITCH_ALLOW_INSECURE_HTTP=1` |
+| `AI_SWITCH_PORT` | `19527` | 否 | 监听端口。值无法解析为端口号时静默回退到 `19527` |
 | `AI_SWITCH_TOKEN` | 无 | **是** | 访问令牌，至少 16 个字符。未设置或过短时服务拒绝启动 |
 | `AI_SWITCH_STATIC_DIR` | 无 | 否 | 前端 `dist` 目录。仅当该目录下存在 `index.html` 时生效，否则回退到内置候选路径 |
 | `AI_SWITCH_TLS_CERT_PATH` | 无 | 与下一项成对 | 证书链 PEM 路径 |
@@ -91,14 +91,14 @@ C:\ai-switch\ai-switch-server.exe
 启动成功后会打印一行监听地址，形如：
 
 ```text
-AI Switch server listening on http://127.0.0.1:3090
+AI Switch server listening on http://127.0.0.1:19527
 ```
 
-对外提供服务（非环回地址，必须带 TLS）：
+对外提供服务（非环回地址默认禁止明文；使用 HTTPS 反代时可显式允许明文上游）：
 
 ```bash
 export AI_SWITCH_HOST=0.0.0.0
-export AI_SWITCH_PORT=3090
+export AI_SWITCH_PORT=19527
 export AI_SWITCH_TOKEN="$(openssl rand -hex 32)"
 export AI_SWITCH_STATIC_DIR=/opt/ai-switch/dist
 export AI_SWITCH_TLS_CERT_PATH=/etc/ai-switch/fullchain.pem
@@ -108,7 +108,7 @@ export AI_SWITCH_TLS_KEY_PATH=/etc/ai-switch/privkey.pem
 
 ```powershell
 $env:AI_SWITCH_HOST = "0.0.0.0"
-$env:AI_SWITCH_PORT = "3090"
+$env:AI_SWITCH_PORT = "19527"
 $env:AI_SWITCH_TOKEN = "<your-random-token>"
 $env:AI_SWITCH_STATIC_DIR = "C:\ai-switch\dist"
 $env:AI_SWITCH_TLS_CERT_PATH = "C:\ai-switch\certs\fullchain.pem"
@@ -119,6 +119,32 @@ C:\ai-switch\ai-switch-server.exe
 如果不想让服务器自己终止 TLS，另一种做法是保持 `AI_SWITCH_HOST=127.0.0.1`，在前面放一个负责 HTTPS 的反向代理。这种情况下服务本身满足环回条件，不需要配置证书路径。
 
 启动后的接口与浏览器行为和桌面端 Web 服务完全一致：`POST /api/:command`、`GET /ws/events`、`GET /health`（不鉴权）。详见 [Web 服务模式](/deploy/web-service)。
+
+## 面板与算力池共用端口
+
+独立服务器只监听一个端口，默认是 `19527`。浏览器面板和算力池 API 可以同时使用它：
+
+- 面板路由（`/api/*`、`/ws/*`、`/health` 和前端页面）继续按面板访问令牌鉴权；
+- 模型 API 路由（`/models`、`/v1/*`、`/v1beta/*`、`/messages`、`/responses`）转发到算力池，并单独要求路由代理 API key；
+- 面板令牌和算力池 API key 是两套不同的凭据，不能互相替代。
+
+如果服务器绑定 `0.0.0.0` 或其他非环回地址，明文 HTTP 默认会被拒绝。推荐让 Nginx 或 Caddy 在前端终止 HTTPS，并把请求反代到 `127.0.0.1:19527`。如果你明确接受可信网络边界内的裸 HTTP，可设置：
+
+```bash
+export AI_SWITCH_ALLOW_INSECURE_HTTP=1
+```
+
+这只允许服务启动，不会关闭面板令牌或算力池 API key 鉴权；裸 HTTP 会暴露令牌和请求内容，请勿直接暴露到公网。内置 HTTPS 仍可通过 `AI_SWITCH_TLS_CERT_PATH` 和 `AI_SWITCH_TLS_KEY_PATH` 启用，但不是反代部署的必需项。
+
+## Linux 一键安装
+
+Linux x86_64 服务器可以直接运行下面的命令安装最新 Release：
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ijry/ai-switch/main/scripts/install-server.sh)"
+```
+
+安装器会创建 `ai-switch` 系统用户，将程序安装到 `/opt/ai-switch`，把令牌和端口持久化到 `/etc/ai-switch/server.env`，并安装、启用 `ai-switch-server.service`。重复执行会保留已有令牌、环境配置和 `~/.ai-switch` 数据。安装器不会修改 Nginx、Certbot、UFW 或其他防火墙配置；HTTPS 反代需要自行配置。
 
 ## 前端资源怎么找
 
@@ -158,7 +184,7 @@ C:\ai-switch\ai-switch-server.exe
 ::: warning 部署前请确认
 - **必须设置 `AI_SWITCH_TOKEN`（缺失时服务不会启动）。** 独立服务器不做敏感命令降级，令牌是唯一的访问控制手段。
 - **令牌等价于 shell 权限。** Web API 包含终端会话命令，拿到令牌的人可以在这台服务器上执行命令。
-- **非环回监听必须带 TLS**，否则服务直接拒绝启动。这是有意设计，不要试图绕过。
+- **非环回明文 HTTP 默认被拒绝。** 使用 Nginx/Caddy 等可信 HTTPS 反代时，设置 `AI_SWITCH_ALLOW_INSECURE_HTTP=1` 才会允许上游明文；它不会关闭任一鉴权，并且不适合直接暴露公网。
 - **数据目录跟着运行账号走。** 服务始终使用运行账号主目录下的 `~/.ai-switch`，其中的 SQLite 库保存着 API Key 与账号凭据，请按凭据目录对待。
 - **多人共享意味着共享一切。** 同一个实例下所有人看到同一份账号、同一份用量、同一批会话，没有按用户隔离的权限模型。
 :::

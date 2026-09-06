@@ -8,13 +8,13 @@ use crate::error::AppError;
 use crate::paths::AppPaths;
 use crate::services::config_write_service::ConfigWriteRuntimeState;
 use crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime;
-use crate::services::route_proxy_service::RouteProxyRuntimeState;
+use crate::services::route_proxy_service::{RouteProxyRuntimeState, RouteProxyService};
 use crate::services::route_recovery_service::RouteRecoveryService;
 use crate::services::tailscale_service::TailscaleRuntimeState;
 use crate::services::web_service::WebServiceRuntimeState;
 use crate::terminal_manager::TerminalManager;
 use crate::web::event_bridge::{EventEmitter, WebEventBroadcaster};
-use crate::web::router::build_router;
+use crate::web::router::build_shared_server_router;
 use crate::web::static_assets::{
     locate_static_dir, resolve_static_dir, static_dir_candidates_report,
 };
@@ -30,6 +30,12 @@ pub fn is_loopback_host(host: &str) -> bool {
         .unwrap_or(host);
     host.parse::<IpAddr>()
         .is_ok_and(|address| address.is_loopback())
+}
+
+const DEFAULT_STANDALONE_PORT: u16 = 19527;
+
+pub(crate) fn standalone_default_port() -> u16 {
+    DEFAULT_STANDALONE_PORT
 }
 
 pub(crate) fn format_web_base_url(scheme: &str, host: &str, port: u16) -> String {
@@ -61,6 +67,23 @@ async fn bind_server_listener(address: SocketAddr) -> Result<tokio::net::TcpList
     tokio::net::TcpListener::bind(address)
         .await
         .map_err(|error| format!("Could not bind server: {error}"))
+}
+
+pub fn validate_server_transport(
+    host: &str,
+    tls_enabled: bool,
+    allow_insecure_http: bool,
+) -> Result<(), AppError> {
+    if tls_enabled || is_loopback_host(host) || allow_insecure_http {
+        return Ok(());
+    }
+
+    Err(AppError::Validation {
+        code: "web.insecure_http_not_allowed",
+        message: "Non-loopback plaintext HTTP is disabled. Set AI_SWITCH_ALLOW_INSECURE_HTTP=1 only when an HTTPS reverse proxy or another trusted boundary protects this port".to_string(),
+        details: Some(host.trim().to_string()),
+        recoverable: true,
+    })
 }
 
 pub fn validate_sensitive_web_transport(host: &str, tls_enabled: bool) -> Result<(), AppError> {
@@ -166,6 +189,38 @@ mod tests {
                 }
             ));
         }
+    }
+
+    #[test]
+    fn non_loopback_http_requires_explicit_opt_in() {
+        let error = validate_server_transport("0.0.0.0", false, false).unwrap_err();
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "web.insecure_http_not_allowed",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn non_loopback_http_is_allowed_when_explicitly_opted_in() {
+        validate_server_transport("0.0.0.0", false, true).unwrap();
+    }
+
+    #[test]
+    fn loopback_http_does_not_require_explicit_opt_in() {
+        validate_server_transport("127.0.0.1", false, false).unwrap();
+    }
+
+    #[test]
+    fn tls_allows_non_loopback_without_explicit_opt_in() {
+        validate_server_transport("0.0.0.0", true, false).unwrap();
+    }
+
+    #[test]
+    fn standalone_defaults_to_shared_route_proxy_port() {
+        assert_eq!(standalone_default_port(), 19527);
     }
 
     #[test]
@@ -311,7 +366,7 @@ pub async fn run_from_env() -> Result<(), String> {
     let port = std::env::var("AI_SWITCH_PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
-        .unwrap_or(3090);
+        .unwrap_or_else(|| standalone_default_port());
     let token = resolve_server_token(std::env::var("AI_SWITCH_TOKEN").ok())
         .map_err(|error| error.to_string())?;
 
@@ -322,8 +377,14 @@ pub async fn run_from_env() -> Result<(), String> {
         tls_private_key_path.as_deref(),
     )
     .map_err(|error| error.to_string())?;
-    validate_sensitive_web_transport(&host, tls_paths.is_some())
+    let allow_insecure_http = std::env::var("AI_SWITCH_ALLOW_INSECURE_HTTP")
+        .map(|value| value.trim() == "1")
+        .unwrap_or(false);
+    validate_server_transport(&host, tls_paths.is_some(), allow_insecure_http)
         .map_err(|error| error.to_string())?;
+    if !tls_paths.is_some() && !is_loopback_host(&host) && allow_insecure_http {
+        eprintln!("WARNING: AI_SWITCH_ALLOW_INSECURE_HTTP=1 enables plaintext HTTP on a non-loopback address. Protect this listener with an HTTPS reverse proxy and keep both authentication tokens enabled.");
+    }
     let static_dir = match locate_static_dir() {
         Some(dir) => {
             println!("Serving AI Switch web assets from {}", dir.display());
@@ -378,17 +439,11 @@ pub async fn run_from_env() -> Result<(), String> {
         });
     }
 
-    // The desktop setup() hook does the same thing; an unattended server needs
-    // it more, since nobody is there to press start after a reboot.
-    {
-        let state = Arc::clone(&state);
-        tokio::spawn(async move {
-            crate::services::route_proxy_https_service::restore_auto_started_proxy(&state).await;
-        });
-    }
+    // The standalone server composes the route proxy into this listener. Do not
+    // restore the desktop service here: it would bind a second port.
 
     let shutdown_state = Arc::clone(&state);
-    let router = build_router(state, token, static_dir);
+    let router = build_shared_server_router(Arc::clone(&state), token, static_dir);
     let addr = tokio::net::lookup_host((host.as_str(), port))
         .await
         .map_err(|error| format!("Invalid server address: {error}"))?
@@ -411,6 +466,18 @@ pub async fn run_from_env() -> Result<(), String> {
     let bound_address = listener
         .local_addr()
         .map_err(|error| format!("Could not read server address: {error}"))?;
+    let scheme = if rustls_config.is_some() {
+        "https"
+    } else {
+        "http"
+    };
+    RouteProxyService::mark_shared_listener(
+        &shutdown_state.route_proxy,
+        host.clone(),
+        bound_address.port(),
+        bound_web_base_url(scheme, bound_address),
+    )
+    .await;
 
     if let Some(rustls_config) = rustls_config {
         let listener = listener
@@ -435,6 +502,7 @@ pub async fn run_from_env() -> Result<(), String> {
             .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>())
             .await
             .map_err(|error| format!("HTTPS server error: {error}"));
+        RouteProxyService::clear_shared_listener(&shutdown_state.route_proxy).await;
         shutdown_runtime(&shutdown_state).await;
         result
     } else {
@@ -446,6 +514,7 @@ pub async fn run_from_env() -> Result<(), String> {
             .with_graceful_shutdown(shutdown_signal())
             .await
             .map_err(|error| format!("Server error: {error}"));
+        RouteProxyService::clear_shared_listener(&shutdown_state.route_proxy).await;
         shutdown_runtime(&shutdown_state).await;
         result
     }
