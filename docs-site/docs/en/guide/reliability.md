@@ -117,7 +117,7 @@ The following count as transient:
 
 401 and 403 are treated as transient because third-party gateways routinely use them to mean "this key is temporarily throttled or rate-limited", not necessarily "this key is dead". Genuinely void credentials are caught by the permanent rule above.
 
-The status code is only one layer, though: when a 401/403 body is itself a deterministic failure — such as the new-api spent balance described below — the semantic rules catch it first and mark the account abnormal instead of backing it off as transient.
+The status code is only one layer, though: when a 401/403 body is itself a deterministic failure — such as the new-api spent balance or the missing-scope rejection described below — the semantic rules catch it first and mark the account abnormal instead of backing it off as transient.
 
 ### Not a failure (None)
 
@@ -162,6 +162,28 @@ The second rule exists for new-api style gateways. Their spent-balance response 
 ```
 
 The envelope has no `error.code` anywhere, so the first rule cannot see it — and the message text alone is not safe to match, because the same gateway also relays an upstream's own `用户额度不足` verbatim. Requiring both conditions narrows the rule to "this gateway account's own balance is gone". Only the `type` inside the `error` object counts; the top-level `type` names the envelope, not the error family. By the time this response arrives the remaining balance is already negative — as deterministic as a quota reset boundary — so the account is marked abnormal instead of being backed off and retried.
+
+### Missing scopes take the same channel
+
+An **under-privileged key** is just as deterministic. OpenAI's restricted API keys grant permissions item by item, and a key without the one `/v1/responses` needs is answered with 401 and this envelope:
+
+```json
+{
+  "error": {
+    "message": "You have insufficient permissions for this operation. Missing scopes: api.responses.write. Check that you have the correct role in your organization (Reader, Writer, Owner) and project (Member, Owner), and if you're using a restricted API key, that it has the necessary scopes.",
+    "type": "invalid_request_error",
+    "code": "insufficient_permissions"
+  }
+}
+```
+
+The rule: the normalized `error.code` contains `insufficientpermissions`, or the message carries **both** `insufficient permissions` and `missing scopes` — the first phrase on its own also opens file and container ACL errors that say nothing about the key.
+
+Like quota exhaustion it records one semantic failure with a threshold of **1**, flipping the account to `error` in one go. The missing permission can only be granted by the key's owner in the issuing console, so rotating accounts, switching models, or waiting out a cooldown change nothing. Handled as an ordinary semantic failure it would be charged per model instead: the account keeps reading as healthy while its models are parked one at a time, and the one sentence naming the fix stays buried in the aggregated "all route credentials failed" error.
+
+The upstream sentence is stored along with the response body, so both the account list's failure hint and the real-generation test panel show it, next to a hint naming the two ways out — set the key's permissions to All (or grant the item the message names), or switch the account's interface format to OpenAI Chat Completions. The latter works because "model capabilities" and "Responses" are separate permissions on a restricted key, so a key missing only `api.responses.write` can usually still serve chat/completions.
+
+Ordinary 401 messages stay out of the test panel (`HTTP 401` already says the same thing); a missing scope is the one exception, because that sentence is the only place the user can read which permission is missing.
 
 ### The fingerprint streak mechanism
 
@@ -275,6 +297,7 @@ pub(crate) fn is_account_scoped_failure(kind: &str, status: Option<u16>) -> bool
 | Any other status on `upstream_status` / `model_test_status` (400/404/408/429/5xx) | Model | This is the upstream's verdict on that one model |
 | `semantic_response_transient` / `response_transform` | Model | The upstream's response content for that model is the problem |
 | Quota exhaustion | Account | Quota is an account property |
+| Missing scope | Account | Permissions are a key property; one missing item is missing for every model |
 | Unknown class | Account | Better to over-park: over-parking is recoverable, letting a broken credential keep serving is not |
 
 **Without a model name it degrades to account scope.** Gemini puts the model in the URL path, and some routes carry none at all; such requests do not consult model state during selection and charge failures to the account, so no protection is lost.
@@ -375,7 +398,7 @@ The phrase is looked for in both the stored body and `last_failure_message`, cas
 | `response_transform` | The upstream responded but the bridge's reverse conversion failed | Model |
 | `upstream_status` | The upstream returned a retryable non-2xx status | Account on 401/403, model otherwise |
 | `semantic_response_transient` | Semantic failure, taking the transient-backoff route | Model |
-| `semantic_response_failed` | Semantic failure, taking the fingerprint-streak route (the quota-exhaustion channel) | Account |
+| `semantic_response_failed` | Semantic failure, taking the fingerprint-streak route (the quota-exhaustion and missing-scope channel) | Account |
 | `model_test_status` | A model test received a non-2xx status | Account on 401/403, model otherwise |
 | `model_test` | Any other retryable model-test failure (transport level) | Account |
 

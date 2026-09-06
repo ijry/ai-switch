@@ -25,8 +25,9 @@ use crate::services::official_agent_identity_service::{
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::response_failure_service::{
-    detect_response_failed, is_quota_exhaustion_failure, is_thinking_signature_failure,
-    stream_disconnected_before_completion, STREAM_DISCONNECTED_FAILURE_MESSAGE,
+    detect_response_failed, is_insufficient_permissions_failure, is_quota_exhaustion_failure,
+    is_thinking_signature_failure, stream_disconnected_before_completion,
+    STREAM_DISCONNECTED_FAILURE_MESSAGE,
 };
 use crate::services::route_config_service::generate_route_proxy_key;
 use crate::services::route_credential_activity::{
@@ -1540,6 +1541,32 @@ async fn forward_request(
                 "{}: upstream quota exhausted",
                 credential.display_name
             ));
+            continue;
+        }
+        // A key that is missing a scope is refused for every model on it, and no
+        // retry, model swap or cooldown can grant the permission — only its owner
+        // can, in the provider's console. Settle it at the account level right
+        // away: the semantic branch below would charge it to the requested model
+        // and leave the pool routing to a credential that cannot answer anything.
+        if let Some(failure) = semantic_failure
+            .as_ref()
+            .filter(|failure| is_insufficient_permissions_failure(failure))
+        {
+            let _ = RouteCredentialRepository::record_semantic_failure_with_status(
+                pool,
+                &credential.id,
+                Some(status.as_u16()),
+                1,
+                &failure.message,
+                Some(&response_bytes),
+            )
+            .await;
+            state
+                .activity
+                .notify_status_change(&platform, &credential.id);
+            // The upstream sentence names the missing scope, so it is worth far
+            // more to the user than a generic "insufficient permissions" would be.
+            retry_errors.push(format!("{}: {}", credential.display_name, failure.message));
             continue;
         }
         if matches!(failure_kind, ProxyFailureKind::Permanent) {
@@ -8414,6 +8441,69 @@ mod tests {
             credential.last_failure_kind.as_deref(),
             Some("semantic_response_failed")
         );
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    /// OpenAI answers a restricted key that was never granted the Responses API
+    /// with 401 and this envelope. Every model on the key is refused identically,
+    /// so the account has to settle in one go instead of being charged a model at a
+    /// time — and the sentence, which is the only place the missing scope is named,
+    /// has to survive into what the user reads.
+    #[tokio::test]
+    async fn missing_scope_response_marks_account_error_and_keeps_the_upstream_sentence() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let missing_scope_body = r#"{"error":{"message":"You have insufficient permissions for this operation. Missing scopes: api.responses.write. Check that you have the correct role in your organization (Reader, Writer, Owner) and project (Member, Owner), and if you're using a restricted API key, that it has the necessary scopes.","type":"invalid_request_error","param":null,"code":"insufficient_permissions"}}"#;
+        let upstream = start_fixed_upstream(StatusCode::UNAUTHORIZED, missing_scope_body).await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_proxy_api_credential_with_config(
+            &pool,
+            "restricted key",
+            &upstream,
+            json!({"interface_format": "openai-responses"}),
+        )
+        .await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/responses",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({"model":"gpt-5.5","input":"hi"}))
+            .send()
+            .await
+            .expect("proxy response");
+        let body = response.text().await.expect("proxy body");
+        assert!(body.contains("api.responses.write"), "body: {body}");
+
+        let credential = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("credential");
+        assert_eq!(credential.status, "error");
+        assert_eq!(
+            credential.last_failure_kind.as_deref(),
+            Some("semantic_response_failed")
+        );
+        // The stored body is what the account row's hint reads to explain the fix.
+        assert!(credential
+            .last_failure_response_json
+            .as_deref()
+            .is_some_and(|stored| stored.contains("api.responses.write")));
 
         RouteProxyService::stop(&runtime).await.expect("stop proxy");
     }

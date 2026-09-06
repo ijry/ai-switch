@@ -96,6 +96,21 @@ Recovery is driven by a background scheduler that can re-enable accounts on a sc
 Official accounts and some third-party endpoints are sensitive to concurrency: parallel requests on a single account tend to trigger rate limiting, and sometimes get flagged as abnormal usage. For those upstreams, set the account's limit to 1 or 2 so AI Switch **spreads concurrency across accounts** — which is the whole point of a pool — rather than piling it onto one.
 :::
 
+## What does "insufficient permissions ... Missing scopes" mean?
+
+The upstream is refusing **the API key's permissions**. It has nothing to do with AI Switch, your network, or your quota. The full error reads:
+
+> You have insufficient permissions for this operation. Missing scopes: api.responses.write. Check that you have the correct role in your organization (Reader, Writer, Owner) and project (Member, Owner), and if you're using a restricted API key, that it has the necessary scopes.
+
+The second half mentions organization and project roles, which sends most people auditing their team's permissions — but the problem is almost always the key itself. OpenAI's **restricted** API keys grant permissions item by item, and whatever follows `Missing scopes:` is the item this key does not have. `api.responses.write` covers `/v1/responses`; `model.request` covers the older chat/completions-style endpoints.
+
+Two ways out:
+
+- In the console that issued the key, set its permissions to **All**, or grant just the item the error names.
+- If the missing item is `api.responses.write`, switch the account's **interface format** to `OpenAI Chat Completions`. "Model capabilities" and "Responses" are separate permissions, so a key missing only the latter can usually still serve chat/completions.
+
+AI Switch recognises this error: the account is marked abnormal **on the first occurrence**, rather than waiting for a streak, because a missing permission holds for every model on that key — rotating accounts, switching models, and waiting out a cooldown all change nothing. The upstream sentence is kept in the account list's failure hint and in the real-generation test panel, alongside a hint naming the two fixes above.
+
 ## Can I use it from my phone?
 
 Yes. Enable the web service, open it in your phone's browser, and enter the access token. Desktop and browser run the same UI — there is no stripped-down mobile version.

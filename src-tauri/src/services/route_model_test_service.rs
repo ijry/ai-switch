@@ -16,8 +16,9 @@ use crate::services::http_client::{
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::response_failure_service::{
-    detect_response_failed, is_quota_exhaustion_failure, stream_disconnected_before_completion,
-    SemanticResponseFailure, STREAM_DISCONNECTED_FAILURE_MESSAGE,
+    detect_response_failed, is_insufficient_permissions_failure, is_quota_exhaustion_failure,
+    stream_disconnected_before_completion, SemanticResponseFailure,
+    STREAM_DISCONNECTED_FAILURE_MESSAGE,
 };
 use crate::services::route_credential_activity::{
     RouteCredentialActivityLease, RouteCredentialActivityRegistry,
@@ -348,8 +349,8 @@ impl RouteModelTestService {
                     &response_body,
                 );
                 let error_message = semantic_failure
+                    .filter(|failure| model_test_error_message_is_useful(failure, status))
                     .map(|failure| failure.message)
-                    .filter(|_| !matches!(status, 401 | 403))
                     .or_else(|| tool_probe.and_then(tool_call_probe_error));
 
                 let outcome = finish_outcome(
@@ -575,8 +576,8 @@ impl RouteModelTestService {
                     && semantic_failure.is_none()
                     && tool_probe.is_none_or(|probe| probe == ToolCallProbe::Called);
                 let error_message = semantic_failure
+                    .filter(|failure| model_test_error_message_is_useful(failure, status))
                     .map(|failure| failure.message)
-                    .filter(|_| !matches!(status, 401 | 403))
                     .or_else(|| tool_probe.and_then(tool_call_probe_error));
                 finish_proxy_outcome(
                     pool,
@@ -1332,11 +1333,13 @@ async fn send_model_test_request(
                     message: STREAM_DISCONNECTED_FAILURE_MESSAGE.to_string(),
                 })
         });
-        let definitive_quota_failure = semantic_failure
-            .as_ref()
-            .is_some_and(is_quota_exhaustion_failure);
+        // Both a spent quota and a missing scope are final verdicts on the
+        // credential rather than on this attempt, so neither may spend the budget.
+        let definitive_credential_failure = semantic_failure.as_ref().is_some_and(|failure| {
+            is_quota_exhaustion_failure(failure) || is_insufficient_permissions_failure(failure)
+        });
         if attempt < failure_policy.retry_count
-            && !definitive_quota_failure
+            && !definitive_credential_failure
             && ((!status_code.is_success()
                 && !matches!(
                     status_code,
@@ -1579,6 +1582,17 @@ async fn load_route_proxy_model_test_trace(
     Ok(None)
 }
 
+/// Whether an upstream's own sentence adds anything to the test panel, which
+/// already prints the HTTP status on its own line.
+///
+/// A rejected key does not: `invalid api key` next to `HTTP 401` is the same fact
+/// twice. A missing scope is the exception — that sentence names the permission
+/// the key still needs, and suppressing it leaves the only copy buried in the
+/// collapsed raw body, which is where users had to dig it out from.
+fn model_test_error_message_is_useful(failure: &SemanticResponseFailure, status: u16) -> bool {
+    !matches!(status, 401 | 403) || is_insufficient_permissions_failure(failure)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn finish_outcome(
     pool: &SqlitePool,
@@ -1627,10 +1641,29 @@ async fn finish_outcome(
             _ => FailureScope::Account,
         };
         let status = response_status.and_then(|value| axum::http::StatusCode::from_u16(value).ok());
-        let quota_failure = detect_response_failed(response_body.as_bytes())
-            .is_some_and(|failure| is_quota_exhaustion_failure(&failure));
+        let semantic_failure = detect_response_failed(response_body.as_bytes());
+        let quota_failure = semantic_failure
+            .as_ref()
+            .is_some_and(is_quota_exhaustion_failure);
         if quota_failure {
             RouteCredentialRepository::update_status(pool, &credential.id, "error").await?;
+        } else if let Some(failure) = semantic_failure
+            .as_ref()
+            .filter(|failure| is_insufficient_permissions_failure(failure))
+        {
+            // A missing scope refuses every model on the key, so it settles the
+            // account instead of the model that happened to be probed. Recorded
+            // rather than only flipped to 异常: the account row's failure hint
+            // reads the stored message and body to explain what to change.
+            RouteCredentialRepository::record_semantic_failure_with_status(
+                pool,
+                &credential.id,
+                response_status,
+                1,
+                &failure.message,
+                Some(response_body.as_bytes()),
+            )
+            .await?;
         } else if let Some(status) = status.filter(|status| !status.is_success()) {
             let message = error_message
                 .as_deref()
@@ -1645,7 +1678,7 @@ async fn finish_outcome(
                 scope_for("model_test_status", Some(status.as_u16())),
             )
             .await?;
-        } else if let Some(failure) = detect_response_failed(response_body.as_bytes()) {
+        } else if let Some(failure) = semantic_failure.as_ref() {
             RouteCredentialRepository::record_transient_failure(
                 pool,
                 &credential.id,
@@ -3654,6 +3687,66 @@ mod tests {
         assert_eq!(credential.transient_failure_count, 1);
         // Cooldown is opt-in, so the failure counts but schedules no backoff.
         assert!(credential.next_retry_at.is_none());
+    }
+
+    /// The same restricted-key rejection the proxy path handles, but through the
+    /// button a user presses right after pasting the key. Two things have to hold:
+    /// the account settles as 异常 (no model on it can answer), and the sentence
+    /// naming the scope reaches the panel instead of being dropped the way other
+    /// 401 messages are.
+    #[tokio::test]
+    async fn test_model_missing_scope_marks_account_error_and_keeps_the_message() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let base_url = start_json_test_server(
+            axum::http::StatusCode::UNAUTHORIZED,
+            json!({"error": {
+                "message": "You have insufficient permissions for this operation. Missing scopes: api.responses.write. Check that you have the correct role in your organization (Reader, Writer, Owner) and project (Member, Owner), and if you're using a restricted API key, that it has the necessary scopes.",
+                "type": "invalid_request_error",
+                "code": "insufficient_permissions"
+            }}),
+        )
+        .await;
+        let credential_id = create_api_credential(&pool, &base_url).await;
+
+        RoutePoolService::set_members(
+            &pool,
+            SetRoutePoolMembersInput {
+                platform: "codex".to_string(),
+                account_ids: vec![credential_id.clone()],
+            },
+        )
+        .await
+        .expect("members");
+
+        let outcome = RouteModelTestService::test_model(
+            &pool,
+            RoutePoolModelTestRequest {
+                platform: "codex".to_string(),
+                account_id: None,
+                model: None,
+                interface_format: None,
+                test_tool_call: false,
+            },
+        )
+        .await
+        .expect("outcome");
+
+        assert!(!outcome.success);
+        assert_eq!(outcome.response_status, Some(401));
+        assert!(outcome
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("api.responses.write")));
+
+        let credential = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("credential");
+        assert_eq!(credential.status, "error");
+        assert_eq!(
+            credential.last_failure_kind.as_deref(),
+            Some("semantic_response_failed")
+        );
     }
 
     #[tokio::test]

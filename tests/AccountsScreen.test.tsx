@@ -2258,6 +2258,39 @@ describe("AccountsScreen", () => {
     expect(within(thirdRow).getByText(/公共池额度耗尽/)).toBeInTheDocument();
   });
 
+  it("explains that a missing scope is the key's own permission, not a pool problem", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      {
+        ...credentialsFixture[0],
+        status: "error",
+        last_failure_kind: "semantic_response_failed",
+        last_failure_message:
+          "You have insufficient permissions for this operation. Missing scopes: api.responses.write. Check that you have the correct role in your organization (Reader, Writer, Owner) and project (Member, Owner), and if you're using a restricted API key, that it has the necessary scopes.",
+        last_failure_response_json:
+          '{"error":{"message":"You have insufficient permissions for this operation. Missing scopes: api.responses.write. Check that you have the correct role in your organization (Reader, Writer, Owner) and project (Member, Owner), and if you\'re using a restricted API key, that it has the necessary scopes.","type":"invalid_request_error","param":null,"code":"insufficient_permissions"}}',
+      },
+      {
+        // A flatly rejected key names no scope, so there is nothing to go grant —
+        // the hint would send the user hunting through permissions for nothing.
+        ...credentialsFixture[1],
+        status: "error",
+        last_failure_kind: "upstream_status",
+        last_failure_message: "upstream returned 401",
+        last_failure_response_json:
+          '{"error":{"message":"insufficient permissions for this key"}}',
+      },
+    ]);
+
+    renderScreen();
+
+    const firstRow = await screen.findByLabelText("放置在 Team Account 前");
+    const secondRow = screen.getByLabelText("放置在 API Account 前");
+    expect(within(firstRow).getByTestId(/^credential-missing-scope-hint-/)).toHaveTextContent(
+      "把它的权限改成 All",
+    );
+    expect(within(secondRow).queryByText(/权限改成 All/)).not.toBeInTheDocument();
+  });
+
   it("keeps the failure tooltip hoverable so its text can be selected", async () => {
     vi.mocked(listRouteCredentials).mockResolvedValue([
       {

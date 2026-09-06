@@ -96,6 +96,21 @@ Web 服务侧另有一层保护：所有 `/api/*` 与 `/ws/events` 请求都要�
 官方账号和部分第三方端点对并发敏感：同一账号并发多路请求容易触发限流，甚至被判定为异常使用。遇到这类上游就把该账号的上限调到 1 或 2，让 AI Switch 把并发**分散到多个账号**（这正是算力池的意义），而不是压在单个账号上。
 :::
 
+## 报错「insufficient permissions ... Missing scopes」是什么意思？
+
+上游拒的是**这个 API Key 的权限**，跟 AI Switch、网络、额度都没关系。完整报错长这样：
+
+> You have insufficient permissions for this operation. Missing scopes: api.responses.write. Check that you have the correct role in your organization (Reader, Writer, Owner) and project (Member, Owner), and if you're using a restricted API key, that it has the necessary scopes.
+
+后半句提到组织和项目角色，容易让人以为要去查团队权限，但绝大多数情况问题在 Key 本身：OpenAI 的**受限（restricted）API Key** 是逐项勾选权限的，`Missing scopes:` 后面点名的那一项就是它没有的。`api.responses.write` 对应 `/v1/responses`，`model.request` 对应旧的 chat/completions 一类端点。
+
+两条出路：
+
+- 去签发这个 Key 的平台，把它的权限改成 **All**，或者单独补上报错里点名的那一项。
+- 缺的是 `api.responses.write` 时，把这个账号的**接口格式**改成 `OpenAI Chat Completions`。"模型调用"和"Responses"是两个独立权限项，只缺后者时走 chat/completions 通常还能用。
+
+AI Switch 认得这个错误：账号会**一次就置为异常**（不像普通失败那样攒够连击才落定），因为缺权限对这个 Key 上所有模型都成立，换号、换模型、等冷却都改变不了结果。上游那句原话会保留在账号列表的失败提示和真实生成测试的结果面板里，附一条中文提醒说明上面两条出路。
+
 ## 能不能在手机上用？
 
 可以。开启 Web 服务后，用手机浏览器访问并输入访问令牌即可——桌面和浏览器跑的是同一份界面，功能没有阉割版。
