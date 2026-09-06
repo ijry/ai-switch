@@ -236,6 +236,11 @@ jobs:
           $bundles = "${{ matrix.bundles }}".Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)
           & pnpm tauri build --ci --bundles @bundles
 
+      - name: Patch AppImage for Wayland compatibility
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash src-tauri/scripts/patch-appimage-wayland.sh
+
       - name: Build standalone server
         run: pnpm server:build:release
 
