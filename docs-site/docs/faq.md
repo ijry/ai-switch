@@ -98,18 +98,38 @@ Web 服务侧另有一层保护：所有 `/api/*` 与 `/ws/events` 请求都要�
 
 ## 报错「insufficient permissions ... Missing scopes」是什么意思？
 
-上游拒的是**这个 API Key 的权限**，跟 AI Switch、网络、额度都没关系。完整报错长这样：
+完整报错长这样：
 
 > You have insufficient permissions for this operation. Missing scopes: api.responses.write. Check that you have the correct role in your organization (Reader, Writer, Owner) and project (Member, Owner), and if you're using a restricted API key, that it has the necessary scopes.
 
-后半句提到组织和项目角色，容易让人以为要去查团队权限，但绝大多数情况问题在 Key 本身：OpenAI 的**受限（restricted）API Key** 是逐项勾选权限的，`Missing scopes:` 后面点名的那一项就是它没有的。`api.responses.write` 对应 `/v1/responses`，`model.request` 对应旧的 chat/completions 一类端点。
+**先看这个账号是 API Key 还是官方（OAuth）账号**，两种情况原因完全不同。
+
+### API Key 账号：Key 的权限不够
+
+OpenAI 的**受限（restricted）API Key** 是逐项勾选权限的，`Missing scopes:` 后面点名的那一项就是它没有的。`api.responses.write` 对应 `/v1/responses`，`model.request` 对应旧的 chat/completions 一类端点。报错后半句提到组织和项目角色，容易让人以为要去查团队权限，但绝大多数情况问题在 Key 本身。
 
 两条出路：
 
 - 去签发这个 Key 的平台，把它的权限改成 **All**，或者单独补上报错里点名的那一项。
 - 缺的是 `api.responses.write` 时，把这个账号的**接口格式**改成 `OpenAI Chat Completions`。"模型调用"和"Responses"是两个独立权限项，只缺后者时走 chat/completions 通常还能用。
 
-AI Switch 认得这个错误：账号会**一次就置为异常**（不像普通失败那样攒够连击才落定），因为缺权限对这个 Key 上所有模型都成立，换号、换模型、等冷却都改变不了结果。上游那句原话会保留在账号列表的失败提示和真实生成测试的结果面板里，附一条中文提醒说明上面两条出路。
+### 官方账号：v0.8.5 之前是 AI Switch 发错了地址
+
+官方 Codex 账号拿的是 **ChatGPT 订阅席位**，不是 Platform API 额度，两者是不同的主机：订阅走 `https://chatgpt.com/backend-api/codex`，Platform API 走 `https://api.openai.com`。后者只认 API Key、并按 Key 的权限项判定，所以把订阅 token 发过去必然回这句"缺 api.responses.write"——它在报告一把这个账号根本没有的 Key。
+
+v0.8.5 之前，官方 Codex 账号的 Config JSON 里如果没写 `base_url`（导入示例和大多数授权文件都不带），AI Switch 会默认发往 `api.openai.com`，于是订阅完全正常的账号也会一直报这个错，而同一份登录态在别的工具里好端端的。v0.8.5 起默认改成了 ChatGPT 后端。
+
+如果你在用旧版且不便升级，可以手工绕开：编辑该账号 → Config JSON 里加一行
+
+```json
+"base_url": "https://chatgpt.com/backend-api/codex"
+```
+
+中转站托管的 OAuth 账号不受影响：它们的 Config 里本来就写着中转站自己的 `base_url`，显式值优先，不会被改动。
+
+### AI Switch 怎么处理这个错误
+
+账号会**一次就置为异常**（不像普通失败那样攒够连击才落定），因为缺权限对这个凭据上所有模型都成立，换号、换模型、等冷却都改变不了结果。上游那句原话会保留在账号列表的失败提示和真实生成测试的结果面板里，附一条中文提醒。想确认自己属于哪种情况，点「真实生成测试」展开「查看输入输出」，看 `target_url` 落在哪个主机上。
 
 ## 能不能在手机上用？
 

@@ -20,8 +20,7 @@ use crate::services::http_client::{
     build_outbound_http_client, build_outbound_http_client_with_timeouts, OutboundTimeouts,
 };
 use crate::services::official_agent_identity_service::{
-    is_official_agent_identity_credential, resolve_agent_identity_headers,
-    CODEX_AGENT_IDENTITY_BASE_URL,
+    resolve_agent_identity_headers, CODEX_CHATGPT_BACKEND_BASE_URL,
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::response_failure_service::{
@@ -3750,14 +3749,23 @@ fn build_official_upstream_request(
             .entry(HeaderName::from_static("anthropic-version"))
             .or_insert(HeaderValue::from_static("2023-06-01"));
     }
-    let base_url = if let Some(base_url) = string_value(config, "base_url") {
-        base_url
-    } else if platform == PlatformId::Codex && is_official_agent_identity_credential(secret, config)
-    {
-        CODEX_AGENT_IDENTITY_BASE_URL
-    } else {
-        default_official_base_url(platform)?
+    let base_url = match string_value(config, "base_url") {
+        Some(base_url) => base_url,
+        None => default_official_base_url(platform)?,
     };
+    // ChatGPT's backend needs to know which account of the token's owner to bill,
+    // the way the agent-identity branch above already tells it. The Codex CLI sends
+    // this on every request; only accounts with several workspaces notice its
+    // absence, which is why it can look optional. Scoped to that host: a relay
+    // holding an OAuth token has no use for it.
+    if platform == PlatformId::Codex && is_codex_backend_base_url(base_url) {
+        let account_id = codex_chatgpt_account_id(secret, config)
+            .map(str::to_string)
+            .or_else(|| codex_chatgpt_account_id_from_token(secret));
+        if let Some(account_id) = account_id {
+            fill_header_if_absent(headers, "chatgpt-account-id", &account_id);
+        }
+    }
     // cli-chat-proxy rejects unversioned clients with HTTP 426 (version = none).
     if platform == PlatformId::Grok && is_grok_cli_chat_proxy_base_url(base_url) {
         apply_official_grok_cli_headers(headers)?;
@@ -3869,6 +3877,36 @@ fn resolve_official_access_token(
         "Route credential {} is missing access_token",
         credential.display_name
     ))
+}
+
+/// The ChatGPT account (workspace) the token's traffic should be billed to.
+///
+/// Importers spell it differently depending on where the auth file came from, and
+/// some omit it entirely — so fall back to the access token's own
+/// `chatgpt_account_id` claim, which ChatGPT mints into every token under its
+/// namespaced `auth` object. Deriving it from the token beats guessing: it is by
+/// definition the account that token belongs to.
+fn codex_chatgpt_account_id<'a>(secret: &'a Value, config: &'a Value) -> Option<&'a str> {
+    const KEYS: [&str; 3] = ["account_id", "chatgpt_account_id", "workspace_id"];
+    KEYS.iter()
+        .find_map(|key| string_value(secret, key))
+        .or_else(|| KEYS.iter().find_map(|key| string_value(config, key)))
+}
+
+/// `chatgpt_account_id` read out of the access token itself.
+///
+/// Separate from [`codex_chatgpt_account_id`] because decoding yields an owned
+/// string, which cannot borrow from the caller's `secret`.
+fn codex_chatgpt_account_id_from_token(secret: &Value) -> Option<String> {
+    let access_token = string_value(secret, "access_token")?;
+    let payload = jwt_payload(access_token)?;
+    payload
+        .get("https://api.openai.com/auth")
+        .and_then(|auth| auth.get("chatgpt_account_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn access_token_is_expired(config: &Value) -> bool {
@@ -5288,9 +5326,21 @@ fn is_messages_path(path: &str) -> bool {
     normalized.ends_with("/messages") || normalized == "messages"
 }
 
+/// Where an official (subscription) credential goes when its config names no
+/// `base_url`.
+///
+/// Codex is the one that trips people up: an official Codex account is a ChatGPT
+/// subscription, and ChatGPT seats are served by `chatgpt.com/backend-api/codex`,
+/// not by the Platform API. `api.openai.com` authenticates *API keys* and judges
+/// them by scope, so it answers an OAuth token with `insufficient permissions ...
+/// Missing scopes: api.responses.write` — a verdict on a key the account does not
+/// have. That reads as a broken account, and the account looks fine in any tool
+/// that talks to the right host. Unlike Anthropic, OpenAI does not serve both
+/// auth modes from one host, so the default has to follow the credential kind.
 fn default_official_base_url(platform: PlatformId) -> Result<&'static str, String> {
     match platform {
-        PlatformId::Codex => Ok("https://api.openai.com"),
+        PlatformId::Codex => Ok(CODEX_CHATGPT_BACKEND_BASE_URL),
+        // Anthropic serves OAuth and API keys from the same host.
         PlatformId::Claude => Ok("https://api.anthropic.com"),
         // CLIProxyAPI xAI official API base for Grok.
         PlatformId::Grok => Ok("https://api.x.ai/v1"),
@@ -11089,6 +11139,137 @@ data: [DONE]\n\n";
         )
         .expect("forwarded request");
         assert_ne!(forwarded.body, request.to_vec());
+    }
+
+    /// A ChatGPT-subscription Codex account, imported the way the app's own
+    /// example JSON produces it: access + refresh token, no `base_url`, no
+    /// agent-identity fields.
+    ///
+    /// This must reach ChatGPT's backend. Sent to `api.openai.com` instead — which
+    /// is where it went until this was pinned — the subscription token is judged as
+    /// an API key and refused for missing `api.responses.write`, so a perfectly good
+    /// account reads as broken while the same login works in any tool that talks to
+    /// the right host.
+    #[test]
+    fn plain_oauth_official_codex_goes_to_the_chatgpt_backend() {
+        let credential = SelectedCredential {
+            id: "official-chatgpt".to_string(),
+            platform: "codex".to_string(),
+            kind: "official".to_string(),
+            display_name: "ChatGPT Plus".to_string(),
+            status: "ok".to_string(),
+            route_priority: 3,
+            max_concurrency: 1,
+            secret_payload_json: serde_json::json!({
+                "access_token": "at-chatgpt",
+                "refresh_token": "rt-chatgpt",
+                "account_id": "acct-workspace-1"
+            })
+            .to_string(),
+            config_json: serde_json::json!({"type": "codex", "auth_kind": "oauth"}).to_string(),
+        };
+
+        let (url, headers, _) = build_upstream_request(
+            &credential,
+            "codex",
+            "/v1/responses",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5.6-sol"}"#,
+        )
+        .expect("official codex request");
+
+        // ChatGPT's backend hosts the endpoint unversioned, so the client's `/v1`
+        // must be dropped rather than appended.
+        assert_eq!(url, "https://chatgpt.com/backend-api/codex/responses");
+        assert_eq!(
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer at-chatgpt")
+        );
+        // The backend bills per account of the token's owner, exactly as it does on
+        // the agent-identity path.
+        assert_eq!(
+            headers
+                .get("chatgpt-account-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("acct-workspace-1")
+        );
+    }
+
+    /// Importers that carry no `account_id` still have one available: ChatGPT mints
+    /// it into the access token. Deriving it beats sending none, which silently
+    /// bills the owner's default workspace.
+    #[test]
+    fn official_codex_reads_the_account_id_out_of_the_access_token() {
+        // {"alg":"none"}.{"https://api.openai.com/auth":{"chatgpt_account_id":"acct-from-jwt"}}.sig
+        let token = "eyJhbGciOiJub25lIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC1mcm9tLWp3dCJ9fQ.sig";
+        let credential = SelectedCredential {
+            id: "official-jwt".to_string(),
+            platform: "codex".to_string(),
+            kind: "official".to_string(),
+            display_name: "ChatGPT Pro".to_string(),
+            status: "ok".to_string(),
+            route_priority: 3,
+            max_concurrency: 1,
+            secret_payload_json: serde_json::json!({"access_token": token}).to_string(),
+            config_json: "{}".to_string(),
+        };
+
+        let (url, headers, _) = build_upstream_request(
+            &credential,
+            "codex",
+            "/v1/responses",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5.6-sol"}"#,
+        )
+        .expect("official codex request");
+
+        assert_eq!(url, "https://chatgpt.com/backend-api/codex/responses");
+        assert_eq!(
+            headers
+                .get("chatgpt-account-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("acct-from-jwt")
+        );
+    }
+
+    /// A relay hosting an OAuth token is not ChatGPT: it has its own auth and no
+    /// notion of ChatGPT workspaces, so an explicit `base_url` must win outright and
+    /// pick up none of the ChatGPT-specific handling.
+    #[test]
+    fn official_codex_keeps_an_explicit_relay_base_url_untouched() {
+        let credential = SelectedCredential {
+            id: "official-relay".to_string(),
+            platform: "codex".to_string(),
+            kind: "official".to_string(),
+            display_name: "Relay Hosted".to_string(),
+            status: "ok".to_string(),
+            route_priority: 3,
+            max_concurrency: 1,
+            secret_payload_json: serde_json::json!({
+                "access_token": "at-relay",
+                "account_id": "acct-1"
+            })
+            .to_string(),
+            config_json: serde_json::json!({"base_url": "https://relay.example.com/v1"})
+                .to_string(),
+        };
+
+        let (url, headers, _) = build_upstream_request(
+            &credential,
+            "codex",
+            "/v1/responses",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5.6-sol"}"#,
+        )
+        .expect("official codex request");
+
+        assert_eq!(url, "https://relay.example.com/v1/responses");
+        assert!(headers.get("chatgpt-account-id").is_none());
     }
 
     #[test]

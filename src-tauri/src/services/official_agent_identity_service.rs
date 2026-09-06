@@ -6,7 +6,14 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-pub const CODEX_AGENT_IDENTITY_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+/// Where a ChatGPT subscription's Codex traffic goes.
+///
+/// This is *not* the Platform API (`api.openai.com`). A ChatGPT OAuth token buys
+/// a subscription seat, not Platform API credit, and the two endpoints
+/// authenticate differently: `api.openai.com` expects an API key and judges it
+/// against the key's scopes, so an OAuth token sent there is refused for missing
+/// `api.responses.write` no matter how healthy the subscription is.
+pub const CODEX_CHATGPT_BACKEND_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentIdentityHeaders {
