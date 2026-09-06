@@ -45,7 +45,10 @@ mod tests {
         assert!(total <= 4, "must not exceed 4 breakpoints, got {total}");
     }
 
-    use super::{anthropic_response_to_responses, responses_request_to_anthropic};
+    use super::{
+        anthropic_response_to_responses, responses_request_to_anthropic,
+        DEFAULT_ANTHROPIC_MAX_TOKENS,
+    };
     use serde_json::Value;
     use std::collections::BTreeMap;
 
@@ -475,6 +478,63 @@ mod tests {
             "no tag may reach the client: {rendered}"
         );
     }
+
+    /// Anthropic rejects `budget_tokens >= max_tokens`. Codex sends no
+    /// `max_output_tokens` and defaults to `medium`, so the invented 8192 tied
+    /// the medium budget exactly and every effort above `low` 400'd — the whole
+    /// Codex-on-Anthropic path, not an edge case.
+    #[test]
+    fn thinking_budget_always_leaves_room_under_max_tokens() {
+        for effort in super::super::RECOGNISED_REASONING_EFFORTS {
+            let request = serde_json::json!({
+                "model": "claude-sonnet-4",
+                "reasoning": {"effort": effort},
+                "input": [{"type": "message", "role": "user", "content": "hi"}]
+            });
+            let prepared: Value = serde_json::from_slice(
+                &responses_request_to_anthropic(&serde_json::to_vec(&request).unwrap()).unwrap(),
+            )
+            .unwrap();
+
+            let max_tokens = prepared["max_tokens"]
+                .as_i64()
+                .expect("max_tokens is required");
+            let budget = prepared["thinking"]["budget_tokens"]
+                .as_i64()
+                .unwrap_or_else(|| panic!("{effort} must enable thinking"));
+            assert!(
+                budget < max_tokens,
+                "{effort}: budget_tokens {budget} must be under max_tokens {max_tokens}"
+            );
+            assert!(
+                max_tokens - budget >= DEFAULT_ANTHROPIC_MAX_TOKENS,
+                "{effort}: only {} tokens left for the answer",
+                max_tokens - budget
+            );
+        }
+    }
+
+    /// A cap the caller set is the caller's. Growing it to fit a bigger thinking
+    /// budget would spend tokens the client explicitly refused.
+    #[test]
+    fn a_client_supplied_limit_is_never_raised() {
+        let request = serde_json::json!({
+            "model": "claude-sonnet-4",
+            "max_output_tokens": 4096,
+            "reasoning": {"effort": "high"},
+            "input": [{"type": "message", "role": "user", "content": "hi"}]
+        });
+        let prepared: Value = serde_json::from_slice(
+            &responses_request_to_anthropic(&serde_json::to_vec(&request).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(prepared["max_tokens"], 4096);
+        assert!(
+            prepared["thinking"]["budget_tokens"].as_i64().unwrap() < 4096,
+            "the budget must fit under the caller's cap, not the other way round"
+        );
+    }
 }
 
 use super::common::{
@@ -515,20 +575,29 @@ pub(super) fn responses_request_to_anthropic(body: &[u8]) -> Result<Vec<u8>, Str
     // Anthropic requires max_tokens, but the Responses API treats
     // max_output_tokens as optional and Codex omits it entirely. Without a
     // default every Codex request would 400.
-    let max_tokens = object
+    let requested_max_tokens = object
         .get("max_output_tokens")
         .and_then(Value::as_i64)
         .filter(|value| *value > 0);
-    result.insert(
-        "max_tokens".to_string(),
-        json!(max_tokens.unwrap_or(DEFAULT_ANTHROPIC_MAX_TOKENS)),
-    );
-    if let Some(effort) = responses_reasoning_effort(object)
-        .and_then(|effort| anthropic_thinking_budget(&effort, max_tokens))
-    {
+    let thinking_budget = responses_reasoning_effort(object)
+        .and_then(|effort| anthropic_thinking_budget(&effort, requested_max_tokens));
+    // Anthropic rejects `budget_tokens >= max_tokens`. When the client named a
+    // limit the budget is already clamped under it, so that value stands — it is
+    // the caller's cap and not ours to raise. When the client named nothing, the
+    // 8192 invented above has to grow to clear the budget: Codex sends no
+    // max_output_tokens and defaults to `medium`, whose 8192 budget ties the
+    // default exactly and 400s every request. Clamping instead of growing would
+    // technically pass while leaving the answer a single token.
+    let max_tokens = match (requested_max_tokens, thinking_budget) {
+        (Some(limit), _) => limit,
+        (None, Some(budget)) => budget + DEFAULT_ANTHROPIC_MAX_TOKENS,
+        (None, None) => DEFAULT_ANTHROPIC_MAX_TOKENS,
+    };
+    result.insert("max_tokens".to_string(), json!(max_tokens));
+    if let Some(budget) = thinking_budget {
         result.insert(
             "thinking".to_string(),
-            json!({"type": "enabled", "budget_tokens": effort}),
+            json!({"type": "enabled", "budget_tokens": budget}),
         );
     }
     // `metadata` rides along because relays gating on the Claude Code signature
