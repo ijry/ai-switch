@@ -416,6 +416,65 @@ mod tests {
         );
         assert!(rendered.contains("The answer is 42."));
     }
+
+    /// A relay that strips extended thinking, or a model answering without it,
+    /// writes the scratchpad into the text block as tags. That block has to
+    /// reach the client as a reasoning item, and the streamed form has to carry
+    /// the summary events — a buffered `reasoning` item with no `added`/`done`
+    /// pair is ignored by the client that receives it.
+    #[test]
+    fn inlined_thinking_tags_become_a_reasoning_item() {
+        let upstream = serde_json::json!({
+            "id": "msg_2",
+            "model": "claude-sonnet-4",
+            "stop_reason": "end_turn",
+            "content": [
+                {"type": "text", "text": "<thinking>Checking the mapping.</thinking>\n\nThe key is unset."}
+            ],
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        });
+
+        let converted = anthropic_response_to_responses(
+            200,
+            Some("application/json"),
+            &serde_json::to_vec(&upstream).unwrap(),
+            &BTreeMap::new(),
+        )
+        .expect("inlined tags must not fail the transform");
+        let value: Value = serde_json::from_slice(&converted.body).unwrap();
+
+        assert_eq!(value["output"][0]["type"], "reasoning");
+        assert_eq!(
+            value["output"][0]["summary"][0]["text"],
+            "Checking the mapping."
+        );
+        assert_eq!(value["output"][1]["type"], "message");
+        assert_eq!(value["output_text"], "The key is unset.");
+
+        let streamed = anthropic_response_to_responses(
+            200,
+            Some("text/event-stream"),
+            concat!(
+                "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_2\",\"model\":\"claude-sonnet-4\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n",
+                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"<thinking>Checking.</thinking>Done.\"}}\n\n",
+                "data: {\"type\":\"message_stop\"}\n\n",
+            )
+            .as_bytes(),
+            &BTreeMap::new(),
+        )
+        .expect("streamed inlined tags must not fail the transform");
+        let rendered = String::from_utf8(streamed.body).unwrap();
+
+        assert!(
+            rendered.contains("event: response.reasoning_summary_text.delta"),
+            "the buffered reasoning item must be replayed as summary events: {rendered}"
+        );
+        assert!(
+            !rendered.contains("<thinking>"),
+            "no tag may reach the client: {rendered}"
+        );
+    }
 }
 
 use super::common::{
@@ -423,7 +482,7 @@ use super::common::{
     response_tool_name, response_tool_namespace, response_tool_parameters,
     responses_reasoning_effort, ResponsesToolNamespaces,
 };
-use super::{common::parse_base64_data_url, sse, TransformedBridgeResponse};
+use super::{common::parse_base64_data_url, sse, thinking_text, TransformedBridgeResponse};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
@@ -1129,6 +1188,25 @@ fn anthropic_content_to_responses_output(
             Some(_) | None => {}
         }
     }
+    // A model whose real thinking channel was never enabled writes its
+    // scratchpad into the answer as `<thinking>…</thinking>`. Route it where the
+    // client already renders reasoning instead of printing the tags as prose.
+    let (inlined_reasoning, visible_text) = thinking_text::split_leading_thinking(&text);
+    let inlined_reasoning = inlined_reasoning.map(str::to_string);
+    let visible_text = visible_text.to_string();
+    if inlined_reasoning.is_some() {
+        message_content = if visible_text.is_empty() {
+            Vec::new()
+        } else {
+            vec![json!({
+                "type": "output_text",
+                "text": visible_text,
+                "annotations": [],
+                "logprobs": []
+            })]
+        };
+        text = visible_text;
+    }
     if !message_content.is_empty() {
         output.insert(
             0,
@@ -1138,6 +1216,18 @@ fn anthropic_content_to_responses_output(
                 "status": "completed",
                 "role": "assistant",
                 "content": message_content
+            }),
+        );
+    }
+    // Ahead of the message: the client orders output items as it receives them,
+    // and reasoning that lands after the answer reads as a reply to it.
+    if let Some(reasoning) = inlined_reasoning {
+        output.insert(
+            0,
+            json!({
+                "id": format!("rs_{}", sanitize_id(response_id)),
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": reasoning}]
             }),
         );
     }

@@ -93,6 +93,9 @@ pub(super) fn responses_events_from_completed_response(
             Some("function_call") => {
                 emit_function_call_item(&mut output, &mut sequence_number, output_index, item)?
             }
+            Some("reasoning") => {
+                emit_reasoning_item(&mut output, &mut sequence_number, output_index, item)?
+            }
             _ => {}
         }
     }
@@ -292,6 +295,114 @@ fn emit_function_call_item(
         }),
     )?;
     *sequence_number += 1;
+    push_responses_event(
+        output,
+        "response.output_item.done",
+        json!({
+            "type": "response.output_item.done",
+            "sequence_number": *sequence_number,
+            "output_index": output_index,
+            "item": item
+        }),
+    )?;
+    *sequence_number += 1;
+    Ok(())
+}
+
+/// Replays a buffered `reasoning` item as the summary-part event sequence.
+///
+/// The bridges that call this convert a whole upstream response at once, so the
+/// reasoning is already complete; the events exist because a Responses client
+/// tracks output items by their `added`/`done` pairs and ignores a summary it
+/// never saw open.
+fn emit_reasoning_item(
+    output: &mut String,
+    sequence_number: &mut u64,
+    output_index: usize,
+    item: &Value,
+) -> Result<(), String> {
+    let item_id = item
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("rs_ai_switch");
+    let mut started_item = item.clone();
+    started_item["summary"] = Value::Array(Vec::new());
+    push_responses_event(
+        output,
+        "response.output_item.added",
+        json!({
+            "type": "response.output_item.added",
+            "sequence_number": *sequence_number,
+            "output_index": output_index,
+            "item": started_item
+        }),
+    )?;
+    *sequence_number += 1;
+
+    for (summary_index, part) in item
+        .get("summary")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let text = part.get("text").and_then(Value::as_str).unwrap_or("");
+        push_responses_event(
+            output,
+            "response.reasoning_summary_part.added",
+            json!({
+                "type": "response.reasoning_summary_part.added",
+                "sequence_number": *sequence_number,
+                "item_id": item_id,
+                "output_index": output_index,
+                "summary_index": summary_index,
+                "part": {"type": "summary_text", "text": ""}
+            }),
+        )?;
+        *sequence_number += 1;
+        if !text.is_empty() {
+            push_responses_event(
+                output,
+                "response.reasoning_summary_text.delta",
+                json!({
+                    "type": "response.reasoning_summary_text.delta",
+                    "sequence_number": *sequence_number,
+                    "item_id": item_id,
+                    "output_index": output_index,
+                    "summary_index": summary_index,
+                    "delta": text
+                }),
+            )?;
+            *sequence_number += 1;
+        }
+        push_responses_event(
+            output,
+            "response.reasoning_summary_text.done",
+            json!({
+                "type": "response.reasoning_summary_text.done",
+                "sequence_number": *sequence_number,
+                "item_id": item_id,
+                "output_index": output_index,
+                "summary_index": summary_index,
+                "text": text
+            }),
+        )?;
+        *sequence_number += 1;
+        push_responses_event(
+            output,
+            "response.reasoning_summary_part.done",
+            json!({
+                "type": "response.reasoning_summary_part.done",
+                "sequence_number": *sequence_number,
+                "item_id": item_id,
+                "output_index": output_index,
+                "summary_index": summary_index,
+                "part": {"type": "summary_text", "text": text}
+            }),
+        )?;
+        *sequence_number += 1;
+    }
+
     push_responses_event(
         output,
         "response.output_item.done",

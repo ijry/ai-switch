@@ -3,6 +3,7 @@ use super::common::{
     response_tool_name, response_tool_namespace, response_tool_parameters,
     responses_reasoning_effort, responses_tool_namespaces, ResponsesToolNamespaces,
 };
+use super::thinking_text::{self, InlineThinkingSplitter, TextSegment};
 use super::TransformedBridgeResponse;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -158,13 +159,17 @@ fn chat_json_to_responses(
     let message = choice
         .get("message")
         .ok_or_else(|| "Chat response is missing choices[0].message".to_string())?;
-    let text = chat_message_text(message)?;
+    let raw_text = chat_message_text(message)?;
+    // A relay with "thinking to content" on delivers the reasoning inside the
+    // visible answer; without this the client renders the tags as prose.
+    let (inlined_reasoning, visible_text) = thinking_text::split_leading_thinking(&raw_text);
+    let text = visible_text.to_string();
     let tool_calls = message
         .get("tool_calls")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let reasoning = message_reasoning_text(message);
+    let reasoning = merge_reasoning(message_reasoning_text(message), inlined_reasoning);
     let has_reasoning = reasoning.is_some();
     let mut output = build_output_items(
         response_id,
@@ -174,7 +179,7 @@ fn chat_json_to_responses(
         tool_namespaces,
         reasoning.as_deref(),
     )?;
-    if let Some(reasoning) = reasoning {
+    if let Some(reasoning) = reasoning.as_deref() {
         output.insert(
             0,
             reasoning_output_item(&reasoning_item_id(response_id), reasoning),
@@ -269,7 +274,10 @@ fn chat_sse_to_responses(
             emit_reasoning_delta(&mut state, &mut output, &mut sequence_number, reasoning)?;
         }
         if let Some(content) = delta.get("content").and_then(Value::as_str) {
-            emit_text_delta(&mut state, &mut output, &mut sequence_number, content)?;
+            // Segments are taken as an owned batch so the splitter's borrow ends
+            // before the emitters take `&mut state`.
+            let segments = state.inline_thinking.push(content);
+            emit_segments(&mut state, &mut output, &mut sequence_number, segments)?;
         }
         if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for tool_call in tool_calls {
@@ -288,6 +296,10 @@ fn chat_sse_to_responses(
         return Err("Chat SSE response did not contain data events".to_string());
     }
     ensure_stream_started(&mut state, &mut output, &mut sequence_number);
+    // Whatever the splitter was still holding back — a block the upstream never
+    // closed, or a tail that turned out not to be a tag.
+    let segments = state.inline_thinking.finish();
+    emit_segments(&mut state, &mut output, &mut sequence_number, segments)?;
     finish_stream(
         &mut state,
         &mut output,
@@ -314,6 +326,9 @@ struct ChatStreamState {
     finish_reason: Option<String>,
     native_finish_reason: Option<String>,
     usage: Option<Value>,
+    /// Routes a `<think>` block the upstream inlined into `content` back onto
+    /// the reasoning channel. Inert for upstreams that never inline one.
+    inline_thinking: InlineThinkingSplitter,
 }
 
 impl ChatStreamState {
@@ -471,6 +486,23 @@ fn emit_reasoning_delta(
         }),
     )?;
     *sequence_number += 1;
+    Ok(())
+}
+
+fn emit_segments(
+    state: &mut ChatStreamState,
+    output: &mut String,
+    sequence_number: &mut u64,
+    segments: Vec<TextSegment>,
+) -> Result<(), String> {
+    for segment in segments {
+        match segment {
+            TextSegment::Reasoning(text) => {
+                emit_reasoning_delta(state, output, sequence_number, &text)?
+            }
+            TextSegment::Text(text) => emit_text_delta(state, output, sequence_number, &text)?,
+        }
+    }
     Ok(())
 }
 
@@ -1146,6 +1178,25 @@ fn message_reasoning_text(message: &Value) -> Option<&str> {
         .and_then(Value::as_str)
         .or_else(|| message.get("reasoning").and_then(Value::as_str))
         .filter(|text| !text.is_empty())
+}
+
+/// Combines reasoning that arrived on its own field with a block the upstream
+/// inlined into the answer.
+///
+/// Normally only one of the two is present — a relay that inlines the block is
+/// one that emptied `reasoning_content` to do it. When both arrive they are
+/// usually the same text double-reported, so an identical pair collapses; a
+/// differing pair is kept whole rather than picking a winner and silently losing
+/// half the model's plan.
+fn merge_reasoning(field: Option<&str>, inlined: Option<&str>) -> Option<String> {
+    match (field, inlined.filter(|text| !text.is_empty())) {
+        (Some(field), Some(inlined)) if field.trim() != inlined.trim() => {
+            Some(format!("{field}\n{inlined}"))
+        }
+        (Some(field), _) => Some(field.to_string()),
+        (None, Some(inlined)) => Some(inlined.to_string()),
+        (None, None) => None,
+    }
 }
 
 fn sanitize_id(value: &str) -> String {
@@ -1848,8 +1899,147 @@ fn copy_fields(source: &Map<String, Value>, target: &mut Map<String, Value>, fie
 
 #[cfg(test)]
 mod tests {
-    use super::responses_request_to_chat;
+    use super::{chat_response_to_responses, responses_request_to_chat};
     use serde_json::Value;
+    use std::collections::BTreeMap;
+
+    fn to_responses(status: u16, content_type: &str, body: &str) -> String {
+        String::from_utf8(
+            chat_response_to_responses(
+                status,
+                Some(content_type),
+                body.as_bytes(),
+                &BTreeMap::new(),
+            )
+            .expect("upstream body must convert")
+            .body,
+        )
+        .expect("converted body must be UTF-8")
+    }
+
+    /// Relays with a "thinking to content" switch (New API's
+    /// `thinking_to_content` and the forks that copied it) splice the reasoning
+    /// into `content` wrapped in tags. Forwarding that verbatim is what makes
+    /// Codex print `<thinking>…</thinking>` in the middle of the transcript.
+    #[test]
+    fn inlined_thinking_block_becomes_reasoning_not_answer_text() {
+        let upstream = serde_json::json!({
+            "id": "cc-1",
+            "model": "deepseek-reasoner",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "<thinking>Checking the key mapping.</thinking>\n\nThe key is unset."
+                },
+                "finish_reason": "stop"
+            }]
+        });
+
+        let converted: Value = serde_json::from_str(&to_responses(
+            200,
+            "application/json",
+            &upstream.to_string(),
+        ))
+        .expect("converted body must be JSON");
+
+        assert_eq!(
+            converted["output_text"], "The key is unset.",
+            "the answer must not carry the tags"
+        );
+        assert_eq!(converted["output"][0]["type"], "reasoning");
+        assert_eq!(
+            converted["output"][0]["summary"][0]["text"],
+            "Checking the key mapping."
+        );
+        let rendered = converted.to_string();
+        assert!(
+            !rendered.contains("<thinking>"),
+            "no tag may survive anywhere in the response: {rendered}"
+        );
+    }
+
+    /// The streamed path is the one users actually hit, and the tag routinely
+    /// straddles two `content` deltas.
+    #[test]
+    fn inlined_thinking_is_rerouted_across_streamed_delta_boundaries() {
+        let upstream = concat!(
+            "data: {\"id\":\"cc-2\",\"model\":\"mimo\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"<think\"}}]}\n\n",
+            "data: {\"id\":\"cc-2\",\"model\":\"mimo\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ing>Weighing it.</think\"}}]}\n\n",
+            "data: {\"id\":\"cc-2\",\"model\":\"mimo\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ing>Use the cache.\"}}]}\n\n",
+            "data: {\"id\":\"cc-2\",\"model\":\"mimo\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+
+        let output = to_responses(200, "text/event-stream", upstream);
+
+        assert!(
+            output.contains("event: response.reasoning_summary_text.delta"),
+            "the block must travel on the reasoning channel: {output}"
+        );
+        assert!(
+            output.contains("\"delta\":\"Weighing it.\""),
+            "reasoning must arrive whole, not one character per event: {output}"
+        );
+        assert!(
+            output.contains("\"delta\":\"Use the cache.\""),
+            "the answer must still reach the text channel: {output}"
+        );
+        assert!(
+            !output.contains("<think"),
+            "no tag may reach the client: {output}"
+        );
+    }
+
+    /// The regression guard for the rewrite itself: an upstream that never
+    /// inlines anything must stream byte-for-byte what it always did.
+    #[test]
+    fn ordinary_streamed_text_is_untouched() {
+        let upstream = concat!(
+            "data: {\"id\":\"cc-3\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Here \"}}]}\n\n",
+            "data: {\"id\":\"cc-3\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"you go.\"}}]}\n\n",
+            "data: {\"id\":\"cc-3\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+
+        let output = to_responses(200, "text/event-stream", upstream);
+
+        assert!(output.contains("\"delta\":\"Here \""));
+        assert!(output.contains("\"delta\":\"you go.\""));
+        assert!(
+            !output.contains("reasoning_summary"),
+            "a turn with no reasoning must not grow a reasoning item: {output}"
+        );
+    }
+
+    /// A turn that only quotes the tags is an answer, not a thought.
+    #[test]
+    fn tags_inside_the_answer_stay_in_the_answer() {
+        let upstream = serde_json::json!({
+            "id": "cc-4",
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Wrap the scratchpad in <thinking>…</thinking> like so."
+                },
+                "finish_reason": "stop"
+            }]
+        });
+
+        let converted: Value = serde_json::from_str(&to_responses(
+            200,
+            "application/json",
+            &upstream.to_string(),
+        ))
+        .expect("converted body must be JSON");
+
+        assert_eq!(
+            converted["output_text"], "Wrap the scratchpad in <thinking>…</thinking> like so.",
+            "quoting the tags must not be mistaken for reasoning"
+        );
+    }
 
     /// Tools go upstream under their namespace-qualified name. A client that
     /// replays a function_call without the `namespace` field must still produce

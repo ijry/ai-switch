@@ -12,6 +12,7 @@ mod responses_claude;
 mod responses_gemini;
 mod responses_responses;
 pub(crate) mod sse;
+mod thinking_text;
 pub(crate) mod turn_reminder;
 
 use crate::models::platform::{ApiDialect, PlatformId};
