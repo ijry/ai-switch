@@ -45,7 +45,10 @@ mod tests {
         assert!(total <= 4, "must not exceed 4 breakpoints, got {total}");
     }
 
-    use super::{anthropic_response_to_responses, responses_request_to_anthropic};
+    use super::{
+        anthropic_response_to_responses, responses_request_to_anthropic,
+        DEFAULT_ANTHROPIC_MAX_TOKENS,
+    };
     use serde_json::Value;
     use std::collections::BTreeMap;
 
@@ -416,6 +419,122 @@ mod tests {
         );
         assert!(rendered.contains("The answer is 42."));
     }
+
+    /// A relay that strips extended thinking, or a model answering without it,
+    /// writes the scratchpad into the text block as tags. That block has to
+    /// reach the client as a reasoning item, and the streamed form has to carry
+    /// the summary events — a buffered `reasoning` item with no `added`/`done`
+    /// pair is ignored by the client that receives it.
+    #[test]
+    fn inlined_thinking_tags_become_a_reasoning_item() {
+        let upstream = serde_json::json!({
+            "id": "msg_2",
+            "model": "claude-sonnet-4",
+            "stop_reason": "end_turn",
+            "content": [
+                {"type": "text", "text": "<thinking>Checking the mapping.</thinking>\n\nThe key is unset."}
+            ],
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        });
+
+        let converted = anthropic_response_to_responses(
+            200,
+            Some("application/json"),
+            &serde_json::to_vec(&upstream).unwrap(),
+            &BTreeMap::new(),
+        )
+        .expect("inlined tags must not fail the transform");
+        let value: Value = serde_json::from_slice(&converted.body).unwrap();
+
+        assert_eq!(value["output"][0]["type"], "reasoning");
+        assert_eq!(
+            value["output"][0]["summary"][0]["text"],
+            "Checking the mapping."
+        );
+        assert_eq!(value["output"][1]["type"], "message");
+        assert_eq!(value["output_text"], "The key is unset.");
+
+        let streamed = anthropic_response_to_responses(
+            200,
+            Some("text/event-stream"),
+            concat!(
+                "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_2\",\"model\":\"claude-sonnet-4\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n",
+                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"<thinking>Checking.</thinking>Done.\"}}\n\n",
+                "data: {\"type\":\"message_stop\"}\n\n",
+            )
+            .as_bytes(),
+            &BTreeMap::new(),
+        )
+        .expect("streamed inlined tags must not fail the transform");
+        let rendered = String::from_utf8(streamed.body).unwrap();
+
+        assert!(
+            rendered.contains("event: response.reasoning_summary_text.delta"),
+            "the buffered reasoning item must be replayed as summary events: {rendered}"
+        );
+        assert!(
+            !rendered.contains("<thinking>"),
+            "no tag may reach the client: {rendered}"
+        );
+    }
+
+    /// Anthropic rejects `budget_tokens >= max_tokens`. Codex sends no
+    /// `max_output_tokens` and defaults to `medium`, so the invented 8192 tied
+    /// the medium budget exactly and every effort above `low` 400'd — the whole
+    /// Codex-on-Anthropic path, not an edge case.
+    #[test]
+    fn thinking_budget_always_leaves_room_under_max_tokens() {
+        for effort in super::super::RECOGNISED_REASONING_EFFORTS {
+            let request = serde_json::json!({
+                "model": "claude-sonnet-4",
+                "reasoning": {"effort": effort},
+                "input": [{"type": "message", "role": "user", "content": "hi"}]
+            });
+            let prepared: Value = serde_json::from_slice(
+                &responses_request_to_anthropic(&serde_json::to_vec(&request).unwrap()).unwrap(),
+            )
+            .unwrap();
+
+            let max_tokens = prepared["max_tokens"]
+                .as_i64()
+                .expect("max_tokens is required");
+            let budget = prepared["thinking"]["budget_tokens"]
+                .as_i64()
+                .unwrap_or_else(|| panic!("{effort} must enable thinking"));
+            assert!(
+                budget < max_tokens,
+                "{effort}: budget_tokens {budget} must be under max_tokens {max_tokens}"
+            );
+            assert!(
+                max_tokens - budget >= DEFAULT_ANTHROPIC_MAX_TOKENS,
+                "{effort}: only {} tokens left for the answer",
+                max_tokens - budget
+            );
+        }
+    }
+
+    /// A cap the caller set is the caller's. Growing it to fit a bigger thinking
+    /// budget would spend tokens the client explicitly refused.
+    #[test]
+    fn a_client_supplied_limit_is_never_raised() {
+        let request = serde_json::json!({
+            "model": "claude-sonnet-4",
+            "max_output_tokens": 4096,
+            "reasoning": {"effort": "high"},
+            "input": [{"type": "message", "role": "user", "content": "hi"}]
+        });
+        let prepared: Value = serde_json::from_slice(
+            &responses_request_to_anthropic(&serde_json::to_vec(&request).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(prepared["max_tokens"], 4096);
+        assert!(
+            prepared["thinking"]["budget_tokens"].as_i64().unwrap() < 4096,
+            "the budget must fit under the caller's cap, not the other way round"
+        );
+    }
 }
 
 use super::common::{
@@ -424,7 +543,7 @@ use super::common::{
     response_tool_namespace, response_tool_parameters, responses_reasoning_effort,
     ResponsesToolNamespaces,
 };
-use super::{common::parse_base64_data_url, sse, TransformedBridgeResponse};
+use super::{common::parse_base64_data_url, sse, thinking_text, TransformedBridgeResponse};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
@@ -457,20 +576,29 @@ pub(super) fn responses_request_to_anthropic(body: &[u8]) -> Result<Vec<u8>, Str
     // Anthropic requires max_tokens, but the Responses API treats
     // max_output_tokens as optional and Codex omits it entirely. Without a
     // default every Codex request would 400.
-    let max_tokens = object
+    let requested_max_tokens = object
         .get("max_output_tokens")
         .and_then(Value::as_i64)
         .filter(|value| *value > 0);
-    result.insert(
-        "max_tokens".to_string(),
-        json!(max_tokens.unwrap_or(DEFAULT_ANTHROPIC_MAX_TOKENS)),
-    );
-    if let Some(effort) = responses_reasoning_effort(object)
-        .and_then(|effort| anthropic_thinking_budget(&effort, max_tokens))
-    {
+    let thinking_budget = responses_reasoning_effort(object)
+        .and_then(|effort| anthropic_thinking_budget(&effort, requested_max_tokens));
+    // Anthropic rejects `budget_tokens >= max_tokens`. When the client named a
+    // limit the budget is already clamped under it, so that value stands — it is
+    // the caller's cap and not ours to raise. When the client named nothing, the
+    // 8192 invented above has to grow to clear the budget: Codex sends no
+    // max_output_tokens and defaults to `medium`, whose 8192 budget ties the
+    // default exactly and 400s every request. Clamping instead of growing would
+    // technically pass while leaving the answer a single token.
+    let max_tokens = match (requested_max_tokens, thinking_budget) {
+        (Some(limit), _) => limit,
+        (None, Some(budget)) => budget + DEFAULT_ANTHROPIC_MAX_TOKENS,
+        (None, None) => DEFAULT_ANTHROPIC_MAX_TOKENS,
+    };
+    result.insert("max_tokens".to_string(), json!(max_tokens));
+    if let Some(budget) = thinking_budget {
         result.insert(
             "thinking".to_string(),
-            json!({"type": "enabled", "budget_tokens": effort}),
+            json!({"type": "enabled", "budget_tokens": budget}),
         );
     }
     // `metadata` rides along because relays gating on the Claude Code signature
@@ -1149,6 +1277,25 @@ fn anthropic_content_to_responses_output(
             Some(_) | None => {}
         }
     }
+    // A model whose real thinking channel was never enabled writes its
+    // scratchpad into the answer as `<thinking>…</thinking>`. Route it where the
+    // client already renders reasoning instead of printing the tags as prose.
+    let (inlined_reasoning, visible_text) = thinking_text::split_leading_thinking(&text);
+    let inlined_reasoning = inlined_reasoning.map(str::to_string);
+    let visible_text = visible_text.to_string();
+    if inlined_reasoning.is_some() {
+        message_content = if visible_text.is_empty() {
+            Vec::new()
+        } else {
+            vec![json!({
+                "type": "output_text",
+                "text": visible_text,
+                "annotations": [],
+                "logprobs": []
+            })]
+        };
+        text = visible_text;
+    }
     if !message_content.is_empty() {
         output.insert(
             0,
@@ -1158,6 +1305,18 @@ fn anthropic_content_to_responses_output(
                 "status": "completed",
                 "role": "assistant",
                 "content": message_content
+            }),
+        );
+    }
+    // Ahead of the message: the client orders output items as it receives them,
+    // and reasoning that lands after the answer reads as a reply to it.
+    if let Some(reasoning) = inlined_reasoning {
+        output.insert(
+            0,
+            json!({
+                "id": format!("rs_{}", sanitize_id(response_id)),
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": reasoning}]
             }),
         );
     }

@@ -327,6 +327,37 @@ mod tests {
         assert!(output.contains("event: response.function_call_arguments.delta"));
         assert!(output.contains("event: response.completed"));
     }
+
+    /// Gemini's own reasoning arrives as `thought: true` parts, which are
+    /// dropped upstream of here. A tag in the text means a relay inlined the
+    /// block, and it belongs on the reasoning channel like everywhere else.
+    #[test]
+    fn inlined_thinking_tags_become_a_reasoning_item() {
+        let body = serde_json::json!({
+            "responseId": "resp_2",
+            "model": "gemini-2.5-flash",
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{"text": "<think>Weighing it.</think>\n\nUse the cache."}]
+                },
+                "finishReason": "STOP"
+            }]
+        });
+
+        let converted = gemini_response_to_responses(
+            200,
+            Some("application/json"),
+            &serde_json::to_vec(&body).unwrap(),
+            &BTreeMap::new(),
+        )
+        .expect("inlined tags must not fail the transform");
+        let value: Value = serde_json::from_slice(&converted.body).unwrap();
+
+        assert_eq!(value["output"][0]["type"], "reasoning");
+        assert_eq!(value["output"][0]["summary"][0]["text"], "Weighing it.");
+        assert_eq!(value["output_text"], "Use the cache.");
+    }
 }
 
 use super::common::{
@@ -334,7 +365,7 @@ use super::common::{
     is_droppable_codex_control_item, is_reasoning_input_item, response_tool_name,
     response_tool_namespace, responses_reasoning_effort, ResponsesToolNamespaces,
 };
-use super::{common::parse_base64_data_url, sse, TransformedBridgeResponse};
+use super::{common::parse_base64_data_url, sse, thinking_text, TransformedBridgeResponse};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
@@ -942,6 +973,24 @@ fn gemini_parts_to_responses_output(
             continue;
         }
     }
+    // Gemini marks its own reasoning with `thought: true` (skipped above), so a
+    // tag reaching here came from a relay that inlined the block into the text.
+    let (inlined_reasoning, visible_text) = thinking_text::split_leading_thinking(&text);
+    let inlined_reasoning = inlined_reasoning.map(str::to_string);
+    let visible_text = visible_text.to_string();
+    if inlined_reasoning.is_some() {
+        message_parts = if visible_text.is_empty() {
+            Vec::new()
+        } else {
+            vec![json!({
+                "type": "output_text",
+                "text": visible_text,
+                "annotations": [],
+                "logprobs": []
+            })]
+        };
+        text = visible_text;
+    }
     if !message_parts.is_empty() {
         output.insert(
             0,
@@ -951,6 +1000,17 @@ fn gemini_parts_to_responses_output(
                 "status": "completed",
                 "role": "assistant",
                 "content": message_parts
+            }),
+        );
+    }
+    // Ahead of the message, for the same reason as the Anthropic bridge.
+    if let Some(reasoning) = inlined_reasoning {
+        output.insert(
+            0,
+            json!({
+                "id": format!("rs_{}", sanitize_id(response_id)),
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": reasoning}]
             }),
         );
     }
