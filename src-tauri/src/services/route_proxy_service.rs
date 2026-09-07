@@ -3842,6 +3842,11 @@ fn build_official_upstream_request(
     if platform == PlatformId::Codex && may_impersonate_codex_cli(config) {
         apply_codex_cli_identity(headers, &credential.id);
     }
+    // Codex's backend answers a `stream: true` body with SSE, and rejects an
+    // Accept header that still says JSON.
+    if platform == PlatformId::Codex && request_body_requests_stream(body) {
+        insert_header(headers, "accept", "text/event-stream")?;
+    }
     let target_url = build_target_url(base_url, path, query);
     Ok(BuiltUpstreamRequest {
         target_url,

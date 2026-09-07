@@ -777,9 +777,28 @@ fn model_test_response_truncated(interface_format: &str, value: &Value) -> bool 
 fn model_test_tool_call_probe(interface_format: &str, body: &[u8]) -> ToolCallProbe {
     // Not JSON means the transport or a gateway got in the way — a compressed
     // body, an SSE stream, an HTML error page. None of that says anything about
-    // the model's tool support.
+    // the model's tool support, except that a complete Responses SSE stream can
+    // still name the tool in its terminal response.
     let Ok(value) = serde_json::from_slice::<Value>(body) else {
-        return ToolCallProbe::Undetermined;
+        let frames =
+            crate::services::route_protocol_bridge::sse::parse_sse_data_records_lossy(body);
+        let called = frames.iter().any(|frame| {
+            model_test_response_has_tool_call(interface_format, frame)
+                || frame.get("response").is_some_and(|response| {
+                    model_test_response_has_tool_call(interface_format, response)
+                })
+        });
+        if called {
+            return ToolCallProbe::Called;
+        }
+        let completed = frames
+            .iter()
+            .any(|frame| frame.get("type").and_then(Value::as_str) == Some("response.completed"));
+        return if completed {
+            ToolCallProbe::NotCalled
+        } else {
+            ToolCallProbe::Undetermined
+        };
     };
     if model_test_response_has_tool_call(interface_format, &value) {
         return ToolCallProbe::Called;
@@ -890,7 +909,13 @@ pub fn build_model_test_request_with_tool_call(
     let (request_path, request_body) = match platform {
         "codex" => (
             "/responses".to_string(),
-            codex_probe_body(&model, &credential.id, &interface_format, prompt),
+            codex_probe_body(
+                &model,
+                &credential.id,
+                &interface_format,
+                prompt,
+                credential.kind != "api",
+            ),
         ),
         "claude" => (
             "/v1/messages".to_string(),
@@ -1012,7 +1037,31 @@ fn codex_probe_body(
     credential_id: &str,
     interface_format: &str,
     prompt: &str,
+    official: bool,
 ) -> Value {
+    if official && interface_format == "openai-responses" {
+        // ChatGPT's Codex backend rejects the public Responses API's string
+        // input with `Input must be a list`, and it does not accept the public
+        // API's sampling or output-limit fields. This is the shape CLIProxyAPI
+        // normalizes to before forwarding to the same backend.
+        return json!({
+            "model": model,
+            "instructions": "",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": prompt
+                }]
+            }],
+            "stream": true,
+            "store": false,
+            "parallel_tool_calls": true,
+            "include": ["reasoning.encrypted_content"]
+        });
+    }
+
     let mut body = json!({
         "model": model,
         "input": prompt,
@@ -1031,7 +1080,13 @@ fn codex_probe_body(
 }
 
 pub fn extract_model_test_response_text(interface_format: &str, body: &str) -> Option<String> {
-    let value = serde_json::from_str::<Value>(body).ok()?;
+    let value = match serde_json::from_str::<Value>(body) {
+        Ok(value) => value,
+        Err(_) if interface_format == "openai-responses" => {
+            return responses_text_from_sse(body.as_bytes());
+        }
+        Err(_) => return None,
+    };
 
     if matches!(interface_format, "openai" | "openai-responses") {
         if let Some(text) = text_at(&value, "/choices/0/message/content") {
@@ -1069,6 +1124,47 @@ pub fn extract_model_test_response_text(interface_format: &str, body: &str) -> O
     }
 
     None
+}
+
+fn responses_text_from_sse(body: &[u8]) -> Option<String> {
+    let mut delta_text = String::new();
+    let mut completed_text = None;
+
+    for frame in crate::services::route_protocol_bridge::sse::parse_sse_data_records_lossy(body) {
+        if frame.get("type").and_then(Value::as_str) == Some("response.output_text.delta") {
+            if let Some(delta) = frame.get("delta").and_then(Value::as_str) {
+                delta_text.push_str(delta);
+            }
+        }
+        if matches!(
+            frame.get("type").and_then(Value::as_str),
+            Some("response.completed") | Some("response.incomplete")
+        ) {
+            completed_text = frame.get("response").and_then(responses_output_text);
+        }
+    }
+
+    if !delta_text.trim().is_empty() {
+        return Some(delta_text);
+    }
+    completed_text
+}
+
+fn responses_output_text(value: &Value) -> Option<String> {
+    let items = value.pointer("/output").and_then(Value::as_array)?;
+    items.iter().find_map(|item| {
+        item.get("content")
+            .and_then(Value::as_array)
+            .and_then(|content| {
+                content.iter().find_map(|part| {
+                    part.get("type")
+                        .and_then(Value::as_str)
+                        .filter(|kind| kind == &"output_text")
+                        .and_then(|_| part.get("text").and_then(Value::as_str))
+                        .map(str::to_string)
+                })
+            })
+    })
 }
 
 pub fn truncate_response_body(body: &[u8]) -> String {
@@ -2506,8 +2602,91 @@ mod tests {
         assert_eq!(request.interface_format, "openai-responses");
         assert_eq!(request.request_path, "/responses");
         assert_eq!(
-            body.pointer("/input").and_then(Value::as_str),
+            body.pointer("/input/0/type").and_then(Value::as_str),
+            Some("message")
+        );
+        assert_eq!(
+            body.pointer("/input/0/role").and_then(Value::as_str),
+            Some("user")
+        );
+        assert_eq!(
+            body.pointer("/input/0/content/0/type")
+                .and_then(Value::as_str),
+            Some("input_text")
+        );
+        assert_eq!(
+            body.pointer("/input/0/content/0/text")
+                .and_then(Value::as_str),
             Some(MODEL_TEST_PROMPT)
+        );
+        assert_eq!(body.pointer("/stream").and_then(Value::as_bool), Some(true));
+        assert_eq!(body.pointer("/store").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            body.pointer("/parallel_tool_calls")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            body.pointer("/include/0").and_then(Value::as_str),
+            Some("reasoning.encrypted_content")
+        );
+        assert_eq!(
+            body.pointer("/instructions").and_then(Value::as_str),
+            Some("")
+        );
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("max_output_tokens").is_none());
+    }
+
+    #[test]
+    fn official_codex_streaming_probe_sends_sse_accept_header() {
+        let request = build_model_test_request(&official_credential("codex"), "codex", None, None)
+            .expect("request");
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+
+        let upstream = build_upstream_request_with_bridge(
+            &official_credential("codex"),
+            "codex",
+            &request.request_path,
+            None,
+            headers,
+            request.request_body_json.as_bytes(),
+            TurnReminderMode::Skip,
+        )
+        .expect("official upstream request");
+
+        assert_eq!(
+            upstream
+                .headers
+                .get(header::ACCEPT)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/event-stream")
+        );
+    }
+
+    #[test]
+    fn extracts_model_text_and_tool_calls_from_responses_sse() {
+        let body = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ai-switch-\"}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"function_call\",\"name\":\"ai_switch_test_tool\"}]}}\n\n"
+        );
+
+        assert_eq!(
+            extract_model_test_response_text("openai-responses", body).as_deref(),
+            Some("ai-switch-ok")
+        );
+        assert_eq!(
+            model_test_tool_call_probe("openai-responses", body.as_bytes()),
+            ToolCallProbe::Called
         );
     }
 
