@@ -619,13 +619,27 @@ fn copied_api_payload(
             json!(target_dialect.as_str()),
         ),
     ]);
-    for key in ["headers", "failure_policy", "recovery"] {
+    for key in [
+        "headers",
+        "failure_policy",
+        "recovery",
+        RELAY_BALANCE_CONFIG_KEY,
+    ] {
         if let Some(value) = source_config.get(key) {
             config.insert(key.to_string(), value.clone());
         }
     }
 
-    let secret_payload_json = json!({ "api_key": api_key }).to_string();
+    let mut secret = Map::from_iter([("api_key".to_string(), json!(api_key))]);
+    for key in [
+        RELAY_BALANCE_ACCESS_TOKEN_KEY,
+        RELAY_BALANCE_ACCESS_TOKEN_USER_ID_KEY,
+    ] {
+        if let Some(value) = source_secret.get(key) {
+            secret.insert(key.to_string(), value.clone());
+        }
+    }
+    let secret_payload_json = Value::Object(secret).to_string();
     let config_json = Value::Object(config).to_string();
     let preview_json = RoutePreviewService::generate(
         target_platform.as_str(),
@@ -2048,6 +2062,81 @@ mod tests {
         let config: Value = serde_json::from_str(&copied.config_json).expect("copied config");
         assert_eq!(config["base_url"], "https://api.example.com/custom");
         assert_eq!(config["interface_format"], "openai-responses");
+    }
+
+    #[tokio::test]
+    async fn copy_api_credential_to_another_platform_preserves_balance_query_settings() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let source = RouteCredentialService::create_api(
+            &pool,
+            CreateApiRouteCredentialInput {
+                platform: "codex".into(),
+                display_name: "Configured Balance".into(),
+                api_key: "sk-source".into(),
+                base_url: "https://api.example.com/custom".into(),
+                interface_format: "openai-responses".into(),
+                model_mappings_json: "[]".into(),
+                fetched_models_json: None,
+                api_key_field: None,
+                preview_json: None,
+                batch_id: None,
+                responses_custom_tool_compat: None,
+                user_agent: None,
+                relay_balance_provider: Some("new_api".into()),
+                relay_balance_access_token: Some("pat-panel-token".into()),
+                relay_balance_access_token_user_id: Some("42".into()),
+            },
+        )
+        .await
+        .expect("create");
+
+        let mut source_config: Value =
+            serde_json::from_str(&source.config_json).expect("source config");
+        source_config[RELAY_BALANCE_CONFIG_KEY] = json!({
+            "provider": "custom",
+            "endpoint": "https://panel.example.com/usage",
+            "remaining_path": "data.remaining",
+            "used_path": "data.used",
+            "limit_path": "data.limit",
+            "plan_path": "data.plan",
+            "unit": "USD",
+            "divisor": 1000.0
+        });
+        sqlx::query("UPDATE route_credentials SET config_json = ? WHERE id = ?")
+            .bind(source_config.to_string())
+            .bind(&source.id)
+            .execute(&pool)
+            .await
+            .expect("configure balance query");
+
+        let copied = RouteCredentialService::copy_with_options(
+            &pool,
+            source.id,
+            CopyRouteCredentialInput {
+                target_platform: Some("opencode".into()),
+                api_key: Some("sk-copy".into()),
+            },
+        )
+        .await
+        .expect("cross-platform copy");
+
+        let copied_config: Value =
+            serde_json::from_str(&copied.config_json).expect("copied config");
+        let copied_secret: Value =
+            serde_json::from_str(&copied.secret_payload_json).expect("copied secret");
+
+        assert_eq!(
+            copied_config[RELAY_BALANCE_CONFIG_KEY],
+            source_config[RELAY_BALANCE_CONFIG_KEY]
+        );
+        assert_eq!(
+            copied_secret[RELAY_BALANCE_ACCESS_TOKEN_KEY],
+            "pat-panel-token"
+        );
+        assert_eq!(copied_secret[RELAY_BALANCE_ACCESS_TOKEN_USER_ID_KEY], "42");
     }
 
     #[tokio::test]
