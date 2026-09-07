@@ -14,20 +14,25 @@ pub(super) fn anthropic_request_to_responses(body: &[u8]) -> Result<Vec<u8>, Str
     if let Some(model) = object.get("model") {
         result.insert("model".to_string(), model.clone());
     }
+    let mut instructions = Vec::new();
     if let Some(system) = object.get("system") {
-        let instructions = anthropic_text(system, "system")?;
-        if !instructions.is_empty() {
-            result.insert("instructions".to_string(), Value::String(instructions));
+        let text = anthropic_text(system, "system")?;
+        if !text.is_empty() {
+            instructions.push(text);
         }
     }
-    result.insert(
-        "input".to_string(),
-        object
-            .get("messages")
-            .map(convert_messages)
-            .transpose()?
-            .unwrap_or_else(|| Value::Array(Vec::new())),
-    );
+    let input = object
+        .get("messages")
+        .map(|messages| convert_messages(messages, &mut instructions))
+        .transpose()?
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    result.insert("input".to_string(), input);
+    if !instructions.is_empty() {
+        result.insert(
+            "instructions".to_string(),
+            Value::String(instructions.join("\n\n")),
+        );
+    }
     if let Some(max_tokens) = object.get("max_tokens") {
         result.insert("max_output_tokens".to_string(), max_tokens.clone());
     }
@@ -73,7 +78,7 @@ pub(super) fn responses_response_to_anthropic(
     })
 }
 
-fn convert_messages(messages: &Value) -> Result<Value, String> {
+fn convert_messages(messages: &Value, instructions: &mut Vec<String>) -> Result<Value, String> {
     let messages = messages
         .as_array()
         .ok_or_else(|| "Anthropic messages must be an array".to_string())?;
@@ -83,10 +88,21 @@ fn convert_messages(messages: &Value) -> Result<Value, String> {
             .as_object()
             .ok_or_else(|| "Anthropic messages entries must be objects".to_string())?;
         let role = object.get("role").and_then(Value::as_str).unwrap_or("user");
-        let blocks = content_blocks(object.get("content").unwrap_or(&Value::Null))?;
         match role {
-            "user" => convert_user_message(&blocks, &mut input)?,
-            "assistant" => convert_assistant_message(&blocks, &mut input)?,
+            "user" => {
+                let blocks = content_blocks(object.get("content").unwrap_or(&Value::Null))?;
+                convert_user_message(&blocks, &mut input)?;
+            }
+            "assistant" => {
+                let blocks = content_blocks(object.get("content").unwrap_or(&Value::Null))?;
+                convert_assistant_message(&blocks, &mut input)?;
+            }
+            "system" => {
+                let text = anthropic_text(object.get("content").unwrap_or(&Value::Null), "system")?;
+                if !text.is_empty() {
+                    instructions.push(text);
+                }
+            }
             other => return Err(format!("Unsupported Anthropic message role: {other}")),
         }
     }
@@ -720,6 +736,32 @@ fn looks_like_sse(body: &[u8]) -> bool {
 mod tests {
     use super::{anthropic_request_to_responses, responses_response_to_anthropic};
     use serde_json::{json, Value};
+
+    /// Inline system messages carry instruction-level context and must become
+    /// Responses `instructions`, not an unsupported message role.
+    #[test]
+    fn accepts_inline_system_message() {
+        let body = json!({
+            "model": "gpt-5.5",
+            "system": "base instruction",
+            "messages": [
+                {"role": "system", "content": [{"type": "text", "text": "system reminder"}]},
+                {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+            ]
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &anthropic_request_to_responses(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            converted["instructions"],
+            "base instruction\n\nsystem reminder"
+        );
+        assert_eq!(converted["input"].as_array().unwrap().len(), 1);
+        assert_eq!(converted["input"][0]["role"], "user");
+    }
 
     #[test]
     fn converts_anthropic_request_to_responses() {
