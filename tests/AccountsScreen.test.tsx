@@ -4228,6 +4228,43 @@ describe("AccountsScreen", () => {
     );
   });
 
+  it("shows the relay plan in the balance badge and its details on hover", async () => {
+    const relayAccount = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://panel.example.com/v1",
+        interface_format: "openai",
+        model_mappings: [],
+        relay_balance: { provider: "sub2api" },
+        relay_balance_snapshot: {
+          provider: "sub2api",
+          remaining: 37.7,
+          used: 12.3,
+          limit: 50,
+          unit: "USD",
+          plan_name: "Claude Max",
+          expires_at: "2026-10-01T00:00:00Z",
+          source_url: "https://panel.example.com/v1/usage",
+          checked_at: "2026-09-02T12:00:00Z",
+          notes: ["订阅 5 小时窗口剩余 80%"],
+        },
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([credentialsFixture[0], relayAccount]);
+    renderScreen();
+
+    const badge = await screen.findByTestId(`credential-relay-balance-${relayAccount.id}`);
+    expect(badge).toHaveTextContent("余额 $37.70 · Claude Max");
+    expect(badge).toHaveAttribute("title", expect.stringContaining("套餐 Claude Max"));
+    expect(badge).toHaveAttribute("title", expect.stringContaining("到期 2026-10-01T00:00:00Z"));
+    expect(badge).toHaveAttribute("title", expect.stringContaining("订阅 5 小时窗口剩余 80%"));
+    expect(
+      screen.getByRole("button", {
+        name: "查询 API Account 余额（当前 $37.70 · Claude Max）",
+      }),
+    ).toBe(badge);
+  });
+
   it("keeps an unlimited balance on the row badge that replaced the wallet", async () => {
     const relayAccount = {
       ...credentialsFixture[1],

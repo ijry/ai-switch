@@ -1403,12 +1403,14 @@ function relayBalanceBadge(
   snapshot: RelayBalanceSnapshot,
 ): { amount: string; label: string; toneClass: string; title: string } {
   const unit = snapshot.unit || "USD";
+  const planName = snapshot.plan_name?.trim();
+  const planSuffix = planName ? ` · ${planName}` : "";
   // An account-level reading is the panel account's money, shared by every account
   // pointing at that panel. Labelling it plain "余额" would read as this key's own.
   const prefix = snapshot.account_level ? "账户余额" : "余额";
   const details: string[] = [`来源 ${snapshot.source_url}`];
-  if (snapshot.plan_name) {
-    details.unshift(`套餐 ${snapshot.plan_name}`);
+  if (planName) {
+    details.unshift(`套餐 ${planName}`);
   }
   if (typeof snapshot.used === "number") {
     details.push(`已用 ${formatRelayBalanceAmount(snapshot.used, unit)}`);
@@ -1429,23 +1431,23 @@ function relayBalanceBadge(
 
   if (snapshot.unlimited) {
     return {
-      amount: "不限",
-      label: "余额 不限",
+      amount: `不限${planSuffix}`,
+      label: `余额 不限${planSuffix}`,
       toneClass: "bg-teal-50 text-teal-800",
       title: details.join("\n"),
     };
   }
   if (typeof snapshot.remaining !== "number") {
     return {
-      amount: "未知",
-      label: `${prefix} 未知`,
+      amount: `未知${planSuffix}`,
+      label: `${prefix} 未知${planSuffix}`,
       toneClass: "bg-stone-100 text-stone-600",
       title: details.join("\n"),
     };
   }
   return {
-    amount: formatRelayBalanceAmount(snapshot.remaining, unit),
-    label: `${prefix} ${formatRelayBalanceAmount(snapshot.remaining, unit)}`,
+    amount: `${formatRelayBalanceAmount(snapshot.remaining, unit)}${planSuffix}`,
+    label: `${prefix} ${formatRelayBalanceAmount(snapshot.remaining, unit)}${planSuffix}`,
     toneClass:
       snapshot.remaining <= 0 ? "bg-rose-50 text-rose-700" : "bg-teal-50 text-teal-800",
     title: details.join("\n"),
