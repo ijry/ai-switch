@@ -131,7 +131,7 @@ Desktop and browser share one React UI. Desktop uses Tauri IPC. Browser mode use
 4. Start the service
 5. Optionally enable Tailscale, choose private or public access, and click **Login with Tailscale**
 
-Default bind is `127.0.0.1:19527`. Binding to `0.0.0.0` must be explicit.
+Default bind is `127.0.0.1:19527`. Without TLS, non-loopback hosts such as `0.0.0.0` are rejected; enable Web service TLS before binding to all interfaces.
 
 For private access, the desktop publishes `https://<magicdns-name>:<port>` through Tailscale `ListenTLS`. Enable MagicDNS and HTTPS certificates in the Tailscale admin console; do not use the `100.x.y.z` IP as the mobile URL because the certificate is issued for the MagicDNS name. The phone must have the official Tailscale App signed in to the same tailnet. The uni-app client does not embed a Tailscale SDK.
 

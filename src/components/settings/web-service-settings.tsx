@@ -26,6 +26,12 @@ const defaultConfig: WebServiceConfig = {
 };
 
 const MINIMUM_WEB_TOKEN_LENGTH = 16;
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+function isLoopbackHost(host: string) {
+  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  return LOOPBACK_HOSTS.has(normalized);
+}
 
 function normalizeConfig(config: WebServiceConfig): WebServiceConfig {
   return {
@@ -96,6 +102,7 @@ export function WebServiceSettings() {
   });
 
   const status = statusQuery.data;
+  const httpTransportRequiresTls = !form.tlsEnabled && !isLoopbackHost(form.host);
 
   return (
     <section className="space-y-3 rounded-2xl border border-stone-200 bg-white/82 p-4 shadow-sm">
@@ -151,6 +158,11 @@ export function WebServiceSettings() {
               />
             </label>
           </div>
+          {httpTransportRequiresTls ? (
+            <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+              {t("settings.webService.hostTransportHint")}
+            </p>
+          ) : null}
 
           <TokenInput
             label={t("settings.webService.token")}
