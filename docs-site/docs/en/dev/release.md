@@ -93,7 +93,7 @@ The two macOS rows are two independent native builds rather than one universal b
 Each target runs the same sequence:
 
 1. **Validate the signing secret.** If `TAURI_SIGNING_PRIVATE_KEY` is empty the job throws immediately — unsigned updater artifacts are never produced.
-2. **Linux system dependencies.** Linux only: `apt-get install` for `libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `patchelf`, `libgtk-3-dev`.
+2. **Linux system dependencies.** Linux only: `apt-get install` for `libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `patchelf`, `libgtk-3-dev`, `gcc-aarch64-linux-gnu`.
 3. **Toolchains.** pnpm 10.12.4, Node 22 (with pnpm cache), stable Rust, stable Go (cached on `sidecar/ai-switch-tsnet/go.sum`).
 4. **Install dependencies.** `pnpm install --frozen-lockfile`.
 5. **Compute platform variables.** Reads the host triple from `rustc -vV` and derives the updater platform id (`windows-x86_64`, `darwin-aarch64`, `darwin-x86_64`, `linux-x86_64`), `APP_VERSION`, plus the sidecar and server binary paths. Nothing in the job hard-codes an architecture: both macOS targets run the identical steps and diverge on `RUNNER_ARCH`.
@@ -215,6 +215,7 @@ A successful run attaches the following to the GitHub Release, in the order the 
 - **Windows:** `ai-switch-<version>-windows-x86_64-setup.exe`
 - **macOS:** `ai-switch-<version>-darwin-aarch64.dmg` (Apple Silicon) and `ai-switch-<version>-darwin-x86_64.dmg` (Intel)
 - **Linux:** `ai-switch-<version>-linux-x86_64.AppImage` and `ai-switch-<version>-linux-x86_64.deb`
+- **Linux ARM64 standalone server:** `ai-switch-server_<tag>_linux-aarch64.zip` and the matching sidecar archive
 - **Per target:** `ai-switch-server_<tag>_<platform>.zip` (standalone server)
 - **Per target:** `ai-switch-tsnet_<tag>_<platform>.zip` (Tailscale sidecar)
 - **macOS:** `ai-switch-updater-<version>-darwin-aarch64.app.tar.gz` and `ai-switch-updater-<version>-darwin-x86_64.app.tar.gz` (only the auto-updater downloads them)

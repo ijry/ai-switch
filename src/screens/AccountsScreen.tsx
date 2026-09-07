@@ -2886,6 +2886,7 @@ export function AccountsScreen({
   const autoQuotaRefreshedPlatform = useRef<string | null>(null);
   const [modelTestOutcome, setModelTestOutcome] = useState<RoutePoolModelTestOutcome | null>(null);
   const [modelTestAutoCloseIn, setModelTestAutoCloseIn] = useState<number | null>(null);
+  const [modelTestAutoClosePaused, setModelTestAutoClosePaused] = useState(false);
   const [configWriteOutcomes, setConfigWriteOutcomes] = useState<ConfigWriteOutcome[]>([]);
   const [configWriteError, setConfigWriteError] = useState<string | null>(null);
   const [configWriteDialogOpen, setConfigWriteDialogOpen] = useState(false);
@@ -5224,26 +5225,40 @@ export function AccountsScreen({
 
   const closeModelTestOutcome = () => {
     setModelTestOutcome(null);
+    setModelTestAutoClosePaused(false);
     modelTestMutation.reset();
   };
 
-  // Arm the 真实生成测试 countdown whenever a verdict lands, and tear it down the
-  // moment another test is in flight — what is on screen no longer describes
-  // what the user is waiting for. The next verdict re-runs this effect, so it
-  // gets a fresh 30 seconds rather than the remainder of the old one.
+  // Arm the 真实生成测试 countdown whenever a verdict lands, and clear it the
+  // moment another test is in flight. The next verdict gets a fresh 30 seconds.
   useEffect(() => {
     const hasVerdict = Boolean(modelTestOutcome) || modelTestMutation.isError;
     if (!hasVerdict || modelTestMutation.isPending) {
       setModelTestAutoCloseIn(null);
+      setModelTestAutoClosePaused(false);
       return;
     }
     setModelTestAutoCloseIn(MODEL_TEST_AUTO_CLOSE_SECONDS);
+  }, [modelTestOutcome, modelTestMutation.isError, modelTestMutation.isPending]);
+
+  // Keep the remaining time frozen while the pointer is over the result panel,
+  // then resume from that same value when the pointer leaves.
+  useEffect(() => {
+    const hasVerdict = Boolean(modelTestOutcome) || modelTestMutation.isError;
+    if (!hasVerdict || modelTestMutation.isPending || modelTestAutoClosePaused) {
+      return;
+    }
     const timer = window.setInterval(() => {
       setModelTestAutoCloseIn((current) => (current === null ? null : Math.max(0, current - 1)));
     }, 1000);
 
     return () => window.clearInterval(timer);
-  }, [modelTestOutcome, modelTestMutation.isError, modelTestMutation.isPending]);
+  }, [
+    modelTestAutoClosePaused,
+    modelTestMutation.isError,
+    modelTestMutation.isPending,
+    modelTestOutcome,
+  ]);
 
   // Reaching zero is what dismisses the panel. Closing from inside the tick
   // would put a side effect in a state updater, and React is free to run those
@@ -5891,6 +5906,8 @@ export function AccountsScreen({
                 ? "border-emerald-200 bg-emerald-50 text-emerald-950"
                 : "border-red-200 bg-red-50 text-red-950"
             }`}
+            onMouseEnter={() => setModelTestAutoClosePaused(true)}
+            onMouseLeave={() => setModelTestAutoClosePaused(false)}
           >
             <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -5989,7 +6006,11 @@ export function AccountsScreen({
           </div>
         ) : null}
         {modelTestMutation.isError ? (
-          <div className="mx-4 mb-3 flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-800">
+          <div
+            className="mx-4 mb-3 flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-800"
+            onMouseEnter={() => setModelTestAutoClosePaused(true)}
+            onMouseLeave={() => setModelTestAutoClosePaused(false)}
+          >
             <p>
               真实生成测试失败：
               {formatApiError(

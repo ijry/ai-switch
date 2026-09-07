@@ -93,7 +93,7 @@ pub fn validate_sensitive_web_transport(host: &str, tls_enabled: bool) -> Result
 
     Err(AppError::Validation {
         code: "web.sensitive_transport_requires_tls",
-        message: "Sensitive Web commands require TLS on non-loopback listeners".to_string(),
+        message: "Sensitive Web commands require TLS on non-loopback listeners. Use a loopback host for HTTP, or enable TLS before binding to all interfaces".to_string(),
         details: Some(host.trim().to_string()),
         recoverable: true,
     })
@@ -189,6 +189,23 @@ mod tests {
                 }
             ));
         }
+    }
+
+    #[test]
+    fn non_loopback_http_error_explains_the_safe_alternatives() {
+        let error = validate_sensitive_web_transport("0.0.0.0", false).unwrap_err();
+        let (message, details) = match error {
+            AppError::Validation {
+                message, details, ..
+            } => (message, details),
+            _ => panic!("expected a validation error"),
+        };
+
+        assert_eq!(
+            message,
+            "Sensitive Web commands require TLS on non-loopback listeners. Use a loopback host for HTTP, or enable TLS before binding to all interfaces"
+        );
+        assert_eq!(details.as_deref(), Some("0.0.0.0"));
     }
 
     #[test]

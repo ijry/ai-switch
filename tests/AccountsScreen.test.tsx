@@ -5313,6 +5313,46 @@ describe("AccountsScreen", () => {
     expect(screen.queryByLabelText("真实生成测试结果")).not.toBeInTheDocument();
   });
 
+  it("pauses the model connectivity result countdown while hovered", async () => {
+    poolStateByPlatform.set("codex", ["cred-official-1"]);
+    renderScreen("codex", "in_pool");
+
+    await userEvent.click(await screen.findByLabelText("真实生成测试算力池路由"));
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByLabelText("开始真实生成测试"));
+    await flushModelTest();
+
+    const result = screen.getByLabelText("真实生成测试结果");
+    act(() => {
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(screen.getByTestId("model-test-auto-close-countdown")).toHaveTextContent(
+      "25 秒后自动关闭",
+    );
+
+    fireEvent.mouseEnter(result);
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(screen.getByTestId("model-test-auto-close-countdown")).toHaveTextContent(
+      "25 秒后自动关闭",
+    );
+
+    fireEvent.mouseLeave(result);
+    act(() => {
+      vi.advanceTimersByTime(24_000);
+    });
+    expect(screen.getByTestId("model-test-auto-close-countdown")).toHaveTextContent(
+      "1 秒后自动关闭",
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(screen.queryByLabelText("真实生成测试结果")).not.toBeInTheDocument();
+  });
+
   it("drops the countdown while the next model test runs and restarts it on the result", async () => {
     poolStateByPlatform.set("codex", ["cred-official-1"]);
     renderScreen("codex", "in_pool");
