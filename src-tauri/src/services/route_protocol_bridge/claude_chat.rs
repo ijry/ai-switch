@@ -100,11 +100,24 @@ fn convert_message(message: &Value) -> Result<Vec<Value>, String> {
         .as_object()
         .ok_or_else(|| "Anthropic messages entries must be objects".to_string())?;
     let role = object.get("role").and_then(Value::as_str).unwrap_or("user");
-    let blocks = content_blocks(object.get("content").unwrap_or(&Value::Null))?;
 
     match role {
-        "user" => convert_user_message(&blocks),
-        "assistant" => convert_assistant_message(&blocks),
+        "user" => {
+            let blocks = content_blocks(object.get("content").unwrap_or(&Value::Null))?;
+            convert_user_message(&blocks)
+        }
+        "assistant" => {
+            let blocks = content_blocks(object.get("content").unwrap_or(&Value::Null))?;
+            convert_assistant_message(&blocks)
+        }
+        "system" => {
+            let text = anthropic_text(object.get("content").unwrap_or(&Value::Null), "system")?;
+            if text.is_empty() {
+                Ok(Vec::new())
+            } else {
+                Ok(vec![json!({"role": "system", "content": text})])
+            }
+        }
         other => Err(format!("Unsupported Anthropic message role: {other}")),
     }
 }
@@ -827,6 +840,26 @@ mod tests {
         assert_eq!(converted["messages"][3]["role"], "tool");
         assert_eq!(converted["max_tokens"], 64);
         assert_eq!(converted["tools"][0]["function"]["name"], "lookup");
+    }
+
+    #[test]
+    fn accepts_system_role_in_anthropic_messages_array() {
+        let body = json!({
+            "model": "gpt-5.5",
+            "messages": [
+                {"role":"system","content":"House style"},
+                {"role":"user","content":[{"type":"text","text":"Find x"}]}
+            ]
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &anthropic_request_to_chat(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(converted["messages"][0]["role"], "system");
+        assert_eq!(converted["messages"][0]["content"], "House style");
+        assert_eq!(converted["messages"][1]["role"], "user");
     }
 
     #[test]
