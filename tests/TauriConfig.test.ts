@@ -26,7 +26,7 @@ describe("Tauri desktop configuration", () => {
     ) as { permissions?: string[] };
 
     expect(packageJson.dependencies?.["@tauri-apps/plugin-autostart"]).toBeDefined();
-    expect(cargo).toMatch(/^tauri-plugin-autostart\s*=\s*"2/m);
+    expect(cargo).toMatch(/^tauri-plugin-autostart\s*=\s*(?:\{[^}\n]*version\s*=\s*)?"2"/m);
     expect(capability.permissions).toContain("autostart:default");
   });
 
@@ -40,7 +40,7 @@ describe("Tauri desktop configuration", () => {
     ) as { permissions?: string[] };
 
     expect(packageJson.dependencies?.["@tauri-apps/plugin-opener"]).toBeDefined();
-    expect(cargo).toMatch(/^tauri-plugin-opener\s*=\s*"2/m);
+    expect(cargo).toMatch(/^tauri-plugin-opener\s*=\s*(?:\{[^}\n]*version\s*=\s*)?"2"/m);
     expect(capability.permissions).toContain("opener:allow-open-url");
     expect(capability.permissions).toContain("opener:allow-default-urls");
     // The webview must not keep a blanket shell:open grant once opener owns
@@ -62,7 +62,7 @@ describe("Tauri desktop configuration", () => {
   });
 
   it("registers the autostart plugin and hidden-launch argument", () => {
-    const source = readSource("src-tauri/src/lib.rs");
+    const source = readSource("src-tauri/src/desktop.rs");
 
     expect(source).toContain("tauri_plugin_autostart::Builder::new()");
     expect(source).toContain(".args([AUTOSTART_ARG])");

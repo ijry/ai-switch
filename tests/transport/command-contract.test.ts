@@ -7,6 +7,13 @@ function readSource(path: string) {
   return readFileSync(resolve(process.cwd(), path), "utf8");
 }
 
+function readTauriSources() {
+  return [
+    readSource("src-tauri/src/lib.rs"),
+    readSource("src-tauri/src/desktop.rs"),
+  ].join("\n");
+}
+
 function extractMatches(source: string, pattern: RegExp) {
   return new Set([...source.matchAll(pattern)].map((match) => match[1]));
 }
@@ -67,7 +74,7 @@ describe("command contract", () => {
       readSource("src/lib/api/client.ts"),
       /\binvoke(?:<[^>]+>)?\(\s*"([a-z0-9_]+)"/g,
     );
-    const tauriSource = readSource("src-tauri/src/lib.rs");
+    const tauriSource = readTauriSources();
     const tauriBlock = tauriSource.match(/tauri::generate_handler!\[([\s\S]*?)\]\)/)?.[1];
     expect(tauriBlock).toBeTruthy();
     const tauriCommands = extractMatches(tauriBlock ?? "", /\b([a-z][a-z0-9_]*)\b/g);
@@ -151,7 +158,7 @@ describe("command contract", () => {
 
   it("exposes export in both transports and save only on desktop", () => {
     const clientSource = readSource("src/lib/api/client.ts");
-    const tauriSource = readSource("src-tauri/src/lib.rs");
+    const tauriSource = readTauriSources();
     const webSource = readSource("src-tauri/src/web/handlers/mod.rs");
     const commandModule = readSource(
       "src-tauri/src/commands/route_credential_transfer_commands.rs",
@@ -178,7 +185,7 @@ describe("command contract", () => {
 
   it("exposes import preview and commit in both transports", () => {
     const clientSource = readSource("src/lib/api/client.ts");
-    const tauriSource = readSource("src-tauri/src/lib.rs");
+    const tauriSource = readTauriSources();
     const webSource = readSource("src-tauri/src/web/handlers/mod.rs");
     const commandModule = readSource(
       "src-tauri/src/commands/route_credential_transfer_commands.rs",
@@ -197,7 +204,7 @@ describe("command contract", () => {
 
   it("exposes Skill package commands in both transports", () => {
     const clientSource = readSource("src/lib/api/client.ts");
-    const tauriSource = readSource("src-tauri/src/lib.rs");
+    const tauriSource = readTauriSources();
     const webSource = readSource("src-tauri/src/web/handlers/mod.rs");
 
     for (const command of ["skills_list_packages", "skills_read_package", "skills_install_package"]) {
@@ -213,7 +220,7 @@ describe("command contract", () => {
 
   it("keeps system terminal recovery desktop-only", () => {
     const clientSource = readSource("src/lib/api/client.ts");
-    const tauriSource = readSource("src-tauri/src/lib.rs");
+    const tauriSource = readTauriSources();
     const webSource = readSource("src-tauri/src/web/handlers/mod.rs");
 
     expect(clientSource).toContain('invoke("open_session_terminal", { input })');
