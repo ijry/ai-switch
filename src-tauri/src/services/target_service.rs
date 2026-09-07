@@ -6,7 +6,10 @@ use crate::database::repositories::target_state_repository::TargetStateRepositor
 use crate::error::AppError;
 use crate::models::platform::{PlatformId, SupportLevel};
 use crate::models::target_app::{ConfigWriteClientStatus, TargetApp, TargetConfigStatus};
-use crate::services::config_write_service::{ConfigWriteCoordinator, ConfigWriteRuntimeState};
+use crate::paths::AppPaths;
+use crate::services::config_write_service::{
+    route_config_path_context, ConfigWriteCoordinator, ConfigWriteRuntimeState,
+};
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use directories::BaseDirs;
 use sqlx::SqlitePool;
@@ -20,6 +23,7 @@ impl TargetService {
     }
 
     pub async fn list_config_statuses(
+        paths: &AppPaths,
         pool: &SqlitePool,
         runtime: &ConfigWriteRuntimeState,
     ) -> Result<Vec<TargetConfigStatus>, AppError> {
@@ -31,16 +35,18 @@ impl TargetService {
                 details: None,
                 recoverable: false,
             })?;
-        Self::list_config_statuses_for_home(pool, runtime, &home).await
+        Self::list_config_statuses_for_home(paths, pool, runtime, &home).await
     }
 
     pub(crate) async fn list_config_statuses_for_home(
+        paths: &AppPaths,
         pool: &SqlitePool,
         runtime: &ConfigWriteRuntimeState,
         home: &Path,
     ) -> Result<Vec<TargetConfigStatus>, AppError> {
         let targets = TargetRepository::ensure_defaults(pool).await?;
-        ConfigWriteCoordinator::reconcile_prepared_for_home(pool, runtime, home).await?;
+        let path_context = route_config_path_context(paths).await?;
+        ConfigWriteCoordinator::reconcile_prepared_for_home(paths, pool, runtime, home).await?;
         let registry = TargetAdapterRegistry::new();
         let mut statuses = Vec::with_capacity(targets.len());
 
@@ -98,7 +104,7 @@ impl TargetService {
                 continue;
             }
 
-            let path = adapter.resolve_path(home);
+            let path = adapter.resolve_path_with_context(home, &path_context);
             let inspection = match ConfigWriter::inspect(&path).await {
                 Ok(file) => adapter.inspect(&path, file.bytes.as_deref()),
                 Err(_) => crate::adapters::route_config::TargetInspection {
@@ -120,7 +126,8 @@ impl TargetService {
         Ok(statuses)
     }
 
-    pub async fn list_config_write_clients(
+    pub async fn list_config_write_clients_for_paths(
+        paths: &AppPaths,
         pool: &SqlitePool,
         platform: PlatformId,
     ) -> Result<Vec<ConfigWriteClientStatus>, AppError> {
@@ -132,7 +139,8 @@ impl TargetService {
                 details: None,
                 recoverable: false,
             })?;
-        Self::list_config_write_clients_for_home(pool, platform, &home).await
+        let path_context = route_config_path_context(paths).await?;
+        Self::list_config_write_clients_with_context(pool, platform, &home, &path_context).await
     }
 
     /// Clients this platform can write config for, with each one's current file
@@ -143,6 +151,21 @@ impl TargetService {
         platform: PlatformId,
         home: &Path,
     ) -> Result<Vec<ConfigWriteClientStatus>, AppError> {
+        Self::list_config_write_clients_with_context(
+            pool,
+            platform,
+            home,
+            &crate::adapters::route_config::RouteConfigPathContext::default(),
+        )
+        .await
+    }
+
+    async fn list_config_write_clients_with_context(
+        pool: &SqlitePool,
+        platform: PlatformId,
+        home: &Path,
+        path_context: &crate::adapters::route_config::RouteConfigPathContext,
+    ) -> Result<Vec<ConfigWriteClientStatus>, AppError> {
         TargetRepository::ensure_defaults(pool).await?;
         let registry = TargetAdapterRegistry::new();
         let mut statuses = Vec::new();
@@ -152,7 +175,7 @@ impl TargetService {
             else {
                 continue;
             };
-            let path = adapter.resolve_path(home);
+            let path = adapter.resolve_path_with_context(home, path_context);
             let inspection = match ConfigWriter::inspect(&path).await {
                 Ok(file) => adapter.inspect(&path, file.bytes.as_deref()),
                 Err(_) => crate::adapters::route_config::TargetInspection {
@@ -216,7 +239,10 @@ experimental_bearer_token = "sentinel"
 
         let pool = create_memory_pool().await.unwrap();
         run_migrations(&pool).await.unwrap();
+        let paths = AppPaths::from_data_dir(fixture.path().join("app-data"));
+        paths.ensure().await.unwrap();
         let statuses = TargetService::list_config_statuses_for_home(
+            &paths,
             &pool,
             &ConfigWriteRuntimeState::default(),
             &home,
@@ -273,7 +299,10 @@ experimental_bearer_token = "sentinel"
         .await
         .unwrap();
 
+        let paths = AppPaths::from_data_dir(fixture.path().join("app-data"));
+        paths.ensure().await.unwrap();
         let statuses = TargetService::list_config_statuses_for_home(
+            &paths,
             &pool,
             &ConfigWriteRuntimeState::default(),
             fixture.path(),
@@ -293,6 +322,7 @@ experimental_bearer_token = "sentinel"
 
     struct TargetFixture {
         _temp: tempfile::TempDir,
+        paths: crate::paths::AppPaths,
         pool: SqlitePool,
         home: PathBuf,
     }
@@ -305,11 +335,14 @@ experimental_bearer_token = "sentinel"
             TargetRepository::ensure_defaults(&pool)
                 .await
                 .expect("targets");
+            let paths = crate::paths::AppPaths::from_data_dir(temp.path().join("app-data"));
+            paths.ensure().await.expect("paths");
             let home = temp.path().join("home");
             tokio::fs::create_dir_all(&home).await.expect("home");
 
             Self {
                 _temp: temp,
+                paths,
                 pool,
                 home,
             }
@@ -402,5 +435,36 @@ experimental_bearer_token = "sentinel"
             zcode.error_code.as_deref(),
             Some("validation.route_config_existing_invalid")
         );
+    }
+
+    #[tokio::test]
+    async fn config_write_clients_honor_the_custom_deepseek_harness_path() {
+        let fixture = TargetFixture::new().await;
+        let custom_path = fixture.home.join("portable").join("settings.yaml");
+        let mut settings = crate::services::settings_service::SettingsService::load(&fixture.paths)
+            .await
+            .expect("settings");
+        settings.deepseek_harness_config_path = Some(custom_path.display().to_string());
+        crate::services::settings_service::SettingsService::save(&fixture.paths, &settings)
+            .await
+            .expect("save");
+
+        let clients = TargetService::list_config_write_clients_for_paths(
+            &fixture.paths,
+            &fixture.pool,
+            PlatformId::Codex,
+        )
+        .await
+        .expect("clients");
+        let harness = clients
+            .iter()
+            .find(|client| client.client_key == "deepseek_harness")
+            .expect("deepseek harness");
+
+        assert_eq!(
+            harness.config_path.as_deref(),
+            Some(custom_path.display().to_string().as_str())
+        );
+        assert_eq!(harness.file_status, "missing");
     }
 }

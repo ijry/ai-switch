@@ -60,6 +60,14 @@ pub(super) fn chat_request_to_responses(body: &[u8]) -> Result<Vec<u8>, String> 
             result.insert(field.to_string(), found.clone());
         }
     }
+    if let Some(effort) = object
+        .get("reasoning_effort")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|effort| !effort.is_empty())
+    {
+        result.insert("reasoning".to_string(), json!({"effort": effort}));
+    }
     // `stop`, `n`, the penalty knobs, and `stream_options` are dropped rather than
     // forwarded: Responses has no equivalent parameter and strict upstreams reject
     // an unknown body field outright, which would turn a serviceable request into
@@ -881,6 +889,20 @@ mod tests {
         assert_eq!(value["max_output_tokens"], 256);
         assert!(value.get("max_tokens").is_none());
         assert_eq!(value["stream"], true);
+    }
+
+    #[test]
+    fn reasoning_effort_becomes_the_responses_reasoning_object() {
+        let body = json!({
+            "model": "gpt-5.6-sol",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "reasoning_effort": "max"
+        });
+
+        let converted = chat_request_to_responses(&serde_json::to_vec(&body).unwrap()).unwrap();
+        let value: Value = serde_json::from_slice(&converted).unwrap();
+
+        assert_eq!(value["reasoning"]["effort"], "max");
     }
 
     #[test]

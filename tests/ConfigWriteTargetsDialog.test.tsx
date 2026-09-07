@@ -108,7 +108,41 @@ describe("ConfigWriteTargetsDialog", () => {
     await user.click(screen.getByRole("checkbox", { name: /ZCode/ }));
     await user.click(screen.getByRole("button", { name: "写入" }));
 
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(["codex", "zcode"]));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(["codex", "zcode"], null));
+  });
+
+  it("submits a custom DeepSeek Harness config path", async () => {
+    const user = userEvent.setup();
+    const { onSubmit } = setup({
+      clients: [
+        {
+          client_key: "deepseek_harness",
+          display_name: "DeepSeek Harness",
+          native: false,
+          restart_required: true,
+          target_key: "deepseek_harness_codex",
+          platform: "codex",
+          config_path: "/home/u/.dsh/settings.yaml",
+          file_status: "missing",
+          error_code: null,
+        },
+      ],
+      initialSelection: ["deepseek_harness"],
+    });
+
+    await user.clear(screen.getByLabelText("DSH 配置文件路径"));
+    await user.type(
+      screen.getByLabelText("DSH 配置文件路径"),
+      "D:\\Portable\\settings.yaml",
+    );
+    await user.click(screen.getByRole("button", { name: "写入" }));
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(
+        ["deepseek_harness"],
+        "D:\\Portable\\settings.yaml",
+      ),
+    );
   });
 
   it("refuses to submit with nothing checked", async () => {

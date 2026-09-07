@@ -63,6 +63,7 @@ mod tests {
             close_to_tray: false,
             claude_client_config_json: Some(r#"{"includeCoAuthoredBy":false}"#.to_string()),
             config_write_clients_json: None,
+            deepseek_harness_config_path: Some("/custom/dsh/settings.yaml".to_string()),
             notification_config_json: None,
         };
 
@@ -80,6 +81,10 @@ mod tests {
         assert_eq!(
             loaded.claude_client_config_json.as_deref(),
             Some(r#"{"includeCoAuthoredBy":false}"#)
+        );
+        assert_eq!(
+            loaded.deepseek_harness_config_path.as_deref(),
+            Some("/custom/dsh/settings.yaml")
         );
     }
 }

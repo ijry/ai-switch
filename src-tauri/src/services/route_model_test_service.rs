@@ -1057,6 +1057,7 @@ fn codex_probe_body(
             }],
             "stream": true,
             "store": false,
+            "reasoning": {"effort": "high"},
             "parallel_tool_calls": true,
             "include": ["reasoning.encrypted_content"]
         });
@@ -2633,6 +2634,10 @@ mod tests {
         assert_eq!(
             body.pointer("/instructions").and_then(Value::as_str),
             Some("")
+        );
+        assert_eq!(
+            body.pointer("/reasoning/effort").and_then(Value::as_str),
+            Some("high")
         );
         assert!(body.get("temperature").is_none());
         assert!(body.get("max_output_tokens").is_none());

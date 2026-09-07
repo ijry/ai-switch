@@ -1,6 +1,6 @@
 use super::{
     existing_text, generated_invalid, invalid_existing_config, ClientModel, RouteConfigInput,
-    TargetAdapter, TargetInspection,
+    RouteConfigPathContext, TargetAdapter, TargetInspection,
 };
 use crate::{error::AppError, models::platform::PlatformId};
 use serde_yaml::{Mapping, Value};
@@ -120,6 +120,25 @@ impl DeepSeekHarnessAdapter {
                     Value::String("contextWindow".to_string()),
                     Value::Number(model.context_window.into()),
                 );
+                if !model.reasoning_levels.is_empty() {
+                    let mut efforts = Mapping::new();
+                    efforts.insert(Value::String("off".to_string()), Value::Null);
+                    for level in &model.reasoning_levels {
+                        let key = if level == "ultra" {
+                            "max"
+                        } else {
+                            level.as_str()
+                        };
+                        efforts.insert(
+                            Value::String(key.to_string()),
+                            Value::String(key.to_string()),
+                        );
+                    }
+                    entry.insert(
+                        Value::String("reasoningEfforts".to_string()),
+                        Value::Mapping(efforts),
+                    );
+                }
                 Value::Mapping(entry)
             })
             .collect()
@@ -161,6 +180,13 @@ impl TargetAdapter for DeepSeekHarnessAdapter {
 
     fn resolve_path(&self, home: &Path) -> PathBuf {
         home.join(".dsh").join("settings.yaml")
+    }
+
+    fn resolve_path_with_context(&self, home: &Path, paths: &RouteConfigPathContext) -> PathBuf {
+        paths
+            .deepseek_harness_config_path
+            .clone()
+            .unwrap_or_else(|| self.resolve_path(home))
     }
 
     fn render(
@@ -361,6 +387,7 @@ mod tests {
                     id: (*id).to_string(),
                     context_window: 200_000,
                     max_output_tokens: 128_000,
+                    reasoning_levels: Vec::new(),
                 })
                 .collect(),
         }
@@ -451,11 +478,13 @@ mod tests {
                 id: "gpt-5.6-sol".to_string(),
                 context_window: 1_000_000,
                 max_output_tokens: 128_000,
+                reasoning_levels: Vec::new(),
             },
             ClientModel {
                 id: "gpt-5.5".to_string(),
                 context_window: 128_000,
                 max_output_tokens: 128_000,
+                reasoning_levels: Vec::new(),
             },
         ];
         let bytes = codex_adapter()
@@ -480,6 +509,43 @@ mod tests {
         // An explicit `maxTokens` would become the model's per-request output
         // cap rather than metadata, so the pool's generic number stays out of it.
         assert!(entries[0].get("maxTokens").is_none());
+    }
+
+    #[test]
+    fn render_writes_selectable_reasoning_efforts() {
+        let bytes = codex_adapter()
+            .render(
+                Path::new("settings.yaml"),
+                None,
+                &RouteConfigInput {
+                    client_models: vec![ClientModel {
+                        id: "gpt-5.6-sol".to_string(),
+                        context_window: 1_000_000,
+                        max_output_tokens: 128_000,
+                        reasoning_levels: vec![
+                            "low".to_string(),
+                            "medium".to_string(),
+                            "high".to_string(),
+                            "xhigh".to_string(),
+                            "max".to_string(),
+                            "ultra".to_string(),
+                        ],
+                    }],
+                    ..input(&[])
+                },
+            )
+            .expect("render");
+        let yaml: Value = serde_yaml::from_slice(&bytes).expect("valid YAML");
+        let efforts =
+            &yaml["llm-pi-ai"]["providers"]["ai-switch-codex"]["models"][0]["reasoningEfforts"];
+
+        assert_eq!(efforts["off"], Value::Null);
+        assert_eq!(efforts["low"], "low");
+        assert_eq!(efforts["medium"], "medium");
+        assert_eq!(efforts["high"], "high");
+        assert_eq!(efforts["xhigh"], "xhigh");
+        assert_eq!(efforts["max"], "max");
+        assert!(efforts.get("ultra").is_none());
     }
 
     #[test]

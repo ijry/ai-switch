@@ -15,12 +15,13 @@ use crate::models::route_credential::{
 use crate::models::route_credential_transfer::RouteCredentialSelectionContext;
 use crate::paths::AppPaths;
 use crate::services::config_write_service::{
-    ConfigWriteCoordinator, ConfigWriteRequest, ConfigWriteRuntimeState,
+    route_config_path_context, ConfigWriteCoordinator, ConfigWriteRequest, ConfigWriteRuntimeState,
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_model_capability::{
     advertised_model_catalog_entries, catalog_member_inputs, catalog_members,
-    codex_default_context_window, codex_model_catalog_payload, parse_model_capability,
+    codex_default_context_window, codex_model_catalog_payload, codex_reasoning_levels,
+    parse_model_capability,
 };
 use crate::services::settings_service::SettingsService;
 use directories::BaseDirs;
@@ -58,6 +59,7 @@ impl RouteConfigService {
         let base_url = normalize_base_url(base_url)?;
         let platform = PlatformId::parse(platform)?;
         PlatformCapabilityService::require(platform, PlatformOperation::ConfigWrite)?;
+        let path_context = route_config_path_context(paths).await?;
         let adapters = Self::resolve_write_clients(paths, platform, client_keys).await?;
         let platform_key = platform.as_str();
 
@@ -122,6 +124,7 @@ impl RouteConfigService {
             let request = ConfigWriteRequest {
                 adapter,
                 home: home.to_path_buf(),
+                path_context: path_context.clone(),
                 input: RouteConfigInput {
                     base_url: base_url.to_string(),
                     route_proxy_key: route_proxy_key.clone(),
@@ -183,6 +186,7 @@ impl RouteConfigService {
         let base_url = normalize_base_url(base_url)?;
         let platforms = RouteProxyKeyRepository::list_platforms(pool).await?;
         let registry = TargetAdapterRegistry::new();
+        let path_context = route_config_path_context(paths).await?;
         let mut requests = Vec::with_capacity(platforms.len());
         let mut skipped = Vec::new();
 
@@ -245,6 +249,7 @@ impl RouteConfigService {
             requests.push(ConfigWriteRequest {
                 adapter,
                 home: home.to_path_buf(),
+                path_context: path_context.clone(),
                 input: RouteConfigInput {
                     base_url: base_url.to_string(),
                     route_proxy_key,
@@ -325,6 +330,7 @@ impl RouteConfigService {
         };
 
         let adapters = Self::resolve_write_clients(paths, platform, client_keys).await?;
+        let path_context = route_config_path_context(paths).await?;
         let claude_env = Self::resolve_claude_env_plan(paths, pool, platform).await?;
         let needs_models = adapters
             .iter()
@@ -338,7 +344,7 @@ impl RouteConfigService {
             RouteProxyKeyRepository::list_aliases_for_platform(pool, platform.as_str()).await?;
 
         for adapter in adapters {
-            let path = adapter.resolve_path(home);
+            let path = adapter.resolve_path_with_context(home, &path_context);
             let Ok(existing) = tokio::fs::read(&path).await else {
                 // A file we manage is gone; writing would recreate it.
                 return Ok(true);
@@ -378,9 +384,11 @@ impl RouteConfigService {
         let platform = PlatformId::parse(platform)?;
         PlatformCapabilityService::require(platform, PlatformOperation::ConfigWrite)?;
         let claude_env = Self::resolve_claude_env_plan(paths, pool, platform).await?;
+        let path_context = route_config_path_context(paths).await?;
         let request = ConfigWriteRequest {
             adapter: route_config_adapter(&native_client_key(platform)?, platform)?,
             home: home.to_path_buf(),
+            path_context,
             input: RouteConfigInput {
                 base_url: base_url.to_string(),
                 route_proxy_key: route_proxy_key.to_string(),
@@ -563,6 +571,11 @@ impl RouteConfigService {
                     ),
                     max_output_tokens: CLIENT_MODEL_MAX_OUTPUT_TOKENS,
                     id: model.id,
+                    reasoning_levels: if platform == PlatformId::Codex {
+                        codex_reasoning_levels(&model.base_id, model.reasoning_levels.as_deref())
+                    } else {
+                        Vec::new()
+                    },
                 })
                 .collect(),
         )
@@ -2403,6 +2416,70 @@ command = "npx"
         // compacts a 1M model early — while the CLI, reading the same pool,
         // does not.
         assert_eq!(model["contextWindow"], 1_000_000);
+    }
+
+    #[tokio::test]
+    async fn deepseek_harness_write_uses_the_configured_custom_path() {
+        let fixture = ServiceFixture::new().await;
+        seed_codex_pool_member(&fixture.pool, "gpt-5.6-sol").await;
+        let custom_path = fixture.home.join("custom-dsh").join("settings.yaml");
+        let mut settings = SettingsService::load(&fixture.paths)
+            .await
+            .expect("settings");
+        settings.deepseek_harness_config_path = Some(custom_path.display().to_string());
+        SettingsService::save(&fixture.paths, &settings)
+            .await
+            .expect("save path");
+
+        let clients = ["deepseek_harness".to_string()];
+        let outcomes = RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            BASE_URL,
+            "codex",
+            &fixture.home,
+            Some(&clients),
+        )
+        .await
+        .expect("write");
+
+        assert_eq!(outcomes[0].path, custom_path.display().to_string());
+        assert!(custom_path.is_file());
+        let raw = tokio::fs::read(&custom_path)
+            .await
+            .expect("read custom path");
+        let yaml: serde_yaml::Value = serde_yaml::from_slice(&raw).expect("yaml");
+        let efforts =
+            &yaml["llm-pi-ai"]["providers"]["ai-switch-codex"]["models"][0]["reasoningEfforts"];
+        assert_eq!(efforts["off"], serde_yaml::Value::Null);
+        assert_eq!(efforts["low"], "low");
+        assert_eq!(efforts["max"], "max");
+        assert!(efforts.get("ultra").is_none());
+        assert!(!fixture.home.join(".dsh/settings.yaml").exists());
+        assert!(
+            !RouteConfigService::config_write_is_stale_for_home(
+                &fixture.paths,
+                &fixture.pool,
+                BASE_URL,
+                "codex",
+                &fixture.home,
+                Some(&clients),
+            )
+            .await
+        );
+
+        let snapshot_id = outcomes[0].snapshot_id.clone().expect("snapshot");
+        ConfigWriteCoordinator::rollback_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            &fixture.home,
+            &snapshot_id,
+        )
+        .await
+        .expect("rollback");
+        assert!(!custom_path.exists());
     }
 
     /// The pool alternates between accounts, so one alias gets one number. Two

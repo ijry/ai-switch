@@ -287,6 +287,7 @@ mod tests {
                     id: (*id).to_string(),
                     context_window: 200_000,
                     max_output_tokens: 128_000,
+                    reasoning_levels: Vec::new(),
                 })
                 .collect(),
         }

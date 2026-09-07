@@ -1,5 +1,5 @@
 use crate::adapters::route_config::{
-    ClaudeEnvPlan, RouteConfigInput, TargetAdapter, TargetAdapterRegistry,
+    ClaudeEnvPlan, RouteConfigInput, RouteConfigPathContext, TargetAdapter, TargetAdapterRegistry,
 };
 use crate::config_writer::{hash_bytes, ConfigWriter, FileState};
 use crate::database::repositories::config_snapshot_repository::ConfigSnapshotRepository;
@@ -11,6 +11,7 @@ use crate::models::platform::{PlatformId, PlatformOperation};
 use crate::models::target_app::{TargetApp, TargetAppStateUpdate};
 use crate::paths::AppPaths;
 use crate::services::platform_capability_service::PlatformCapabilityService;
+use crate::services::settings_service::SettingsService;
 use chrono::{Duration, Utc};
 use directories::BaseDirs;
 use sqlx::SqlitePool;
@@ -41,6 +42,7 @@ pub struct ConfigWriteRequest {
     pub adapter: Arc<dyn TargetAdapter>,
     pub home: PathBuf,
     pub input: RouteConfigInput,
+    pub path_context: RouteConfigPathContext,
 }
 
 #[derive(Clone)]
@@ -71,7 +73,9 @@ impl ConfigWriteCoordinator {
         runtime: &ConfigWriteRuntimeState,
         request: ConfigWriteRequest,
     ) -> Result<ConfigWriteOutcome, AppError> {
-        let path = request.adapter.resolve_path(&request.home);
+        let path = request
+            .adapter
+            .resolve_path_with_context(&request.home, &request.path_context);
         let lock = runtime.lock_for_path(&path).await?;
         let _guard = lock.lock().await;
         let prepared = Self::prepare_one(paths, pool, request, Uuid::new_v4().to_string()).await?;
@@ -118,7 +122,13 @@ impl ConfigWriteCoordinator {
         let operation_id = Uuid::new_v4().to_string();
         let mut lock_paths = requests
             .iter()
-            .map(|request| normalized_absolute_path(&request.adapter.resolve_path(&request.home)))
+            .map(|request| {
+                normalized_absolute_path(
+                    &request
+                        .adapter
+                        .resolve_path_with_context(&request.home, &request.path_context),
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
         lock_paths.sort();
         lock_paths.dedup();
@@ -219,7 +229,9 @@ impl ConfigWriteCoordinator {
         let target = TargetRepository::get_by_key(pool, request.adapter.target_key()).await?;
         validate_adapter_target(&target, request.adapter.as_ref())?;
 
-        let path = request.adapter.resolve_path(&request.home);
+        let path = request
+            .adapter
+            .resolve_path_with_context(&request.home, &request.path_context);
         let original = ConfigWriter::inspect(&path).await?;
         let replacement =
             request
@@ -351,7 +363,8 @@ impl ConfigWriteCoordinator {
     ) -> Result<ConfigWriteOutcome, AppError> {
         let source = ConfigSnapshotRepository::get(pool, source_snapshot_id).await?;
         let (target, platform, adapter) = validate_rollback_source(pool, &source).await?;
-        validate_snapshot_path(&source, adapter.as_ref(), home)?;
+        let path_context = route_config_path_context(paths).await?;
+        validate_snapshot_path(&source, adapter.as_ref(), home, &path_context)?;
         let path = PathBuf::from(&source.path);
         let lock = runtime.lock_for_path(&path).await?;
         let _guard = lock.lock().await;
@@ -474,24 +487,29 @@ impl ConfigWriteCoordinator {
     }
 
     pub async fn reconcile_prepared(
+        paths: &AppPaths,
         pool: &SqlitePool,
         runtime: &ConfigWriteRuntimeState,
     ) -> Result<(), AppError> {
         let home = resolve_home_dir()?;
-        Self::reconcile_prepared_for_home(pool, runtime, &home).await
+        Self::reconcile_prepared_for_home(paths, pool, runtime, &home).await
     }
 
     pub(crate) async fn reconcile_prepared_for_home(
+        paths: &AppPaths,
         pool: &SqlitePool,
         runtime: &ConfigWriteRuntimeState,
         home: &Path,
     ) -> Result<(), AppError> {
         let cutoff = (Utc::now() - Duration::minutes(5)).to_rfc3339();
+        let path_context = route_config_path_context(paths).await?;
         for snapshot in ConfigSnapshotRepository::list_prepared_before(pool, &cutoff).await? {
             let authorization = validate_reconciliation_target(pool, &snapshot).await;
             let (target, path) = match authorization {
                 Ok((target, adapter)) => {
-                    if let Err(error) = validate_snapshot_path(&snapshot, adapter.as_ref(), home) {
+                    if let Err(error) =
+                        validate_snapshot_path(&snapshot, adapter.as_ref(), home, &path_context)
+                    {
                         let code = app_error_code(&error);
                         ConfigSnapshotRepository::mark_status(
                             pool,
@@ -749,9 +767,11 @@ fn validate_snapshot_path(
     snapshot: &ConfigSnapshotRecord,
     adapter: &dyn TargetAdapter,
     home: &Path,
+    path_context: &RouteConfigPathContext,
 ) -> Result<(), AppError> {
     let recorded = normalized_absolute_path(Path::new(&snapshot.path))?;
-    let resolved = normalized_absolute_path(&adapter.resolve_path(home))?;
+    let resolved =
+        normalized_absolute_path(&adapter.resolve_path_with_context(home, path_context))?;
     if recorded != resolved {
         return Err(AppError::Validation {
             code: "config.path_unsafe",
@@ -861,7 +881,7 @@ fn safe_metadata_json(adapter_key: &str, operation: &str) -> String {
     .to_string()
 }
 
-fn normalized_absolute_path(path: &Path) -> Result<PathBuf, AppError> {
+pub(crate) fn normalized_absolute_path(path: &Path) -> Result<PathBuf, AppError> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -894,6 +914,32 @@ fn normalized_absolute_path(path: &Path) -> Result<PathBuf, AppError> {
     {
         Ok(normalized)
     }
+}
+
+pub(crate) async fn route_config_path_context(
+    paths: &AppPaths,
+) -> Result<RouteConfigPathContext, AppError> {
+    let settings = SettingsService::load(paths).await?;
+    let Some(raw) = settings
+        .deepseek_harness_config_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(RouteConfigPathContext::default());
+    };
+    let path = PathBuf::from(raw);
+    if !path.is_absolute() {
+        return Err(AppError::Validation {
+            code: "validation.route_config_path_absolute_required",
+            message: "DeepSeek Harness config path must be absolute".to_string(),
+            details: Some(raw.to_string()),
+            recoverable: true,
+        });
+    }
+    Ok(RouteConfigPathContext {
+        deepseek_harness_config_path: Some(path),
+    })
 }
 
 fn resolve_home_dir() -> Result<PathBuf, AppError> {
@@ -1025,6 +1071,7 @@ mod tests {
                     .by_client_and_platform("codex", PlatformId::Codex)
                     .expect("Codex adapter"),
                 home: self.home.clone(),
+                path_context: RouteConfigPathContext::default(),
                 input: RouteConfigInput {
                     base_url: BASE_URL.to_string(),
                     route_proxy_key: ROUTE_PROXY_KEY.to_string(),
@@ -1046,6 +1093,7 @@ mod tests {
             ConfigWriteRequest {
                 adapter: Arc::new(ConflictOnCommitAdapter { inner: adapter }),
                 home: self.home.clone(),
+                path_context: RouteConfigPathContext::default(),
                 input: RouteConfigInput {
                     base_url: BASE_URL.to_string(),
                     route_proxy_key: ROUTE_PROXY_KEY.to_string(),
@@ -1677,6 +1725,7 @@ mod tests {
             .unwrap();
 
         ConfigWriteCoordinator::reconcile_prepared_for_home(
+            &fixture.paths,
             &fixture.pool,
             &fixture.runtime,
             &fixture.home,

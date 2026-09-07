@@ -381,7 +381,7 @@ pub async fn dispatch_command(
                 .map_err(to_error)?,
         ),
         "list_target_config_statuses" => to_value(
-            TargetService::list_config_statuses(&state.pool, &state.config_writes)
+            TargetService::list_config_statuses(&state.paths, &state.pool, &state.config_writes)
                 .await
                 .map_err(to_error)?,
         ),
@@ -389,9 +389,13 @@ pub async fn dispatch_command(
             let platform = required_string_arg(&args, "platform")?;
             let platform = PlatformId::parse(&platform).map_err(to_error)?;
             to_value(
-                TargetService::list_config_write_clients(&state.pool, platform)
-                    .await
-                    .map_err(to_error)?,
+                TargetService::list_config_write_clients_for_paths(
+                    &state.paths,
+                    &state.pool,
+                    platform,
+                )
+                .await
+                .map_err(to_error)?,
             )
         }
         "list_config_snapshots" => {
@@ -399,9 +403,13 @@ pub async fn dispatch_command(
             let limit = optional_i64_arg(&args, "limit")?
                 .unwrap_or(50)
                 .clamp(1, 200);
-            ConfigWriteCoordinator::reconcile_prepared(&state.pool, &state.config_writes)
-                .await
-                .map_err(to_error)?;
+            ConfigWriteCoordinator::reconcile_prepared(
+                &state.paths,
+                &state.pool,
+                &state.config_writes,
+            )
+            .await
+            .map_err(to_error)?;
             to_value(
                 ConfigSnapshotRepository::list(&state.pool, target_app_id.as_deref(), limit)
                     .await

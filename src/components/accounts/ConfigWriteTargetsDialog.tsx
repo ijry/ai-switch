@@ -209,13 +209,14 @@ type ConfigWriteTargetsDialogProps = {
   poolApiKey?: string | null;
   /** Current catalog mode for this platform; `undefined` until the pool loads. */
   modelMode?: RoutePoolModelMode;
+  deepSeekHarnessConfigPath?: string | null;
   /** A mode change is saving right now, so the picker is frozen. */
   modelModeSaving?: boolean;
   onModelModeChange?: (mode: RoutePoolModelMode) => void;
   loading: boolean;
   error: string | null;
   onClose: () => void;
-  onSubmit: (clientKeys: string[]) => void;
+  onSubmit: (clientKeys: string[], deepSeekHarnessConfigPath: string | null) => void;
 };
 
 export function ConfigWriteTargetsDialog({
@@ -230,6 +231,7 @@ export function ConfigWriteTargetsDialog({
   poolApiKey = null,
   modelMode = "aggregate",
   modelModeSaving = false,
+  deepSeekHarnessConfigPath = null,
   onModelModeChange,
   loading,
   error,
@@ -244,6 +246,9 @@ export function ConfigWriteTargetsDialog({
   // may only arrive after the capability query settles, and a platform that cannot
   // be written at all should open on the parameters it can actually use.
   const [tabOverride, setTabOverride] = useState<ConfigWriteTab | null>(null);
+  const [deepSeekHarnessPathOverride, setDeepSeekHarnessPathOverride] = useState<
+    string | null
+  >(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const builtinTabRef = useRef<HTMLButtonElement>(null);
   const manualTabRef = useRef<HTMLButtonElement>(null);
@@ -318,6 +323,11 @@ export function ConfigWriteTargetsDialog({
     (client) => client.restart_required && selected.includes(client.client_key),
   );
   const restartNames = restartClients.map((client) => client.display_name).join("、");
+  const deepSeekHarnessClient = clients.find(
+    (client) => client.client_key === "deepseek_harness",
+  );
+  const deepSeekHarnessPath =
+    deepSeekHarnessPathOverride ?? deepSeekHarnessConfigPath ?? "";
 
   const toggle = (clientKey: string) => {
     setOverride(
@@ -358,10 +368,12 @@ export function ConfigWriteTargetsDialog({
       return;
     }
     // Submit in list order so the result panel lists clients predictably.
+    const customDeepSeekHarnessPath = deepSeekHarnessPath.trim();
     onSubmit(
       clients
         .map((client) => client.client_key)
         .filter((clientKey) => selected.includes(clientKey)),
+      customDeepSeekHarnessPath ? customDeepSeekHarnessPath : null,
     );
   };
 
@@ -539,6 +551,26 @@ export function ConfigWriteTargetsDialog({
                   <p className="rounded-md border border-amber-200 bg-amber-50 px-3.5 py-3 text-xs leading-5 text-amber-950">
                     写入后需重启 {restartNames} 才生效（它不监听配置文件变化）。
                   </p>
+                ) : null}
+
+                {deepSeekHarnessClient && selected.includes("deepseek_harness") ? (
+                  <label className="grid gap-1.5 rounded-md bg-stone-50 px-3.5 py-3 text-xs text-stone-700">
+                    <span className="text-[11px] font-semibold text-stone-600">
+                      DSH 配置文件路径
+                    </span>
+                    <input
+                      aria-label="DSH 配置文件路径"
+                      className="h-8 rounded-md border border-stone-200 bg-white px-2.5 font-mono text-[11px] text-stone-800 outline-none placeholder:font-sans placeholder:text-stone-400 focus:border-blue-400"
+                      disabled={disabled || loading}
+                      onChange={(event) => setDeepSeekHarnessPathOverride(event.target.value)}
+                      placeholder="留空使用 ~/.dsh/settings.yaml"
+                      type="text"
+                      value={deepSeekHarnessPath}
+                    />
+                    <span className="text-[11px] leading-5 text-stone-500">
+                      需要绝对路径；留空时写回 DeepSeek Harness 默认位置。
+                    </span>
+                  </label>
                 ) : null}
               </div>
             ) : (

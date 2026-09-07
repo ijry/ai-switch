@@ -55,6 +55,12 @@ pub struct ClientModel {
     pub id: String,
     pub context_window: u32,
     pub max_output_tokens: u32,
+    pub reasoning_levels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RouteConfigPathContext {
+    pub deepseek_harness_config_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -137,6 +143,9 @@ pub trait TargetAdapter: Send + Sync {
     fn requires_client_models(&self) -> bool;
     fn platform(&self) -> PlatformId;
     fn resolve_path(&self, home: &Path) -> PathBuf;
+    fn resolve_path_with_context(&self, home: &Path, _paths: &RouteConfigPathContext) -> PathBuf {
+        self.resolve_path(home)
+    }
     fn render(
         &self,
         path: &Path,
@@ -777,11 +786,13 @@ api_key = "legacy-key"
                     id: "gpt-5.6-sol".to_string(),
                     context_window: 200_000,
                     max_output_tokens: 128_000,
+                    reasoning_levels: Vec::new(),
                 },
                 ClientModel {
                     id: "claude-sonnet-alias[1m]".to_string(),
                     context_window: 1_000_000,
                     max_output_tokens: 128_000,
+                    reasoning_levels: Vec::new(),
                 },
             ],
             ..input()

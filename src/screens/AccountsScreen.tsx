@@ -4264,9 +4264,30 @@ export function AccountsScreen({
     }
   }, [settingsQuery.data?.config_write_clients_json, activePlatform]);
   const writeConfigsMutation = useMutation({
-    mutationFn: async (clientKeys: string[]) => {
+    mutationFn: async ({
+      clientKeys,
+      deepSeekHarnessConfigPath,
+    }: {
+      clientKeys: string[];
+      deepSeekHarnessConfigPath: string | null;
+    }) => {
       if (!configWriteEnabled) {
         throw new Error(configWriteReason);
+      }
+      let settings = settingsQuery.data;
+      if (
+        deepSeekHarnessConfigPath !== (settings?.deepseek_harness_config_path ?? null) &&
+        (settings || deepSeekHarnessConfigPath !== null)
+      ) {
+        if (!settings) {
+          throw new Error("设置尚未加载，无法保存 DSH 配置路径。");
+        }
+        const pathUpdated = await saveSettings({
+          ...settings,
+          deepseek_harness_config_path: deepSeekHarnessConfigPath,
+        });
+        queryClient.setQueryData(["settings"], pathUpdated);
+        settings = pathUpdated;
       }
       const outcomes = await writeRouteProxyConfigs(
         routeProxyQuery.data?.base_url ?? null,
@@ -4275,7 +4296,6 @@ export function AccountsScreen({
       );
       // Remember the choice so the next write does not need re-picking, and so
       // the staleness nudge covers exactly the clients that were written.
-      const settings = settingsQuery.data;
       if (settings) {
         let existing: Record<string, string[]> = {};
         try {
@@ -4314,6 +4334,9 @@ export function AccountsScreen({
         setConfigWriteError(`以下客户端没有写入成功：${names.join("、")}`);
       }
       void queryClient.invalidateQueries({ queryKey: ["route-config-stale"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["config-write-clients", activePlatform],
+      });
     },
     onError: (error) => setConfigWriteError(formatConfigWriteError(error)),
   });
@@ -7858,13 +7881,18 @@ export function AccountsScreen({
           loading={writeConfigsMutation.isPending}
           modelMode={routePoolQuery.data?.model_mode ?? "aggregate"}
           modelModeSaving={setModelModeMutation.isPending}
+          deepSeekHarnessConfigPath={
+            settingsQuery.data?.deepseek_harness_config_path ?? null
+          }
           onClose={() => {
             if (!writeConfigsMutation.isPending) {
               setConfigWriteDialogOpen(false);
             }
           }}
           onModelModeChange={(mode) => setModelModeMutation.mutate(mode)}
-          onSubmit={(clientKeys) => writeConfigsMutation.mutate(clientKeys)}
+          onSubmit={(clientKeys, deepSeekHarnessConfigPath) =>
+            writeConfigsMutation.mutate({ clientKeys, deepSeekHarnessConfigPath })
+          }
           platform={activePlatform}
           platformLabel={platformLabels[activePlatform]}
           poolApiKey={routeProxyKeyQuery.data ?? null}

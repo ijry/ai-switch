@@ -23,7 +23,7 @@ pub async fn list_target_apps(state: State<'_, AppState>) -> Result<Vec<TargetAp
 pub async fn list_target_config_statuses(
     state: State<'_, AppState>,
 ) -> Result<Vec<TargetConfigStatus>, ApiError> {
-    TargetService::list_config_statuses(&state.pool, &state.config_writes)
+    TargetService::list_config_statuses(&state.paths, &state.pool, &state.config_writes)
         .await
         .map_err(ApiError::from)
 }
@@ -34,7 +34,7 @@ pub async fn list_config_write_clients(
     platform: String,
 ) -> Result<Vec<ConfigWriteClientStatus>, ApiError> {
     let platform = PlatformId::parse(&platform).map_err(ApiError::from)?;
-    TargetService::list_config_write_clients(&state.pool, platform)
+    TargetService::list_config_write_clients_for_paths(&state.paths, &state.pool, platform)
         .await
         .map_err(ApiError::from)
 }
@@ -46,6 +46,7 @@ pub async fn list_config_snapshots(
     limit: Option<i64>,
 ) -> Result<Vec<ConfigSnapshotSummary>, ApiError> {
     list_config_snapshots_inner(
+        &state.paths,
         &state.pool,
         &state.config_writes,
         target_app_id.as_deref(),
@@ -66,12 +67,13 @@ pub async fn rollback_config_snapshot(
 }
 
 async fn list_config_snapshots_inner(
+    paths: &AppPaths,
     pool: &SqlitePool,
     runtime: &ConfigWriteRuntimeState,
     target_app_id: Option<&str>,
     limit: Option<i64>,
 ) -> Result<Vec<ConfigSnapshotSummary>, crate::error::AppError> {
-    ConfigWriteCoordinator::reconcile_prepared(pool, runtime).await?;
+    ConfigWriteCoordinator::reconcile_prepared(paths, pool, runtime).await?;
     ConfigSnapshotRepository::list(pool, target_app_id, limit.unwrap_or(50).clamp(1, 200)).await
 }
 
@@ -98,7 +100,9 @@ async fn rollback_config_snapshot_for_home_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::route_config::{ClaudeEnvPlan, RouteConfigInput, TargetAdapterRegistry};
+    use crate::adapters::route_config::{
+        ClaudeEnvPlan, RouteConfigInput, RouteConfigPathContext, TargetAdapterRegistry,
+    };
     use crate::database::{create_memory_pool, run_migrations};
     use crate::paths::AppPaths;
     use crate::services::config_write_service::{
@@ -130,6 +134,7 @@ mod tests {
                     .by_client_and_platform("codex", PlatformId::Codex)
                     .unwrap(),
                 home: home.clone(),
+                path_context: RouteConfigPathContext::default(),
                 input: RouteConfigInput {
                     base_url: "http://127.0.0.1:43111".to_string(),
                     route_proxy_key: "sk-ai-switch-test".to_string(),
@@ -142,7 +147,7 @@ mod tests {
         .await
         .unwrap();
 
-        let snapshots = list_config_snapshots_inner(&pool, &runtime, None, Some(50))
+        let snapshots = list_config_snapshots_inner(&paths, &pool, &runtime, None, Some(50))
             .await
             .unwrap();
         let serialized = serde_json::to_value(&snapshots).unwrap();
