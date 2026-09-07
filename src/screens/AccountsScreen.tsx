@@ -6726,22 +6726,14 @@ export function AccountsScreen({
                     />
                   );
                   const nameBlock = (
-                    <>
+                    <div
+                      className={`flex min-w-0 items-center gap-1 ${
+                        cardLayout ? "flex-1" : "basis-64"
+                      }`}
+                      data-testid={`account-name-block-${credential.id}`}
+                    >
                         <p
-                          className={`truncate text-[13px] font-semibold text-stone-950 ${
-                            // A card lays the name out in a nowrap row, so it has to be
-                            // allowed to shrink; the list wraps its badges instead.
-                            //
-                            // `basis-64` aligns the badges that follow it into a
-                            // column, but it must stay shrinkable: the grid track
-                            // holding it is `minmax(0,1fr)`, which goes below 16rem
-                            // once the window approaches the 320px minimum. With
-                            // `shrink-0` the name overflowed into the action column
-                            // and, because the scroll container hides overflow-x,
-                            // did so with neither an ellipsis nor a way to scroll to
-                            // it — the text simply ran under the buttons.
-                            cardLayout ? "min-w-0 flex-1" : "min-w-0 basis-64"
-                          }`}
+                          className="min-w-0 flex-1 truncate text-[13px] font-semibold text-stone-950"
                           title={`P${credential.route_priority}-${credential.display_name}`}
                         >
                           {/* The prefix doubles as the 路由优先级 quick edit. Chrome
@@ -6772,7 +6764,7 @@ export function AccountsScreen({
                             aria-label={`打开 ${baseUrlLink.host}`}
                             // Hidden until the row is hovered or the button itself is
                             // focused: keyboard users never lose access to it.
-                            className="-ml-1 shrink-0 text-stone-400 opacity-0 motion-control hover:text-blue-600 focus-visible:opacity-100 group-hover/name:opacity-100"
+                            className="shrink-0 text-stone-400 opacity-0 motion-control hover:text-blue-600 focus-visible:opacity-100 group-hover/name:opacity-100"
                             onClick={(event) => {
                               event.stopPropagation();
                               void openExternal(baseUrlLink.href);
@@ -6783,7 +6775,7 @@ export function AccountsScreen({
                             <ExternalLink aria-hidden="true" className="h-3.5 w-3.5" />
                           </button>
                         )}
-                    </>
+                    </div>
                   );
                   // A row keeps both live counters up in the badges: 并发 goes last,
                   // after the balance, where a number that changes with every request

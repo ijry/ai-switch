@@ -809,6 +809,10 @@ describe("AccountsScreen", () => {
       "group-hover/name:opacity-100",
       "focus-visible:opacity-100",
     );
+    // The hover-only link belongs to the same fixed-width name column, so API
+    // and official credentials leave their badges at the same horizontal offset.
+    expect(openLinkButton.parentElement).toHaveClass("basis-64");
+    expect(openLinkButton.previousElementSibling).toHaveClass("min-w-0", "flex-1", "truncate");
     // The desktop webview swallows `window.open`, so the link has to go through
     // the opener adapter instead.
     await userEvent.click(openLinkButton);
