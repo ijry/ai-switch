@@ -131,7 +131,7 @@ tag 去掉 `v` 前缀后的版本号，必须与 `package.json` 和 `src-tauri/t
 4. 启动服务
 5. 可选：启用安全网络（Tailscale），选择访问模式（仅私网 / 公网访问），再点**使用 OAuth 登录**
 
-默认绑定 `127.0.0.1:19527`。绑定到 `0.0.0.0` 必须显式设置。
+默认绑定 `127.0.0.1:19527`。未启用 TLS 时，`0.0.0.0` 等非环回地址会拒绝启动；需要绑定所有网卡时，请先启用 Web 服务 TLS。
 
 私网访问时，桌面端通过 Tailscale `ListenTLS` 发布 `https://<magicdns-名称>:<端口>`。请先在 Tailscale 管理后台启用 MagicDNS 和 HTTPS 证书；不要把 `100.x.y.z` 这个 IP 填成移动端 URL，因为证书是按 MagicDNS 名称签发的。手机上必须已经用官方 Tailscale App 登录同一个 tailnet。uni-app 客户端本身不内嵌 Tailscale SDK。
 
