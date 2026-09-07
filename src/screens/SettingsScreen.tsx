@@ -17,6 +17,12 @@ import { NotificationSettings } from "../components/settings/notification-settin
 import { WebServiceSettings } from "../components/settings/web-service-settings";
 import { useState } from "react";
 import { MotionPresence } from "../components/motion/MotionPrimitives";
+import {
+  agentPlatforms,
+  createDefaultAgentVisibility,
+  type AgentPlatform,
+  type AgentVisibility,
+} from "../lib/agentVisibility";
 
 type FeatureEntry = {
   screen?: string;
@@ -72,12 +78,29 @@ const featureEntries: FeatureEntry[] = [
 
 type SettingsScreenProps = {
   onOpenFeature?: (screen: string) => void;
+  agentVisibility?: AgentVisibility;
+  onAgentVisibilityChange?: (platform: AgentPlatform, visible: boolean) => void;
 };
 
-export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
+const agentLabelKeys = {
+  codex: "nav.agent.codex",
+  claude: "nav.agent.claude",
+  grok: "nav.agent.grok",
+  gemini: "nav.agent.gemini",
+  opencode: "nav.agent.opencode",
+  openclaw: "nav.agent.openclaw",
+  hermes: "nav.agent.hermes",
+} as const;
+
+export function SettingsScreen({
+  onOpenFeature,
+  agentVisibility,
+  onAgentVisibilityChange,
+}: SettingsScreenProps) {
   const queryClient = useQueryClient();
   const { language, setLanguage, t } = useI18n();
   const [activeSection, setActiveSection] = useState<"webService" | "https" | "notification">("webService");
+  const [localAgentVisibility, setLocalAgentVisibility] = useState(createDefaultAgentVisibility);
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const saveMutation = useMutation({
     mutationFn: saveSettings,
@@ -96,6 +119,14 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
   }
 
   const settings = settingsQuery.data;
+  const effectiveAgentVisibility = agentVisibility ?? localAgentVisibility;
+  const handleAgentVisibilityChange = (platform: AgentPlatform, visible: boolean) => {
+    if (onAgentVisibilityChange) {
+      onAgentVisibilityChange(platform, visible);
+      return;
+    }
+    setLocalAgentVisibility((current) => ({ ...current, [platform]: visible }));
+  };
   const handleLanguageChange = (nextLanguage: Language) => {
     setLanguage(nextLanguage);
     saveMutation.mutate({ ...settings, language: nextLanguage });
@@ -187,6 +218,29 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
 
       <div className="space-y-3 rounded-2xl border border-stone-200 bg-white/82 p-4 shadow-sm">
         <h2 className="text-[15px] font-semibold text-stone-950">{t("settings.app.title")}</h2>
+        <div className="space-y-2 rounded-xl border border-stone-200 bg-stone-50/70 p-3">
+          <div>
+            <h3 className="text-[13px] font-semibold text-stone-800">{t("settings.agentVisibility.title")}</h3>
+            <p className="mt-1 text-[11px] font-medium text-stone-500">{t("settings.agentVisibility.subtitle")}</p>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {agentPlatforms.map((platform) => (
+              <label
+                className="flex items-center gap-2 rounded-lg border border-stone-200 bg-white px-3 py-2 text-[12px] font-semibold text-stone-700"
+                key={platform}
+              >
+                <input
+                  aria-label={t("settings.agentVisibility.show", { agent: t(agentLabelKeys[platform]) })}
+                  checked={effectiveAgentVisibility[platform]}
+                  className="accent-blue-600"
+                  onChange={(event) => handleAgentVisibilityChange(platform, event.target.checked)}
+                  type="checkbox"
+                />
+                <span>{t("settings.agentVisibility.show", { agent: t(agentLabelKeys[platform]) })}</span>
+              </label>
+            ))}
+          </div>
+        </div>
         <p className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] text-stone-600">
           {t("settings.dataDir", { path: settings.data_dir })}
         </p>

@@ -64,6 +64,54 @@ describe("AppLayout", () => {
     expect(onNavigate).toHaveBeenCalledWith("About");
   });
 
+  it("hides disabled agents from the sidebar", () => {
+    render(
+      <I18nProvider initialLanguage="zh-CN">
+        <AppLayout
+          activeScreen="Codex"
+          agentVisibility={{
+            codex: true,
+            claude: false,
+            grok: true,
+            gemini: true,
+            opencode: true,
+            openclaw: true,
+            hermes: true,
+          }}
+          onNavigate={vi.fn()}
+          onToggleSidebar={vi.fn()}
+          sidebarCollapsed={false}
+        >
+          <div>content</div>
+        </AppLayout>
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole("button", { name: "Codex" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Claude" })).not.toBeInTheDocument();
+  });
+
+  it("toggles and persists agent visibility from the sidebar menu", async () => {
+    render(
+      <I18nProvider initialLanguage="zh-CN">
+        <AppLayout
+          activeScreen="Codex"
+          onNavigate={vi.fn()}
+          onToggleSidebar={vi.fn()}
+          sidebarCollapsed={false}
+        >
+          <div>content</div>
+        </AppLayout>
+      </I18nProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "智能体显示选项" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "显示 Claude" }));
+
+    expect(screen.queryByRole("button", { name: "Claude" })).not.toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem("ai-switch.agent-visibility") ?? "{}").claude).toBe(false);
+  });
+
   it("highlights About on its own instead of the Settings area", () => {
     render(
       <I18nProvider initialLanguage="zh-CN">

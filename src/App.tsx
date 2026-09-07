@@ -10,6 +10,12 @@ import {
   platformByAgentScreen,
   type AgentPlatform,
 } from "./components/layout/AppLayout";
+import {
+  readAgentVisibility,
+  resolveVisibleAgentScreen,
+  writeAgentVisibility,
+  type AgentVisibility,
+} from "./lib/agentVisibility";
 import { WebAuthGate } from "./components/auth/WebAuthGate";
 import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 import { I18nProvider } from "./lib/i18n";
@@ -82,6 +88,7 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [webReady, setWebReady] = useState(canSkipWebAuthGate);
   const [poolScopeFocus, setPoolScopeFocus] = useState<PoolScopeFocus | null>(null);
+  const [agentVisibility, setAgentVisibility] = useState<AgentVisibility>(readAgentVisibility);
   // Vibe keeps live terminals; once it has been opened we keep it mounted and only
   // hide it so switching back and forth never drops running sessions or scrollback.
   const [vibeMounted, setVibeMounted] = useState(false);
@@ -91,6 +98,18 @@ export function App() {
   useEffect(() => {
     setWebReady(canSkipWebAuthGate());
   }, []);
+
+  useEffect(() => {
+    writeAgentVisibility(agentVisibility);
+  }, [agentVisibility]);
+
+  useEffect(() => {
+    const nextScreen = resolveVisibleAgentScreen(screen, agentVisibility);
+    if (nextScreen === screen) return;
+    screenRef.current = nextScreen;
+    setNavigationDirection("neutral");
+    setScreen(nextScreen);
+  }, [agentVisibility, screen]);
 
   useEffect(() => {
     if (vibeActive) {
@@ -178,6 +197,8 @@ export function App() {
             {!vibeActive && (
               <AppLayout
                 activeScreen={screen}
+                agentVisibility={agentVisibility}
+                onAgentVisibilityChange={setAgentVisibility}
                 onNavigate={navigate}
                 onOpenVibe={() => navigate("Vibe")}
                 onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
@@ -203,7 +224,15 @@ export function App() {
                 {screen === "OCR" && <OcrScreen />}
                 {screen === "Sessions" && <SessionsScreen initialPlatform={sessionPlatform} />}
                 {screen === "Updates" && <UpdatesScreen />}
-                {screen === "Settings" && <SettingsScreen onOpenFeature={navigate} />}
+                {screen === "Settings" && (
+                  <SettingsScreen
+                    agentVisibility={agentVisibility}
+                    onAgentVisibilityChange={(platform, visible) =>
+                      setAgentVisibility((current) => ({ ...current, [platform]: visible }))
+                    }
+                    onOpenFeature={navigate}
+                  />
+                )}
                 {screen === "MCP" && <McpScreen />}
                 {screen === "Skills" && <SkillsScreen />}
                 {screen === "About" && <AboutScreen />}

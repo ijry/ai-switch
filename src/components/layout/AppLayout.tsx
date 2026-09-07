@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { motion } from "motion/react";
 import {
+  ChevronDown,
   Info,
   Menu,
   PlugZap,
@@ -11,47 +12,23 @@ import {
 } from "lucide-react";
 import { AiSwitchLogo } from "../brand/AiSwitchLogo";
 import { AgentIcon, type AgentIconPlatform } from "../brand/AgentIcon";
+import {
+  createDefaultAgentVisibility,
+  readAgentVisibility,
+  writeAgentVisibility,
+  type AgentPlatform,
+  type AgentVisibility,
+} from "../../lib/agentVisibility";
 import { supportedLanguages, useI18n, type Language } from "../../lib/i18n";
 import { useDragResize } from "../../lib/useDragResize";
 
-export type AgentPlatform =
-  | "codex"
-  | "claude"
-  | "grok"
-  | "gemini"
-  | "opencode"
-  | "openclaw"
-  | "hermes";
-
-export const agentPlatforms: AgentPlatform[] = [
-  "codex",
-  "claude",
-  "grok",
-  "gemini",
-  "opencode",
-  "openclaw",
-  "hermes",
-];
-
-export const agentScreenByPlatform: Record<AgentPlatform, string> = {
-  codex: "Codex",
-  claude: "Claude",
-  grok: "Grok",
-  gemini: "Gemini",
-  opencode: "OpenCode",
-  openclaw: "OpenClaw",
-  hermes: "Hermes",
-};
-
-export const platformByAgentScreen: Record<string, AgentPlatform> = {
-  Codex: "codex",
-  Claude: "claude",
-  Grok: "grok",
-  Gemini: "gemini",
-  OpenCode: "opencode",
-  OpenClaw: "openclaw",
-  Hermes: "hermes",
-};
+export {
+  agentPlatforms,
+  agentScreenByPlatform,
+  platformByAgentScreen,
+  type AgentPlatform,
+  type AgentVisibility,
+} from "../../lib/agentVisibility";
 
 export const settingsFeatureScreens = [
   "Sessions",
@@ -95,6 +72,8 @@ type AppLayoutProps = {
   onLanguageChange?: (language: Language) => void;
   languageSaving?: boolean;
   sidebarCollapsed: boolean;
+  agentVisibility?: AgentVisibility;
+  onAgentVisibilityChange?: (visibility: AgentVisibility) => void;
 };
 
 type AgentNavItem = {
@@ -207,6 +186,8 @@ export function AppLayout({
   onLanguageChange,
   languageSaving = false,
   sidebarCollapsed,
+  agentVisibility,
+  onAgentVisibilityChange,
 }: AppLayoutProps) {
   const { language, setLanguage, t } = useI18n();
   const appShellRef = useRef<HTMLDivElement | null>(null);
@@ -215,8 +196,12 @@ export function AppLayout({
     () => typeof window !== "undefined" && window.innerWidth < SIDEBAR_DRAWER_BREAKPOINT,
   );
   const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
+  const [localAgentVisibility, setLocalAgentVisibility] = useState(readAgentVisibility);
+  const [agentVisibilityOpen, setAgentVisibilityOpen] = useState(false);
   const settingsActive = isSettingsArea(activeScreen);
   const accountWorkspaceActive = agentItems.some((item) => item.screen === activeScreen);
+  const effectiveAgentVisibility = agentVisibility ?? localAgentVisibility;
+  const visibleAgentItems = agentItems.filter((item) => effectiveAgentVisibility[item.platform]);
   const sidebarDrawerVisible = narrowLayout && sidebarDrawerOpen;
   const sidebarContentCollapsed = narrowLayout ? !sidebarDrawerOpen : sidebarCollapsed;
   const desktopGridClass = sidebarCollapsed
@@ -289,6 +274,30 @@ export function AppLayout({
     setSidebarDrawerOpen(false);
     onNavigate(nextScreen);
   };
+
+  const handleAgentVisibilityChange = (platform: AgentPlatform, visible: boolean) => {
+    const nextVisibility = { ...effectiveAgentVisibility, [platform]: visible };
+    if (onAgentVisibilityChange) {
+      onAgentVisibilityChange(nextVisibility);
+    } else {
+      setLocalAgentVisibility(nextVisibility);
+    }
+  };
+
+  const restoreAgentVisibility = () => {
+    const nextVisibility = Object.fromEntries(
+      agentItems.map((item) => [item.platform, true]),
+    ) as AgentVisibility;
+    if (onAgentVisibilityChange) {
+      onAgentVisibilityChange(nextVisibility);
+    } else {
+      setLocalAgentVisibility(nextVisibility);
+    }
+  };
+
+  useEffect(() => {
+    writeAgentVisibility(effectiveAgentVisibility);
+  }, [effectiveAgentVisibility]);
 
   const handleOpenVibe = () => {
     setSidebarDrawerOpen(false);
@@ -401,15 +410,49 @@ export function AppLayout({
 
             <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-0.5">
               <section>
-                <p
-                  className={`px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-stone-400 ${
-                    sidebarContentCollapsed ? "hidden" : ""
-                  }`}
-                >
-                  {t("layout.agents")}
-                </p>
+                <div className={`flex items-center justify-between px-2 pb-1 ${sidebarContentCollapsed ? "hidden" : ""}`}>
+                  <p className={`text-[11px] font-semibold uppercase tracking-wide text-stone-400 ${sidebarContentCollapsed ? "hidden" : ""}`}>
+                    {t("layout.agents")}
+                  </p>
+                  <div className="relative">
+                    <button
+                      aria-expanded={agentVisibilityOpen}
+                      aria-label={t("layout.agentVisibility")}
+                      className="inline-flex items-center gap-0.5 rounded p-0.5 text-stone-400 hover:bg-white/70 hover:text-stone-700"
+                      onClick={() => setAgentVisibilityOpen((current) => !current)}
+                      title={t("layout.agentVisibility")}
+                      type="button"
+                    >
+                      <Settings2 aria-hidden="true" className="h-3.5 w-3.5" />
+                      <ChevronDown aria-hidden="true" className={`h-3 w-3 motion-control ${agentVisibilityOpen ? "rotate-180" : ""}`} />
+                    </button>
+                    {agentVisibilityOpen ? (
+                      <div className="absolute right-0 top-full z-50 mt-1 w-48 rounded-lg border border-stone-200 bg-white p-2 shadow-lg">
+                        {agentItems.map((item) => (
+                          <label className="flex items-center gap-2 px-2 py-1.5 text-[12px] text-stone-700" key={item.platform}>
+                            <input
+                              aria-label={t("settings.agentVisibility.show", { agent: t(item.labelKey) })}
+                              checked={effectiveAgentVisibility[item.platform]}
+                              className="accent-blue-600"
+                              onChange={(event) => handleAgentVisibilityChange(item.platform, event.target.checked)}
+                              type="checkbox"
+                            />
+                            {t(item.labelKey)}
+                          </label>
+                        ))}
+                        <button
+                          className="mt-1 w-full border-t border-stone-100 px-2 pt-2 text-left text-[11px] font-semibold text-blue-700 hover:text-blue-900"
+                          onClick={restoreAgentVisibility}
+                          type="button"
+                        >
+                          {t("layout.restoreAgentVisibility")}
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
                 <div className="space-y-1">
-                  {agentItems.map((item) => (
+                  {visibleAgentItems.map((item) => (
                     <NavButton
                       active={activeScreen === item.screen}
                       collapsed={sidebarContentCollapsed}
