@@ -7170,7 +7170,7 @@ export function AccountsScreen({
                             selectedAccountIds.has(credential.id)
                               ? "ring-2 ring-amber-300"
                               : ""
-                          }`}
+                          } ${actionMenuOpen ? "relative z-50" : ""}`}
                           data-testid={`account-card-${credential.id}`}
                           ref={accountDragSort.registerItem(credential.id)}
                         >

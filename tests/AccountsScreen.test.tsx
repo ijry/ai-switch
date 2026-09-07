@@ -1412,6 +1412,24 @@ describe("AccountsScreen", () => {
     expect(screen.getByTestId("account-card-cred-api-1")).not.toHaveClass("bg-red-50/50");
   });
 
+  it("raises a card above following cards while its action menu is open", async () => {
+    renderScreen();
+
+    await screen.findByText("Team Account");
+    await userEvent.click(screen.getByRole("button", { name: "卡片模式" }));
+
+    const card = screen.getByTestId("account-card-cred-official-1");
+    expect(card).not.toHaveClass("z-50");
+
+    await userEvent.click(within(card).getByLabelText("更多操作 Team Account"));
+
+    expect(card).toHaveClass("relative", "z-50");
+
+    await userEvent.keyboard("{Escape}");
+
+    expect(card).not.toHaveClass("z-50");
+  });
+
   it("keeps every account detail on a card and folds the row actions into its menu", async () => {
     renderScreen();
 
