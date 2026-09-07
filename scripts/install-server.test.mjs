@@ -53,3 +53,19 @@ test("only the Linux server archive receives installer and service unit", () => 
   const packageJson = fs.readFileSync(new URL("../package.json", import.meta.url), "utf8");
   assert.match(packageJson, /release:manifest:test[^\n]*install-server\.test\.mjs/);
 });
+
+test("standalone server documentation does not require WebKitGTK", () => {
+  const zhDoc = fs.readFileSync(
+    new URL("../docs-site/docs/deploy/standalone-server.md", import.meta.url),
+    "utf8",
+  );
+  const enDoc = fs.readFileSync(
+    new URL("../docs-site/docs/en/deploy/standalone-server.md", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(zhDoc, /不依赖 WebKitGTK/);
+  assert.doesNotMatch(zhDoc, /仍依赖 WebKitGTK/);
+  assert.match(enDoc, /does not require WebKitGTK/);
+  assert.doesNotMatch(enDoc, /still depends on the WebKitGTK/);
+});
