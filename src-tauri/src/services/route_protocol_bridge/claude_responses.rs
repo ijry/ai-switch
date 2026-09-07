@@ -737,6 +737,32 @@ mod tests {
     use super::{anthropic_request_to_responses, responses_response_to_anthropic};
     use serde_json::{json, Value};
 
+    /// Inline system messages carry instruction-level context and must become
+    /// Responses `instructions`, not an unsupported message role.
+    #[test]
+    fn accepts_inline_system_message() {
+        let body = json!({
+            "model": "gpt-5.5",
+            "system": "base instruction",
+            "messages": [
+                {"role": "system", "content": [{"type": "text", "text": "system reminder"}]},
+                {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+            ]
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &anthropic_request_to_responses(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            converted["instructions"],
+            "base instruction\n\nsystem reminder"
+        );
+        assert_eq!(converted["input"].as_array().unwrap().len(), 1);
+        assert_eq!(converted["input"][0]["role"], "user");
+    }
+
     #[test]
     fn converts_anthropic_request_to_responses() {
         let body = json!({

@@ -815,6 +815,30 @@ mod tests {
     use super::{anthropic_request_to_chat, chat_response_to_anthropic};
     use serde_json::{json, Value};
 
+    /// Claude Code can emit inline `role: "system"` entries inside `messages[]`
+    /// (e.g. mid-conversation system reminders). The Chat bridge must accept
+    /// them instead of failing the whole turn with an unsupported-role error.
+    #[test]
+    fn accepts_inline_system_message() {
+        let body = json!({
+            "model": "gpt-5.5",
+            "messages": [
+                {"role": "system", "content": [{"type": "text", "text": "be terse"}]},
+                {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+            ]
+        });
+
+        let converted: Value = serde_json::from_slice(
+            &anthropic_request_to_chat(&serde_json::to_vec(&body).unwrap()).unwrap(),
+        )
+        .unwrap();
+        let messages = converted["messages"].as_array().unwrap();
+
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "be terse");
+        assert_eq!(messages[1]["role"], "user");
+    }
+
     #[test]
     fn converts_anthropic_request_to_chat() {
         let body = json!({
