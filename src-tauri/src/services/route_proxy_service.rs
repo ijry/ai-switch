@@ -4282,6 +4282,10 @@ pub struct OfficialQuotaSnapshot {
     pub quota_remaining: Option<i64>,
     pub quota_limit: Option<i64>,
     pub quota_used: Option<i64>,
+    pub credits_has_credits: Option<bool>,
+    pub credits_unlimited: Option<bool>,
+    pub credits_balance: Option<String>,
+    pub rate_limit_reset_credits_available_count: Option<i64>,
 }
 
 fn config_remain_positive(config: &Value, keys: &[&str]) -> bool {
@@ -4342,6 +4346,10 @@ pub fn parse_official_quota_snapshot(response_body: &str) -> Option<OfficialQuot
         quota_remaining: Some(0),
         quota_limit,
         quota_used,
+        credits_has_credits: None,
+        credits_unlimited: None,
+        credits_balance: None,
+        rate_limit_reset_credits_available_count: None,
     })
 }
 
@@ -4420,6 +4428,21 @@ pub fn apply_official_quota_snapshot(
     }
     if let Some(quota_used) = snapshot.quota_used {
         object.insert("quota_used".to_string(), json!(quota_used));
+    }
+    if let Some(has_credits) = snapshot.credits_has_credits {
+        object.insert("credits_has_credits".to_string(), json!(has_credits));
+    }
+    if let Some(unlimited) = snapshot.credits_unlimited {
+        object.insert("credits_unlimited".to_string(), json!(unlimited));
+    }
+    if let Some(balance) = &snapshot.credits_balance {
+        object.insert("credits_balance".to_string(), json!(balance));
+    }
+    if let Some(available_count) = snapshot.rate_limit_reset_credits_available_count {
+        object.insert(
+            "rate_limit_reset_credits_available_count".to_string(),
+            json!(available_count),
+        );
     }
     let now = Utc::now().to_rfc3339();
     object.insert("quota_updated_at".to_string(), json!(now.clone()));
@@ -11382,6 +11405,35 @@ data: [DONE]\n\n";
         assert!(next.contains("\"quota_limit\":1000000"));
         assert!(next.contains("quota_updated_at"));
         assert!(next.contains("reset_primary"));
+    }
+
+    #[test]
+    fn apply_official_quota_snapshot_persists_credit_metadata() {
+        let snapshot = OfficialQuotaSnapshot {
+            subscription_type: Some("k12".to_string()),
+            primary_remain: Some(75),
+            weekly_remain: None,
+            reset_primary: Some("2026-09-07T12:00:00Z".to_string()),
+            reset_weekly: None,
+            quota_remaining: Some(75),
+            quota_limit: None,
+            quota_used: None,
+            credits_has_credits: Some(true),
+            credits_unlimited: Some(false),
+            credits_balance: Some("12.34".to_string()),
+            rate_limit_reset_credits_available_count: Some(0),
+        };
+
+        let next =
+            apply_official_quota_snapshot(r#"{"existing":"value"}"#, &snapshot).expect("config");
+        let config: serde_json::Value = serde_json::from_str(&next).expect("json");
+        assert_eq!(config["credits_has_credits"], serde_json::json!(true));
+        assert_eq!(config["credits_unlimited"], serde_json::json!(false));
+        assert_eq!(config["credits_balance"], serde_json::json!("12.34"));
+        assert_eq!(
+            config["rate_limit_reset_credits_available_count"],
+            serde_json::json!(0)
+        );
     }
 
     #[test]

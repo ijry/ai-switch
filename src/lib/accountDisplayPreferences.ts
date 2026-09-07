@@ -3,6 +3,7 @@ export type AccountDisplayPreferences = {
   showModelList: boolean;
   showRequestStats: boolean;
   showLatencyStats: boolean;
+  showResetTime: boolean;
 };
 
 export const ACCOUNT_DISPLAY_PREFERENCES_STORAGE_KEY = "ai-switch.account-display-preferences";
@@ -12,6 +13,7 @@ export const DEFAULT_ACCOUNT_DISPLAY_PREFERENCES: AccountDisplayPreferences = {
   showModelList: true,
   showRequestStats: true,
   showLatencyStats: false,
+  showResetTime: true,
 };
 
 /**
@@ -37,6 +39,7 @@ function readPreferences(value: unknown): AccountDisplayPreferences {
     showModelList: read("showModelList"),
     showRequestStats: read("showRequestStats"),
     showLatencyStats: read("showLatencyStats"),
+    showResetTime: read("showResetTime"),
   };
 }
 

@@ -974,6 +974,39 @@ function officialWeeklyRemain(credential: RouteCredential): number | null {
   return numberFromRecord(config, "weekly_remain");
 }
 
+function officialCredits(credential: RouteCredential): {
+  hasCredits: boolean | null;
+  unlimited: boolean | null;
+  balance: string | null;
+  resetCardCount: number | null;
+} | null {
+  if (credential.kind !== "official") {
+    return null;
+  }
+  const config = parseJsonObject(credential.config_json);
+  const hasCredits =
+    typeof config.credits_has_credits === "boolean" ? config.credits_has_credits : null;
+  const unlimited = typeof config.credits_unlimited === "boolean" ? config.credits_unlimited : null;
+  const rawBalance = config.credits_balance;
+  const balance =
+    typeof rawBalance === "string" && rawBalance.trim()
+      ? rawBalance.trim()
+      : typeof rawBalance === "number" && Number.isFinite(rawBalance)
+        ? String(rawBalance)
+        : null;
+  const rawCount = config.rate_limit_reset_credits_available_count;
+  const resetCardCount =
+    typeof rawCount === "number" && Number.isInteger(rawCount) && rawCount >= 0
+      ? rawCount
+      : typeof rawCount === "string" && /^\d+$/.test(rawCount.trim())
+        ? Number(rawCount.trim())
+        : null;
+  if (hasCredits === null && unlimited === null && balance === null && resetCardCount === null) {
+    return null;
+  }
+  return { hasCredits, unlimited, balance, resetCardCount };
+}
+
 function officialLatestResetLabel(credential: RouteCredential): string | null {
   if (credential.kind !== "official") {
     return null;
@@ -2828,6 +2861,7 @@ export function AccountsScreen({
   const [testingAccountId, setTestingAccountId] = useState<string | null>(null);
   const [refreshingQuotaId, setRefreshingQuotaId] = useState<string | null>(null);
   const [quotaRefreshMessage, setQuotaRefreshMessage] = useState<string | null>(null);
+  const quotaRefreshMessageTimerRef = useRef<number | null>(null);
   const [refreshingRelayBalanceId, setRefreshingRelayBalanceId] = useState<string | null>(null);
   const [relayBalanceMessage, setRelayBalanceMessage] = useState<string | null>(null);
   const [relayBalanceStatusById, setRelayBalanceStatusById] = useState<
@@ -4048,10 +4082,17 @@ export function AccountsScreen({
       await invalidateAccountData();
       const updated = outcomes.filter((item) => item.updated).length;
       const failed = outcomes.filter((item) => item.source === 'error').length;
+      const codexSource = outcomes.find(
+        (item) => item.updated && item.source === "codex.default_wham_usage",
+      )?.source;
+      if (codexSource) {
+        setQuotaRefreshMessage(`已更新额度（${codexSource}）`);
+        return;
+      }
       const parts = [`官方账号 ${outcomes.length} 个`];
       if (updated) parts.push(`更新 ${updated}`);
       if (failed) parts.push(`失败 ${failed}`);
-      setQuotaRefreshMessage(parts.join(' · '));
+      setQuotaRefreshMessage(parts.join(" · "));
     },
     onError: (error) => {
       setQuotaRefreshMessage(formatApiError(error, '批量刷新额度失败'));
@@ -4060,6 +4101,29 @@ export function AccountsScreen({
       setRefreshingQuotaId(null);
     },
   });
+
+  useEffect(() => {
+    if (!quotaRefreshMessage?.startsWith("已更新额度（")) {
+      if (quotaRefreshMessageTimerRef.current !== null) {
+        window.clearTimeout(quotaRefreshMessageTimerRef.current);
+      }
+      quotaRefreshMessageTimerRef.current = null;
+      return;
+    }
+    if (quotaRefreshMessageTimerRef.current !== null) {
+      window.clearTimeout(quotaRefreshMessageTimerRef.current);
+    }
+    quotaRefreshMessageTimerRef.current = window.setTimeout(() => {
+      quotaRefreshMessageTimerRef.current = null;
+      setQuotaRefreshMessage(null);
+    }, 3000);
+    return () => {
+      if (quotaRefreshMessageTimerRef.current !== null) {
+        window.clearTimeout(quotaRefreshMessageTimerRef.current);
+      }
+      quotaRefreshMessageTimerRef.current = null;
+    };
+  }, [quotaRefreshMessage]);
 
   const relayBalanceMutation = useMutation({
     mutationFn: (id: string) => refreshRouteCredentialRelayBalance(id),
@@ -6136,6 +6200,7 @@ export function AccountsScreen({
                         ["showModelList", "模型列表"],
                         ["showRequestStats", "请求统计"],
                         ["showLatencyStats", "请求耗时"],
+                        ["showResetTime", "重置时间"],
                       ] as const
                     ).map(([key, label]) => (
                       <label
@@ -6371,6 +6436,7 @@ export function AccountsScreen({
                   const primaryRemain = officialPrimaryRemain(credential);
                   const weeklyRemain = officialWeeklyRemain(credential);
                   const latestReset = officialLatestResetLabel(credential);
+                  const credits = officialCredits(credential);
                   const retryLabel = credentialRetryLabel(credential);
                   const cooldownState = credentialCooldownState(credential, cooldownNow);
                   const failureTag = transientFailureTag(
@@ -6748,6 +6814,53 @@ export function AccountsScreen({
                         耗时 {formatRequestDuration(credential.last_duration_ms)}
                       </span>
                     ) : null;
+                  const resetTimeTag = accountDisplayPreferences.showResetTime && latestReset ? (
+                    <span
+                      className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700"
+                      data-testid={`account-reset-time-${credential.id}`}
+                      title="最近重置时间"
+                    >
+                      重置 {latestReset}
+                    </span>
+                  ) : null;
+                  const creditsTags = credits ? (
+                    <>
+                      {credits.balance !== null ? (
+                        <span
+                          className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800"
+                          data-testid={`account-credits-${credential.id}`}
+                          title="充值额度"
+                        >
+                          充值额度 {credits.balance}
+                        </span>
+                      ) : credits.unlimited === true ? (
+                        <span
+                          className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800"
+                          data-testid={`account-credits-${credential.id}`}
+                          title="充值额度"
+                        >
+                          充值额度 无限
+                        </span>
+                      ) : credits.hasCredits === true ? (
+                        <span
+                          className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800"
+                          data-testid={`account-credits-${credential.id}`}
+                          title="充值额度"
+                        >
+                          充值额度 可用
+                        </span>
+                      ) : null}
+                      {credits.resetCardCount !== null ? (
+                        <span
+                          className="rounded-full bg-cyan-50 px-2 py-0.5 text-[11px] font-semibold text-cyan-800"
+                          data-testid={`account-reset-credits-${credential.id}`}
+                          title="额度卡次数"
+                        >
+                          额度卡 {credits.resetCardCount} 次
+                        </span>
+                      ) : null}
+                    </>
+                  ) : null;
                   const badges = (
                     <>
                         {accountDisplayPreferences.showAccountType ? (
@@ -6827,9 +6940,9 @@ export function AccountsScreen({
                         {primaryRemain != null && (
                           <span
                             className="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-800"
-                            title="主额度剩余"
+                            title="5小时额度剩余"
                           >
-                            主额度 {primaryRemain}
+                            5H额度 {primaryRemain}
                           </span>
                         )}
                         {weeklyRemain != null && (
@@ -6840,14 +6953,7 @@ export function AccountsScreen({
                             周额度 {weeklyRemain}
                           </span>
                         )}
-                        {latestReset && (
-                          <span
-                            className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700"
-                            title="最近重置时间"
-                          >
-                            重置 {latestReset}
-                          </span>
-                        )}
+                        {creditsTags}
                         {relayBalanceBlock}
                         {cardLayout ? null : concurrencyBadge}
                     </>
@@ -6956,7 +7062,11 @@ export function AccountsScreen({
                   // Without stats the footer still has to render when a counter is
                   // live, otherwise turning off 请求统计 would also hide 并发/冷却.
                   const cardFooterVisible = Boolean(
-                    accountDisplayPreferences.showRequestStats || concurrencyBadge || cooldownBadge,
+                    accountDisplayPreferences.showRequestStats ||
+                      latencyTag ||
+                      resetTimeTag ||
+                      concurrencyBadge ||
+                      cooldownBadge,
                   );
                   if (cardLayout) {
                     return (
@@ -7006,6 +7116,8 @@ export function AccountsScreen({
                                   {statsLine}
                                 </p>
                               ) : null}
+                              {latencyTag}
+                              {resetTimeTag}
                               {concurrencyBadge || cooldownBadge ? (
                                 // ml-auto rather than justify-between: with the stats
                                 // line hidden the counters are the only child, and
@@ -7050,8 +7162,8 @@ export function AccountsScreen({
                           {modelListBlock}
                         </div>
                       ) : null}
-                      {accountDisplayPreferences.showRequestStats || latencyTag ? (
-                        <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[11px] text-stone-500">
+                      {accountDisplayPreferences.showRequestStats || latencyTag || resetTimeTag ? (
+                        <div className="mt-0.5 flex min-w-0 shrink-0 items-center gap-2 text-[11px] text-stone-500">
                           {accountDisplayPreferences.showRequestStats ? (
                             modelLineToggle ? (
                               <button
@@ -7080,7 +7192,8 @@ export function AccountsScreen({
                               <p className={`min-w-0 ${STATS_LINE_WIDTH} truncate`}>{statsLine}</p>
                             )
                           ) : null}
-                          {latencyTag ? <span className="shrink-0">{latencyTag}</span> : null}
+                          {latencyTag}
+                          {resetTimeTag}
                         </div>
                       ) : null}
                     </div>

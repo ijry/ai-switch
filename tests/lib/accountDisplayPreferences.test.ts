@@ -14,12 +14,14 @@ describe("account display preferences", () => {
       showModelList: true,
       showRequestStats: true,
       showLatencyStats: false,
+      showResetTime: true,
     });
     expect(DEFAULT_ACCOUNT_DISPLAY_PREFERENCES).toEqual({
       showAccountType: false,
       showModelList: true,
       showRequestStats: true,
       showLatencyStats: false,
+      showResetTime: true,
     });
   });
 
@@ -34,6 +36,7 @@ describe("account display preferences", () => {
       showModelList: false,
       showRequestStats: true,
       showLatencyStats: false,
+      showResetTime: true,
     });
     expect(loadAccountDisplayPreferences({ getItem: () => "not-json" })).toEqual(
       DEFAULT_ACCOUNT_DISPLAY_PREFERENCES,
@@ -43,7 +46,7 @@ describe("account display preferences", () => {
   it("persists the selected display preferences", () => {
     let saved = "";
     saveAccountDisplayPreferences(
-      { showAccountType: true, showModelList: false, showRequestStats: false, showLatencyStats: true },
+      { showAccountType: true, showModelList: false, showRequestStats: false, showLatencyStats: true, showResetTime: true },
       { setItem: (_key, value) => { saved = value; } },
     );
     expect(JSON.parse(saved)).toEqual({
@@ -51,6 +54,7 @@ describe("account display preferences", () => {
       showModelList: false,
       showRequestStats: false,
       showLatencyStats: true,
+      showResetTime: true,
     });
   });
 
@@ -65,6 +69,7 @@ describe("account display preferences", () => {
       // Only the absent ones fall back.
       showRequestStats: true,
       showLatencyStats: false,
+      showResetTime: true,
     });
   });
 
@@ -79,6 +84,7 @@ describe("account display preferences", () => {
       showModelList: false,
       showRequestStats: true,
       showLatencyStats: false,
+      showResetTime: true,
     });
     // A key from a removed toggle must not be written back on the next save.
     expect(Object.keys(loaded)).not.toContain("stale");
