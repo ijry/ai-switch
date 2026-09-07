@@ -909,13 +909,7 @@ pub fn build_model_test_request_with_tool_call(
     let (request_path, request_body) = match platform {
         "codex" => (
             "/responses".to_string(),
-            codex_probe_body(
-                &model,
-                &credential.id,
-                &interface_format,
-                prompt,
-                credential.kind != "api",
-            ),
+            codex_probe_body(&model, &credential.id, &interface_format, prompt),
         ),
         "claude" => (
             "/v1/messages".to_string(),
@@ -1037,13 +1031,12 @@ fn codex_probe_body(
     credential_id: &str,
     interface_format: &str,
     prompt: &str,
-    official: bool,
 ) -> Value {
-    if official && interface_format == "openai-responses" {
-        // ChatGPT's Codex backend rejects the public Responses API's string
-        // input with `Input must be a list`, and it does not accept the public
-        // API's sampling or output-limit fields. This is the shape CLIProxyAPI
-        // normalizes to before forwarding to the same backend.
+    if interface_format == "openai-responses" {
+        // ChatGPT's Codex backend and New API's Codex channels both expect the
+        // CLI's Responses shape: message-list input, SSE, encrypted reasoning,
+        // and a prompt cache key. The public sampling and output-limit fields
+        // are not accepted by the ChatGPT backend.
         return json!({
             "model": model,
             "instructions": "",
@@ -1059,7 +1052,8 @@ fn codex_probe_body(
             "store": false,
             "reasoning": {"effort": "high"},
             "parallel_tool_calls": true,
-            "include": ["reasoning.encrypted_content"]
+            "include": ["reasoning.encrypted_content"],
+            "prompt_cache_key": Uuid::new_v4().to_string()
         });
     }
 
@@ -2381,7 +2375,7 @@ mod tests {
     #[test]
     fn a_tool_call_probe_asks_for_the_call_instead_of_a_text_reply() {
         for (platform, dialect, pointer) in [
-            ("codex", "openai-responses", "/input"),
+            ("codex", "openai-responses", "/input/0/content/0/text"),
             ("opencode", "openai", "/messages/0/content"),
             ("claude", "anthropic", "/messages/0/content"),
             ("gemini", "gemini", "/contents/0/parts/0/text"),
@@ -2585,13 +2579,33 @@ mod tests {
             Some("gpt-5")
         );
         assert_eq!(
-            body.pointer("/input").and_then(Value::as_str),
-            Some(MODEL_TEST_PROMPT)
+            body.pointer("/input/0/type").and_then(Value::as_str),
+            Some("message")
         );
         assert_eq!(
-            body.pointer("/max_output_tokens").and_then(Value::as_i64),
-            Some(16)
+            body.pointer("/input/0/role").and_then(Value::as_str),
+            Some("user")
         );
+        assert_eq!(
+            body.pointer("/input/0/content/0/type")
+                .and_then(Value::as_str),
+            Some("input_text")
+        );
+        assert_eq!(
+            body.pointer("/input/0/content/0/text")
+                .and_then(Value::as_str),
+            Some(MODEL_TEST_PROMPT)
+        );
+        assert_eq!(body.pointer("/stream").and_then(Value::as_bool), Some(true));
+        assert_eq!(body.pointer("/store").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            body.pointer("/include/0").and_then(Value::as_str),
+            Some("reasoning.encrypted_content")
+        );
+        assert!(body
+            .pointer("/prompt_cache_key")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty()));
     }
 
     #[test]
@@ -2709,7 +2723,8 @@ mod tests {
         assert_eq!(request.interface_format, "openai-responses");
         assert_eq!(request.request_path, "/responses");
         assert_eq!(
-            body.pointer("/input").and_then(Value::as_str),
+            body.pointer("/input/0/content/0/text")
+                .and_then(Value::as_str),
             Some(MODEL_TEST_PROMPT)
         );
     }
