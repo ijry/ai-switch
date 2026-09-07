@@ -1,5 +1,7 @@
 # SaaS 完整功能实施计划
 
+> 分组部分暂停执行：用户已改为核心动态分组、普通路由单组激活、SaaS 使用所有非内部组。以 `../specs/2026-09-07-shared-agent-groups-design.md` 为准；本文原有独立分组、批次授权和 `groups.delete` 契约已失效，待修订设计审阅后更新实施步骤。其余已实现文件保留，不回滚。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 完整交付独立 SaaS 模块、用户站点、管理员控制、真实计费与可切换日志驱动。
@@ -36,7 +38,7 @@
 
 ## 公共传输契约
 
-管理员沿用 `getTransport().invoke('saas_admin', { operation, payload })`，只让主 token 或桌面调用。
+管理员沿用 `getTransport().call('saas_admin', { operation, payload })`，只让主 token 或桌面调用。
 
 用户通过 `/api/saas/user/:operation` JSON POST 调用；用户 ID 从 HttpOnly session 推导，写请求必须带 session 对应 CSRF token。用户客户端不使用宿主 WebTransport。
 

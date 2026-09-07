@@ -1,5 +1,7 @@
 # SaaS 身份与账务实施计划
 
+> 分组部分暂停执行：核心组为唯一来源，SaaS 仅读取并保存扩展，不再创建/删除分组或按批次构造独立成员池。先审阅 `../specs/2026-09-07-shared-agent-groups-design.md`，再修订 Task 1、Task 3 以及 Key/账务外键和授权范围；身份、充值、兑换等已有实现保留。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans task-by-task. Track steps with checkboxes.
 
 **Goal:** 提供真实 OAuth、用户资源、分组、美元交易、充值审核与兑换。
