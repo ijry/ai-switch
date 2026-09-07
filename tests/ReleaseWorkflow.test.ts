@@ -125,6 +125,32 @@ describe("package manager handoff", () => {
   });
 });
 
+describe("AppImage Wayland patch", () => {
+  const script = readFileSync(
+    resolve(process.cwd(), "src-tauri/scripts/patch-appimage-wayland.sh"),
+    "utf8",
+  );
+
+  it("finds the architecture-specific linuxdeploy AppImage Tauri caches", () => {
+    // Tauri 2.x saves linuxdeploy as `linuxdeploy-<arch>.AppImage` in its
+    // tools cache, not as a file named plain `linuxdeploy`. Looking for the
+    // old name leaves the AppDir patched but unpacked, and fails the release.
+    expect(script).toContain('LINUXDEPLOY_ARCH="${HOST_TRIPLE:-$(uname -m)}"');
+    expect(script).toContain('LINUXDEPLOY_ARCH="${LINUXDEPLOY_ARCH%%-*}"');
+    expect(script.match(/-name "linuxdeploy-\${LINUXDEPLOY_ARCH}\.AppImage"/g) ?? []).toHaveLength(2);
+  });
+
+  it("re-packs with supported linuxdeploy options and extraction mode", () => {
+    // GitHub runners cannot mount AppImages, and Tauri itself runs linuxdeploy
+    // in extraction mode. Re-running linuxdeploy also redeploys dependencies,
+    // so the removed Wayland libraries must be excluded explicitly.
+    expect(script).toContain('OUTPUT="$OUTPUT" ARCH="$LINUXDEPLOY_ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$LINUXDEPLOY"');
+    expect(script).toContain('--appimage-extract-and-run');
+    expect(script).toContain('--exclude-library "libwayland*.so*"');
+    expect(script).not.toContain("--deploy-library-path");
+  });
+});
+
 describe("package manager dry run", () => {
   const workflow = readPackageManagersWorkflow();
 

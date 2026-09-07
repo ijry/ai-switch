@@ -74,11 +74,13 @@ else
 fi
 
 # ── 5. Re-pack the AppImage ──────────────────────────────────────────────────
-# The linuxdeploy binary is cached by tauri-cli in the cargo target dir.
-LINUXDEPLOY=$(find "$REPO_ROOT/src-tauri/target" -name 'linuxdeploy' -type f 2>/dev/null | head -1)
+# Tauri stores its bundling tools as `linuxdeploy-<arch>.AppImage` in its cache.
+LINUXDEPLOY_ARCH="${HOST_TRIPLE:-$(uname -m)}"
+LINUXDEPLOY_ARCH="${LINUXDEPLOY_ARCH%%-*}"
+LINUXDEPLOY=$(find "$REPO_ROOT/src-tauri/target" -type f -name "linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" 2>/dev/null | head -1)
 if [ -z "$LINUXDEPLOY" ]; then
     # Fallback: also check the tauri cache in ~/.cache
-    LINUXDEPLOY=$(find "${XDG_CACHE_HOME:-$HOME/.cache}/tauri" -name 'linuxdeploy' -type f 2>/dev/null | head -1)
+    LINUXDEPLOY=$(find "${XDG_CACHE_HOME:-$HOME/.cache}/tauri" -type f -name "linuxdeploy-${LINUXDEPLOY_ARCH}.AppImage" 2>/dev/null | head -1)
 fi
 
 if [ -n "$LINUXDEPLOY" ] && [ -x "$LINUXDEPLOY" ]; then
@@ -92,10 +94,11 @@ if [ -n "$LINUXDEPLOY" ] && [ -x "$LINUXDEPLOY" ]; then
     OUTPUT="$BUNDLE_DIR/$APPIMAGE_NAME"
 
     echo "[patch-appimage] Re-packing with $LINUXDEPLOY"
-    "$LINUXDEPLOY" \
+    OUTPUT="$OUTPUT" ARCH="$LINUXDEPLOY_ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$LINUXDEPLOY" \
+        --appimage-extract-and-run \
         --appdir "$APPDIR" \
+        --exclude-library "libwayland*.so*" \
         --output appimage \
-        --deploy-library-path "$WL_LIB_DIR" \
         2>&1 | tail -5
 
     # linuxdeploy writes the new AppImage next to the AppDir.  Move it into
