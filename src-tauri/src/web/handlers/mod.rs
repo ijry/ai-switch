@@ -22,6 +22,7 @@ use crate::models::batch::NewBatch;
 use crate::models::external_client_import::{
     ImportExternalClientAccountsInput, PreviewExternalClientImportInput,
 };
+use crate::models::notification::NotificationChannelKind;
 use crate::models::platform::PlatformId;
 use crate::models::route_credential::{
     CopyRouteCredentialInput, CreateApiRouteCredentialInput, ImportOfficialFilesInput,
@@ -43,6 +44,7 @@ use crate::services::disk_space_service::DiskSpaceService;
 use crate::services::external_client_import_service;
 use crate::services::import_service::{ExampleJsonImportRequest, ImportService};
 use crate::services::model_pricing::ModelPriceConfig;
+use crate::services::notification_service;
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_config_service::RouteConfigService;
 use crate::services::route_credential_service::RouteCredentialService;
@@ -78,6 +80,7 @@ pub fn is_sensitive_command(command: &str) -> bool {
             | "skills_delete"
             | "skills_install_package"
             | "skills_uninstall_package"
+            | "test_notification"
             | "create_mobile_pairing"
             | "create_terminal_session"
             | "get_web_service_config"
@@ -1032,6 +1035,13 @@ pub async fn dispatch_command(
                 .await
                 .map_err(to_error)?,
         ),
+        "test_notification" => {
+            let kind: NotificationChannelKind = parse_arg(&args, "kind")?;
+            notification_service::test_channel(&kind)
+                .await
+                .map_err(|message| command_error("web.notification_test", message))?;
+            to_value(())
+        }
         other => Err(ApiError::from(AppError::Validation {
             code: "web.command_unknown",
             message: "Web command is not recognized".to_string(),
