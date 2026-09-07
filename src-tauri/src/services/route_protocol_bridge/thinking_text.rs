@@ -12,6 +12,11 @@
 //! knows how to render reasoning, and leaves `output_text` holding the answer
 //! alone.
 //!
+//! ChatGLM-style relays can also leak the `<|assistant|>` role boundary into
+//! the head of `content`. That marker is protocol plumbing, not prose, so a
+//! leading occurrence is removed before the thinking decision. Markers later in
+//! the text are left alone: they may be exactly what the answer is quoting.
+//!
 //! # Why only a leading block
 //!
 //! A tag is recognised only at the very start of a turn's text, which is where
@@ -24,6 +29,7 @@
 /// diverge at the `>` — so the order is defensive rather than load-bearing.
 const OPEN_TAGS: [&str; 2] = ["<thinking>", "<think>"];
 const CLOSE_TAGS: [&str; 2] = ["</thinking>", "</think>"];
+const ASSISTANT_CONTROL_MARKER: &str = "<|assistant|>";
 
 /// How much undecided text to hold before giving up on finding an opening tag.
 ///
@@ -38,6 +44,7 @@ const MAX_UNDECIDED_BYTES: usize = 32;
 /// no leading block is handed back untouched, so callers can run every turn
 /// through this unconditionally.
 pub(super) fn split_leading_thinking(text: &str) -> (Option<&str>, &str) {
+    let text = strip_leading_assistant_marker(text);
     let trimmed = text.trim_start();
     let Some(opener) = OPEN_TAGS
         .iter()
@@ -116,6 +123,14 @@ impl InlineThinkingSplitter {
             match self.state {
                 SplitterState::Undecided => {
                     let leading = self.buffer.len() - self.buffer.trim_start().len();
+                    if starts_with_ignore_ascii_case(
+                        &self.buffer[leading..],
+                        ASSISTANT_CONTROL_MARKER,
+                    ) {
+                        self.buffer
+                            .drain(..leading + ASSISTANT_CONTROL_MARKER.len());
+                        continue;
+                    }
                     let opener = OPEN_TAGS
                         .iter()
                         .find(|tag| starts_with_ignore_ascii_case(&self.buffer[leading..], tag))
@@ -129,6 +144,7 @@ impl InlineThinkingSplitter {
                         let trimmed = &self.buffer[leading..];
                         trimmed.is_empty()
                             || OPEN_TAGS.iter().any(|tag| is_proper_prefix(trimmed, tag))
+                            || is_proper_prefix(trimmed, ASSISTANT_CONTROL_MARKER)
                     };
                     if !ended && undecided && self.buffer.len() <= MAX_UNDECIDED_BYTES {
                         return;
@@ -181,6 +197,15 @@ impl InlineThinkingSplitter {
                 }
             }
         }
+    }
+}
+
+fn strip_leading_assistant_marker(text: &str) -> &str {
+    let trimmed = text.trim_start();
+    if starts_with_ignore_ascii_case(trimmed, ASSISTANT_CONTROL_MARKER) {
+        trimmed[ASSISTANT_CONTROL_MARKER.len()..].trim_start()
+    } else {
+        text
     }
 }
 
@@ -291,6 +316,28 @@ mod tests {
         let (reasoning, text) = split_leading_thinking("<THINK>hm</Think>answer");
         assert_eq!(reasoning, Some("hm"));
         assert_eq!(text, "answer");
+    }
+
+    #[test]
+    fn strips_a_leading_assistant_control_marker() {
+        let (reasoning, text) = split_leading_thinking("<|assistant|>Here is the answer.");
+        assert_eq!(reasoning, None);
+        assert_eq!(text, "Here is the answer.");
+    }
+
+    #[test]
+    fn streams_a_control_marker_split_across_delta_boundaries() {
+        let segments = stream(&["<|ass", "istant|>Here ", "is the answer."]);
+        assert_eq!(reasoning(&segments), "");
+        assert_eq!(text(&segments), "Here is the answer.");
+    }
+
+    #[test]
+    fn keeps_an_assistant_marker_that_is_only_quoted_in_the_answer() {
+        let original = "The token <|assistant|> is not part of the answer.";
+        let (reasoning, text) = split_leading_thinking(original);
+        assert_eq!(reasoning, None);
+        assert_eq!(text, original);
     }
 
     /// Text with no leading block has to come back byte-identical, because every
