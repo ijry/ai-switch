@@ -198,6 +198,10 @@ import { fetchRouteProxyModels } from "../lib/routeProxyModels";
 import { openExternal } from "../lib/openExternal";
 import { copySensitiveText } from "../lib/routeCredentialTransfer";
 import {
+  adjustCodexBaseUrlForInterfaceFormat,
+  type CodexBaseUrlAdjustment,
+} from "../lib/codexBaseUrl";
+import {
   codexModelTestInterfaceFormat,
   loadCodexModelTestEndpoint,
   saveCodexModelTestEndpoint,
@@ -2371,6 +2375,28 @@ function CredentialFailureTooltip({
   );
 }
 
+function BaseUrlAdjustmentNotice({ adjustment }: { adjustment: CodexBaseUrlAdjustment | null }) {
+  if (!adjustment) {
+    return null;
+  }
+
+  return (
+    <div
+      aria-label="Base URL 自动调整提示"
+      aria-live="polite"
+      className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[12px] text-blue-800"
+      role="status"
+    >
+      <p>
+        {adjustment.action === "remove-v1"
+          ? "已切换为 Claude 格式，已自动移除 Base URL 末尾的 /v1。"
+          : "已切换为 OpenAI 格式，已自动恢复 Base URL 末尾的 /v1。"}
+      </p>
+      <p className="mt-1 break-all font-mono">当前地址：{adjustment.adjustedBaseUrl}</p>
+    </div>
+  );
+}
+
 function PresetFields({
   baseUrl,
   fieldClass,
@@ -2787,6 +2813,7 @@ export function AccountsScreen({
   const [apiBaseUrl, setApiBaseUrl] = useState(() =>
     activePlatform === "grok" ? "https://api.x.ai/v1" : "https://api.example.com/v1",
   );
+  const [apiBaseUrlAdjustment, setApiBaseUrlAdjustment] = useState<CodexBaseUrlAdjustment | null>(null);
   const [apiInterfaceFormat, setApiInterfaceFormat] = useState<InterfaceFormat>(() =>
     defaultInterfaceFormat(activePlatform),
   );
@@ -2833,6 +2860,7 @@ export function AccountsScreen({
   const [editApiKeyOcrRecognizing, setEditApiKeyOcrRecognizing] = useState(false);
   const editApiKeyOcrFileInputRef = useRef<HTMLInputElement | null>(null);
   const [editApiBaseUrl, setEditApiBaseUrl] = useState("");
+  const [editApiBaseUrlAdjustment, setEditApiBaseUrlAdjustment] = useState<CodexBaseUrlAdjustment | null>(null);
   const [editApiInterfaceFormat, setEditApiInterfaceFormat] = useState<InterfaceFormat>("openai");
   const [editResponsesCustomToolCompat, setEditResponsesCustomToolCompat] = useState(false);
   const [editInlineRemoteImages, setEditInlineRemoteImages] = useState(false);
@@ -3414,6 +3442,7 @@ export function AccountsScreen({
     setApiResponsesCustomToolCompat(false);
     setApiUserAgent("");
     setApiBaseUrl(activePlatform === "grok" ? "https://api.x.ai/v1" : "https://api.example.com/v1");
+    setApiBaseUrlAdjustment(null);
     setApiKeyField(defaultAnthropicApiKeyFieldForCreate(activePlatform));
     setApiMappings(defaultModelMappings(activePlatform));
     setApiMappingsError(null);
@@ -3437,6 +3466,7 @@ export function AccountsScreen({
       return;
     }
     setEditName(editingCredential.display_name);
+    setEditApiBaseUrlAdjustment(null);
     setEditEmail(editingCredential.email ?? "");
     setEditStatus(editingCredential.status);
     setEditPriority(editingCredential.route_priority ?? 3);
@@ -8229,6 +8259,7 @@ export function AccountsScreen({
                       labelClass={labelClass}
                       onApply={(preset) => {
                         setApiBaseUrl(preset.baseUrl);
+                        setApiBaseUrlAdjustment(null);
                         setApiInterfaceFormat(preset.interfaceFormat);
                         setApiMappings(preset.modelMappings.map((mapping) => ({ ...mapping })));
                         setApiName((current) => (current.trim() ? current : preset.defaultName));
@@ -8302,6 +8333,7 @@ export function AccountsScreen({
                         className={fieldClass}
                         onChange={(event) => {
                           setApiBaseUrl(event.target.value);
+                          setApiBaseUrlAdjustment(null);
                           setApiFetchedModels([]);
                           setApiFetchModelsError(null);
                         }}
@@ -8315,7 +8347,18 @@ export function AccountsScreen({
                           aria-label="接口格式"
                           className={fieldClass}
                           onChange={(event) => {
-                            setApiInterfaceFormat(event.target.value as InterfaceFormat);
+                            const interfaceFormat = event.target.value as InterfaceFormat;
+                            const adjustment = adjustCodexBaseUrlForInterfaceFormat(
+                              activePlatform,
+                              apiBaseUrl,
+                              interfaceFormat,
+                              apiBaseUrlAdjustment,
+                            );
+                            setApiInterfaceFormat(interfaceFormat);
+                            setApiBaseUrlAdjustment(adjustment);
+                            if (adjustment) {
+                              setApiBaseUrl(adjustment.adjustedBaseUrl);
+                            }
                             setApiFetchedModels([]);
                             setApiFetchModelsError(null);
                           }}
@@ -8329,6 +8372,7 @@ export function AccountsScreen({
                         </select>
                       </label>
                     ) : null}
+                    <BaseUrlAdjustmentNotice adjustment={apiBaseUrlAdjustment} />
                     {isAnthropicInterfaceFormat(apiInterfaceFormat) ? (
                       <label className={labelClass}>
                         Claude 鉴权字段
@@ -9059,6 +9103,7 @@ export function AccountsScreen({
                       className={fieldClass}
                       onChange={(event) => {
                         setEditApiBaseUrl(event.target.value);
+                        setEditApiBaseUrlAdjustment(null);
                         setEditFetchedModels([]);
                         setEditFetchModelsError(null);
                       }}
@@ -9072,7 +9117,18 @@ export function AccountsScreen({
                         aria-label="编辑接口格式"
                         className={fieldClass}
                         onChange={(event) => {
-                          setEditApiInterfaceFormat(event.target.value as InterfaceFormat);
+                          const interfaceFormat = event.target.value as InterfaceFormat;
+                          const adjustment = adjustCodexBaseUrlForInterfaceFormat(
+                            activePlatform,
+                            editApiBaseUrl,
+                            interfaceFormat,
+                            editApiBaseUrlAdjustment,
+                          );
+                          setEditApiInterfaceFormat(interfaceFormat);
+                          setEditApiBaseUrlAdjustment(adjustment);
+                          if (adjustment) {
+                            setEditApiBaseUrl(adjustment.adjustedBaseUrl);
+                          }
                           setEditFetchedModels([]);
                           setEditFetchModelsError(null);
                         }}
@@ -9086,6 +9142,7 @@ export function AccountsScreen({
                       </select>
                     </label>
                   ) : null}
+                  <BaseUrlAdjustmentNotice adjustment={editApiBaseUrlAdjustment} />
                   {isAnthropicInterfaceFormat(editApiInterfaceFormat) ? (
                     <label className={labelClass}>
                       Claude 鉴权字段

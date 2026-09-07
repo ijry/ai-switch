@@ -2939,6 +2939,97 @@ describe("AccountsScreen", () => {
     expect(screen.getByLabelText("声明支持 1M 1")).not.toBeChecked();
   });
 
+  it.each(["anthropic", "openai", "openai-responses"] as const)(
+    "automatically adjusts the Codex Base URL when creating with %s",
+    async (interfaceFormat) => {
+      renderScreen();
+
+      await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+      await userEvent.type(screen.getByLabelText("API 账号名称"), "Adjusted API");
+      await userEvent.type(screen.getByLabelText("API Key"), "sk-adjusted");
+      await userEvent.clear(screen.getByLabelText("Base URL"));
+      await userEvent.type(screen.getByLabelText("Base URL"), "https://gateway.test/proxy/v1");
+      await userEvent.selectOptions(screen.getByLabelText("接口格式"), "openai-responses");
+      expect(screen.queryByRole("status", { name: "Base URL 自动调整提示" })).not.toBeInTheDocument();
+
+      await userEvent.selectOptions(screen.getByLabelText("接口格式"), "anthropic");
+
+      expect(screen.getByLabelText("Base URL")).toHaveValue("https://gateway.test/proxy");
+      expect(screen.getByRole("status", { name: "Base URL 自动调整提示" })).toHaveTextContent("已自动移除 Base URL 末尾的 /v1");
+      expect(screen.getByRole("status", { name: "Base URL 自动调整提示" })).toHaveTextContent("https://gateway.test/proxy");
+
+      if (interfaceFormat !== "anthropic") {
+        await userEvent.selectOptions(screen.getByLabelText("接口格式"), interfaceFormat);
+        expect(screen.getByLabelText("Base URL")).toHaveValue("https://gateway.test/proxy/v1");
+        expect(screen.getByRole("status", { name: "Base URL 自动调整提示" })).toHaveTextContent("已自动恢复 Base URL 末尾的 /v1");
+      }
+
+      await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+      await waitFor(() => expect(createApiRouteCredential).toHaveBeenCalledWith(
+        expect.objectContaining({
+          base_url: interfaceFormat === "anthropic" ? "https://gateway.test/proxy" : "https://gateway.test/proxy/v1",
+          interface_format: interfaceFormat,
+        }),
+      ));
+      await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+      expect(screen.getByLabelText("Base URL")).toHaveValue("https://api.example.com/v1");
+      expect(screen.queryByRole("status", { name: "Base URL 自动调整提示" })).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["create", "edit"] as const)(
+    "does not restore an automatically adjusted Base URL after a manual change in %s",
+    async (mode) => {
+      renderScreen();
+      const baseUrlLabel = mode === "create" ? "Base URL" : "编辑 Base URL";
+      const formatLabel = mode === "create" ? "接口格式" : "编辑接口格式";
+
+      await userEvent.click(await screen.findByRole("button", {
+        name: mode === "create" ? "新增账号" : "编辑 API Account",
+      }));
+      await userEvent.selectOptions(screen.getByLabelText(formatLabel), "anthropic");
+      expect(screen.getByRole("status", { name: "Base URL 自动调整提示" })).toBeInTheDocument();
+
+      await userEvent.clear(screen.getByLabelText(baseUrlLabel));
+      await userEvent.type(screen.getByLabelText(baseUrlLabel), "https://custom.test/proxy");
+
+      expect(screen.queryByRole("status", { name: "Base URL 自动调整提示" })).not.toBeInTheDocument();
+      await userEvent.selectOptions(screen.getByLabelText(formatLabel), "openai-responses");
+      expect(screen.getByLabelText(baseUrlLabel)).toHaveValue("https://custom.test/proxy");
+      expect(screen.queryByRole("status", { name: "Base URL 自动调整提示" })).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["create", "edit"] as const)(
+    "keeps the Base URL adjustment aligned with the %s form lifecycle",
+    async (mode) => {
+      renderScreen();
+      const openLabel = mode === "create" ? "新增账号" : "编辑 API Account";
+      const formatLabel = mode === "create" ? "接口格式" : "编辑接口格式";
+      const baseUrlLabel = mode === "create" ? "Base URL" : "编辑 Base URL";
+
+      await userEvent.click(await screen.findByRole("button", { name: openLabel }));
+      await userEvent.selectOptions(screen.getByLabelText(formatLabel), "anthropic");
+      expect(screen.getByRole("status", { name: "Base URL 自动调整提示" })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", {
+        name: mode === "create" ? "关闭新增账号" : "关闭编辑账号",
+      }));
+      await userEvent.click(await screen.findByRole("button", { name: openLabel }));
+
+      if (mode === "create") {
+        expect(screen.getByLabelText(baseUrlLabel)).toHaveValue("https://api.example.com");
+        expect(screen.getByRole("status", { name: "Base URL 自动调整提示" })).toBeInTheDocument();
+        await userEvent.selectOptions(screen.getByLabelText(formatLabel), "openai");
+        expect(screen.getByLabelText(baseUrlLabel)).toHaveValue("https://api.example.com/v1");
+        expect(screen.getByRole("status", { name: "Base URL 自动调整提示" })).toHaveTextContent("已自动恢复 Base URL 末尾的 /v1");
+      } else {
+        expect(screen.getByLabelText(baseUrlLabel)).toHaveValue("https://api.example.com/v1");
+        expect(screen.queryByRole("status", { name: "Base URL 自动调整提示" })).not.toBeInTheDocument();
+      }
+    },
+  );
+
   it("applies the AgentRouter preset to the create form", async () => {
     renderScreen();
 
@@ -2952,6 +3043,7 @@ describe("AccountsScreen", () => {
     );
 
     expect(screen.getByLabelText("Base URL")).toHaveValue("https://agentrouter.org/v1");
+    expect(screen.queryByRole("status", { name: "Base URL 自动调整提示" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("接口格式")).toHaveValue("openai");
     expect(screen.getByLabelText("API 账号名称")).toHaveValue("AgentRouter");
     expect(screen.getByLabelText("请求模型 1")).toHaveValue("gpt-5.6-sol");
@@ -3852,6 +3944,38 @@ describe("AccountsScreen", () => {
     });
     expect(JSON.parse(updateInput.preview_json).config_toml).toContain("https://api.changed.test/v1");
   });
+
+  it.each(["anthropic", "openai", "openai-responses"] as const)(
+    "automatically adjusts the Codex Base URL when editing with %s",
+    async (interfaceFormat) => {
+      renderScreen();
+
+      await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+      expect(screen.getByLabelText("编辑 Base URL")).toHaveValue("https://api.example.com/v1");
+      expect(screen.queryByRole("status", { name: "Base URL 自动调整提示" })).not.toBeInTheDocument();
+      await userEvent.selectOptions(screen.getByLabelText("编辑接口格式"), "anthropic");
+
+      expect(screen.getByLabelText("编辑 Base URL")).toHaveValue("https://api.example.com");
+      expect(screen.getByRole("status", { name: "Base URL 自动调整提示" })).toHaveTextContent("已自动移除 Base URL 末尾的 /v1");
+
+      if (interfaceFormat !== "anthropic") {
+        await userEvent.selectOptions(screen.getByLabelText("编辑接口格式"), interfaceFormat);
+        expect(screen.getByLabelText("编辑 Base URL")).toHaveValue("https://api.example.com/v1");
+        expect(screen.getByRole("status", { name: "Base URL 自动调整提示" })).toHaveTextContent("已自动恢复 Base URL 末尾的 /v1");
+      }
+
+      await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+      await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+      const updateInput = vi.mocked(updateRouteCredential).mock.calls[0][1];
+      const expectedBaseUrl = interfaceFormat === "anthropic" ? "https://api.example.com" : "https://api.example.com/v1";
+      expect(JSON.parse(updateInput.config_json)).toMatchObject({
+        base_url: expectedBaseUrl,
+        interface_format: interfaceFormat,
+      });
+      expect(JSON.parse(updateInput.preview_json).config_toml).toContain(`base_url = "${expectedBaseUrl}"`);
+    },
+  );
 
   it("edits the Claude API key field through structured API fields", async () => {
     renderScreen();
