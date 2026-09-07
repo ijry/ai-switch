@@ -6558,7 +6558,7 @@ export function AccountsScreen({
                         data-testid={`credential-relay-balance-${credential.id}`}
                         title={relayBalanceTag.title}
                       >
-                        {relayBalanceTag.label}
+                        {relayBalanceTag.amount}
                       </span>
                     ) : null
                   ) : (
@@ -6588,7 +6588,7 @@ export function AccountsScreen({
                       }
                       type="button"
                     >
-                      {relayBalanceTag ? <span>{relayBalanceTag.label}</span> : null}
+                      {relayBalanceTag ? <span>{relayBalanceTag.amount}</span> : null}
                       <RefreshCw
                         aria-hidden="true"
                         className={`h-3 w-3 shrink-0 ${relayBalanceRefreshing ? "animate-spin" : ""} ${

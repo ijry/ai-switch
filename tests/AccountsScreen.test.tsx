@@ -4214,7 +4214,7 @@ describe("AccountsScreen", () => {
 
     expect(
       await screen.findByTestId(`credential-relay-balance-${relayAccount.id}`),
-    ).toHaveTextContent("余额 $37.70");
+    ).toHaveTextContent(/^\$37\.70$/);
     // 有读数时刷新图标只在悬停/聚焦时追加，静止的 tag 保持干净。
     expect(screen.getByTestId(`credential-relay-balance-refresh-${relayAccount.id}`)).toHaveClass(
       "hidden",
@@ -4258,7 +4258,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     const badge = await screen.findByTestId(`credential-relay-balance-${relayAccount.id}`);
-    expect(badge).toHaveTextContent("余额 $37.70 · Claude Max");
+    expect(badge).toHaveTextContent(/^\$37\.70 · Claude Max$/);
     expect(badge).not.toHaveTextContent("vip");
     expect(badge).toHaveAttribute("title", expect.stringContaining("套餐 Claude Max"));
     expect(badge).toHaveAttribute("title", expect.stringContaining("Key 分组 vip"));
@@ -4272,7 +4272,7 @@ describe("AccountsScreen", () => {
 
     await userEvent.click(screen.getByLabelText("打开刷新菜单"));
     await userEvent.click(screen.getByLabelText("显示Key 分组名称"));
-    expect(badge).toHaveTextContent("余额 $37.70 · Claude Max · vip");
+    expect(badge).toHaveTextContent(/^\$37\.70 · Claude Max · vip$/);
     expect(
       screen.getByRole("button", {
         name: "查询 API Account 余额（当前 $37.70 · Claude Max · vip）",
@@ -4300,7 +4300,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     const badge = await screen.findByTestId(`credential-relay-balance-${relayAccount.id}`);
-    expect(badge).toHaveTextContent("余额 不限");
+    expect(badge).toHaveTextContent(/^不限$/);
     expect(badge).toHaveAttribute(
       "title",
       expect.stringContaining("来源 https://panel.example.com/api/usage/token/"),
@@ -4332,17 +4332,14 @@ describe("AccountsScreen", () => {
 
     const card = await screen.findByTestId(`account-card-${relayAccount.id}`);
     const badge = within(card).getByTestId(`credential-relay-balance-${relayAccount.id}`);
-    expect(badge).toHaveTextContent("余额 不限");
+    expect(badge).toHaveTextContent(/^不限$/);
     expect(badge).toHaveAttribute(
       "title",
       expect.stringContaining("来源 https://panel.example.com/api/usage/token/"),
     );
   });
 
-  // An account-level reading is the panel account's money, shared by every key on
-  // that panel, so the badge says 账户余额 rather than letting it read as this key's
-  // own allowance.
-  it("labels an account-level balance as the panel account's", async () => {
+  it("shows an account-level balance without a prefix and keeps its details on hover", async () => {
     const relayAccount = {
       ...credentialsFixture[1],
       config_json: JSON.stringify({
@@ -4366,11 +4363,15 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     const badge = await screen.findByTestId(`credential-relay-balance-${relayAccount.id}`);
-    expect(badge).toHaveTextContent("账户余额 $12.30");
+    expect(badge).toHaveTextContent(/^\$12\.30$/);
     expect(badge).toHaveAttribute(
       "title",
       expect.stringContaining("令牌不限额度，显示的是面板账户余额"),
     );
+
+    await userEvent.click(screen.getByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
+    expect(screen.getByText("账户余额 $12.30", { exact: true })).toBeInTheDocument();
   });
 
   it("keeps a stored balance visible when a batch refresh fails for that account", async () => {
@@ -4408,7 +4409,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     const badge = await screen.findByTestId(`credential-relay-balance-${relayAccount.id}`);
-    expect(badge).toHaveTextContent("余额 $37.70");
+    expect(badge).toHaveTextContent(/^\$37\.70$/);
 
     await userEvent.click(screen.getByRole("button", { name: "打开刷新菜单" }));
     await userEvent.click(screen.getByRole("menuitem", { name: "查询中转站余额" }));
@@ -4417,7 +4418,7 @@ describe("AccountsScreen", () => {
     // Still there, and the failure is reachable through the badge's title.
     expect(
       await screen.findByTestId(`credential-relay-balance-${relayAccount.id}`),
-    ).toHaveTextContent("余额 $37.70");
+    ).toHaveTextContent(/^\$37\.70$/);
     expect(
       screen.getByRole("button", { name: /查询 API Account 余额（上次查询失败）/ }),
     ).toBeInTheDocument();
@@ -4572,7 +4573,7 @@ describe("AccountsScreen", () => {
     await userEvent.click(queryButton);
 
     await waitFor(() => {
-      expect(queryButton).toHaveTextContent("余额 90.00 CNY");
+      expect(queryButton).toHaveTextContent(/^90\.00 CNY$/);
       expect(queryButton).toHaveClass("text-teal-800");
     });
   });
