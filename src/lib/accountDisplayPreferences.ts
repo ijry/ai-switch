@@ -4,6 +4,7 @@ export type AccountDisplayPreferences = {
   showRequestStats: boolean;
   showLatencyStats: boolean;
   showResetTime: boolean;
+  showRelayGroupName: boolean;
 };
 
 export const ACCOUNT_DISPLAY_PREFERENCES_STORAGE_KEY = "ai-switch.account-display-preferences";
@@ -14,6 +15,7 @@ export const DEFAULT_ACCOUNT_DISPLAY_PREFERENCES: AccountDisplayPreferences = {
   showRequestStats: true,
   showLatencyStats: false,
   showResetTime: true,
+  showRelayGroupName: false,
 };
 
 /**
@@ -40,6 +42,7 @@ function readPreferences(value: unknown): AccountDisplayPreferences {
     showRequestStats: read("showRequestStats"),
     showLatencyStats: read("showLatencyStats"),
     showResetTime: read("showResetTime"),
+    showRelayGroupName: read("showRelayGroupName"),
   };
 }
 

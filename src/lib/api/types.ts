@@ -283,6 +283,7 @@ export type RelayBalanceConfig = {
 export type RelayBalanceSnapshot = {
   provider: RelayBalanceProvider;
   plan_name?: string | null;
+  group_name?: string | null;
   remaining?: number | null;
   used?: number | null;
   limit?: number | null;
