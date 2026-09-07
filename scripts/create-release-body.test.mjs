@@ -67,6 +67,10 @@ test("puts a labelled download table above the changelog", async () => {
     // Updater-only payloads and the sidecar stay out of the table.
     assert.doesNotMatch(body, /app\.tar\.gz|tsnet/);
     assert.match(body, /独立服务器.+Standalone server: \[Windows \(x64\)\]/);
+    assert.match(
+      body,
+      /AI_SWITCH_PORT=19527 \/bin\/bash -c "\$\(curl -fsSL https:\/\/raw\.githubusercontent\.com\/ijry\/ai-switch\/main\/scripts\/install-server\.sh\)"/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

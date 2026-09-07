@@ -141,10 +141,14 @@ export AI_SWITCH_ALLOW_INSECURE_HTTP=1
 Linux x86_64 服务器可以直接运行下面的命令安装最新 Release：
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ijry/ai-switch/main/scripts/install-server.sh)"
+AI_SWITCH_PORT=19527 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ijry/ai-switch/main/scripts/install-server.sh)"
 ```
 
-安装器会创建 `ai-switch` 系统用户，将程序安装到 `/opt/ai-switch`，把令牌和端口持久化到 `/etc/ai-switch/server.env`，并安装、启用 `ai-switch-server.service`。重复执行会保留已有令牌、环境配置和 `~/.ai-switch` 数据。安装器不会修改 Nginx、Certbot、UFW 或其他防火墙配置；HTTPS 反代需要自行配置。
+把 `AI_SWITCH_PORT=19527` 换成需要的端口；默认监听 `127.0.0.1`，需要外部访问时可再设置 `AI_SWITCH_HOST`。安装器会创建 `ai-switch` 系统用户，将程序安装到 `/opt/ai-switch`，把令牌和端口持久化到 `/etc/ai-switch/server.env`，并安装、启用、启动 `ai-switch-server.service`。安装完成后会输出面板地址、服务状态和读取访问令牌的命令。升级前会先停止旧服务，避免替换二进制时出现 `Text file busy`。
+
+当前 Linux 服务器二进制仍依赖 WebKitGTK 4.1 运行库。安装器会用 `ldd` 检测缺失库；Debian/Ubuntu 上自动安装 `libwebkit2gtk-4.1-0`，其他发行版需要先自行安装对应运行库。
+
+新安装会默认写入 `AI_SWITCH_ALLOW_INSECURE_HTTP=1`，让非环回地址上的明文 HTTP 可以启动；这只影响一键安装路径，手动运行服务器时仍保持默认拒绝。令牌和算力池 API key 鉴权不会因此关闭。重复执行会保留已有令牌、环境配置和 `~/.ai-switch` 数据，因此已有配置不会自动改成这个默认值。安装器不会修改 Nginx、Certbot、UFW 或其他防火墙配置；HTTPS 反代需要自行配置。
 
 ## 前端资源怎么找
 

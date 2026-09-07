@@ -141,10 +141,14 @@ This only permits startup; it does not disable panel-token or compute-pool API-k
 On an x86_64 Linux server, install the latest Release with:
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ijry/ai-switch/main/scripts/install-server.sh)"
+AI_SWITCH_PORT=19527 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ijry/ai-switch/main/scripts/install-server.sh)"
 ```
 
-The installer creates the `ai-switch` system user, installs the program under `/opt/ai-switch`, persists the token and port in `/etc/ai-switch/server.env`, and installs/enables `ai-switch-server.service`. Re-running it preserves the existing token, environment configuration, and `~/.ai-switch` data. It does not modify Nginx, Certbot, UFW, or firewall rules; configure HTTPS reverse proxying separately.
+Replace `AI_SWITCH_PORT=19527` with the port you want; the default bind is `127.0.0.1`, and external access requires setting `AI_SWITCH_HOST`. The installer creates the `ai-switch` system user, installs the program under `/opt/ai-switch`, persists the token and port in `/etc/ai-switch/server.env`, and installs, enables, and starts `ai-switch-server.service`. When it finishes, it prints the panel URL, service status, and the command for reading the access token. Before upgrading, it stops the old service so replacing the binary does not fail with `Text file busy`.
+
+The current Linux server binary still depends on the WebKitGTK 4.1 runtime. The installer checks for missing libraries with `ldd`; on Debian/Ubuntu it installs `libwebkit2gtk-4.1-0` automatically, while other distributions require the equivalent runtime package first.
+
+A fresh install writes `AI_SWITCH_ALLOW_INSECURE_HTTP=1`, allowing plaintext HTTP to start on a non-loopback bind. This applies only to the installer path; manually running the server still rejects it by default. Panel-token and compute-pool API-key authentication remain enabled. Re-running preserves the existing token, environment configuration, and `~/.ai-switch` data, so an existing configuration is not rewritten with this default. The installer does not modify Nginx, Certbot, UFW, or firewall rules; configure HTTPS reverse proxying separately.
 ## How the frontend is located
 
 `AI_SWITCH_STATIC_DIR` is not the only route. The resolution order is below; the first candidate containing `index.html` wins:

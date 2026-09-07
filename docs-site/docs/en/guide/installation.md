@@ -52,6 +52,14 @@ chmod +x ./ai-switch-0.8.0-linux-x86_64.AppImage
 
 AI Switch is a Tauri app and depends on the system WebKitGTK. If your distribution doesn't ship it, install it yourself — on Debian/Ubuntu that means `libwebkit2gtk-4.1-0`, `libgtk-3-0`, and `librsvg2-2`, plus ayatana appindicator for the tray icon. The `.deb` declares its dependencies so `apt` resolves them automatically; with the AppImage you have to check manually.
 
+If you do not need the desktop shell and only want the standalone web service on an x86_64 Linux server, use the one-click installer:
+
+```bash
+AI_SWITCH_PORT=19527 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ijry/ai-switch/main/scripts/install-server.sh)"
+```
+
+Replace `19527` with the port you want. The installer creates the system user and service, starts `ai-switch-server.service` when finished, and prints the panel URL, service status, and how to read the access token. See the [standalone server guide](/en/deploy/standalone-server) for details.
+
 ## macOS won't open it: "damaged" or "unverified developer"
 
 The first time you open AI Switch on macOS, you will most likely hit one of these:

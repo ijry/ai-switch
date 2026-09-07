@@ -65,6 +65,7 @@ export async function createReleaseBody({ assetsDir, tag, repo, notesFile, outpu
   const platforms = await readPlatforms(assetsDir);
   const installable = platforms.filter(({ installers }) => installers.length > 0);
   const servers = platforms.filter(({ server }) => server);
+  const linuxServer = servers.find(({ id }) => id === "linux-x86_64");
 
   const lines = [];
   if (installable.length > 0) {
@@ -79,6 +80,10 @@ export async function createReleaseBody({ assetsDir, tag, repo, notesFile, outpu
   if (servers.length > 0) {
     const downloads = servers.map(({ label, server }) => link(repo, tag, server, label)).join(" · ");
     blocks.push(`独立服务器（解压即用，浏览器访问）· Standalone server: ${downloads}`);
+  }
+  if (linuxServer) {
+    const installCommand = `AI_SWITCH_PORT=19527 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/${repo}/main/scripts/install-server.sh)"`;
+    blocks.push(`Linux 一键安装 · Linux one-click install:\n\n\`\`\`bash\n${installCommand}\n\`\`\``);
   }
   if (blocks.length > 0 && notes) {
     blocks.push("---");

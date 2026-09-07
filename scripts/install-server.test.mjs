@@ -25,7 +25,15 @@ test("Linux installer provisions a protected systemd service on shared port", ()
   assert.match(installer, /Keeping existing environment/);
   assert.match(installer, /run_root test -r "\$ENV_FILE"/);
   assert.match(installer, /run_root sed -n 's\/\^AI_SWITCH_TOKEN=\/\/p' "\$ENV_FILE"/);
-  assert.doesNotMatch(installer, /AI_SWITCH_ALLOW_INSECURE_HTTP=/);
+  assert.match(installer, /ALLOW_INSECURE_HTTP="\$\{AI_SWITCH_ALLOW_INSECURE_HTTP:-1\}"/);
+  assert.match(installer, /AI_SWITCH_ALLOW_INSECURE_HTTP=%s/);
+  assert.match(installer, /AI_SWITCH_PORT must be a number between 1 and 65535/);
+  assert.match(installer, /systemctl is-active --quiet ai-switch-server\.service/);
+  assert.match(installer, /systemctl --no-pager --full status ai-switch-server\.service/);
+  assert.match(installer, /Panel URL:/);
+  assert.match(installer, /grep -q "not found"/);
+  assert.match(installer, /apt-get install -y libwebkit2gtk-4\.1-0/);
+  assert.match(installer, /systemctl stop ai-switch-server\.service/);
   assert.doesNotMatch(installer, /aarch64|arm64/);
   assert.doesNotMatch(installer, /nginx|certbot|ufw/i);
 

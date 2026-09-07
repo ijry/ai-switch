@@ -11,6 +11,7 @@ SERVICE_NAME="ai-switch-server.service"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}"
 PORT="${AI_SWITCH_PORT:-19527}"
 HOST="${AI_SWITCH_HOST:-127.0.0.1}"
+ALLOW_INSECURE_HTTP="${AI_SWITCH_ALLOW_INSECURE_HTTP:-1}"
 
 say() { printf '[ai-switch] %s\n' "$*"; }
 die() { printf '[ai-switch] error: %s\n' "$*" >&2; exit 1; }
@@ -21,6 +22,9 @@ fi
 command -v curl >/dev/null 2>&1 || die "curl is required."
 command -v unzip >/dev/null 2>&1 || die "unzip is required."
 command -v systemctl >/dev/null 2>&1 || die "systemd/systemctl is required."
+
+[[ "$PORT" =~ ^[0-9]+$ ]] || die "AI_SWITCH_PORT must be a number between 1 and 65535."
+(( PORT >= 1 && PORT <= 65535 )) || die "AI_SWITCH_PORT must be a number between 1 and 65535."
 
 if [[ "$(id -u)" -eq 0 ]]; then
   AS_ROOT=()
@@ -55,6 +59,19 @@ unzip -q "${TEMP_DIR}/${ARCHIVE}" -d "$TEMP_DIR/package"
 [[ -f "$TEMP_DIR/package/web/index.html" ]] || die "The release archive has no web/index.html."
 [[ -f "$TEMP_DIR/package/ai-switch-tsnet" ]] || die "The release archive has no ai-switch-tsnet sidecar."
 
+if ldd "$TEMP_DIR/package/ai-switch-server" 2>/dev/null | grep -q "not found"; then
+  say "Installing missing WebKitGTK runtime dependencies"
+  if command -v apt-get >/dev/null 2>&1; then
+    run_root env DEBIAN_FRONTEND=noninteractive apt-get update
+    run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y libwebkit2gtk-4.1-0
+  else
+    die "The server binary needs WebKitGTK 4.1 runtime libraries; install them with your distribution's package manager and retry."
+  fi
+  if ldd "$TEMP_DIR/package/ai-switch-server" 2>/dev/null | grep -q "not found"; then
+    die "The server binary still has missing shared libraries after installing WebKitGTK."
+  fi
+fi
+
 # Keep the existing token and environment on repeat installs. The server.env
 # format is deliberately simple KEY=value lines; do not execute it as shell.
 existing_token=""
@@ -68,6 +85,8 @@ if [[ -z "$existing_token" ]]; then
     existing_token="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
   fi
 fi
+
+run_root systemctl stop ai-switch-server.service >/dev/null 2>&1 || true
 
 if ! getent passwd ai-switch >/dev/null 2>&1; then
   run_root useradd --system --home-dir /var/lib/ai-switch --create-home --shell /usr/sbin/nologin ai-switch
@@ -84,8 +103,8 @@ run_root chmod 0755 "$INSTALL_DIR/ai-switch-server" "$INSTALL_DIR/ai-switch-tsne
 
 ENV_TMP="$TEMP_DIR/server.env"
 if ! run_root test -r "$ENV_FILE"; then
-  printf 'AI_SWITCH_HOST=%s\nAI_SWITCH_PORT=%s\nAI_SWITCH_TOKEN=%s\nAI_SWITCH_STATIC_DIR=%s\nAI_SWITCH_TSNET_PATH=%s\n' \
-    "$HOST" "$PORT" "$existing_token" "$INSTALL_DIR/web" "$INSTALL_DIR/ai-switch-tsnet" > "$ENV_TMP"
+  printf 'AI_SWITCH_HOST=%s\nAI_SWITCH_PORT=%s\nAI_SWITCH_ALLOW_INSECURE_HTTP=%s\nAI_SWITCH_TOKEN=%s\nAI_SWITCH_STATIC_DIR=%s\nAI_SWITCH_TSNET_PATH=%s\n' \
+    "$HOST" "$PORT" "$ALLOW_INSECURE_HTTP" "$existing_token" "$INSTALL_DIR/web" "$INSTALL_DIR/ai-switch-tsnet" > "$ENV_TMP"
   run_root install -D -o root -g root -m 0600 "$ENV_TMP" "$ENV_FILE"
 else
   say "Keeping existing environment in ${ENV_FILE}"
@@ -120,5 +139,24 @@ UNIT
 fi
 run_root systemctl daemon-reload
 run_root systemctl enable --now ai-switch-server.service
-say "Installed to ${INSTALL_DIR}; panel and model API share ${HOST}:${PORT}."
-say "The access token is stored in ${ENV_FILE}; read it with sudo cat ${ENV_FILE}."
+if ! run_root systemctl is-active --quiet ai-switch-server.service; then
+  run_root systemctl --no-pager --full status ai-switch-server.service
+  die "The ai-switch-server service did not start."
+fi
+
+DISPLAY_HOST="$HOST"
+[[ "$DISPLAY_HOST" == "0.0.0.0" ]] && DISPLAY_HOST="127.0.0.1"
+if [[ "$DISPLAY_HOST" == *:* ]]; then
+  PANEL_URL="http://[${DISPLAY_HOST}]:${PORT}"
+else
+  PANEL_URL="http://${DISPLAY_HOST}:${PORT}"
+fi
+
+say "Installed to ${INSTALL_DIR}."
+say "Panel URL: ${PANEL_URL}"
+say "Service status:"
+run_root systemctl --no-pager --full status ai-switch-server.service
+say "Access token: sudo cat ${ENV_FILE}"
+if [[ "$ALLOW_INSECURE_HTTP" == "1" ]]; then
+  say "Plaintext HTTP is enabled for this installer deployment; protect non-loopback access with an HTTPS reverse proxy."
+fi

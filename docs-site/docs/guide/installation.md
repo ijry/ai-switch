@@ -52,6 +52,14 @@ chmod +x ./ai-switch-0.8.0-linux-x86_64.AppImage
 
 AI Switch 是 Tauri 应用，依赖系统的 WebKitGTK。发行版没预装的话需要自己补上（Debian / Ubuntu 上对应 `libwebkit2gtk-4.1-0`、`libgtk-3-0`、`librsvg2-2`，托盘图标还需要 ayatana appindicator）。`.deb` 会声明依赖，`apt` 会自动处理；用 AppImage 的话要手动确认。
 
+如果不需要桌面端，只想在 Linux x86_64 服务器上运行独立 Web 服务，可以用一键安装命令：
+
+```bash
+AI_SWITCH_PORT=19527 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ijry/ai-switch/main/scripts/install-server.sh)"
+```
+
+把 `19527` 换成需要的端口即可。安装器会创建系统用户和服务，安装完成后自动启动 `ai-switch-server.service`，并输出面板地址、服务状态和读取访问令牌的命令。详细说明见[独立服务器](/deploy/standalone-server)。
+
 ## macOS 打不开：「已损坏」「无法验证开发者」
 
 在 macOS 上第一次打开 AI Switch，你大概会遇到下面这类提示之一：

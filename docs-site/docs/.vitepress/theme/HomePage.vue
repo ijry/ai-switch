@@ -11,6 +11,8 @@ const link = (path: string) => withBase(`${isEn.value ? "/en" : ""}${path}.html`
 
 const REPO = "https://github.com/ijry/ai-switch";
 const RELEASES = `${REPO}/releases/latest`;
+const LINUX_INSTALL_COMMAND =
+  'AI_SWITCH_PORT=19527 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ijry/ai-switch/main/scripts/install-server.sh)"';
 const SHOT =
   "https://github.com/user-attachments/assets/fbd3932e-29a7-4e3f-a980-e93fb093b643";
 
@@ -141,6 +143,8 @@ const COPY = {
     finalLead: "桌面端装完即用，也可以自己跑一份服务给团队。",
     finalPrimary: "安装指南",
     finalSecondary: "在 GitHub 上查看",
+    linuxInstallTitle: "Linux 服务器一键安装",
+    linuxInstallNote: "把 19527 换成你需要的端口；安装器会自动启动服务并输出访问地址。",
   },
 
   en: {
@@ -260,6 +264,8 @@ const COPY = {
       "Install the desktop build and go, or run the service yourself for a team.",
     finalPrimary: "Installation guide",
     finalSecondary: "View on GitHub",
+    linuxInstallTitle: "One-click Linux server install",
+    linuxInstallNote: "Replace 19527 with your port; the installer starts the service and prints its URL.",
   },
 } as const;
 
@@ -446,6 +452,11 @@ const STACK = [
           <a class="as-btn as-btn-ghost" :href="REPO" target="_blank" rel="noreferrer">
             {{ t.finalSecondary }}
           </a>
+        </div>
+        <div class="as-install">
+          <p class="as-install-title">{{ t.linuxInstallTitle }}</p>
+          <code class="as-install-command">{{ LINUX_INSTALL_COMMAND }}</code>
+          <p class="as-install-note">{{ t.linuxInstallNote }}</p>
         </div>
       </div>
     </section>
@@ -1006,6 +1017,31 @@ const STACK = [
 
 .as-final-inner {
   text-align: center;
+}
+
+.as-install {
+  margin: 28px auto 0;
+  max-width: 880px;
+}
+
+.as-install-title,
+.as-install-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--as-muted);
+}
+
+.as-install-command {
+  display: block;
+  margin: 10px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--as-line);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.04);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .as-final-title {
