@@ -151,6 +151,12 @@ pub(crate) const CODEX_ONE_M_CONTEXT_WINDOW: u32 = 1_000_000;
 /// (`deepseek-v4-flash-0731`, `glm-5.3-air`, …).
 const CODEX_ONE_M_UPSTREAM_PREFIXES: &[&str] =
     &["deepseek-v4", "glm-5.2", "glm-5.3", "qwen-3.8", "kimi-k3"];
+const CODEX_BASELINE_CONTEXT_WINDOWS: &[(&str, u32)] = &[
+    ("gpt-5.6-sol", 272_000),
+    ("gpt-5.6-terra", 272_000),
+    ("gpt-5.6-luna", 272_000),
+    ("gpt-5.5", 272_000),
+];
 
 /// The window to advertise for an alias whose mapping declares none.
 ///
@@ -164,10 +170,15 @@ pub(crate) fn codex_default_context_window(upstream_model: &str) -> u32 {
         .iter()
         .any(|prefix| name.starts_with(prefix) || bare.starts_with(prefix))
     {
-        CODEX_ONE_M_CONTEXT_WINDOW
-    } else {
-        CODEX_DEFAULT_CONTEXT_WINDOW
+        return CODEX_ONE_M_CONTEXT_WINDOW;
     }
+    if let Some((_, window)) = CODEX_BASELINE_CONTEXT_WINDOWS
+        .iter()
+        .find(|(model, _)| name == *model || bare == *model)
+    {
+        return *window;
+    }
+    CODEX_DEFAULT_CONTEXT_WINDOW
 }
 
 /// What Codex clients are told, preferring the user's own declaration. Zero is
@@ -1076,7 +1087,9 @@ mod tests {
             .find(|entry| entry.id == "gpt-5.6-sol")
             .expect("sol entry");
 
-        assert_eq!(sol.context_window, Some(256_000));
+        // The existing maximum merge applies: the baseline account claims 272K
+        // while the mapped account declares 256K, so the advertised alias is 272K.
+        assert_eq!(sol.context_window, Some(272_000));
         assert_eq!(
             sol.reasoning_levels.as_deref(),
             Some(&["high".to_string()][..])
@@ -1238,6 +1251,17 @@ mod tests {
             fixture["one_m_context_window"],
             Value::from(CODEX_ONE_M_CONTEXT_WINDOW)
         );
+        for (model, window) in fixture["baseline_context_windows"]
+            .as_object()
+            .expect("baseline context windows")
+        {
+            let window = window.as_u64().expect("context window");
+            assert_eq!(
+                codex_default_context_window(model) as u64,
+                window,
+                "{model}"
+            );
+        }
         for prefix in fixture["one_m_upstream_prefixes"]
             .as_array()
             .expect("prefixes")
@@ -1275,16 +1299,45 @@ mod tests {
     }
 
     #[test]
+    fn codex_baseline_models_carry_their_own_context_window() {
+        // 128K was a generic fallback, not the shipped baseline. Codex displays
+        // 95% of the declared window, which is where the old table's 121.6K came
+        // from.
+        for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"] {
+            assert_eq!(
+                codex_default_context_window(model),
+                272_000,
+                "model={model}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wildcard_account_advertises_the_baseline_context_window() {
+        let wildcard = parse_model_capability(r#"{"model_mappings":[]}"#);
+        let catalog = codex_model_catalog_payload(&[wildcard]);
+        let model = catalog["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .find(|model| model["slug"] == "gpt-5.6-sol")
+            .expect("baseline model");
+
+        assert_eq!(model["context_window"], 272_000);
+        assert_eq!(model["max_context_window"], 272_000);
+    }
+
+    #[test]
     fn other_upstream_models_default_to_the_generic_window() {
         for upstream in [
-            "gpt-5.6-sol",
+            "some-relay-model",
             // An older generation of the same family is not in the table.
             "deepseek-v3-chat",
             "glm-5.1",
             "qwen-3.7",
             "kimi-k2",
             // A vendor path whose model half does not match either.
-            "openai/gpt-5.5",
+            "openai/other-model",
             "",
         ] {
             assert_eq!(
@@ -1306,7 +1359,12 @@ mod tests {
             codex_effective_context_window(Some(0), "deepseek-v4-flash"),
             1_000_000
         );
-        assert_eq!(codex_effective_context_window(None, "gpt-5.5"), 128_000);
+        assert_eq!(codex_effective_context_window(None, "gpt-5.5"), 272_000);
+        // A declaration still outranks the shipped baseline window.
+        assert_eq!(
+            codex_effective_context_window(Some(256_000), "gpt-5.5"),
+            256_000
+        );
     }
 
     #[test]
@@ -1326,7 +1384,7 @@ mod tests {
         assert_eq!(models[0]["context_window"], 1_000_000);
         assert_eq!(models[0]["max_context_window"], 1_000_000);
         assert_eq!(models[1]["slug"], "gpt-5.5");
-        assert_eq!(models[1]["context_window"], 128_000);
+        assert_eq!(models[1]["context_window"], 272_000);
     }
 
     #[test]

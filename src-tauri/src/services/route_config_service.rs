@@ -1814,7 +1814,7 @@ command = "npx"
     fn one_m_suffixed_models_get_the_larger_context_window() {
         assert_eq!(
             client_model_context_window(PlatformId::Codex, "gpt-5.6-sol", None, "gpt-5.6-sol"),
-            128_000
+            272_000
         );
         assert_eq!(
             client_model_context_window(
@@ -2276,7 +2276,7 @@ command = "npx"
         let entry = &json["provider"]["ai-switch-codex"];
         assert_eq!(entry["models"]["gpt-5.6-sol"]["limit"]["output"], 128000);
         // Same Codex default the CLI catalog writes for a passthrough gpt id.
-        assert_eq!(entry["models"]["gpt-5.6-sol"]["limit"]["context"], 128000);
+        assert_eq!(entry["models"]["gpt-5.6-sol"]["limit"]["context"], 272000);
         assert_eq!(entry["aiSwitch"]["platform"], "codex");
     }
 
@@ -2704,7 +2704,7 @@ command = "npx"
         // Zero is not a real window; fall back to the upstream's own default.
         assert_eq!(
             client_model_context_window(PlatformId::Codex, "gpt-5.6-sol", Some(0), "gpt-5.6-sol"),
-            128_000
+            272_000
         );
         // A declaration also outranks the `[1m]` guess, since the user picked it
         // against a specific upstream.

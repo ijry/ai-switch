@@ -125,15 +125,21 @@ describe("codexModelCapability", () => {
     }
   });
 
+  it("gives each GPT baseline model its shipped context window", () => {
+    for (const model of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]) {
+      expect(codexDefaultContextWindow(model)).toBe(272_000);
+    }
+  });
+
   it("defaults every other upstream model to the conservative 128K", () => {
     for (const upstream of [
-      "gpt-5.6-sol",
+      "some-relay-model",
       // An older generation of the same family is not in the table.
       "deepseek-v3-chat",
       "glm-5.1",
       "qwen-3.7",
       "kimi-k2",
-      "openai/gpt-5.5",
+      "openai/other-model",
       "",
     ]) {
       expect(codexDefaultContextWindow(upstream)).toBe(128_000);
@@ -143,7 +149,7 @@ describe("codexModelCapability", () => {
   it("keeps the default table in step with the option labels", () => {
     // The editor renders the default through codexContextWindowLabel, so a value
     // the labeller cannot name would show up as raw digits.
-    expect(codexContextWindowLabel(codexDefaultContextWindow("gpt-5.5"))).toBe("128K");
+    expect(codexContextWindowLabel(codexDefaultContextWindow("gpt-5.5"))).toBe("272K");
     expect(codexContextWindowLabel(codexDefaultContextWindow("glm-5.3"))).toBe("1M");
   });
 
@@ -161,6 +167,7 @@ describe("codexModelCapability", () => {
       baseline_reasoning_profiles: Record<string, string[]>;
       default_reasoning_levels: string[];
       one_m_upstream_prefixes: string[];
+      baseline_context_windows: Record<string, number>;
       default_context_window: number;
       one_m_context_window: number;
     };
@@ -173,6 +180,9 @@ describe("codexModelCapability", () => {
       fixture.default_reasoning_levels,
     );
     expect(codexDefaultContextWindow("some-relay-model")).toBe(fixture.default_context_window);
+    for (const [model, window] of Object.entries(fixture.baseline_context_windows)) {
+      expect(codexDefaultContextWindow(model)).toBe(window);
+    }
     for (const prefix of fixture.one_m_upstream_prefixes) {
       expect(codexDefaultContextWindow(prefix)).toBe(fixture.one_m_context_window);
     }

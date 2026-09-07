@@ -12951,7 +12951,7 @@ data: [DONE]\n\n";
         let data = payload.get("data").and_then(Value::as_array).expect("data");
 
         assert_eq!(data[0]["context_window"].as_u64(), Some(1_000_000));
-        assert_eq!(data[1]["context_window"].as_u64(), Some(128_000));
+        assert_eq!(data[1]["context_window"].as_u64(), Some(272_000));
     }
 
     #[test]

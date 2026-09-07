@@ -135,6 +135,16 @@ export const CODEX_ONE_M_UPSTREAM_PREFIXES = [
   "kimi-k3",
 ] as const;
 
+/** Shipped context windows for the baseline models the pool advertises when an
+ * account has no mappings. These are not one-click editor options: a user can
+ * still declare a different number, and the pool merge keeps the maximum. */
+const CODEX_BASELINE_CONTEXT_WINDOWS: Record<string, number> = {
+  "gpt-5.6-sol": 272_000,
+  "gpt-5.6-terra": 272_000,
+  "gpt-5.6-luna": 272_000,
+  "gpt-5.5": 272_000,
+};
+
 /**
  * The window a row will advertise when it declares none. Keyed by the *upstream*
  * model, not the alias the client asks for, since the window is a property of
@@ -147,11 +157,10 @@ export const CODEX_ONE_M_UPSTREAM_PREFIXES = [
 export function codexDefaultContextWindow(upstreamModel: string): number {
   const name = upstreamModel.trim().toLowerCase();
   const bare = name.slice(name.lastIndexOf("/") + 1);
-  return CODEX_ONE_M_UPSTREAM_PREFIXES.some(
-    (prefix) => name.startsWith(prefix) || bare.startsWith(prefix),
-  )
-    ? CODEX_ONE_M_CONTEXT_WINDOW
-    : CODEX_DEFAULT_CONTEXT_WINDOW;
+  if (CODEX_ONE_M_UPSTREAM_PREFIXES.some((prefix) => name.startsWith(prefix) || bare.startsWith(prefix))) {
+    return CODEX_ONE_M_CONTEXT_WINDOW;
+  }
+  return CODEX_BASELINE_CONTEXT_WINDOWS[name] ?? CODEX_BASELINE_CONTEXT_WINDOWS[bare] ?? CODEX_DEFAULT_CONTEXT_WINDOW;
 }
 
 /** Label for a stored window, including one an import brought in that is not on
