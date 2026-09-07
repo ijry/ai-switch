@@ -1401,16 +1401,30 @@ function formatRequestDuration(milliseconds: number): string {
 /// visibly shows, in exactly the same wording.
 function relayBalanceBadge(
   snapshot: RelayBalanceSnapshot,
+  showGroupName = false,
 ): { amount: string; label: string; toneClass: string; title: string } {
   const unit = snapshot.unit || "USD";
-  const planName = snapshot.plan_name?.trim();
-  const planSuffix = planName ? ` · ${planName}` : "";
+  const storedPlanName = snapshot.plan_name?.trim();
+  const storedGroupName = snapshot.group_name?.trim();
+  const legacyGroupName =
+    !storedGroupName && snapshot.provider === "new_api" && snapshot.account_level
+      ? storedPlanName
+      : undefined;
+  const planName = legacyGroupName ? undefined : storedPlanName;
+  const groupName = storedGroupName ?? legacyGroupName;
+  const visibleNames = [planName, showGroupName ? groupName : undefined].filter(
+    (name, index, names): name is string => Boolean(name) && names.indexOf(name) === index,
+  );
+  const nameSuffix = visibleNames.length > 0 ? ` · ${visibleNames.join(" · ")}` : "";
   // An account-level reading is the panel account's money, shared by every account
   // pointing at that panel. Labelling it plain "余额" would read as this key's own.
   const prefix = snapshot.account_level ? "账户余额" : "余额";
   const details: string[] = [`来源 ${snapshot.source_url}`];
   if (planName) {
     details.unshift(`套餐 ${planName}`);
+  }
+  if (groupName) {
+    details.unshift(`Key 分组 ${groupName}`);
   }
   if (typeof snapshot.used === "number") {
     details.push(`已用 ${formatRelayBalanceAmount(snapshot.used, unit)}`);
@@ -1431,23 +1445,23 @@ function relayBalanceBadge(
 
   if (snapshot.unlimited) {
     return {
-      amount: `不限${planSuffix}`,
-      label: `余额 不限${planSuffix}`,
+      amount: `不限${nameSuffix}`,
+      label: `余额 不限${nameSuffix}`,
       toneClass: "bg-teal-50 text-teal-800",
       title: details.join("\n"),
     };
   }
   if (typeof snapshot.remaining !== "number") {
     return {
-      amount: `未知${planSuffix}`,
-      label: `${prefix} 未知${planSuffix}`,
+      amount: `未知${nameSuffix}`,
+      label: `${prefix} 未知${nameSuffix}`,
       toneClass: "bg-stone-100 text-stone-600",
       title: details.join("\n"),
     };
   }
   return {
-    amount: `${formatRelayBalanceAmount(snapshot.remaining, unit)}${planSuffix}`,
-    label: `${prefix} ${formatRelayBalanceAmount(snapshot.remaining, unit)}${planSuffix}`,
+    amount: `${formatRelayBalanceAmount(snapshot.remaining, unit)}${nameSuffix}`,
+    label: `${prefix} ${formatRelayBalanceAmount(snapshot.remaining, unit)}${nameSuffix}`,
     toneClass:
       snapshot.remaining <= 0 ? "bg-rose-50 text-rose-700" : "bg-teal-50 text-teal-800",
     title: details.join("\n"),
@@ -6247,6 +6261,7 @@ export function AccountsScreen({
                         ["showRequestStats", "请求统计"],
                         ["showLatencyStats", "请求耗时"],
                         ["showResetTime", "重置时间"],
+                        ["showRelayGroupName", "Key 分组名称"],
                       ] as const
                     ).map(([key, label]) => (
                       <label
@@ -6507,7 +6522,10 @@ export function AccountsScreen({
                   const effectiveRelayBalanceSnapshot =
                     relayBalanceStatus?.snapshot ?? relayBalanceSnapshot;
                   const relayBalanceTag = effectiveRelayBalanceSnapshot
-                    ? relayBalanceBadge(effectiveRelayBalanceSnapshot)
+                    ? relayBalanceBadge(
+                        effectiveRelayBalanceSnapshot,
+                        accountDisplayPreferences.showRelayGroupName,
+                      )
                     : null;
                   // 余额只剩这一个入口：读数是标签本身，刷新按钮长在标签里，悬停/聚焦
                   // 才追加图标，右侧不再单独摆一个钱包。归档账号没有刷新入口，但存过的
@@ -9226,10 +9244,18 @@ export function AccountsScreen({
                       <div className="flex flex-wrap items-center gap-2 border-t border-stone-100 pt-2">
                         <span
                           className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-                            relayBalanceBadge(editRelayBalanceSnapshot).toneClass
+                            relayBalanceBadge(
+                              editRelayBalanceSnapshot,
+                              accountDisplayPreferences.showRelayGroupName,
+                            ).toneClass
                           }`}
                         >
-                          {relayBalanceBadge(editRelayBalanceSnapshot).label}
+                          {
+                            relayBalanceBadge(
+                              editRelayBalanceSnapshot,
+                              accountDisplayPreferences.showRelayGroupName,
+                            ).label
+                          }
                         </span>
                         <span className="text-[11px] font-medium text-stone-500">
                           更新于 {formatRelayBalanceCheckedAt(editRelayBalanceSnapshot.checked_at)}

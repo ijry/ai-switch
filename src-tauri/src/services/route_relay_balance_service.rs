@@ -684,6 +684,8 @@ async fn get_json_from_candidates(
 
 const NEW_API_USAGE_PATH: &str = "/api/usage/token/";
 const NEW_API_USER_SELF_PATH: &str = "/api/user/self";
+const NEW_API_SUBSCRIPTION_SELF_PATH: &str = "/api/subscription/self";
+const NEW_API_SUBSCRIPTION_PLANS_PATH: &str = "/api/subscription/plans";
 
 /// new-api's token-scoped usage endpoint, plus the account-scoped one behind it.
 ///
@@ -753,6 +755,25 @@ async fn fetch_new_api_balance(
         .await;
     }
 
+    let plan_name = match request.access_token.as_deref() {
+        Some(access_token) => match account_request_headers(
+            access_token,
+            request.access_token_user_id.as_deref(),
+            request.user_agent.as_deref(),
+        ) {
+            Ok(account_headers) => {
+                fetch_new_api_subscription_plan_name(
+                    client,
+                    &panel_root,
+                    &account_headers,
+                    access_token,
+                )
+                .await
+            }
+            Err(_) => None,
+        },
+        None => None,
+    };
     let (divisor, divisor_source) = new_api_divisor(client, config, &panel_root).await;
 
     let mut notes = Vec::new();
@@ -775,7 +796,8 @@ async fn fetch_new_api_balance(
 
     Ok(RelayBalanceSnapshot {
         provider: RelayBalanceProvider::NewApi,
-        plan_name: None,
+        plan_name,
+        group_name: None,
         // An unlimited key's granted/available numbers carry no meaning; what it
         // has spent still does.
         remaining: if usage.unlimited {
@@ -852,6 +874,8 @@ async fn fetch_new_api_account_balance(
         .strip_suffix(NEW_API_USER_SELF_PATH)
         .unwrap_or(url.as_str())
         .to_string();
+    let plan_name =
+        fetch_new_api_subscription_plan_name(client, &panel_root, &headers, access_token).await;
     let (divisor, divisor_source) = new_api_divisor(client, config, &panel_root).await;
 
     let mut notes = Vec::new();
@@ -882,9 +906,8 @@ async fn fetch_new_api_account_balance(
 
     Ok(RelayBalanceSnapshot {
         provider: RelayBalanceProvider::NewApi,
-        // new-api calls it a group; it is what decides this account's pricing, so
-        // it lands where every other provider's plan name does.
-        plan_name: account.group,
+        plan_name,
+        group_name: account.group,
         remaining: account.quota.map(|value| value / divisor),
         used: account.used_quota.map(|value| value / divisor),
         // The panel reports what is left and what was spent, never an allowance.
@@ -1107,6 +1130,65 @@ fn parse_new_api_user_self(body: &Value) -> Result<NewApiUserAccount, String> {
     Ok(account)
 }
 
+fn parse_new_api_subscription_plan_id(body: &Value) -> Option<i64> {
+    if body.get("success").and_then(Value::as_bool) == Some(false) {
+        return None;
+    }
+    let data = body.get("data")?;
+    let plan_id = |entry: &Value| {
+        let subscription = entry.get("subscription").unwrap_or(entry);
+        number_field(subscription, "plan_id").map(|value| value as i64)
+    };
+
+    data.get("primary_subscription")
+        .and_then(plan_id)
+        .or_else(|| {
+            data.get("subscriptions")
+                .and_then(Value::as_array)
+                .and_then(|entries| entries.iter().find_map(plan_id))
+        })
+        .or_else(|| {
+            data.get("all_subscriptions")
+                .and_then(Value::as_array)
+                .and_then(|entries| entries.iter().find_map(plan_id))
+        })
+}
+
+fn parse_new_api_subscription_plan_name(body: &Value, plan_id: i64) -> Option<String> {
+    if body.get("success").and_then(Value::as_bool) == Some(false) {
+        return None;
+    }
+    let data = body.get("data")?;
+    let plans = data
+        .as_array()
+        .or_else(|| data.get("plans").and_then(Value::as_array))?;
+    plans.iter().find_map(|entry| {
+        let plan = entry.get("plan").unwrap_or(entry);
+        (number_field(plan, "id").map(|value| value as i64) == Some(plan_id))
+            .then(|| string_field(plan, "title").or_else(|| string_field(plan, "name")))
+            .flatten()
+    })
+}
+
+async fn fetch_new_api_subscription_plan_name(
+    client: &Client,
+    panel_root: &str,
+    headers: &HeaderMap,
+    access_token: &str,
+) -> Option<String> {
+    let self_candidates = vec![format!("{panel_root}{NEW_API_SUBSCRIPTION_SELF_PATH}")];
+    let (_, subscription_body) =
+        get_json_from_candidates(client, headers, &self_candidates, access_token)
+            .await
+            .ok()?;
+    let plan_id = parse_new_api_subscription_plan_id(&subscription_body)?;
+    let plan_candidates = vec![format!("{panel_root}{NEW_API_SUBSCRIPTION_PLANS_PATH}")];
+    let (_, plans_body) = get_json_from_candidates(client, headers, &plan_candidates, access_token)
+        .await
+        .ok()?;
+    parse_new_api_subscription_plan_name(&plans_body, plan_id)
+}
+
 /// `GET <panel>/api/status` is unauthenticated and reports the panel's real
 /// `quota_per_unit`. Admins do change it, and hard-coding 500000 silently
 /// reports the wrong dollar figure when they have. Best-effort: any failure
@@ -1166,6 +1248,7 @@ async fn fetch_sub2api_balance(
     Ok(RelayBalanceSnapshot {
         provider: RelayBalanceProvider::Sub2Api,
         plan_name: usage.plan_name,
+        group_name: None,
         remaining: usage.remaining,
         used: usage.used,
         limit: usage.limit,
@@ -1298,6 +1381,7 @@ async fn fetch_custom_balance(
     Ok(RelayBalanceSnapshot {
         provider: RelayBalanceProvider::Custom,
         plan_name: json_path_value(&body, &config.plan_path).and_then(display_string),
+        group_name: None,
         remaining: Some(remaining / divisor),
         used: json_path_number(&body, &config.used_path).map(|value| value / divisor),
         limit: json_path_number(&body, &config.limit_path).map(|value| value / divisor),
@@ -1596,6 +1680,32 @@ mod tests {
         assert_eq!(account.used_quota, Some(3_850_000.0));
     }
 
+    #[test]
+    fn new_api_subscription_self_reads_the_active_plan_id() {
+        let body = json!({
+            "success": true,
+            "data": {
+                "primary_subscription": {
+                    "subscription": {"plan_id": 12, "status": "active"}
+                },
+                "all_subscriptions": []
+            }
+        });
+        assert_eq!(parse_new_api_subscription_plan_id(&body), Some(12));
+    }
+
+    #[test]
+    fn new_api_subscription_plans_resolve_day_and_week_card_titles() {
+        let body = json!({
+            "success": true,
+            "data": [
+                {"plan": {"id": 11, "title": "天卡"}},
+                {"plan": {"id": 12, "title": "周卡"}}
+            ]
+        });
+        assert_eq!(parse_new_api_subscription_plan_name(&body, 12).as_deref(), Some("周卡"));
+    }
+
     /// The account route stamps its envelope on `success`, and new-api does refuse
     /// with 200 plus a false flag on its other routes, so a status-only check would
     /// read such a refusal as a balance of zero.
@@ -1774,6 +1884,7 @@ mod tests {
         let snapshot = RelayBalanceSnapshot {
             provider: RelayBalanceProvider::NewApi,
             plan_name: None,
+            group_name: None,
             remaining: Some(1.5),
             used: None,
             limit: None,
@@ -2082,6 +2193,7 @@ mod tests {
         assert_eq!(snapshot.used, Some(6.0));
         assert_eq!(snapshot.limit, Some(30.0));
         assert_eq!(snapshot.plan_name.as_deref(), Some("vip"));
+        assert_eq!(snapshot.group_name, None);
         assert_eq!(snapshot.unit, "CNY");
     }
 
@@ -2471,6 +2583,77 @@ mod tests {
         start_new_api_panel_with_user_id(token_usage, account, false).await
     }
 
+    async fn start_new_api_panel_with_subscription(
+        token_usage: Value,
+        account: Value,
+        subscription_self: Value,
+        subscription_plans: Value,
+    ) -> String {
+        let expected_access_token = format!("Bearer {PANEL_ACCESS_TOKEN}");
+        let app = Router::new()
+            .route(
+                NEW_API_USAGE_PATH,
+                get(move |headers: AxumHeaderMap| {
+                    let body = token_usage.clone();
+                    async move {
+                        answer_if_authorized(&headers, "Bearer sk-relay-key", body, "令牌无效")
+                    }
+                }),
+            )
+            .route(
+                NEW_API_USER_SELF_PATH,
+                get({
+                    let expected_access_token = expected_access_token.clone();
+                    move |headers: AxumHeaderMap| {
+                        let body = account.clone();
+                        let expected_access_token = expected_access_token.clone();
+                        async move {
+                            answer_if_authorized(
+                                &headers,
+                                &expected_access_token,
+                                body,
+                                "access token 无效",
+                            )
+                        }
+                    }
+                }),
+            )
+            .route(
+                NEW_API_SUBSCRIPTION_SELF_PATH,
+                get({
+                    let expected_access_token = expected_access_token.clone();
+                    move |headers: AxumHeaderMap| {
+                        let body = subscription_self.clone();
+                        let expected_access_token = expected_access_token.clone();
+                        async move {
+                            answer_if_authorized(
+                                &headers,
+                                &expected_access_token,
+                                body,
+                                "access token 无效",
+                            )
+                        }
+                    }
+                }),
+            )
+            .route(
+                NEW_API_SUBSCRIPTION_PLANS_PATH,
+                get(move |headers: AxumHeaderMap| {
+                    let body = subscription_plans.clone();
+                    let expected_access_token = expected_access_token.clone();
+                    async move {
+                        answer_if_authorized(
+                            &headers,
+                            &expected_access_token,
+                            body,
+                            "access token 无效",
+                        )
+                    }
+                }),
+            );
+        format!("http://{}/v1", serve(app).await)
+    }
+
     async fn start_new_api_panel_with_user_id(
         token_usage: Option<Value>,
         account: Option<Value>,
@@ -2607,7 +2790,8 @@ mod tests {
             "the account has a real number even though the key has no cap"
         );
         assert!(snapshot.account_level, "the figures are not this key's");
-        assert_eq!(snapshot.plan_name.as_deref(), Some("vip"));
+        assert_eq!(snapshot.plan_name, None);
+        assert_eq!(snapshot.group_name.as_deref(), Some("vip"));
         assert!(snapshot.source_url.ends_with(NEW_API_USER_SELF_PATH));
         assert!(
             snapshot
@@ -2622,6 +2806,38 @@ mod tests {
             "the key's own spend is still worth keeping: {:?}",
             snapshot.notes
         );
+    }
+
+    #[tokio::test]
+    async fn new_api_account_balance_keeps_group_separate_from_subscription_plan() {
+        let base_url = start_new_api_panel_with_subscription(
+            new_api_unlimited_usage_body(),
+            new_api_account_body(),
+            json!({
+                "success": true,
+                "data": {"subscriptions": [{"subscription": {"plan_id": 12}}]}
+            }),
+            json!({
+                "success": true,
+                "data": [{"plan": {"id": 12, "title": "周卡"}}]
+            }),
+        )
+        .await;
+        let pool = memory_pool().await;
+        let credential = seed_relay_credential_with_access_token(
+            &pool,
+            &base_url,
+            Some(json!({"provider": "new_api"})),
+            Some(PANEL_ACCESS_TOKEN),
+        )
+        .await;
+
+        let outcome = RouteRelayBalanceService::refresh_one(&pool, credential.id)
+            .await
+            .expect("refresh");
+        let snapshot = snapshot_of(&outcome.credential);
+        assert_eq!(snapshot.plan_name.as_deref(), Some("周卡"));
+        assert_eq!(snapshot.group_name.as_deref(), Some("vip"));
     }
 
     /// Without the access token nothing changed: an unlimited key still reports only

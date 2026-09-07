@@ -15,6 +15,7 @@ describe("account display preferences", () => {
       showRequestStats: true,
       showLatencyStats: false,
       showResetTime: true,
+      showRelayGroupName: false,
     });
     expect(DEFAULT_ACCOUNT_DISPLAY_PREFERENCES).toEqual({
       showAccountType: false,
@@ -22,6 +23,7 @@ describe("account display preferences", () => {
       showRequestStats: true,
       showLatencyStats: false,
       showResetTime: true,
+      showRelayGroupName: false,
     });
   });
 
@@ -37,6 +39,7 @@ describe("account display preferences", () => {
       showRequestStats: true,
       showLatencyStats: false,
       showResetTime: true,
+      showRelayGroupName: false,
     });
     expect(loadAccountDisplayPreferences({ getItem: () => "not-json" })).toEqual(
       DEFAULT_ACCOUNT_DISPLAY_PREFERENCES,
@@ -46,7 +49,7 @@ describe("account display preferences", () => {
   it("persists the selected display preferences", () => {
     let saved = "";
     saveAccountDisplayPreferences(
-      { showAccountType: true, showModelList: false, showRequestStats: false, showLatencyStats: true, showResetTime: true },
+      { showAccountType: true, showModelList: false, showRequestStats: false, showLatencyStats: true, showResetTime: true, showRelayGroupName: true },
       { setItem: (_key, value) => { saved = value; } },
     );
     expect(JSON.parse(saved)).toEqual({
@@ -55,6 +58,7 @@ describe("account display preferences", () => {
       showRequestStats: false,
       showLatencyStats: true,
       showResetTime: true,
+      showRelayGroupName: true,
     });
   });
 
@@ -70,6 +74,7 @@ describe("account display preferences", () => {
       showRequestStats: true,
       showLatencyStats: false,
       showResetTime: true,
+      showRelayGroupName: false,
     });
   });
 
@@ -85,6 +90,7 @@ describe("account display preferences", () => {
       showRequestStats: true,
       showLatencyStats: false,
       showResetTime: true,
+      showRelayGroupName: false,
     });
     // A key from a removed toggle must not be written back on the next save.
     expect(Object.keys(loaded)).not.toContain("stale");

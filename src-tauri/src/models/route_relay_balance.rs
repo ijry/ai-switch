@@ -214,6 +214,8 @@ pub struct RelayBalanceSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remaining: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub used: Option<f64>,
@@ -377,6 +379,7 @@ mod tests {
         let snapshot = RelayBalanceSnapshot {
             provider: RelayBalanceProvider::NewApi,
             plan_name: Some("default".to_string()),
+            group_name: Some("vip".to_string()),
             remaining: Some(37.7),
             used: Some(12.3),
             limit: Some(50.0),
@@ -411,6 +414,7 @@ mod tests {
         let base = RelayBalanceSnapshot {
             provider: RelayBalanceProvider::Sub2Api,
             plan_name: None,
+            group_name: None,
             remaining: Some(0.0),
             used: None,
             limit: None,
