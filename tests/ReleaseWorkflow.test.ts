@@ -72,8 +72,17 @@ describe("standalone server release archive", () => {
 
   it("builds and stages a Linux ARM64 standalone server archive", () => {
     expect(workflow).toContain("rustup target add aarch64-unknown-linux-gnu");
-    expect(workflow).toContain("GOARCH=arm64 go build");
     expect(workflow).toContain('-Platform "linux-aarch64"');
+  });
+
+  it("builds the Linux ARM64 sidecar from its Go module directory", () => {
+    const arm64Step = workflow.slice(
+      workflow.indexOf("- name: Build Linux ARM64 standalone server"),
+      workflow.indexOf("- name: Stage release assets"),
+    );
+
+    expect(arm64Step).toContain("cd sidecar/ai-switch-tsnet");
+    expect(arm64Step).toContain('-o "../../$SIDECAR_ARM64_BIN" .');
   });
 });
 
