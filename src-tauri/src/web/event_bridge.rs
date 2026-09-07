@@ -1,5 +1,6 @@
 use serde::{Serialize, Serializer};
 use std::sync::Arc;
+#[cfg(feature = "desktop")]
 use tauri::Emitter;
 use tokio::sync::broadcast;
 
@@ -59,6 +60,7 @@ impl WebEventBroadcaster {
 
 #[derive(Clone)]
 pub enum EventEmitter {
+    #[cfg(feature = "desktop")]
     Tauri(tauri::AppHandle),
     #[allow(dead_code)]
     Web(Arc<WebEventBroadcaster>),
@@ -69,6 +71,7 @@ pub enum EventEmitter {
 impl EventEmitter {
     pub fn emit(&self, channel: &str, payload: &impl Serialize) {
         match self {
+            #[cfg(feature = "desktop")]
             EventEmitter::Tauri(app) => {
                 let _ = app.emit(channel, payload);
             }

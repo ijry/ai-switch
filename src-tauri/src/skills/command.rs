@@ -129,7 +129,7 @@ pub async fn skills_install_package(
     .map_err(ApiError::from)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn skills_uninstall_package(
     package_id: String,
     agent_type: Option<SkillAgentType>,

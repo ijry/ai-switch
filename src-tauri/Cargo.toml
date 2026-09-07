@@ -28,17 +28,29 @@ path = "src/bin/ai_switch_server.rs"
 required-features = ["standalone-server"]
 
 [features]
+default = ["desktop"]
+desktop = [
+  "dep:tauri",
+  "tauri/default",
+  "dep:tauri-plugin-autostart",
+  "dep:tauri-plugin-deep-link",
+  "dep:tauri-plugin-dialog",
+  "dep:tauri-plugin-opener",
+  "dep:tauri-plugin-process",
+  "dep:tauri-plugin-single-instance",
+  "dep:tauri-plugin-updater",
+]
 standalone-server = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
-tauri-plugin-autostart = "2"
-tauri-plugin-opener = "2"
-tauri-plugin-process = "2"
-tauri-plugin-updater = "2"
+tauri = { version = "2", optional = true, default-features = false, features = ["tray-icon"] }
+tauri-plugin-autostart = { version = "2", optional = true }
+tauri-plugin-opener = { version = "2", optional = true }
+tauri-plugin-process = { version = "2", optional = true }
+tauri-plugin-updater = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -68,9 +80,9 @@ rcgen = { version = "0.13", features = ["x509-parser"] }
 sha1 = "0.10"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 x509-parser = "0.16"
-tauri-plugin-dialog = "2"
-tauri-plugin-deep-link = "2"
-tauri-plugin-single-instance = "2"
+tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-deep-link = { version = "2", optional = true }
+tauri-plugin-single-instance = { version = "2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

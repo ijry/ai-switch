@@ -1,29 +1,12 @@
 use crate::app_state::AppState;
 use crate::error::ApiError;
 use crate::models::account::{NewOfficialAccount, OfficialAccount, UpdateOfficialAccount};
-use crate::models::batch::{Batch, BatchGroup, NewBatch};
+use crate::models::batch::{
+    Batch, BatchGroup, CreateAccountRequest, CreateProviderRequest, NewBatch, UpdateAccountRequest,
+};
 use crate::models::provider::{NewProvider, Provider};
 use crate::services::batch_service::BatchService;
-use serde::Deserialize;
 use tauri::State;
-
-#[derive(Debug, Deserialize)]
-pub struct CreateProviderRequest {
-    pub provider: NewProvider,
-    pub batch_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateAccountRequest {
-    pub account: NewOfficialAccount,
-    pub batch_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct UpdateAccountRequest {
-    pub id: String,
-    pub account: UpdateOfficialAccount,
-}
 
 #[tauri::command]
 pub async fn create_batch(state: State<'_, AppState>, input: NewBatch) -> Result<Batch, ApiError> {

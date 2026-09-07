@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
+use crate::models::account::{NewOfficialAccount, UpdateOfficialAccount};
+use crate::models::provider::NewProvider;
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
 pub struct Batch {
     pub id: String,
@@ -44,4 +47,22 @@ pub struct NewBatch {
     pub name: String,
     pub source: String,
     pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateProviderRequest {
+    pub provider: NewProvider,
+    pub batch_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateAccountRequest {
+    pub account: NewOfficialAccount,
+    pub batch_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateAccountRequest {
+    pub id: String,
+    pub account: UpdateOfficialAccount,
 }

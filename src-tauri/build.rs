@@ -1,5 +1,7 @@
 fn main() {
-    tauri_build::build();
+    if std::env::var_os("CARGO_FEATURE_DESKTOP").is_some() {
+        tauri_build::build();
+    }
 
     // The library test target explicitly links Tauri's generated manifest resource.
     // Keep this as a search path only so application binaries do not link it twice.

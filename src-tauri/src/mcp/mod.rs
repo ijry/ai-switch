@@ -6,7 +6,8 @@
 mod clients;
 mod model;
 mod normalize;
-mod service;
+pub(crate) mod service;
 
+#[cfg(feature = "desktop")]
 pub(crate) mod command;
 pub(crate) mod marketplace;

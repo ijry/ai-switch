@@ -4,7 +4,6 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::app_state::AppState;
-use crate::commands::batch_commands::{CreateAccountRequest, UpdateAccountRequest};
 use crate::core::sessions::{get_session_messages_core, list_sessions_core};
 use crate::core::settings::{get_settings_core, save_settings_core};
 use crate::core::terminals::{
@@ -19,6 +18,7 @@ use crate::core::usage_stats::{
 use crate::database::repositories::config_snapshot_repository::ConfigSnapshotRepository;
 use crate::error::{ApiError, AppError};
 use crate::models::batch::NewBatch;
+use crate::models::batch::{CreateAccountRequest, UpdateAccountRequest};
 use crate::models::external_client_import::{
     ImportExternalClientAccountsInput, PreviewExternalClientImportInput,
 };
@@ -125,8 +125,8 @@ pub async fn dispatch_command(
 ) -> Result<Value, ApiError> {
     match command {
         "health" => to_value(json!({ "ok": true })),
-        "mcp_scan_local" => to_value(crate::mcp::command::mcp_scan_local().await?),
-        "mcp_list_marketplaces" => to_value(crate::mcp::command::mcp_list_marketplaces().await?),
+        "mcp_scan_local" => to_value(crate::mcp::service::scan_local().map_err(ApiError::from)?),
+        "mcp_list_marketplaces" => to_value(crate::mcp::marketplace::list_marketplaces().await),
         "mcp_search_marketplace" => {
             let provider_id = required_string_arg(&args, "providerId")?;
             let query = optional_string_arg(&args, "query")?;
@@ -137,15 +137,16 @@ pub async fn dispatch_command(
                     })
                 })
                 .transpose()?;
-            to_value(crate::mcp::command::mcp_search_marketplace(provider_id, query, limit).await?)
+            to_value(
+                crate::mcp::marketplace::search(provider_id, query, limit)
+                    .await
+                    .map_err(ApiError::from)?,
+            )
         }
         "mcp_get_marketplace_server_detail" => {
             let provider_id = required_string_arg(&args, "providerId")?;
             let server_id = required_string_arg(&args, "serverId")?;
-            to_value(
-                crate::mcp::command::mcp_get_marketplace_server_detail(provider_id, server_id)
-                    .await?,
-            )
+            to_value(crate::mcp::marketplace::get_detail(provider_id, server_id).await?)
         }
         "mcp_install_from_marketplace" => {
             let provider_id = required_string_arg(&args, "providerId")?;
@@ -155,7 +156,7 @@ pub async fn dispatch_command(
             let protocol = optional_string_arg(&args, "protocol")?;
             let parameter_values = args.get("parameterValues").cloned();
             to_value(
-                crate::mcp::command::mcp_install_from_marketplace(
+                crate::mcp::marketplace::install(
                     provider_id,
                     server_id,
                     apps,
@@ -170,12 +171,15 @@ pub async fn dispatch_command(
             let server_id = required_string_arg(&args, "serverId")?;
             let spec: Value = parse_arg(&args, "spec")?;
             let apps = parse_arg(&args, "apps")?;
-            to_value(crate::mcp::command::mcp_upsert_local_server(server_id, spec, apps).await?)
+            to_value(
+                crate::mcp::service::upsert_local_server(server_id, spec, apps)
+                    .map_err(ApiError::from)?,
+            )
         }
         "mcp_set_server_apps" => {
             let server_id = required_string_arg(&args, "serverId")?;
             let apps = parse_arg(&args, "apps")?;
-            to_value(crate::mcp::command::mcp_set_server_apps(server_id, apps).await?)
+            to_value(crate::mcp::service::set_server_apps(server_id, apps).map_err(ApiError::from)?)
         }
         "mcp_remove_server" => {
             let server_id = required_string_arg(&args, "serverId")?;
@@ -185,22 +189,33 @@ pub async fn dispatch_command(
                 .map(serde_json::from_value)
                 .transpose()
                 .map_err(|error| invalid_argument("apps", Some(error.to_string())))?;
-            to_value(crate::mcp::command::mcp_remove_server(server_id, apps).await?)
+            to_value(crate::mcp::service::remove_server(server_id, apps).map_err(ApiError::from)?)
         }
-        "skills_list_agents" => to_value(crate::skills::command::skills_list_agents().await?),
+        "skills_list_agents" => to_value(crate::skills::service::list_agents()),
         "skills_list" => {
             let agent_type = parse_arg(&args, "agentType")?;
             let scope = parse_arg(&args, "scope")?;
             let workspace_path = optional_string_arg(&args, "workspacePath")?;
-            to_value(crate::skills::command::skills_list(agent_type, scope, workspace_path).await?)
+            to_value(
+                crate::skills::service::list_skills(
+                    agent_type,
+                    scope,
+                    workspace_path_ref(&workspace_path),
+                )
+                .map_err(ApiError::from)?,
+            )
         }
         "skills_list_packages" => {
             let agent_type = parse_arg(&args, "agentType")?;
             let scope = parse_arg(&args, "scope")?;
             let workspace_path = optional_string_arg(&args, "workspacePath")?;
             to_value(
-                crate::skills::command::skills_list_packages(agent_type, scope, workspace_path)
-                    .await?,
+                crate::skills::packages::list_skill_packages(
+                    agent_type,
+                    scope,
+                    workspace_path_ref(&workspace_path),
+                )
+                .map_err(ApiError::from)?,
             )
         }
         "skills_read_package" => {
@@ -209,13 +224,13 @@ pub async fn dispatch_command(
             let scope = parse_arg(&args, "scope")?;
             let workspace_path = optional_string_arg(&args, "workspacePath")?;
             to_value(
-                crate::skills::command::skills_read_package(
-                    package_id,
+                crate::skills::packages::read_skill_package(
+                    &package_id,
                     agent_type,
                     scope,
-                    workspace_path,
+                    workspace_path_ref(&workspace_path),
                 )
-                .await?,
+                .map_err(ApiError::from)?,
             )
         }
         "skills_install_package" => {
@@ -225,14 +240,14 @@ pub async fn dispatch_command(
             let workspace_path = optional_string_arg(&args, "workspacePath")?;
             let skill_ids = optional_string_array_arg(&args, "skillIds")?;
             to_value(
-                crate::skills::command::skills_install_package(
-                    package_id,
+                crate::skills::packages::install_skill_package(
+                    &package_id,
                     agent_type,
                     scope,
-                    workspace_path,
+                    workspace_path_ref(&workspace_path),
                     skill_ids,
                 )
-                .await?,
+                .map_err(ApiError::from)?,
             )
         }
         "skills_uninstall_package" => {
@@ -242,14 +257,14 @@ pub async fn dispatch_command(
             let workspace_path = optional_string_arg(&args, "workspacePath")?;
             let skill_ids = optional_string_array_arg(&args, "skillIds")?;
             to_value(
-                crate::skills::command::skills_uninstall_package(
-                    package_id,
+                crate::skills::packages::uninstall_skill_package(
+                    &package_id,
                     agent_type,
                     scope,
-                    workspace_path,
+                    workspace_path_ref(&workspace_path),
                     skill_ids,
                 )
-                .await?,
+                .map_err(ApiError::from)?,
             )
         }
         "skills_read" => {
@@ -258,8 +273,13 @@ pub async fn dispatch_command(
             let skill_id = required_string_arg(&args, "skillId")?;
             let workspace_path = optional_string_arg(&args, "workspacePath")?;
             to_value(
-                crate::skills::command::skills_read(agent_type, scope, skill_id, workspace_path)
-                    .await?,
+                crate::skills::service::read_skill(
+                    agent_type,
+                    scope,
+                    &skill_id,
+                    workspace_path_ref(&workspace_path),
+                )
+                .map_err(ApiError::from)?,
             )
         }
         "skills_save" => {
@@ -275,15 +295,15 @@ pub async fn dispatch_command(
                 .map_err(|error| invalid_argument("layout", Some(error.to_string())))?;
             let workspace_path = optional_string_arg(&args, "workspacePath")?;
             to_value(
-                crate::skills::command::skills_save(
+                crate::skills::service::save_skill(
                     agent_type,
                     scope,
                     skill_id,
                     content,
                     layout,
-                    workspace_path,
+                    workspace_path_ref(&workspace_path),
                 )
-                .await?,
+                .map_err(ApiError::from)?,
             )
         }
         "skills_delete" => {
@@ -292,8 +312,13 @@ pub async fn dispatch_command(
             let skill_id = required_string_arg(&args, "skillId")?;
             let workspace_path = optional_string_arg(&args, "workspacePath")?;
             to_value(
-                crate::skills::command::skills_delete(agent_type, scope, skill_id, workspace_path)
-                    .await?,
+                crate::skills::service::delete_skill(
+                    agent_type,
+                    scope,
+                    skill_id,
+                    workspace_path_ref(&workspace_path),
+                )
+                .map_err(ApiError::from)?,
             )
         }
         "list_batch_groups" => {
@@ -1101,6 +1126,10 @@ fn optional_string_arg(args: &Value, key: &str) -> Result<Option<String>, ApiErr
         }
         Some(_) => Err(invalid_argument(key, Some("expected string".to_string()))),
     }
+}
+
+fn workspace_path_ref(workspace_path: &Option<String>) -> Option<&std::path::Path> {
+    workspace_path.as_deref().map(std::path::Path::new)
 }
 
 fn optional_string_array_arg(args: &Value, key: &str) -> Result<Option<Vec<String>>, ApiError> {

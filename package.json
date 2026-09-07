@@ -11,14 +11,14 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "test:run": "vitest run",
-    "release:manifest:test": "node --test scripts/create-updater-manifest.test.mjs scripts/verify-updater-signatures.test.mjs scripts/stage-release-assets.test.mjs scripts/create-release-body.test.mjs scripts/create-package-manifests.test.mjs scripts/install-server.test.mjs",
+    "release:manifest:test": "node --test scripts/create-updater-manifest.test.mjs scripts/verify-updater-signatures.test.mjs scripts/stage-release-assets.test.mjs scripts/create-release-body.test.mjs scripts/create-package-manifests.test.mjs scripts/install-server.test.mjs scripts/server-linkage.test.mjs",
     "rust:check": "cd src-tauri && cargo check",
     "rust:fmt": "cd src-tauri && cargo fmt",
     "rust:fmt:check": "cd src-tauri && cargo fmt --check",
     "rust:test": "cd src-tauri && cargo test",
-    "server:build": "cd src-tauri && cargo build --features standalone-server --bin ai-switch-server",
-    "server:build:release": "cd src-tauri && cargo build --release --features standalone-server --bin ai-switch-server",
-    "server:check": "cd src-tauri && cargo check --features standalone-server --bin ai-switch-server",
+    "server:build": "cd src-tauri && cargo build --no-default-features --features standalone-server --bin ai-switch-server",
+    "server:build:release": "cd src-tauri && cargo build --release --no-default-features --features standalone-server --bin ai-switch-server",
+    "server:check": "cd src-tauri && cargo check --no-default-features --features standalone-server --bin ai-switch-server",
     "tauri:build": "tauri build"
   },
   "dependencies": {

@@ -1,5 +1,6 @@
 //! Agent Skills storage management.
 
+#[cfg(feature = "desktop")]
 pub(crate) mod command;
 pub(crate) mod frontmatter;
 pub(crate) mod model;
