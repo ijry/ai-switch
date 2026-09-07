@@ -126,7 +126,7 @@ describe("SettingsScreen", () => {
     vi.mocked(getWebServiceConfig).mockResolvedValue({
       host: "127.0.0.1",
       port: 3090,
-      token: "secret",
+      token: "secret-token-123456",
       autoStart: false,
       tailscaleEnabled: true,
       tlsEnabled: false,
@@ -386,7 +386,7 @@ describe("SettingsScreen", () => {
     vi.mocked(getWebServiceConfig).mockResolvedValue({
       host: "127.0.0.1",
       port: 3090,
-      token: "secret",
+      token: "secret-token-123456",
       autoStart: false,
       tailscaleEnabled: false,
       tlsEnabled: true,
@@ -431,5 +431,75 @@ describe("SettingsScreen", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Stop service" }));
     await waitFor(() => expect(stopWebServer).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(getTailscaleStatus).toHaveBeenCalledTimes(3));
+  });
+
+  it("explains and blocks startup when the Web token is too short", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settingsFixture);
+    vi.mocked(getWebServiceConfig).mockResolvedValue({
+      host: "127.0.0.1",
+      port: 10086,
+      token: "123456",
+      autoStart: false,
+      tailscaleEnabled: false,
+      tlsEnabled: false,
+      tlsCertPath: null,
+      tlsKeyPath: null,
+    });
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <I18nProvider initialLanguage="zh-CN">
+          <SettingsScreen />
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "启动服务" }));
+
+    expect(await screen.findByText("访问令牌至少需要 16 个字符，请更换后再启动。")).toBeInTheDocument();
+    expect(startWebServer).not.toHaveBeenCalled();
+    expect(saveWebServiceConfig).not.toHaveBeenCalled();
+  });
+
+  it("toggles and copies the Web service token", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    vi.mocked(getSettings).mockResolvedValue(settingsFixture);
+    vi.mocked(getWebServiceConfig).mockResolvedValue({
+      host: "127.0.0.1",
+      port: 3090,
+      token: "secret-token-123456",
+      autoStart: false,
+      tailscaleEnabled: false,
+      tlsEnabled: false,
+      tlsCertPath: null,
+      tlsKeyPath: null,
+    });
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <I18nProvider initialLanguage="zh-CN">
+          <SettingsScreen />
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+
+    const input = await screen.findByLabelText("访问令牌");
+    expect(input).toHaveAttribute("type", "password");
+
+    await userEvent.click(screen.getByRole("button", { name: "显示访问令牌" }));
+    expect(input).toHaveAttribute("type", "text");
+
+    await userEvent.click(screen.getByRole("button", { name: "复制访问令牌" }));
+    expect(writeText).toHaveBeenCalledWith("secret-token-123456");
+
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: undefined,
+    });
   });
 });

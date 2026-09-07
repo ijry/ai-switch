@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { getSettings } from "../../lib/api/client";
+import { TokenInput } from "./TokenInput";
 import { useI18n } from "../../lib/i18n";
 import {
   clearWebAccessToken,
@@ -102,17 +103,12 @@ export function WebAuthGate({ onAuthenticated }: WebAuthGateProps) {
           <p className="mt-1 text-[13px] text-stone-500">{t("auth.subtitle")}</p>
         </div>
 
-        <label className="flex flex-col gap-1.5 text-[12px] font-semibold text-stone-600">
-          <span>{t("auth.token")}</span>
-          <input
-            autoComplete="current-password"
-            className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-medium text-stone-900 shadow-sm outline-none motion-control focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-            onChange={(event) => setToken(event.target.value)}
-            placeholder={t("auth.tokenPlaceholder")}
-            type="password"
-            value={token}
-          />
-        </label>
+        <TokenInput
+          label={t("auth.token")}
+          onChange={setToken}
+          placeholder={t("auth.tokenPlaceholder")}
+          value={token}
+        />
 
         {error && <p className="text-[12px] font-medium text-red-700">{error}</p>}
 

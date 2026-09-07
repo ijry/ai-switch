@@ -10,6 +10,7 @@ import {
 } from "../../lib/api/client";
 import type { WebServiceConfig } from "../../lib/api/types";
 import { useI18n } from "../../lib/i18n";
+import { TokenInput } from "../auth/TokenInput";
 import { TailscaleSettings } from "./tailscale-settings";
 
 const defaultConfig: WebServiceConfig = {
@@ -23,6 +24,8 @@ const defaultConfig: WebServiceConfig = {
   tlsCertPath: null,
   tlsKeyPath: null,
 };
+
+const MINIMUM_WEB_TOKEN_LENGTH = 16;
 
 function normalizeConfig(config: WebServiceConfig): WebServiceConfig {
   return {
@@ -70,7 +73,11 @@ export function WebServiceSettings() {
 
   const startMutation = useMutation({
     mutationFn: async () => {
-      const saved = await saveWebServiceConfig(normalizeConfig(form));
+      const normalized = normalizeConfig(form);
+      if ((normalized.token?.length ?? 0) < MINIMUM_WEB_TOKEN_LENGTH) {
+        throw new Error(t("settings.webService.tokenTooShort"));
+      }
+      const saved = await saveWebServiceConfig(normalized);
       queryClient.setQueryData(["web-service-config"], saved);
       const status = await startWebServer();
       queryClient.setQueryData(["web-server-status"], status);
@@ -145,15 +152,12 @@ export function WebServiceSettings() {
             </label>
           </div>
 
-          <label className="flex flex-col gap-1.5 text-[12px] font-medium text-stone-600">
-            <span>{t("settings.webService.token")}</span>
-            <input
-              className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
-              onChange={(event) => setForm((current) => ({ ...current, token: event.target.value }))}
-              type="password"
-              value={form.token ?? ""}
-            />
-          </label>
+          <TokenInput
+            label={t("settings.webService.token")}
+            onChange={(value) => setForm((current) => ({ ...current, token: value }))}
+            value={form.token ?? ""}
+            copy
+          />
 
           <div className="flex flex-wrap gap-3">
             <label className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-medium text-stone-700">
@@ -244,7 +248,13 @@ export function WebServiceSettings() {
               <p>{t("settings.webService.stopped")}</p>
             )}
             {saveMutation.isError && <p className="mt-1 text-red-700">{t("settings.webService.saveError")}</p>}
-            {startMutation.isError && <p className="mt-1 text-red-700">{t("settings.webService.startError")}</p>}
+            {startMutation.isError && (
+              <p className="mt-1 text-red-700">
+                {startMutation.error instanceof Error && startMutation.error.message
+                  ? startMutation.error.message
+                  : t("settings.webService.startError")}
+              </p>
+            )}
             {stopMutation.isError && <p className="mt-1 text-red-700">{t("settings.webService.stopError")}</p>}
             {saveMutation.isSuccess && <p className="mt-1 text-emerald-700">{t("settings.webService.saved")}</p>}
           </div>
