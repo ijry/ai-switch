@@ -93,7 +93,7 @@ macOS 两行是两次独立的原生构建，不是一个 universal 包：arm64 
 每个目标的步骤顺序：
 
 1. **校验签名密钥** —— 如果 `TAURI_SIGNING_PRIVATE_KEY` 为空直接抛错，绝不产出未签名的更新器资源。
-2. **Linux 系统依赖** —— 仅 Linux 执行 `apt-get install`（`libwebkit2gtk-4.1-dev`、`libayatana-appindicator3-dev`、`librsvg2-dev`、`patchelf`、`libgtk-3-dev`）。
+2. **Linux 系统依赖** —— 仅 Linux 执行 `apt-get install`（`libwebkit2gtk-4.1-dev`、`libayatana-appindicator3-dev`、`librsvg2-dev`、`patchelf`、`libgtk-3-dev`、`gcc-aarch64-linux-gnu`）。
 3. **工具链** —— pnpm 10.12.4、Node 22（带 pnpm 缓存）、stable Rust、stable Go（按 `sidecar/ai-switch-tsnet/go.sum` 缓存）。
 4. **安装依赖** —— `pnpm install --frozen-lockfile`。
 5. **计算平台变量** —— 从 `rustc -vV` 取 host 三元组，推导出更新器平台标识（`windows-x86_64` / `darwin-aarch64` / `darwin-x86_64` / `linux-x86_64`）、`APP_VERSION`，以及 sidecar 与服务器二进制路径。整个 job 里没有一处写死架构：两个 macOS 目标共用同一份步骤，靠 `RUNNER_ARCH` 分流。
@@ -215,6 +215,7 @@ git tag -d v0.6.8
 - **Windows**：`ai-switch-<版本>-windows-x86_64-setup.exe`
 - **macOS**：`ai-switch-<版本>-darwin-aarch64.dmg`（Apple Silicon）与 `ai-switch-<版本>-darwin-x86_64.dmg`（Intel）
 - **Linux**：`ai-switch-<版本>-linux-x86_64.AppImage` 与 `ai-switch-<版本>-linux-x86_64.deb`
+- **Linux ARM64 独立服务器**：`ai-switch-server_<tag>_linux-aarch64.zip` 与对应 sidecar 归档
 - **每个目标**：`ai-switch-server_<tag>_<平台>.zip`（独立服务器）
 - **每个目标**：`ai-switch-tsnet_<tag>_<平台>.zip`（Tailscale sidecar）
 - **macOS**：`ai-switch-updater-<版本>-darwin-aarch64.app.tar.gz` 与 `ai-switch-updater-<版本>-darwin-x86_64.app.tar.gz`（只有自动更新会下载）

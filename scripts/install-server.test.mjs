@@ -34,7 +34,8 @@ test("Linux installer provisions a protected systemd service on shared port", ()
   assert.match(installer, /grep -q "not found"/);
   assert.match(installer, /apt-get install -y libwebkit2gtk-4\.1-0/);
   assert.match(installer, /systemctl stop ai-switch-server\.service/);
-  assert.doesNotMatch(installer, /aarch64|arm64/);
+  assert.match(installer, /x86_64\|amd64\) ARCH="x86_64"/);
+  assert.match(installer, /aarch64\|arm64\) ARCH="aarch64"/);
   assert.doesNotMatch(installer, /nginx|certbot|ufw/i);
 
   assert.match(service, /^User=ai-switch$/m);
@@ -49,6 +50,10 @@ test("only the Linux server archive receives installer and service unit", () => 
   assert.match(workflow, /matrix\.label[^\n]+Linux/);
   assert.match(workflow, /Copy-Item scripts\/install-server\.sh/);
   assert.match(workflow, /Copy-Item deploy\/ai-switch-server\.service/);
+  assert.match(workflow, /aarch64-unknown-linux-gnu/);
+  assert.match(workflow, /gcc-aarch64-linux-gnu/);
+  assert.match(workflow, /GOARCH=arm64/);
+  assert.match(workflow, /linux-aarch64/);
 
   const packageJson = fs.readFileSync(new URL("../package.json", import.meta.url), "utf8");
   assert.match(packageJson, /release:manifest:test[^\n]*install-server\.test\.mjs/);
@@ -65,7 +70,9 @@ test("standalone server documentation does not require WebKitGTK", () => {
   );
 
   assert.match(zhDoc, /不依赖 WebKitGTK/);
+  assert.match(zhDoc, /Linux x86_64 \/ aarch64/);
   assert.doesNotMatch(zhDoc, /仍依赖 WebKitGTK/);
   assert.match(enDoc, /does not require WebKitGTK/);
+  assert.match(enDoc, /x86_64 or aarch64/);
   assert.doesNotMatch(enDoc, /still depends on the WebKitGTK/);
 });

@@ -36,7 +36,7 @@ If Gatekeeper blocks the first launch, that is expected — see [macOS won't ope
 
 ### Linux
 
-Two assets, both **x86_64**:
+The desktop packages are currently **x86_64**:
 
 - **`ai-switch-<version>-linux-x86_64.deb`** — on Debian/Ubuntu, install with `sudo apt install ./<filename>`
 - **`ai-switch-<version>-linux-x86_64.AppImage`** — no installation; `chmod +x` and run
@@ -52,7 +52,7 @@ chmod +x ./ai-switch-0.8.0-linux-x86_64.AppImage
 
 AI Switch is a Tauri app and depends on the system WebKitGTK. If your distribution doesn't ship it, install it yourself — on Debian/Ubuntu that means `libwebkit2gtk-4.1-0`, `libgtk-3-0`, and `librsvg2-2`, plus ayatana appindicator for the tray icon. The `.deb` declares its dependencies so `apt` resolves them automatically; with the AppImage you have to check manually.
 
-If you do not need the desktop shell and only want the standalone web service on an x86_64 Linux server, use the one-click installer:
+If you do not need the desktop shell and only want the standalone web service on an x86_64 or aarch64 Linux server, use the one-click installer; it detects the current architecture automatically:
 
 ```bash
 AI_SWITCH_PORT=19527 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ijry/ai-switch/main/scripts/install-server.sh)"

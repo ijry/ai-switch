@@ -67,7 +67,13 @@ describe("standalone server release archive", () => {
   it("ships the tailscale sidecar under the name the server looks for", () => {
     // tailscale_sidecar.rs falls back to a sibling `ai-switch-tsnet[.exe]`, not
     // the target-triple name the build produces.
-    expect(workflow).toContain('"ai-switch-tsnet$env:EXE_SUFFIX"');
+    expect(workflow).toContain('"ai-switch-tsnet$ExeSuffix"');
+  });
+
+  it("builds and stages a Linux ARM64 standalone server archive", () => {
+    expect(workflow).toContain("rustup target add aarch64-unknown-linux-gnu");
+    expect(workflow).toContain("GOARCH=arm64 go build");
+    expect(workflow).toContain('-Platform "linux-aarch64"');
   });
 });
 

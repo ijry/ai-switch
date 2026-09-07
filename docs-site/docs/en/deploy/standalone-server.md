@@ -138,7 +138,7 @@ This only permits startup; it does not disable panel-token or compute-pool API-k
 
 ## One-click Linux installation
 
-On an x86_64 Linux server, install the latest Release with:
+On an x86_64 or aarch64 Linux server, install the latest Release with the command below; the installer detects the current architecture automatically:
 
 ```bash
 AI_SWITCH_PORT=19527 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ijry/ai-switch/main/scripts/install-server.sh)"

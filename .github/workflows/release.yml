@@ -147,7 +147,8 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
-            libgtk-3-dev
+            libgtk-3-dev \
+            gcc-aarch64-linux-gnu
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -200,6 +201,10 @@ jobs:
           "APP_VERSION=$("${{ github.ref_name }}" -replace '^v', '')" >> $env:GITHUB_ENV
           "SIDECAR_BIN=src-tauri/binaries/ai-switch-tsnet-$hostTriple$exeSuffix" >> $env:GITHUB_ENV
           "SERVER_BIN=src-tauri/target/release/ai-switch-server$exeSuffix" >> $env:GITHUB_ENV
+          if ($env:RUNNER_OS -eq "Linux") {
+            "SIDECAR_ARM64_BIN=src-tauri/binaries/ai-switch-tsnet-aarch64-unknown-linux-gnu" >> $env:GITHUB_ENV
+            "SERVER_ARM64_BIN=src-tauri/target/aarch64-unknown-linux-gnu/release/ai-switch-server" >> $env:GITHUB_ENV
+          }
 
       - name: Run frontend checks
         run: |
@@ -244,6 +249,21 @@ jobs:
       - name: Build standalone server
         run: pnpm server:build:release
 
+      - name: Build Linux ARM64 standalone server
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          rustup target add aarch64-unknown-linux-gnu
+          GOARCH=arm64 go build -trimpath -ldflags="-s -w" \
+            -o "$SIDECAR_ARM64_BIN" ./sidecar/ai-switch-tsnet
+          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+          export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+          export AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
+          cd src-tauri
+          cargo build --release --target aarch64-unknown-linux-gnu \
+            --no-default-features --features standalone-server \
+            --bin ai-switch-server
+
       - name: Stage release assets
         shell: pwsh
         run: |
@@ -263,35 +283,55 @@ jobs:
             throw "Staging the Tauri bundle assets failed."
           }
 
-          # The standalone server has no Tauri resource map, so the frontend has
-          # to travel with it: resolve_static_dir() looks for a sibling web/ and
-          # a bare binary leaves the browser on a JSON 404 instead of the UI.
-          $serverStage = "server-bundle"
-          if (Test-Path $serverStage) { Remove-Item -Recurse -Force $serverStage }
-          New-Item -ItemType Directory -Force $serverStage | Out-Null
-          Copy-Item $env:SERVER_BIN (Join-Path $serverStage (Split-Path $env:SERVER_BIN -Leaf))
-          Copy-Item $env:SIDECAR_BIN (Join-Path $serverStage "ai-switch-tsnet$env:EXE_SUFFIX")
-          Copy-Item dist (Join-Path $serverStage "web") -Recurse
-          if (-not (Test-Path (Join-Path $serverStage "web/index.html"))) {
-            throw "Server bundle is missing web/index.html"
-          }
-          # The installer and systemd unit are Linux deployment helpers. Keep
-          # them out of desktop-platform archives, where they are not usable.
-          if ("${{ matrix.label }}" -eq "Linux") {
-            Copy-Item scripts/install-server.sh (Join-Path $serverStage "install-server.sh")
-            Copy-Item deploy/ai-switch-server.service (Join-Path $serverStage "ai-switch-server.service")
+          function Stage-ServerArchive {
+            param(
+              [string] $ServerBin,
+              [string] $SidecarBin,
+              [string] $Platform,
+              [string] $ExeSuffix,
+              [bool] $IncludeLinuxHelpers
+            )
+            $serverStage = "server-bundle-$Platform"
+            if (Test-Path $serverStage) { Remove-Item -Recurse -Force $serverStage }
+            New-Item -ItemType Directory -Force $serverStage | Out-Null
+            New-Item -ItemType Directory -Force "release-assets/$Platform" | Out-Null
+            Copy-Item $ServerBin (Join-Path $serverStage (Split-Path $ServerBin -Leaf))
+            Copy-Item $SidecarBin (Join-Path $serverStage "ai-switch-tsnet$ExeSuffix")
+            Copy-Item dist (Join-Path $serverStage "web") -Recurse
+            if (-not (Test-Path (Join-Path $serverStage "web/index.html"))) {
+              throw "Server bundle is missing web/index.html"
+            }
+            if ($IncludeLinuxHelpers) {
+              Copy-Item scripts/install-server.sh (Join-Path $serverStage "install-server.sh")
+              Copy-Item deploy/ai-switch-server.service (Join-Path $serverStage "ai-switch-server.service")
+            }
+            $serverArchive = Join-Path "release-assets/$Platform" "ai-switch-server_${tag}_${Platform}.zip"
+            $sidecarArchive = Join-Path "release-assets/$Platform" "ai-switch-tsnet_${tag}_${Platform}.zip"
+            Compress-Archive -Path "$serverStage/*" -DestinationPath $serverArchive -Force
+            Compress-Archive -Path $SidecarBin -DestinationPath $sidecarArchive -Force
           }
 
-          $serverArchive = Join-Path $dest "ai-switch-server_${tag}_$env:UPDATER_PLATFORM.zip"
-          $sidecarArchive = Join-Path $dest "ai-switch-tsnet_${tag}_$env:UPDATER_PLATFORM.zip"
-          Compress-Archive -Path "$serverStage/*" -DestinationPath $serverArchive -Force
-          Compress-Archive -Path $env:SIDECAR_BIN -DestinationPath $sidecarArchive -Force
+          Stage-ServerArchive `
+            -ServerBin $env:SERVER_BIN `
+            -SidecarBin $env:SIDECAR_BIN `
+            -Platform $env:UPDATER_PLATFORM `
+            -ExeSuffix $env:EXE_SUFFIX `
+            -IncludeLinuxHelpers ("${{ matrix.label }}" -eq "Linux")
+
+          if ("${{ matrix.label }}" -eq "Linux") {
+            Stage-ServerArchive `
+              -ServerBin $env:SERVER_ARM64_BIN `
+              -SidecarBin $env:SIDECAR_ARM64_BIN `
+              -Platform "linux-aarch64" `
+              -ExeSuffix "" `
+              -IncludeLinuxHelpers $true
+          }
 
       - name: Upload release assets
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.UPDATER_PLATFORM }}
-          path: release-assets/${{ env.UPDATER_PLATFORM }}
+          path: release-assets/**
           if-no-files-found: error
 
   publish:

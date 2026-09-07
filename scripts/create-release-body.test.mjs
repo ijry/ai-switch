@@ -35,6 +35,7 @@ test("puts a labelled download table above the changelog", async () => {
     "linux-x86_64/ai-switch-0.8.0-linux-x86_64.AppImage",
     "linux-x86_64/ai-switch-0.8.0-linux-x86_64.deb",
     "linux-x86_64/ai-switch-server_v0.8.0_linux-x86_64.zip",
+    "linux-aarch64/ai-switch-server_v0.8.0_linux-aarch64.zip",
     "latest.json",
   ]);
 
@@ -67,10 +68,34 @@ test("puts a labelled download table above the changelog", async () => {
     // Updater-only payloads and the sidecar stay out of the table.
     assert.doesNotMatch(body, /app\.tar\.gz|tsnet/);
     assert.match(body, /独立服务器.+Standalone server: \[Windows \(x64\)\]/);
+    assert.match(body, /Standalone server:.+\[Linux \(ARM64\)\]/);
     assert.match(
       body,
       /AI_SWITCH_PORT=19527 \/bin\/bash -c "\$\(curl -fsSL https:\/\/raw\.githubusercontent\.com\/ijry\/ai-switch\/main\/scripts\/install-server\.sh\)"/,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("shows the one-click installer when only the Linux ARM64 server is available", async () => {
+  const root = await assetsFixture([
+    "linux-aarch64/ai-switch-server_v0.8.0_linux-aarch64.zip",
+  ]);
+
+  try {
+    const output = path.join(root, "release-body.md");
+    await createReleaseBody({
+      assetsDir: root,
+      tag: "v0.8.0",
+      repo: "ijry/ai-switch",
+      notesFile: path.join(root, "release-notes.md"),
+      output,
+    });
+
+    const body = await readFile(output, "utf8");
+    assert.match(body, /Linux one-click install/);
+    assert.match(body, /install-server\.sh/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

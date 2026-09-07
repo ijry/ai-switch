@@ -138,7 +138,7 @@ export AI_SWITCH_ALLOW_INSECURE_HTTP=1
 
 ## Linux 一键安装
 
-Linux x86_64 服务器可以直接运行下面的命令安装最新 Release：
+Linux x86_64 / aarch64 服务器可以直接运行下面的命令安装最新 Release；安装器会自动识别当前架构：
 
 ```bash
 AI_SWITCH_PORT=19527 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ijry/ai-switch/main/scripts/install-server.sh)"

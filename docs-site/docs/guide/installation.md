@@ -36,7 +36,7 @@ AI Switch 桌面端从 GitHub Releases 获取，三个平台都有预构建的�
 
 ### Linux
 
-有两种资产，都是 **x86_64**：
+桌面端安装包当前是 **x86_64**：
 
 - **`ai-switch-<版本>-linux-x86_64.deb`** —— Debian / Ubuntu 系用 `sudo apt install ./<文件名>` 安装
 - **`ai-switch-<版本>-linux-x86_64.AppImage`** —— 不用安装，`chmod +x` 之后直接运行
@@ -52,7 +52,7 @@ chmod +x ./ai-switch-0.8.0-linux-x86_64.AppImage
 
 AI Switch 是 Tauri 应用，依赖系统的 WebKitGTK。发行版没预装的话需要自己补上（Debian / Ubuntu 上对应 `libwebkit2gtk-4.1-0`、`libgtk-3-0`、`librsvg2-2`，托盘图标还需要 ayatana appindicator）。`.deb` 会声明依赖，`apt` 会自动处理；用 AppImage 的话要手动确认。
 
-如果不需要桌面端，只想在 Linux x86_64 服务器上运行独立 Web 服务，可以用一键安装命令：
+如果不需要桌面端，只想在 Linux x86_64 或 aarch64 服务器上运行独立 Web 服务，可以用一键安装命令；脚本会自动识别当前架构：
 
 ```bash
 AI_SWITCH_PORT=19527 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ijry/ai-switch/main/scripts/install-server.sh)"
