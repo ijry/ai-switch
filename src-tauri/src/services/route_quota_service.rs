@@ -587,12 +587,26 @@ fn quota_response_snippet(body: &str) -> String {
 }
 
 pub fn parse_codex_quota_snapshot(value: &Value) -> Option<OfficialQuotaSnapshot> {
-    if let Some(rate_limits) = value.get("rate_limits").or_else(|| value.get("rateLimits")) {
-        if let Some(snapshot) = parse_codex_quota_snapshot(rate_limits) {
-            return Some(snapshot);
-        }
+    let nested_snapshot = value
+        .get("rate_limits")
+        .or_else(|| value.get("rateLimits"))
+        .and_then(parse_codex_quota_snapshot);
+    let mut snapshot = nested_snapshot.or_else(|| parse_codex_quota_snapshot_local(value));
+
+    if snapshot.is_none() && has_codex_quota_signal(value) {
+        snapshot = Some(snapshot_with_primary_remaining(
+            subscription_type_from(value),
+            None,
+        ));
     }
 
+    snapshot.map(|mut snapshot| {
+        merge_codex_snapshot_metadata(&mut snapshot, value);
+        snapshot
+    })
+}
+
+fn parse_codex_quota_snapshot_local(value: &Value) -> Option<OfficialQuotaSnapshot> {
     let subscription_type = subscription_type_from(value);
 
     // Preferred ChatGPT/Codex WHAM shape.
@@ -734,6 +748,8 @@ fn has_codex_quota_signal(value: &Value) -> bool {
         || value.get("spendControl").is_some()
         || value.get("additional_rate_limits").is_some()
         || value.get("additionalRateLimits").is_some()
+        || value.get("rate_limit_reset_credits").is_some()
+        || value.get("rateLimitResetCredits").is_some()
 }
 
 fn snapshot_with_primary_remaining(
@@ -749,6 +765,10 @@ fn snapshot_with_primary_remaining(
         quota_remaining: primary_remain,
         quota_limit: None,
         quota_used: None,
+        credits_has_credits: None,
+        credits_unlimited: None,
+        credits_balance: None,
+        rate_limit_reset_credits_available_count: None,
     }
 }
 
@@ -842,6 +862,10 @@ pub fn parse_grok_quota_snapshot(value: &Value) -> Option<OfficialQuotaSnapshot>
         quota_remaining: primary,
         quota_limit,
         quota_used,
+        credits_has_credits: None,
+        credits_unlimited: None,
+        credits_balance: None,
+        rate_limit_reset_credits_available_count: None,
     })
 }
 
@@ -939,6 +963,64 @@ fn merge_windows(
         quota_remaining: primary_remain,
         quota_limit: primary.as_ref().and_then(|item| item.limit),
         quota_used: primary.as_ref().and_then(|item| item.used),
+        credits_has_credits: None,
+        credits_unlimited: None,
+        credits_balance: None,
+        rate_limit_reset_credits_available_count: None,
+    }
+}
+
+fn merge_codex_snapshot_metadata(snapshot: &mut OfficialQuotaSnapshot, value: &Value) {
+    if snapshot.subscription_type.is_none() {
+        snapshot.subscription_type = subscription_type_from(value);
+    }
+    merge_codex_credit_fields(snapshot, value);
+}
+
+fn merge_codex_credit_fields(snapshot: &mut OfficialQuotaSnapshot, value: &Value) {
+    let Some(credits) = value.get("credits") else {
+        if let Some(count) = reset_credits_available_count(value) {
+            snapshot.rate_limit_reset_credits_available_count = Some(count);
+        }
+        return;
+    };
+
+    if let Some(has_credits) = bool_value_any(credits, &["has_credits", "hasCredits"]) {
+        snapshot.credits_has_credits = Some(has_credits);
+    }
+    if let Some(unlimited) = bool_value_any(credits, &["unlimited"]) {
+        snapshot.credits_unlimited = Some(unlimited);
+    }
+    if let Some(balance) = scalar_text(
+        credits
+            .get("balance")
+            .or_else(|| credits.get("credit_balance"))
+            .or_else(|| credits.get("creditBalance")),
+    ) {
+        snapshot.credits_balance = Some(balance);
+    }
+    if let Some(count) = reset_credits_available_count(value) {
+        snapshot.rate_limit_reset_credits_available_count = Some(count);
+    }
+}
+
+fn reset_credits_available_count(value: &Value) -> Option<i64> {
+    let reset_credits = value
+        .get("rate_limit_reset_credits")
+        .or_else(|| value.get("rateLimitResetCredits"))?;
+    first_i64(reset_credits, &["available_count", "availableCount"])
+}
+
+fn bool_value_any(value: &Value, keys: &[&str]) -> Option<bool> {
+    keys.iter().find_map(|key| bool_value(value, key))
+}
+
+fn scalar_text(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::String(text) if !text.trim().is_empty() => Some(text.trim().to_string()),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        _ => None,
     }
 }
 
@@ -1232,6 +1314,183 @@ mod tests {
     }
 
     #[test]
+    fn parse_codex_credits_and_reset_credit_count_supports_snake_and_camel_case() {
+        let snake = json!({
+            "plan_type": "k12",
+            "rate_limits": {
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 25,
+                        "reset_at": 1780000000
+                    }
+                }
+            },
+            "credits": {
+                "has_credits": true,
+                "unlimited": false,
+                "balance": "12.34"
+            },
+            "rate_limit_reset_credits": {
+                "available_count": 3
+            }
+        });
+        let snapshot = parse_codex_quota_snapshot(&snake).expect("snake-case snapshot");
+        assert_eq!(snapshot.credits_has_credits, Some(true));
+        assert_eq!(snapshot.credits_unlimited, Some(false));
+        assert_eq!(snapshot.credits_balance.as_deref(), Some("12.34"));
+        assert_eq!(snapshot.rate_limit_reset_credits_available_count, Some(3));
+
+        let camel = json!({
+            "planType": "k12",
+            "rateLimits": {
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 25,
+                        "resetAt": 1780000000
+                    }
+                }
+            },
+            "credits": {
+                "hasCredits": true,
+                "unlimited": true,
+                "balance": 7.5
+            },
+            "rateLimitResetCredits": {
+                "availableCount": 0
+            }
+        });
+        let snapshot = parse_codex_quota_snapshot(&camel).expect("camel-case snapshot");
+        assert_eq!(snapshot.credits_has_credits, Some(true));
+        assert_eq!(snapshot.credits_unlimited, Some(true));
+        assert_eq!(snapshot.credits_balance.as_deref(), Some("7.5"));
+        assert_eq!(snapshot.rate_limit_reset_credits_available_count, Some(0));
+    }
+
+    #[test]
+    fn parse_codex_keeps_top_level_credit_metadata_when_rate_limits_are_nested() {
+        let value = json!({
+            "plan_type": "k12",
+            "rate_limits": {
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 25,
+                        "reset_at": 1780000000
+                    }
+                }
+            },
+            "credits": {
+                "has_credits": true,
+                "unlimited": false,
+                "balance": "12.34"
+            },
+            "rate_limit_reset_credits": {
+                "available_count": 3
+            }
+        });
+
+        let snapshot = parse_codex_quota_snapshot(&value).expect("snapshot");
+        assert_eq!(snapshot.primary_remain, Some(75));
+        assert_eq!(snapshot.credits_balance.as_deref(), Some("12.34"));
+        assert_eq!(snapshot.rate_limit_reset_credits_available_count, Some(3));
+    }
+
+    #[test]
+    fn parse_codex_credits_and_reset_card_count() {
+        let value = json!({
+            "plan_type": "plus",
+            "credits": {
+                "has_credits": true,
+                "unlimited": false,
+                "balance": "12.34"
+            },
+            "rate_limit_reset_credits": { "available_count": 0 }
+        });
+
+        let snapshot = parse_codex_quota_snapshot(&value).expect("snapshot");
+        assert_eq!(snapshot.credits_has_credits, Some(true));
+        assert_eq!(snapshot.credits_unlimited, Some(false));
+        assert_eq!(snapshot.credits_balance.as_deref(), Some("12.34"));
+        assert_eq!(snapshot.rate_limit_reset_credits_available_count, Some(0));
+        assert_eq!(snapshot.primary_remain, None);
+    }
+
+    #[test]
+    fn parse_codex_credits_camel_case_and_nested_rate_limits() {
+        let value = json!({
+            "planType": "pro",
+            "credits": { "hasCredits": true, "unlimited": true, "balance": 99.5 },
+            "rateLimits": {
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 20,
+                        "limitWindowSeconds": 18000,
+                        "resetAt": 1780000000
+                    }
+                },
+                "rateLimitResetCredits": { "availableCount": 3 }
+            }
+        });
+
+        let snapshot = parse_codex_quota_snapshot(&value).expect("snapshot");
+        assert_eq!(snapshot.subscription_type.as_deref(), Some("pro"));
+        assert_eq!(snapshot.primary_remain, Some(80));
+        assert_eq!(snapshot.credits_has_credits, Some(true));
+        assert_eq!(snapshot.credits_unlimited, Some(true));
+        assert_eq!(snapshot.credits_balance.as_deref(), Some("99.5"));
+        assert_eq!(snapshot.rate_limit_reset_credits_available_count, Some(3));
+    }
+
+    #[test]
+    fn parse_codex_has_credits_without_balance_keeps_snapshot() {
+        let value = json!({ "credits": { "has_credits": true } });
+        let snapshot = parse_codex_quota_snapshot(&value).expect("snapshot");
+        assert_eq!(snapshot.credits_has_credits, Some(true));
+        assert_eq!(snapshot.credits_unlimited, None);
+        assert_eq!(snapshot.credits_balance, None);
+        assert_eq!(snapshot.primary_remain, None);
+    }
+
+    #[test]
+    fn apply_snapshot_persists_codex_credit_metadata() {
+        let snapshot = OfficialQuotaSnapshot {
+            subscription_type: Some("plus".to_string()),
+            primary_remain: None,
+            weekly_remain: None,
+            reset_primary: None,
+            reset_weekly: None,
+            quota_remaining: None,
+            quota_limit: None,
+            quota_used: None,
+            credits_has_credits: Some(true),
+            credits_unlimited: Some(false),
+            credits_balance: Some("12.34".to_string()),
+            rate_limit_reset_credits_available_count: Some(0),
+        };
+
+        let next = apply_official_quota_snapshot("{}", &snapshot).expect("config");
+        let config: Value = serde_json::from_str(&next).expect("config json");
+        assert_eq!(config["credits_has_credits"], json!(true));
+        assert_eq!(config["credits_unlimited"], json!(false));
+        assert_eq!(config["credits_balance"], json!("12.34"));
+        assert_eq!(config["rate_limit_reset_credits_available_count"], json!(0));
+    }
+
+    #[test]
+    fn parse_codex_nested_rate_limits_keeps_top_level_credits() {
+        let value = json!({
+            "credits": { "has_credits": true, "balance": "4" },
+            "rate_limits": {
+                "rate_limit": {
+                    "primary_window": { "used_percent": 50 }
+                }
+            }
+        });
+        let snapshot = parse_codex_quota_snapshot(&value).expect("snapshot");
+        assert_eq!(snapshot.primary_remain, Some(50));
+        assert_eq!(snapshot.credits_has_credits, Some(true));
+        assert_eq!(snapshot.credits_balance.as_deref(), Some("4"));
+    }
+    #[test]
     fn parse_claude_utilization_percent() {
         let value = json!({
             "five_hour": { "utilization": 0.25, "resets_at": "2026-07-22T12:00:00Z" },
@@ -1283,6 +1542,10 @@ mod tests {
             quota_remaining: Some(0),
             quota_limit: Some(1000),
             quota_used: Some(1000),
+            credits_has_credits: None,
+            credits_unlimited: None,
+            credits_balance: None,
+            rate_limit_reset_credits_available_count: None,
         };
         let next = apply_official_quota_snapshot("{}", &snapshot).expect("config");
         assert!(!is_route_credential_quota_available(&next));

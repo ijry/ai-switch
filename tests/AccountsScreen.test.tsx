@@ -25,6 +25,7 @@ import {
   listRouteCredentials,
   listRouteCredentialPage,
   reorderRouteCredentials,
+  refreshRouteCredentialQuota,
   refreshRouteCredentialRelayBalance,
   refreshRouteCredentialsQuota,
   refreshRouteCredentialsRelayBalance,
@@ -98,6 +99,7 @@ vi.mock("../src/lib/api/client", () => ({
   listRouteCredentials: vi.fn(),
   listRouteCredentialPage: vi.fn(),
   reorderRouteCredentials: vi.fn(),
+  refreshRouteCredentialQuota: vi.fn(),
   refreshRouteCredentialRelayBalance: vi.fn(),
   refreshRouteCredentialsQuota: vi.fn(),
   refreshRouteCredentialsRelayBalance: vi.fn(),
@@ -505,6 +507,7 @@ describe("AccountsScreen", () => {
     vi.mocked(listRouteCredentials).mockReset();
     vi.mocked(listRouteCredentialPage).mockReset();
     vi.mocked(reorderRouteCredentials).mockReset();
+    vi.mocked(refreshRouteCredentialQuota).mockReset();
     vi.mocked(refreshRouteCredentialsQuota).mockReset();
     vi.mocked(restoreRouteCredentials).mockReset();
     vi.mocked(routePoolTestModel).mockReset();
@@ -626,6 +629,12 @@ describe("AccountsScreen", () => {
     vi.mocked(getSettings).mockResolvedValue(settingsFixture);
     vi.mocked(saveSettings).mockImplementation(async (settings) => settings);
     vi.mocked(archiveRouteCredentials).mockResolvedValue(undefined);
+    vi.mocked(refreshRouteCredentialQuota).mockResolvedValue({
+      credential: credentialsFixture[0],
+      updated: false,
+      source: "none",
+      message: null,
+    });
     vi.mocked(refreshRouteCredentialsQuota).mockResolvedValue([]);
     vi.mocked(restoreRouteCredentials).mockResolvedValue(undefined);
     poolStateByPlatform = new Map<string, string[]>([["codex", []]]);
@@ -861,6 +870,7 @@ describe("AccountsScreen", () => {
         showModelList: false,
         showRequestStats: false,
         showLatencyStats: false,
+        showResetTime: true,
       }),
     );
 
@@ -1444,6 +1454,120 @@ describe("AccountsScreen", () => {
     expect(window.localStorage.getItem(ACCOUNT_DISPLAY_PREFERENCES_STORAGE_KEY)).toContain(
       '"showLatencyStats":true',
     );
+  });
+
+  it("places reset time after request duration and lets the refresh menu hide it", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      {
+        ...credentialsFixture[0],
+        reset_primary: "2026-09-07T12:00:00Z",
+        last_duration_ms: 384,
+      },
+    ]);
+    window.localStorage.setItem(
+      ACCOUNT_DISPLAY_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({
+        showAccountType: false,
+        showModelList: false,
+        showRequestStats: true,
+        showLatencyStats: true,
+      }),
+    );
+    renderScreen();
+
+    const row = await screen.findByLabelText("放置在 Team Account 前");
+    const latency = within(row).getByTestId("account-latency-cred-official-1");
+    const reset = within(row).getByTestId("account-reset-time-cred-official-1");
+    expect(latency.compareDocumentPosition(reset) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    await userEvent.click(screen.getByLabelText("打开刷新菜单"));
+    const toggle = screen.getByLabelText("显示重置时间");
+    expect(toggle).toBeChecked();
+    await userEvent.click(toggle);
+    expect(within(row).queryByTestId("account-reset-time-cred-official-1")).not.toBeInTheDocument();
+  });
+
+  it("keeps reset time after duration in card footer", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      {
+        ...credentialsFixture[0],
+        reset_primary: "2026-09-07T12:00:00Z",
+        last_duration_ms: 384,
+      },
+    ]);
+    window.localStorage.setItem(
+      ACCOUNT_DISPLAY_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({
+        showAccountType: false,
+        showModelList: false,
+        showRequestStats: true,
+        showLatencyStats: true,
+        showResetTime: true,
+      }),
+    );
+    renderScreen();
+    await userEvent.click(screen.getByRole("button", { name: "卡片模式" }));
+
+    const card = await screen.findByTestId("account-card-cred-official-1");
+    const latency = within(card).getByTestId("account-latency-cred-official-1");
+    const reset = within(card).getByTestId("account-reset-time-cred-official-1");
+    expect(latency.compareDocumentPosition(reset) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("shows Codex credits and reset-card count only when the API returns them", async () => {
+    vi.mocked(listRouteCredentials).mockResolvedValue([
+      {
+        ...credentialsFixture[0],
+        primary_remain: 82,
+        config_json: JSON.stringify({
+          credits_has_credits: true,
+          credits_unlimited: false,
+          credits_balance: "12.34",
+          rate_limit_reset_credits_available_count: 3,
+        }),
+      },
+      credentialsFixture[1],
+    ]);
+    renderScreen();
+
+    const row = await screen.findByLabelText("放置在 Team Account 前");
+    expect(within(row).getByTestId("account-credits-cred-official-1")).toHaveTextContent("充值额度 12.34");
+    expect(within(row).getByTestId("account-reset-credits-cred-official-1")).toHaveTextContent("额度卡 3 次");
+    expect(within(row).getByText("5H额度 82")).toBeInTheDocument();
+    expect(within(row).queryByText(/主额度/)).not.toBeInTheDocument();
+    const apiRow = screen.getByLabelText("放置在 API Account 前");
+    expect(within(apiRow).queryByTestId("account-credits-cred-api-1")).not.toBeInTheDocument();
+    expect(within(apiRow).queryByTestId("account-reset-credits-cred-api-1")).not.toBeInTheDocument();
+  });
+
+  it("shows the quota refresh success message for three seconds", async () => {
+    vi.mocked(refreshRouteCredentialQuota).mockResolvedValue({
+      credential: {
+        ...credentialsFixture[0],
+        config_json: JSON.stringify({ credits_has_credits: true, credits_balance: "12.34" }),
+      },
+      updated: true,
+      source: "codex.default_wham_usage",
+      message: null,
+    });
+    renderScreen();
+
+    await screen.findByText("Team Account");
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByLabelText("刷新 Team Account 额度"));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("已更新额度（codex.default_wham_usage）")).toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2999);
+    });
+    expect(screen.getByText("已更新额度（codex.default_wham_usage）")).toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(screen.queryByText("已更新额度（codex.default_wham_usage）")).not.toBeInTheDocument();
   });
 
   it("keeps sub-second durations in milliseconds and says when no average exists", async () => {
