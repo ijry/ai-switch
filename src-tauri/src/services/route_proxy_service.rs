@@ -5,9 +5,8 @@ use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepo
 use crate::error::{ApiError, AppError};
 use crate::models::platform::{ApiDialect, CapabilityRule, PlatformId, PlatformOperation};
 use crate::models::route_credential::{
-    is_synthetic_route_alias, normalize_anthropic_api_key_field, ModelMapping,
-    RouteCredentialFailurePolicy, ANTHROPIC_API_KEY_FIELD, ANTHROPIC_AUTH_TOKEN_FIELD,
-    CLAUDE_ONE_M_SUFFIX,
+    normalize_anthropic_api_key_field, ModelMapping, RouteCredentialFailurePolicy,
+    ANTHROPIC_API_KEY_FIELD, ANTHROPIC_AUTH_TOKEN_FIELD, CLAUDE_ONE_M_SUFFIX,
 };
 use crate::models::route_credential_model::{
     FailureScope, RouteCredentialModelState, MODEL_STATUS_OK,
@@ -3071,19 +3070,8 @@ fn filter_candidates_for_rule(
 
 /// The capability the router judges a candidate by.
 ///
-/// `official` accounts lose their synthetic aliases: `build_official_upstream_request`
-/// never applies model mappings, so an invented alias would reach the vendor
-/// verbatim and 404. Dropping those entries keeps an alias-only official config
-/// collapsed to the baseline-only wildcard it behaved as before the aliases
-/// existed.
 fn candidate_capability(candidate: &PoolCandidate) -> ModelCapability {
-    let mut capability = parse_model_capability(&candidate.credential.config_json);
-    if candidate.credential.kind == "official" {
-        capability
-            .mappings
-            .retain(|mapping| !is_synthetic_route_alias(&mapping.from));
-    }
-    capability
+    parse_model_capability(&candidate.credential.config_json)
 }
 
 /// Resolve a precise-mode model id (`<账号前缀>/<别名>`) to the one account it names.
@@ -3791,6 +3779,8 @@ fn build_official_upstream_request(
     let platform = PlatformId::parse(platform).map_err(format_app_error)?;
     PlatformCapabilityService::require(platform, PlatformOperation::OfficialAccountRouting)
         .map_err(format_app_error)?;
+    let mappings = parse_model_capability_value(config).mappings;
+    let rewritten_body = apply_model_mappings(body, &mappings);
     // Apply credential-provided headers first (CPA may ship extra headers).
     apply_config_headers(headers, config)?;
 
@@ -3844,17 +3834,18 @@ fn build_official_upstream_request(
     }
     // Codex's backend answers a `stream: true` body with SSE, and rejects an
     // Accept header that still says JSON.
-    if platform == PlatformId::Codex && request_body_requests_stream(body) {
+    if platform == PlatformId::Codex && request_body_requests_stream(&rewritten_body) {
         insert_header(headers, "accept", "text/event-stream")?;
     }
     let target_url = build_target_url(base_url, path, query);
+    let streaming_request = request_body_requests_stream(&rewritten_body);
     Ok(BuiltUpstreamRequest {
         target_url,
         headers: headers.clone(),
-        body: body.to_vec(),
+        body: rewritten_body,
         bridge_kind: None,
         tool_namespaces: BTreeMap::new(),
-        streaming_request: request_body_requests_stream(body),
+        streaming_request,
     })
 }
 
@@ -11305,6 +11296,37 @@ data: [DONE]\n\n";
         );
     }
 
+    #[test]
+    fn official_codex_model_mappings_rewrite_the_request_body() {
+        let credential = SelectedCredential {
+            id: "official-mapped".to_string(),
+            platform: "codex".to_string(),
+            kind: "official".to_string(),
+            display_name: "ChatGPT Mapped".to_string(),
+            status: "ok".to_string(),
+            route_priority: 3,
+            max_concurrency: 1,
+            secret_payload_json: serde_json::json!({"access_token": "at-mapped"}).to_string(),
+            config_json: serde_json::json!({
+                "model_mappings": [{"from": "gpt-5.6-sol", "to": "gpt-5.6-terra"}]
+            })
+            .to_string(),
+        };
+
+        let (_, _, body) = build_upstream_request(
+            &credential,
+            "codex",
+            "/v1/responses",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5.6-sol"}"#,
+        )
+        .expect("official codex request");
+
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("body json");
+        assert_eq!(body["model"], "gpt-5.6-terra");
+    }
+
     /// Importers that carry no `account_id` still have one available: ChatGPT mints
     /// it into the access token. Deriving it beats sending none, which silently
     /// bills the owner's default workspace.
@@ -11936,9 +11958,7 @@ data: [DONE]\n\n";
     }
 
     #[test]
-    fn official_credentials_are_not_selected_for_synthetic_aliases() {
-        // Official upstreams get the body unrewritten, so a synthetic alias
-        // would reach the vendor verbatim and 404.
+    fn official_credentials_are_selected_for_synthetic_aliases() {
         let mut official = api_credential_with_config(
             "official",
             r#"{"model_mappings":[{"from":"claude-subagent","to":"provider-haiku"}]}"#,
@@ -11958,12 +11978,12 @@ data: [DONE]\n\n";
                 .iter()
                 .map(|item| item.display_name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["api"]
+            vec!["official", "api"]
         );
     }
 
     #[test]
-    fn official_credentials_with_a_fallback_keep_baseline_only_semantics() {
+    fn official_credentials_with_a_fallback_serve_unmatched_models() {
         let mut official = api_credential_with_config(
             "official",
             r#"{"model_mappings":[{"from":"claude-model","to":"catch-all"}]}"#,
@@ -11971,14 +11991,12 @@ data: [DONE]\n\n";
         official.kind = "official".to_string();
         official.platform = "claude".to_string();
 
-        // Stripping its only (synthetic) mapping collapses it to the
-        // baseline-only wildcard — exactly its pre-feature behavior.
         let unmatched = filter_credentials_for_model(
             "claude",
             vec![official.clone()],
             Some("deepseek-v4-flash-0731"),
         );
-        assert!(unmatched.is_empty());
+        assert_eq!(unmatched.len(), 1);
 
         let baseline =
             filter_credentials_for_model("claude", vec![official], Some("claude-sonnet-alias"));

@@ -4155,6 +4155,33 @@ describe("AccountsScreen", () => {
     );
   });
 
+  it("edits model mappings for an official account", async () => {
+    const official = {
+      ...credentialsFixture[0],
+      config_json: JSON.stringify({
+        type: "codex",
+        model_mappings: [{ from: "gpt-5", to: "old-upstream" }],
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([official]);
+    vi.mocked(updateRouteCredential).mockResolvedValue(official);
+
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 Team Account" }));
+    expect(screen.getByLabelText("请求模型 1")).toHaveValue("gpt-5");
+    await userEvent.clear(screen.getByLabelText("上游模型 1"));
+    await userEvent.type(screen.getByLabelText("上游模型 1"), "official-upstream");
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const payload = vi.mocked(updateRouteCredential).mock.calls[0][1];
+    expect(JSON.parse(payload.config_json)).toMatchObject({
+      type: "codex",
+      model_mappings: [{ from: "gpt-5", to: "official-upstream" }],
+    });
+  });
+
   it("saves the relay balance provider chosen in the advanced tab", async () => {
     vi.mocked(updateRouteCredential).mockResolvedValue(credentialsFixture[1]);
     renderScreen();

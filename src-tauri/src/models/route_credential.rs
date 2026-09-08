@@ -450,9 +450,7 @@ pub fn is_fallback_mapping(mapping: &ModelMapping) -> bool {
     mapping.from.trim() == FALLBACK_MODEL_ALIAS
 }
 
-/// Aliases this app invents rather than receives from a vendor. Official
-/// credentials must never be routed one: their bodies are forwarded without
-/// model rewriting, so the fake name would reach the vendor verbatim.
+/// Aliases this app invents rather than receives from a vendor.
 pub fn is_synthetic_route_alias(model: &str) -> bool {
     let model = model.trim();
     model == FALLBACK_MODEL_ALIAS || model == CLAUDE_SUBAGENT_MODEL_ALIAS

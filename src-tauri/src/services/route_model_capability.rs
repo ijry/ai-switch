@@ -1,6 +1,4 @@
-use crate::models::route_credential::{
-    is_fallback_mapping, is_synthetic_route_alias, ModelMapping,
-};
+use crate::models::route_credential::{is_fallback_mapping, ModelMapping};
 use crate::services::route_pool_model_mode::{
     assign_member_prefixes, PoolModelMode, OFFICIAL_MODEL_PREFIX,
 };
@@ -51,11 +49,8 @@ pub(crate) fn catalog_member_inputs(
 
 /// Parse each member's mappings and hand out precise-mode prefixes.
 ///
-/// Official members are collapsed onto the reserved prefix and lose their
-/// synthetic aliases, matching what routing does for them
-/// (`filter_candidates_for_model`): their bodies are forwarded unrewritten, so an
-/// invented alias would reach the vendor verbatim, and advertising one would
-/// promise a model the router refuses to serve.
+/// Official members are collapsed onto the reserved prefix; their mappings still
+/// decide which aliases that shared group can serve.
 pub(crate) fn catalog_members(inputs: &[CatalogMemberInput<'_>]) -> Vec<ModelCatalogMember> {
     let api_members: Vec<(&str, &str)> = inputs
         .iter()
@@ -68,11 +63,8 @@ pub(crate) fn catalog_members(inputs: &[CatalogMemberInput<'_>]) -> Vec<ModelCat
     inputs
         .iter()
         .map(|input| {
-            let mut capability = parse_model_capability(input.config_json);
+            let capability = parse_model_capability(input.config_json);
             let prefix = if input.kind == "official" {
-                capability
-                    .mappings
-                    .retain(|mapping| !is_synthetic_route_alias(&mapping.from));
                 OFFICIAL_MODEL_PREFIX.to_string()
             } else {
                 api_prefixes.next().unwrap_or_default()
@@ -437,18 +429,13 @@ pub(crate) fn resolve_mapping_target<'a>(
 /// catch-all mapping funnels every client alias onto a single key instead of
 /// letting each alias hit the wall separately.
 ///
-/// `official` accounts never get their model rewritten
-/// (`build_official_upstream_request`), so their key is the requested name.
 pub(crate) fn model_state_key(
     platform: &str,
     capability: &ModelCapability,
-    kind: &str,
+    _kind: &str,
     requested_model: &str,
 ) -> String {
     let requested = strip_one_m_suffix_for_route_lookup(requested_model);
-    if kind == "official" {
-        return requested.to_string();
-    }
     let _ = platform;
     resolve_mapping_target(&capability.mappings, requested)
         .map(|target| strip_one_m_suffix_for_route_lookup(target).to_string())
@@ -484,9 +471,9 @@ pub(crate) fn aliases_for_model_key(capability: &ModelCapability, model_key: &st
 pub(crate) fn known_upstream_models(
     platform: &str,
     capability: &ModelCapability,
-    kind: &str,
+    _kind: &str,
 ) -> Vec<String> {
-    if kind == "official" || capability.mappings.is_empty() {
+    if capability.mappings.is_empty() {
         return default_client_models(platform)
             .iter()
             .map(|model| (*model).to_string())
@@ -1626,21 +1613,19 @@ mod tests {
     }
 
     #[test]
-    fn model_state_key_keeps_the_requested_name_for_official_and_empty_mappings() {
+    fn model_state_key_uses_the_mapped_upstream_model_for_official_accounts() {
         let empty = parse_model_capability(r#"{"model_mappings":[]}"#);
         assert_eq!(
             model_state_key("codex", &empty, "api", "gpt-5.6-sol"),
             "gpt-5.6-sol"
         );
 
-        // build_official_upstream_request never rewrites the model, so an
-        // official account's key must be the name the client sent.
         let official = parse_model_capability(
             r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"upstream-sol"}]}"#,
         );
         assert_eq!(
             model_state_key("codex", &official, "official", "gpt-5.6-sol"),
-            "gpt-5.6-sol"
+            "upstream-sol"
         );
     }
 
@@ -1678,13 +1663,12 @@ mod tests {
     }
 
     #[test]
-    fn known_upstream_models_ignores_mappings_for_official_accounts() {
+    fn known_upstream_models_uses_mappings_for_official_accounts() {
         let capability = parse_model_capability(
             r#"{"model_mappings":[{"from":"gpt-5.6-sol","to":"upstream-sol"}]}"#,
         );
         let models = known_upstream_models("codex", &capability, "official");
-        assert!(models.contains(&"gpt-5.6-sol".to_string()));
-        assert!(!models.contains(&"upstream-sol".to_string()));
+        assert_eq!(models, vec!["upstream-sol".to_string()]);
     }
 
     #[test]
@@ -1763,10 +1747,9 @@ mod tests {
     }
 
     #[test]
-    fn official_members_never_advertise_a_synthetic_alias() {
-        // `claude-subagent` is ours, not the vendor's, and an official account
-        // forwards the name unrewritten — so advertising it would promise a model
-        // the router refuses to serve.
+    fn official_members_advertise_a_configured_synthetic_alias() {
+        // `claude-subagent` is ours, not the vendor's; a configured mapping is
+        // what makes the alias safe for an official account to serve.
         let official = member(
             "id-one",
             "Claude 官方",
@@ -1776,12 +1759,7 @@ mod tests {
 
         let ids = super::advertised_model_ids("claude", &[official], PoolModelMode::Aggregate);
 
-        assert!(!ids.iter().any(|id| id == "claude-subagent"), "ids={ids:?}");
-        // With its only mapping gone it is a baseline wildcard again.
-        assert!(
-            ids.contains(&"claude-sonnet-alias".to_string()),
-            "ids={ids:?}"
-        );
+        assert_eq!(ids, vec!["claude-subagent"]);
     }
 
     #[test]

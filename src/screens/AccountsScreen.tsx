@@ -873,6 +873,13 @@ function parseModelMappingsFromConfig(configJson: string): ModelMapping[] {
   }
 }
 
+function writeModelMappingsToConfig(
+  config: Record<string, unknown>,
+  mappings: ModelMapping[],
+): Record<string, unknown> {
+  return { ...config, model_mappings: mappings };
+}
+
 function normalizeModelMappings(mappings: ModelMapping[], platform: PlatformKey) {
   const normalized: ModelMapping[] = [];
   for (const mapping of mappings) {
@@ -4474,7 +4481,7 @@ export function AccountsScreen({
         throw new Error("缺少账号");
       }
       const normalizedMappings = normalizeModelMappings(editModelMappings, activePlatform);
-      if (editingCredential.kind === "api" && normalizedMappings.error) {
+      if (normalizedMappings.error) {
         setEditModelMappingsError(normalizedMappings.error);
         setEditTab("basic");
         throw new Error(normalizedMappings.error);
@@ -4568,7 +4575,10 @@ export function AccountsScreen({
               ),
             )
           : writeUserAgentToConfig(
-              parseJsonObject(editConfigJson.trim() || "{}"),
+              writeModelMappingsToConfig(
+                parseJsonObject(editConfigJson.trim() || "{}"),
+                normalizedMappings.mappings,
+              ),
               editUserAgent,
             );
       const configWithFetchedModels =
@@ -8702,6 +8712,22 @@ export function AccountsScreen({
                     </select>
                   </label>
                 </>
+              ) : null}
+              {editTab === "basic" && editingCredential.kind !== "api" ? (
+                <ModelMappingsEditor
+                  error={editModelMappingsError}
+                  fetchError={editFetchModelsError}
+                  fetchedModels={editFetchedModels}
+                  interfaceFormat={defaultInterfaceFormat(activePlatform)}
+                  isFetchingModels={editFetchModelsMutation.isPending}
+                  label="模型映射"
+                  onChange={(next) => {
+                    setEditModelMappings(next);
+                    setEditModelMappingsError(null);
+                  }}
+                  platform={activePlatform}
+                  value={editModelMappings}
+                />
               ) : null}
               {editTab === "advanced" ? (
                 <>
