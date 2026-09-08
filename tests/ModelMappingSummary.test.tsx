@@ -15,7 +15,7 @@ describe("ModelMappingSummary", () => {
     const tooltip = screen.getByRole("tooltip", { hidden: true });
     expect(label.parentElement).toHaveAttribute("aria-describedby", tooltip.id);
     expect(tooltip).toHaveTextContent(
-      "未配置模型映射，仅匹配基线模型：gpt-5.6-sol、gpt-5.6-terra、gpt-5.6-luna、gpt-5.5",
+      "未配置模型映射，仅匹配基线模型：gpt-6-astra、gpt-5.6-sol、gpt-5.6-terra、gpt-5.6-luna、gpt-5.5",
     );
     expect(tooltip).toHaveClass("group-hover:block", "whitespace-normal");
     await user.hover(label);

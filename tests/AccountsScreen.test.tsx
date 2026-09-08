@@ -3064,12 +3064,14 @@ describe("AccountsScreen", () => {
     expect(screen.queryByRole("status", { name: "Base URL 自动调整提示" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("接口格式")).toHaveValue("openai");
     expect(screen.getByLabelText("API 账号名称")).toHaveValue("AgentRouter");
-    expect(screen.getByLabelText("请求模型 1")).toHaveValue("gpt-5.6-sol");
-    expect(screen.getByLabelText("上游模型 1")).toHaveValue("gpt-5.6-sol");
-    expect(screen.getByLabelText("请求模型 2")).toHaveValue("glm-5.3");
-    expect(screen.getByLabelText("上游模型 2")).toHaveValue("glm-5.3");
-    expect(screen.getByLabelText("请求模型 3")).toHaveValue("deepseek-v4-flash");
-    expect(screen.getByLabelText("上游模型 3")).toHaveValue("deepseek-v4-flash");
+    expect(screen.getByLabelText("请求模型 1")).toHaveValue("gpt-6-astra");
+    expect(screen.getByLabelText("上游模型 1")).toHaveValue("gpt-6-astra");
+    expect(screen.getByLabelText("请求模型 2")).toHaveValue("gpt-5.6-sol");
+    expect(screen.getByLabelText("上游模型 2")).toHaveValue("gpt-5.6-sol");
+    expect(screen.getByLabelText("请求模型 3")).toHaveValue("glm-5.3");
+    expect(screen.getByLabelText("上游模型 3")).toHaveValue("glm-5.3");
+    expect(screen.getByLabelText("请求模型 4")).toHaveValue("deepseek-v4-flash");
+    expect(screen.getByLabelText("上游模型 4")).toHaveValue("deepseek-v4-flash");
     expect(
       screen.getByText("已套用 AgentRouter 预设，通常只需填写 API Key。"),
     ).toBeInTheDocument();
@@ -3120,11 +3122,11 @@ describe("AccountsScreen", () => {
       "agentrouter-primary",
     );
 
-    expect(screen.getByLabelText("请求模型 1")).toHaveValue("gpt-5.6-sol");
-    expect(screen.getByLabelText("上游模型 1")).toHaveValue("gpt-5.6-sol");
+    expect(screen.getByLabelText("请求模型 1")).toHaveValue("gpt-6-astra");
+    expect(screen.getByLabelText("上游模型 1")).toHaveValue("gpt-6-astra");
     // The hand-typed row is gone rather than pushed below the preset rows.
     expect(screen.queryByDisplayValue("foo")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("请求模型 4")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("请求模型 5")).not.toBeInTheDocument();
   });
 
   it("falls back to the custom option after the base url changes", async () => {
@@ -3166,7 +3168,7 @@ describe("AccountsScreen", () => {
           base_url: "https://agentrouter.org/v1",
           interface_format: "openai",
           model_mappings_json:
-            "[{\"from\":\"gpt-5.6-sol\",\"to\":\"gpt-5.6-sol\"},{\"from\":\"glm-5.3\",\"to\":\"glm-5.3\"},{\"from\":\"deepseek-v4-flash\",\"to\":\"deepseek-v4-flash\"}]",
+            "[{\"from\":\"gpt-6-astra\",\"to\":\"gpt-6-astra\"},{\"from\":\"gpt-5.6-sol\",\"to\":\"gpt-5.6-sol\"},{\"from\":\"glm-5.3\",\"to\":\"glm-5.3\"},{\"from\":\"deepseek-v4-flash\",\"to\":\"deepseek-v4-flash\"}]",
         }),
       ),
     );
@@ -5404,6 +5406,7 @@ describe("AccountsScreen", () => {
     // 本账号映射别名 gpt-5 + codex 基线模型，不含其它平台。
     expect(options).toEqual([
       "gpt-5",
+      "gpt-6-astra",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",

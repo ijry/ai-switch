@@ -141,6 +141,15 @@ const STATIC_RATES: &[(&str, ModelRate)] = &[
     ),
     // OpenAI / Codex
     (
+        "gpt-6-astra",
+        ModelRate {
+            input_per_mtok: 10.0,
+            output_per_mtok: 50.0,
+            cache_read_per_mtok: 1.0,
+            cache_write_per_mtok: 12.5,
+        },
+    ),
+    (
         "gpt-5",
         ModelRate {
             input_per_mtok: 1.25,
@@ -452,6 +461,11 @@ mod tests {
             rate_for_model("gpt-5.6-sol").map(|r| r.input_per_mtok),
             Some(1.25)
         );
+        let astra = rate_for_model("gpt-6-astra").expect("gpt-6-astra rate");
+        assert_eq!(astra.input_per_mtok, 10.0);
+        assert_eq!(astra.cache_read_per_mtok, 1.0);
+        assert_eq!(astra.cache_write_per_mtok, 12.5);
+        assert_eq!(astra.output_per_mtok, 50.0);
     }
 
     #[test]
