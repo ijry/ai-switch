@@ -315,6 +315,8 @@ pub struct RouteCredentialPageRequest {
     pub filters: Vec<String>,
     #[serde(default)]
     pub pool_scope: RouteCredentialPoolScope,
+    #[serde(default)]
+    pub group_id: Option<String>,
 }
 
 impl RouteCredentialPageRequest {

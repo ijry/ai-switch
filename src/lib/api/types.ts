@@ -543,6 +543,7 @@ export type RouteCredentialPageRequest = {
   page_size: number;
   filters: string[];
   pool_scope: RouteCredentialPoolScope;
+  group_id?: string | null;
 };
 
 export type ReorderRouteCredentialInput = {

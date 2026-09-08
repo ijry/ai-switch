@@ -98,6 +98,7 @@ import {
 import {
   createBatch,
   copyRouteCredential,
+  createRoutePoolGroup,
   clearRouteCredentialFailureState,
   clearRouteCredentialModelState,
   setRouteCredentialCooldown,
@@ -106,6 +107,7 @@ import {
   createApiRouteCredential,
   archiveRouteCredentials,
   deleteRouteCredential,
+  deleteRoutePoolGroup,
   fetchRouteModels,
   getRoutePool,
   getRouteProxyKey,
@@ -126,13 +128,14 @@ import {
   routePoolTestModel,
   saveSettings,
   setRouteCredentialStatuses,
-  setRoutePoolMembers,
+  setRoutePoolGroupMembers,
   setRoutePoolModelMode,
   startRouteProxy,
   stopRouteProxy,
   subscribeRouteProxyLiveLog,
   unsubscribeRouteProxyLiveLog,
   updateRouteCredential,
+  updateRoutePoolGroup,
   routeConfigWriteIsStale,
   writeRouteProxyConfigs,
 } from "../lib/api/client";
@@ -163,6 +166,7 @@ import type {
   RecoveryRule,
   RouteModelsFetchRequest,
   RoutePoolModelMode,
+  RoutePoolGroup,
   RoutePoolModelTestOutcome,
   RoutePoolModelTestRequest,
   RouteProxyLiveLogEntry,
@@ -232,13 +236,14 @@ type RowAction = {
   inlineLabel?: string;
   inlineToneClass: string;
 };
-type RoutePoolAction = "add" | "remove" | "sync";
+type RoutePoolAction = "add" | "remove" | "sync" | "move";
 type RoutePoolFeedback = {
   type: "success" | "error";
   message: string;
 } | null;
 type RoutePoolMutationInput = {
   platform: string;
+  group_id?: string | null;
   account_ids: string[];
   action: RoutePoolAction;
   affectedCount: number;
@@ -250,6 +255,44 @@ const MAX_ROUTE_CREDENTIAL_COOLDOWN_SECONDS = 86_400;
 // interesting adjustment is usually "wait less" — a rate-limit window that turned
 // out to be shorter than the configured one.
 const COOLDOWN_ADJUST_STEPS = [-300, -60, 60, 300, 1800];
+
+function fallbackRoutePoolGroups(platform: string): RoutePoolGroup[] {
+  return [
+    {
+      id: `${platform}-default`,
+      platform,
+      name: "默认组",
+      sort_order: 0,
+      is_internal: false,
+      is_active: true,
+      account_count: 0,
+      created_at: "",
+      updated_at: "",
+    },
+    {
+      id: `${platform}-out`,
+      platform,
+      name: "未入池",
+      sort_order: 1,
+      is_internal: false,
+      is_active: false,
+      account_count: 0,
+      created_at: "",
+      updated_at: "",
+    },
+    {
+      id: `${platform}-archived`,
+      platform,
+      name: "已归档",
+      sort_order: 2,
+      is_internal: false,
+      is_active: false,
+      account_count: 0,
+      created_at: "",
+      updated_at: "",
+    },
+  ];
+}
 
 // How long a finished 真实生成测试 stays on screen before tidying itself away.
 // Long enough to read the verdict and the routing chain, and the × is still
@@ -445,13 +488,6 @@ function modelStateIsClearable(state: RouteCredentialModelState): boolean {
     state.semantic_failure_streak_count > 0
   );
 }
-
-const accountViewOptions: Array<{ key: AccountView; label: string }> = [
-  { key: "in_pool", label: "算力池" },
-  { key: "out_of_pool", label: "未入池" },
-  { key: "archived", label: "已归档" },
-  { key: "stats", label: "统计" },
-];
 
 const accountLayoutOptions: Array<{ key: AccountListLayout; label: string }> = [
   { key: "list", label: "列表模式" },
@@ -2758,6 +2794,13 @@ export function AccountsScreen({
   const refreshMenuRef = useRef<HTMLDivElement | null>(null);
   const modelTestMenuRef = useRef<HTMLDivElement | null>(null);
   const [accountView, setAccountView] = useState<AccountView>("in_pool");
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [groupDialog, setGroupDialog] = useState<{
+    mode: "create" | "edit";
+    group: RoutePoolGroup | null;
+    name: string;
+    isInternal: boolean;
+  } | null>(null);
   const [toolbarAutoHidden, setToolbarAutoHidden] = useState(false);
   const toolbarHideTimerRef = useRef<number | null>(null);
   const toolbarHoveredRef = useRef(false);
@@ -2909,12 +2952,16 @@ export function AccountsScreen({
   const modelTestStorageKey = modelTestAccount?.id ?? poolModelTestKey(activePlatform);
   const routeTestModel = modelTestModels[modelTestStorageKey]?.model ?? "";
   const statsOpen = accountView === "stats";
+  const accountGroupId = statsOpen ? null : selectedGroupId;
   const accountScope: RouteCredentialPoolScope =
-    accountView === "archived"
-      ? "archived"
-      : accountView === "out_of_pool"
+    statsOpen || accountGroupId == null
+      ? "in_pool"
+      : accountGroupId.endsWith("-out")
         ? "out_of_pool"
-        : "in_pool";
+        : accountGroupId.endsWith("-archived")
+          ? "archived"
+          : "in_pool";
+  const archivedGroupSelected = accountGroupId?.endsWith("-archived") ?? false;
   const poolMemberKey = useMemo(
     () => Array.from(draftPoolIds).sort().join(","),
     [draftPoolIds],
@@ -3141,10 +3188,10 @@ export function AccountsScreen({
       "route-credential-page",
       activePlatform,
       accountScope,
+      accountGroupId,
       accountPage,
       accountPageSize,
       accountFilters,
-      poolMemberKey,
     ],
     queryFn: async () => {
       if (typeof listRouteCredentialPage === "function") {
@@ -3154,6 +3201,7 @@ export function AccountsScreen({
           page_size: accountPageSize,
           filters: accountFilters,
           pool_scope: accountScope,
+          group_id: accountGroupId,
         });
         if (page && Array.isArray(page.items)) {
           return page;
@@ -3226,10 +3274,22 @@ export function AccountsScreen({
   // no longer carries a period filter — which also means the account-data
   // invalidations keyed on ["route-pool", platform] match it again.
   const routePoolQuery = useQuery({
-    queryKey: ["route-pool", activePlatform],
-    queryFn: () => getRoutePool(activePlatform, null, null, null),
+    queryKey: ["route-pool", activePlatform, selectedGroupId],
+    queryFn: () => getRoutePool(activePlatform, selectedGroupId, null, null, null),
     placeholderData: keepPreviousData,
   });
+  const routePoolGroups = routePoolQuery.data?.groups ?? fallbackRoutePoolGroups(activePlatform);
+
+  useEffect(() => {
+    setSelectedGroupId(null);
+    setAccountView("in_pool");
+  }, [activePlatform]);
+
+  useEffect(() => {
+    if (selectedGroupId == null && routePoolQuery.data?.group_id) {
+      setSelectedGroupId(routePoolQuery.data.group_id);
+    }
+  }, [routePoolQuery.data?.group_id, selectedGroupId]);
   // Counts *consecutive* stopped polls, not total updates. `dataUpdateCount` is
   // cumulative over the query's whole life and includes every `setQueryData`, so
   // it never resets: by the time the user stopped the proxy the count was already
@@ -3671,6 +3731,11 @@ export function AccountsScreen({
       return;
     }
     setAccountView(poolScopeFocus.scope);
+    setSelectedGroupId(
+      poolScopeFocus.scope === "in_pool"
+        ? `${activePlatform}-default`
+        : `${activePlatform}-out`,
+    );
     setAccountPage(1);
     void invalidateAccountData();
     onPoolScopeFocusConsumed?.(poolScopeFocus.nonce);
@@ -3957,52 +4022,70 @@ export function AccountsScreen({
         ? external.created_ids
         : imported.map((credential) => credential.id);
       if (poolCandidateIds.length > 0) {
-        const nextPoolIds = new Set(draftPoolIds);
-        for (const credentialId of poolCandidateIds) {
-          if (joinPoolOnCreate) {
-            nextPoolIds.add(credentialId);
-          } else {
-            nextPoolIds.delete(credentialId);
+        if (joinPoolOnCreate) {
+          const targetGroupId =
+            selectedGroupId ?? routePoolQuery.data?.group_id ?? routePoolQuery.data?.active_group_id;
+          if (targetGroupId) {
+            const nextPoolIds = new Set(routePoolQuery.data?.account_ids ?? draftPoolIds);
+            for (const credentialId of poolCandidateIds) {
+              nextPoolIds.add(credentialId);
+            }
+            try {
+              const state = await setRoutePoolGroupMembers({
+                platform: activePlatform,
+                group_id: targetGroupId,
+                account_ids: Array.from(nextPoolIds),
+              });
+              setDraftPoolIds(new Set(state.account_ids));
+              if (!external) {
+                setRoutePoolFeedback({
+                  type: "success",
+                  message: `已新增 ${poolCandidateIds.length} 个账号并加入当前分组。`,
+                });
+              }
+            } catch (error) {
+              setRoutePoolFeedback({
+                type: "error",
+                message: `分组同步失败：${formatApiError(error, "请求未成功。")}`,
+              });
+            }
+          }
+        } else {
+          const outGroupId = routePoolGroups.find(
+            (group) => group.id === `${activePlatform}-out`,
+          )?.id;
+          if (outGroupId) {
+            setSelectedGroupId(outGroupId);
           }
         }
-        setDraftPoolIds(nextPoolIds);
-        try {
-          const state = await setRoutePoolMembers({
-            platform: activePlatform,
-            account_ids: Array.from(nextPoolIds),
-          });
-          setDraftPoolIds(new Set(state.account_ids));
-          if (joinPoolOnCreate && !external) {
-            setRoutePoolFeedback({
-              type: "success",
-              message: `已新增 ${poolCandidateIds.length} 个账号并加入算力池。`,
-            });
-          }
-        } catch (error) {
-          setRoutePoolFeedback({
-            type: "error",
-            message: `算力池同步失败：${formatApiError(error, "请求未成功。")}`,
-          });
-        }
-        setAccountView(joinPoolOnCreate ? "in_pool" : "out_of_pool");
+        setAccountView("in_pool");
       }
       await invalidateAccountData();
     },
   });
 
   const routePoolMutation = useMutation({
-    mutationFn: ({ platform, account_ids }: RoutePoolMutationInput) =>
-      setRoutePoolMembers({ platform, account_ids }),
+    mutationFn: ({ platform, group_id, account_ids }: RoutePoolMutationInput) =>
+      setRoutePoolGroupMembers({
+        platform,
+        group_id: group_id ?? selectedGroupId ?? routePoolQuery.data?.group_id ?? "",
+        account_ids,
+      }),
     onMutate: () => {
       setRoutePoolFeedback(null);
     },
     onSuccess: (state, variables) => {
+      if (variables.group_id) {
+        setSelectedGroupId(variables.group_id);
+      }
       setDraftPoolIds(new Set(state.account_ids));
       const message =
         variables.action === "add"
           ? `已加入 ${variables.affectedCount} 个账号。`
           : variables.action === "remove"
             ? `已移出 ${variables.affectedCount} 个账号。`
+            : variables.action === "move"
+              ? `已移动 ${variables.affectedCount} 个账号。`
             : "算力池已同步。";
       setRoutePoolFeedback({ type: "success", message });
       void invalidateAccountData();
@@ -4016,6 +4099,77 @@ export function AccountsScreen({
         message: `算力池更新失败：${formatApiError(error, "请求未成功。")}`,
       });
       void invalidateAccountData();
+    },
+  });
+
+  const groupCreateMutation = useMutation({
+    mutationFn: (input: { name: string; isInternal: boolean }) =>
+      createRoutePoolGroup({
+        platform: activePlatform,
+        name: input.name,
+        is_internal: input.isInternal,
+      }),
+    onSuccess: (state) => {
+      setSelectedGroupId(state.group_id ?? state.active_group_id ?? null);
+      setAccountView("in_pool");
+      setGroupDialog(null);
+      setRoutePoolFeedback({ type: "success", message: "分组已创建。" });
+      void invalidateAccountData();
+    },
+    onError: (error) => {
+      setRoutePoolFeedback({
+        type: "error",
+        message: `分组创建失败：${formatApiError(error, "请求未成功。")}`,
+      });
+    },
+  });
+
+  const groupUpdateMutation = useMutation({
+    mutationFn: (input: {
+      id: string;
+      name: string;
+      isInternal: boolean;
+      activate: boolean;
+    }) =>
+      updateRoutePoolGroup({
+        platform: activePlatform,
+        id: input.id,
+        name: input.name,
+        is_internal: input.isInternal,
+        activate: input.activate,
+        sort_order: null,
+      }),
+    onSuccess: (state) => {
+      setSelectedGroupId(state.group_id ?? state.active_group_id ?? null);
+      setGroupDialog(null);
+      setRoutePoolFeedback({
+        type: "success",
+        message: state.active_group_id === state.group_id ? "分组已保存并激活。" : "分组已保存。",
+      });
+      void invalidateAccountData();
+    },
+    onError: (error) => {
+      setRoutePoolFeedback({
+        type: "error",
+        message: `分组保存失败：${formatApiError(error, "请求未成功。")}`,
+      });
+    },
+  });
+
+  const groupDeleteMutation = useMutation({
+    mutationFn: (groupId: string) =>
+      deleteRoutePoolGroup({ platform: activePlatform, id: groupId }),
+    onSuccess: (state) => {
+      setSelectedGroupId(state.group_id ?? state.active_group_id ?? null);
+      setGroupDialog(null);
+      setRoutePoolFeedback({ type: "success", message: "空分组已删除。" });
+      void invalidateAccountData();
+    },
+    onError: (error) => {
+      setRoutePoolFeedback({
+        type: "error",
+        message: `分组删除失败：${formatApiError(error, "请求未成功。")}`,
+      });
     },
   });
   const modelTestMutation = useMutation({
@@ -4362,7 +4516,7 @@ export function AccountsScreen({
     mutationFn: (mode: RoutePoolModelMode) =>
       setRoutePoolModelMode({ platform: activePlatform, mode }),
     onSuccess: (state) => {
-      queryClient.setQueryData(["route-pool", activePlatform], state);
+      queryClient.setQueryData(["route-pool", activePlatform, selectedGroupId], state);
       // The rendered client config now differs from disk, which is exactly what
       // the staleness hint is for.
       void queryClient.invalidateQueries({ queryKey: ["route-config-stale"] });
@@ -4988,6 +5142,7 @@ export function AccountsScreen({
     setDraftPoolIds(next);
     routePoolMutation.mutate({
       platform: activePlatform,
+      group_id: selectedGroupId ?? routePoolQuery.data?.group_id ?? null,
       account_ids: Array.from(next),
       action,
       affectedCount,
@@ -5057,28 +5212,76 @@ export function AccountsScreen({
     />
   );
 
-  const addSelectedToPool = () => {
-    if (selectedAccountIds.size === 0 || routePoolMutation.isPending) {
-      return;
-    }
-    const next = new Set(draftPoolIds);
-    for (const id of selectedAccountIds) {
-      next.add(id);
-    }
-    applyPoolMembership(Array.from(next), "add", selectedAccountIds.size);
-    clearAccountSelection();
+  const openCreateGroupDialog = () => {
+    groupCreateMutation.reset();
+    groupUpdateMutation.reset();
+    setGroupDialog({
+      mode: "create",
+      group: null,
+      name: "",
+      isInternal: false,
+    });
   };
 
-  const removeSelectedFromPool = () => {
-    if (selectedAccountIds.size === 0 || routePoolMutation.isPending) {
+  const openGroupEditor = (group: RoutePoolGroup) => {
+    groupCreateMutation.reset();
+    groupUpdateMutation.reset();
+    setGroupDialog({
+      mode: "edit",
+      group,
+      name: group.name,
+      isInternal: group.is_internal,
+    });
+  };
+
+  const saveGroupDialog = (activate: boolean) => {
+    if (!groupDialog || groupCreateMutation.isPending || groupUpdateMutation.isPending) {
       return;
     }
-    const next = new Set(draftPoolIds);
-    for (const id of selectedAccountIds) {
-      next.delete(id);
+    const name = groupDialog.name.trim();
+    if (!name) {
+      setRoutePoolFeedback({ type: "error", message: "请输入分组名称。" });
+      return;
     }
-    applyPoolMembership(Array.from(next), "remove", selectedAccountIds.size);
-    clearAccountSelection();
+    if (groupDialog.mode === "create") {
+      groupCreateMutation.mutate({ name, isInternal: groupDialog.isInternal });
+      return;
+    }
+    if (!groupDialog.group) {
+      return;
+    }
+    groupUpdateMutation.mutate({
+      id: groupDialog.group.id,
+      name,
+      isInternal: groupDialog.isInternal,
+      activate,
+    });
+  };
+
+  const moveSelectedToGroup = async (targetGroupId: string) => {
+    if (!targetGroupId || selectedAccountIds.size === 0 || routePoolMutation.isPending) {
+      return;
+    }
+    try {
+      const targetState = await getRoutePool(activePlatform, targetGroupId, null, null, null);
+      const nextAccountIds = new Set(targetState.account_ids);
+      for (const id of selectedAccountIds) {
+        nextAccountIds.add(id);
+      }
+      routePoolMutation.mutate({
+        platform: activePlatform,
+        group_id: targetGroupId,
+        account_ids: Array.from(nextAccountIds),
+        action: "move",
+        affectedCount: selectedAccountIds.size,
+      });
+      clearAccountSelection();
+    } catch (error) {
+      setRoutePoolFeedback({
+        type: "error",
+        message: `读取分组失败：${formatApiError(error, "请求未成功。")}`,
+      });
+    }
   };
 
   const requestDeleteSelectedAccounts = () => {
@@ -5290,6 +5493,14 @@ export function AccountsScreen({
       return;
     }
     setAccountView(view);
+  };
+
+  const selectRouteGroup = (groupId: string) => {
+    if (groupId === selectedGroupId && accountView === "in_pool") {
+      return;
+    }
+    setSelectedGroupId(groupId);
+    setAccountView("in_pool");
   };
 
   const selectAccountLayout = (layout: AccountListLayout) => {
@@ -6354,7 +6565,6 @@ export function AccountsScreen({
                 </button>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                {accountView !== "archived" && (
                   <>
                     <select
                       aria-label="批量设置状态"
@@ -6380,56 +6590,52 @@ export function AccountsScreen({
                         {batchStatusMutation.isPending ? "应用中..." : "应用状态"}
                       </button>
                     )}
-                  </>
-                )}
-                {accountView === "archived" ? (
-                  <button
-                    aria-label="批量恢复账号"
-                    className="grid h-7 w-7 place-items-center border border-emerald-200 bg-white text-emerald-800 motion-control hover:bg-emerald-50 disabled:opacity-50"
-                    disabled={archiveMutation.isPending || restoreMutation.isPending}
-                    onClick={restoreSelectedAccounts}
-                    title="批量恢复账号"
-                    type="button"
+                  <select
+                    aria-label="移动到分组"
+                    className="h-7 rounded-lg border border-emerald-300 bg-white px-2 text-[12px] font-semibold text-emerald-800 disabled:opacity-50"
+                    disabled={routePoolMutation.isPending}
+                    onChange={(event) => {
+                      const targetGroupId = event.target.value;
+                      if (targetGroupId) {
+                        void moveSelectedToGroup(targetGroupId);
+                      }
+                      event.currentTarget.value = "";
+                    }}
+                    value=""
                   >
-                    <ArchiveRestore aria-hidden="true" className="h-3.5 w-3.5" />
-                    <span className="sr-only">批量恢复账号</span>
-                  </button>
-                ) : (
-                  <>
-                    {accountView === "out_of_pool" ? (
+                    <option value="">移动到分组</option>
+                    {routePoolGroups.map((group) => (
+                      <option key={group.id} value={group.id}>
+                        {group.name}
+                      </option>
+                    ))}
+                  </select>
+                    {archivedGroupSelected ? (
                       <button
-                        aria-label="批量加入算力池"
-                        className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-700 px-2.5 py-1.5 text-[12px] font-semibold text-white motion-control hover:bg-emerald-800 disabled:opacity-50"
-                        disabled={routePoolMutation.isPending}
-                        onClick={addSelectedToPool}
+                        aria-label="批量恢复账号"
+                        className="grid h-7 w-7 place-items-center border border-emerald-200 bg-white text-emerald-800 motion-control hover:bg-emerald-50 disabled:opacity-50"
+                        disabled={archiveMutation.isPending || restoreMutation.isPending}
+                        onClick={restoreSelectedAccounts}
+                        title="批量恢复账号"
                         type="button"
                       >
-                        加入算力池
+                        <ArchiveRestore aria-hidden="true" className="h-3.5 w-3.5" />
+                        <span className="sr-only">批量恢复账号</span>
                       </button>
                     ) : (
                       <button
-                        aria-label="批量移出算力池"
-                        className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-emerald-800 motion-control hover:bg-emerald-50 disabled:opacity-50"
-                        disabled={routePoolMutation.isPending}
-                        onClick={removeSelectedFromPool}
+                        aria-label="批量归档账号"
+                        className="inline-flex h-7 items-center justify-center gap-1.5 border border-amber-200 bg-white px-2.5 text-[12px] font-semibold text-amber-800 motion-control hover:bg-amber-50 disabled:opacity-50"
+                        disabled={archiveMutation.isPending || restoreMutation.isPending}
+                        onClick={archiveSelectedAccounts}
+                        title="批量归档账号"
                         type="button"
                       >
-                        移出算力池
+                        <Archive aria-hidden="true" className="h-3.5 w-3.5" />
+                        归档
                       </button>
                     )}
-                    <button
-                      aria-label="批量归档账号"
-                      className="inline-flex h-7 items-center justify-center gap-1.5 border border-amber-200 bg-white px-2.5 text-[12px] font-semibold text-amber-800 motion-control hover:bg-amber-50 disabled:opacity-50"
-                      disabled={archiveMutation.isPending || restoreMutation.isPending}
-                      onClick={archiveSelectedAccounts}
-                      title="批量归档账号"
-                      type="button"
-                    >
-                      <Archive aria-hidden="true" className="h-3.5 w-3.5" />
-                      归档
-                    </button>
                   </>
-                )}
                 <button
                   aria-label="批量删除账号"
                   className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-red-700 motion-control hover:bg-red-50 disabled:opacity-50"
@@ -7349,21 +7555,36 @@ export function AccountsScreen({
           className="flex h-8 min-h-0 items-center justify-between gap-1 overflow-hidden border-t border-stone-300 bg-stone-100 px-2 text-[11px] text-stone-600"
           data-testid="account-workspace-status-bar"
         >
-          <div aria-label="账号视图" className="flex h-7 shrink-0 items-center rounded-lg border border-stone-200 bg-white p-0.5 shadow-sm" role="group">
-            {accountViewOptions.map((option) => {
-              const active = accountView === option.key;
+          <div aria-label="账号分组" className="flex h-7 max-w-[65%] shrink-0 items-center gap-0.5 overflow-x-auto rounded-lg border border-stone-200 bg-white p-0.5 shadow-sm" role="group">
+            {routePoolGroups.map((group) => {
+              const selected = accountView !== "stats" && group.id === selectedGroupId;
               return (
                 <button
-                  aria-label={option.label}
-                  aria-pressed={active}
-                  className={`relative grid h-6 place-items-center rounded-md px-1 text-[11px] font-semibold motion-control ${active ? "bg-stone-900 text-white shadow-sm" : "text-stone-600 hover:bg-stone-100"}`}
-                  key={option.key}
-                  onClick={() => selectAccountView(option.key)}
-                  title={option.label}
+                  aria-label={`${group.name}${group.is_active ? "，当前激活" : ""}`}
+                  aria-pressed={selected}
+                  className={`relative grid h-6 shrink-0 place-items-center rounded-md px-1.5 text-[11px] font-semibold motion-control ${selected ? "bg-stone-900 text-white shadow-sm" : "text-stone-600 hover:bg-stone-100"}`}
+                  key={group.id}
+                  onClick={() => selectRouteGroup(group.id)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    openGroupEditor(group);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "ContextMenu") {
+                      event.preventDefault();
+                      openGroupEditor(group);
+                    }
+                  }}
+                  title={`${group.name} · ${group.account_count} 个账号${group.is_internal ? " · 内部" : ""}${group.is_active ? " · 当前承接普通路由" : ""}（右键编辑）`}
                   type="button"
                 >
-                  {option.label}
-                  {active ? (
+                  {group.name}
+                  {group.is_active ? (
+                    <span aria-hidden="true" className="ml-1 rounded bg-amber-400/90 px-1 text-[9px] font-bold text-stone-900">
+                      激活
+                    </span>
+                  ) : null}
+                  {selected ? (
                     <motion.span
                       aria-hidden="true"
                       className="pointer-events-none absolute inset-x-1 bottom-0 h-0.5 rounded-full bg-amber-400"
@@ -7374,6 +7595,25 @@ export function AccountsScreen({
                 </button>
               );
             })}
+            <button
+              aria-label="统计"
+              aria-pressed={accountView === "stats"}
+              className="grid h-6 shrink-0 place-items-center rounded-md px-1.5 text-[11px] font-semibold text-stone-600 motion-control hover:bg-stone-100"
+              onClick={() => selectAccountView("stats")}
+              title="统计"
+              type="button"
+            >
+              统计
+            </button>
+            <button
+              aria-label="新建分组"
+              className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-stone-200 text-stone-700 motion-control hover:bg-stone-100"
+              onClick={openCreateGroupDialog}
+              title="新建分组"
+              type="button"
+            >
+              <Plus aria-hidden="true" className="h-3.5 w-3.5" />
+            </button>
           </div>
           {routePoolFeedback ? (
             <div className="flex min-w-0 flex-1 items-center gap-1 px-2">
@@ -7432,6 +7672,95 @@ export function AccountsScreen({
         </footer>
 
         </div>
+
+      {groupDialog && (
+        <div
+          className="motion-overlay fixed inset-0 z-[80] grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !groupCreateMutation.isPending && !groupUpdateMutation.isPending) {
+              setGroupDialog(null);
+            }
+          }}
+        >
+          <div
+            aria-label={groupDialog.mode === "create" ? "新建分组" : "编辑分组"}
+            aria-modal="true"
+            className="w-full max-w-sm rounded-2xl border border-stone-200 bg-white p-4 shadow-2xl"
+            role="dialog"
+          >
+            <h3 className="text-lg font-semibold text-stone-950">
+              {groupDialog.mode === "create" ? "新建分组" : "编辑分组"}
+            </h3>
+            <label className="mt-3 block text-[12px] font-semibold text-stone-700" htmlFor="route-pool-group-name">
+              分组名称
+            </label>
+            <input
+              className="mt-1 w-full rounded-xl border border-stone-300 px-3 py-2 text-sm outline-none focus:border-stone-500"
+              id="route-pool-group-name"
+              onChange={(event) =>
+                setGroupDialog((current) =>
+                  current ? { ...current, name: event.target.value } : current,
+                )
+              }
+              value={groupDialog.name}
+            />
+            <label className="mt-3 flex items-center gap-2 text-[12px] font-semibold text-stone-700">
+              <input
+                checked={groupDialog.isInternal}
+                onChange={(event) =>
+                  setGroupDialog((current) =>
+                    current ? { ...current, isInternal: event.target.checked } : current,
+                  )
+                }
+                type="checkbox"
+              />
+              内部分组（不提供给 SaaS 用户）
+            </label>
+            {groupDialog.group ? (
+              <p className="mt-3 text-[12px] leading-5 text-stone-600">
+                {groupDialog.group.account_count} 个账号；{groupDialog.group.is_active ? "当前承接普通路由。" : "未承接普通路由。"}
+              </p>
+            ) : null}
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              {groupDialog.group && !groupDialog.group.is_active && groupDialog.group.account_count === 0 ? (
+                <button
+                  className="rounded-xl border border-red-200 px-3 py-2 text-[13px] font-semibold text-red-700 motion-control hover:bg-red-50 disabled:opacity-50"
+                  disabled={groupDeleteMutation.isPending}
+                  onClick={() => groupDeleteMutation.mutate(groupDialog.group?.id ?? "")}
+                  type="button"
+                >
+                  删除
+                </button>
+              ) : null}
+              <button
+                className="rounded-xl border border-stone-300 px-3 py-2 text-[13px] font-semibold text-stone-700 motion-control hover:bg-stone-50"
+                onClick={() => setGroupDialog(null)}
+                type="button"
+              >
+                取消
+              </button>
+              {groupDialog.mode === "edit" && !groupDialog.group?.is_active ? (
+                <button
+                  className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[13px] font-semibold text-amber-800 motion-control hover:bg-amber-100 disabled:opacity-50"
+                  disabled={groupUpdateMutation.isPending}
+                  onClick={() => saveGroupDialog(true)}
+                  type="button"
+                >
+                  保存并激活
+                </button>
+              ) : null}
+              <button
+                className="rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white motion-control hover:bg-stone-800 disabled:opacity-50"
+                disabled={groupCreateMutation.isPending || groupUpdateMutation.isPending}
+                onClick={() => saveGroupDialog(groupDialog.group?.is_active ?? false)}
+                type="button"
+              >
+                保存
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {pendingDelete && (
         <div className="motion-overlay fixed inset-0 z-[80] grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm"
@@ -8173,7 +8502,7 @@ export function AccountsScreen({
 
             <label className="mt-3 flex items-start gap-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-medium text-stone-700">
               <input
-                aria-label="创建后加入算力池"
+                aria-label="创建后加入当前分组"
                 checked={joinPoolOnCreate}
                 className="mt-0.5 h-4 w-4 rounded border-stone-300 text-amber-500 focus:ring-blue-400"
                 disabled={createMutation.isPending}
@@ -8181,7 +8510,7 @@ export function AccountsScreen({
                 type="checkbox"
               />
               <span className="grid gap-0.5">
-                <span>创建后加入算力池</span>
+                <span>创建后加入当前分组</span>
                 <span className="text-[11px] font-medium text-stone-500">
                   {createMode === "external"
                     ? "只作用于本次新增的账号；覆盖已有账号时保持其原有入池状态。"

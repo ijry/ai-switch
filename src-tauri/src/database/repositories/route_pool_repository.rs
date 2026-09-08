@@ -650,6 +650,26 @@ impl RoutePoolRepository {
             recoverable: true,
         })?
         .unwrap_or(-1);
+        let active_group_id = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM route_pool_groups
+             WHERE platform = ? AND is_active = 1 AND deleted_at IS NULL
+             ORDER BY sort_order ASC LIMIT 1",
+        )
+        .bind(platform)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_pool_append_group",
+            message: "Could not load the active route group".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?
+        .ok_or_else(|| AppError::Validation {
+            code: "validation.route_pool_group_active_missing",
+            message: "Platform has no active route group".to_string(),
+            details: Some(platform.to_string()),
+            recoverable: true,
+        })?;
         let now = Utc::now().to_rfc3339();
         let mut inserted = 0usize;
 
@@ -657,14 +677,19 @@ impl RoutePoolRepository {
             let next_sort_order = current_max.saturating_add(1);
             let result = sqlx::query(
                 "INSERT INTO route_pool_members
-                 (id, platform, route_credential_id, enabled, sort_order, created_at, updated_at)
-                 VALUES (?, ?, ?, 1, ?, ?, ?)
-                 ON CONFLICT(platform, route_credential_id) DO NOTHING",
+                 (id, platform, route_credential_id, enabled, sort_order, group_id, created_at, updated_at)
+                 VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+                 ON CONFLICT(platform, route_credential_id) DO UPDATE SET
+                   group_id = excluded.group_id,
+                   sort_order = excluded.sort_order,
+                   updated_at = excluded.updated_at
+                 WHERE route_pool_members.group_id IS NOT excluded.group_id",
             )
             .bind(Uuid::new_v4().to_string())
             .bind(platform)
             .bind(credential_id)
             .bind(next_sort_order)
+            .bind(&active_group_id)
             .bind(&now)
             .bind(&now)
             .execute(&mut **tx)
@@ -689,14 +714,29 @@ impl RoutePoolRepository {
         pool: &SqlitePool,
         platform: &str,
     ) -> Result<Vec<RoutePoolMemberAccount>, AppError> {
+        let group_id = Self::active_group_id(pool, platform)
+            .await?
+            .ok_or_else(|| AppError::Validation {
+                code: "validation.route_pool_group_active_missing",
+                message: "Platform has no active route group".to_string(),
+                details: Some(platform.to_string()),
+                recoverable: true,
+            })?;
+        Self::member_accounts_for_group(pool, &group_id).await
+    }
+
+    pub async fn member_accounts_for_group(
+        pool: &SqlitePool,
+        group_id: &str,
+    ) -> Result<Vec<RoutePoolMemberAccount>, AppError> {
         let rows = sqlx::query(
             "SELECT a.id, a.display_name, a.status, a.route_priority, a.max_concurrency
              FROM route_pool_members rpm
              INNER JOIN route_credentials a ON a.id = rpm.route_credential_id
-             WHERE rpm.platform = ? AND rpm.enabled = 1 AND a.archived_at IS NULL
+             WHERE rpm.group_id = ? AND a.archived_at IS NULL
              ORDER BY a.route_priority ASC, rpm.sort_order ASC, rpm.created_at ASC",
         )
-        .bind(platform)
+        .bind(group_id)
         .fetch_all(pool)
         .await
         .map_err(|err| AppError::Database {
@@ -1263,6 +1303,77 @@ mod tests {
                 .await
                 .unwrap();
         assert!(archived_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn member_accounts_follow_the_active_dynamic_group() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let default_account = create_credential(&pool, "codex", "Default").await;
+        let alternate_account = create_credential(&pool, "codex", "Alternate").await;
+        let default_group = RoutePoolRepository::active_group_id(&pool, "codex")
+            .await
+            .unwrap()
+            .unwrap();
+        RoutePoolRepository::replace_group_members(
+            &pool,
+            "codex",
+            &default_group,
+            &[default_account.clone()],
+        )
+        .await
+        .unwrap();
+        let alternate_group = RoutePoolRepository::create_group(&pool, "codex", "备选组", false)
+            .await
+            .unwrap();
+        RoutePoolRepository::replace_group_members(
+            &pool,
+            "codex",
+            &alternate_group,
+            &[alternate_account.clone()],
+        )
+        .await
+        .unwrap();
+
+        let members = RoutePoolRepository::member_accounts(&pool, "codex")
+            .await
+            .unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].id, default_account);
+
+        RoutePoolRepository::update_group(&pool, "codex", &alternate_group, None, None, true, None)
+            .await
+            .unwrap();
+        let members = RoutePoolRepository::member_accounts(&pool, "codex")
+            .await
+            .unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].id, alternate_account);
+
+        let group_members = RoutePoolRepository::member_accounts_for_group(&pool, &default_group)
+            .await
+            .unwrap();
+        assert_eq!(group_members.len(), 1);
+        assert_eq!(group_members[0].id, default_account);
+    }
+
+    #[tokio::test]
+    async fn appended_members_join_the_active_dynamic_group() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let account_id = create_credential(&pool, "codex", "New").await;
+
+        let inserted = RoutePoolRepository::append_members(&pool, "codex", &[account_id.clone()])
+            .await
+            .unwrap();
+
+        assert_eq!(inserted, 1);
+        assert_eq!(
+            RoutePoolRepository::list_member_ids(&pool, "codex")
+                .await
+                .unwrap(),
+            vec![account_id]
+        );
     }
 
     #[tokio::test]

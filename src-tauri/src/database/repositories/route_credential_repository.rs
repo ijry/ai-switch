@@ -141,8 +141,18 @@ fn push_filter_predicate(builder: &mut QueryBuilder<Sqlite>, filters: &[String])
     builder.push(")");
 }
 
-fn push_pool_scope_predicate(builder: &mut QueryBuilder<Sqlite>, scope: RouteCredentialPoolScope) {
+fn push_pool_scope_predicate(
+    builder: &mut QueryBuilder<Sqlite>,
+    scope: RouteCredentialPoolScope,
+    group_id: Option<&str>,
+) {
     builder.push(" AND ");
+    if let Some(group_id) = group_id {
+        builder.push("EXISTS (SELECT 1 FROM route_pool_members rpm WHERE rpm.route_credential_id = rc.id AND rpm.group_id = ");
+        builder.push_bind(group_id.to_string());
+        builder.push(")");
+        return;
+    }
     match scope {
         RouteCredentialPoolScope::Archived => {
             builder.push("rc.archived_at IS NOT NULL");
@@ -190,7 +200,7 @@ async fn boundary_id(
     let mut query =
         QueryBuilder::<Sqlite>::new("SELECT rc.id FROM route_credentials rc WHERE rc.platform = ");
     query.push_bind(&request.platform);
-    push_pool_scope_predicate(&mut query, request.pool_scope);
+    push_pool_scope_predicate(&mut query, request.pool_scope, request.group_id.as_deref());
     push_filter_predicate(&mut query, &request.filters);
     query
         .push(" ORDER BY rc.sort_order ASC, rc.created_at DESC LIMIT 1 OFFSET ")
@@ -404,6 +414,52 @@ async fn create_with_connection(
         details: Some(err.to_string()),
         recoverable: true,
     })?;
+
+    let group_id = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM route_pool_groups
+         WHERE platform = ? AND deleted_at IS NULL
+         ORDER BY
+           CASE
+             WHEN id = printf('%s-out', ?) THEN 0
+             WHEN is_active = 0 THEN 1
+             ELSE 2
+           END,
+           sort_order ASC
+         LIMIT 1",
+    )
+    .bind(platform)
+    .bind(platform)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|err| AppError::Database {
+        code: "database.route_credential_default_group",
+        message: "Could not load the default route group".to_string(),
+        details: Some(err.to_string()),
+        recoverable: true,
+    })?;
+    if let Some(group_id) = group_id {
+        sqlx::query(
+            "INSERT INTO route_pool_members
+               (id, platform, route_credential_id, enabled, sort_order, group_id, created_at, updated_at)
+             VALUES (?, ?, ?, 0, ?, ?, ?, ?)
+             ON CONFLICT(platform, route_credential_id) DO NOTHING",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(platform)
+        .bind(&id)
+        .bind(sort_order)
+        .bind(&group_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *connection)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_credential_default_group_member",
+            message: "Could not assign the default route group".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+    }
 
     sqlx::query_as::<_, RouteCredential>(
         "SELECT
@@ -803,7 +859,7 @@ impl RouteCredentialRepository {
             separated.push_bind(id);
         }
         separated.push_unseparated(")");
-        push_pool_scope_predicate(&mut query, selection.pool_scope);
+        push_pool_scope_predicate(&mut query, selection.pool_scope, None);
         query.push(" ORDER BY rc.sort_order ASC, rc.created_at DESC, rc.id ASC");
 
         query
@@ -999,7 +1055,11 @@ impl RouteCredentialRepository {
             "SELECT COUNT(*) FROM route_credentials rc WHERE rc.platform = ",
         );
         count_query.push_bind(&request.platform);
-        push_pool_scope_predicate(&mut count_query, request.pool_scope);
+        push_pool_scope_predicate(
+            &mut count_query,
+            request.pool_scope,
+            request.group_id.as_deref(),
+        );
         push_filter_predicate(&mut count_query, &request.filters);
         let total: i64 = count_query
             .build_query_scalar()
@@ -1024,7 +1084,11 @@ impl RouteCredentialRepository {
         item_query
             .push(" WHERE rc.platform = ")
             .push_bind(&request.platform);
-        push_pool_scope_predicate(&mut item_query, request.pool_scope);
+        push_pool_scope_predicate(
+            &mut item_query,
+            request.pool_scope,
+            request.group_id.as_deref(),
+        );
         push_filter_predicate(&mut item_query, &request.filters);
         item_query
             .push(" GROUP BY rc.id ORDER BY rc.sort_order ASC, rc.created_at DESC LIMIT ")
@@ -1244,6 +1308,7 @@ impl RouteCredentialRepository {
                 page_size,
                 filters: input.filters,
                 pool_scope: input.pool_scope,
+                group_id: None,
             },
         )
         .await
@@ -2238,7 +2303,59 @@ mod tests {
             page_size: 20,
             filters: Vec::new(),
             pool_scope,
+            group_id: None,
         }
+    }
+
+    #[tokio::test]
+    async fn page_filters_accounts_by_dynamic_group() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let default_account = create_api_credential(&pool, "codex", "Default").await.id;
+        let alternate_account = create_api_credential(&pool, "codex", "Alternate").await.id;
+        let default_group = crate::database::repositories::route_pool_repository::RoutePoolRepository::active_group_id(&pool, "codex")
+            .await
+            .unwrap()
+            .unwrap();
+        let alternate_group =
+            crate::database::repositories::route_pool_repository::RoutePoolRepository::create_group(
+                &pool, "codex", "备选组", false,
+            )
+            .await
+            .unwrap();
+        crate::database::repositories::route_pool_repository::RoutePoolRepository::replace_group_members(
+            &pool,
+            "codex",
+            &default_group,
+            &[default_account.clone()],
+        )
+        .await
+        .unwrap();
+        crate::database::repositories::route_pool_repository::RoutePoolRepository::replace_group_members(
+            &pool,
+            "codex",
+            &alternate_group,
+            &[alternate_account.clone()],
+        )
+        .await
+        .unwrap();
+
+        let page = RouteCredentialRepository::page(
+            &pool,
+            RouteCredentialPageRequest {
+                platform: "codex".to_string(),
+                page: 1,
+                page_size: 20,
+                filters: Vec::new(),
+                pool_scope: RouteCredentialPoolScope::InPool,
+                group_id: Some(alternate_group),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].id, alternate_account);
     }
 
     async fn record_request(
@@ -2264,6 +2381,24 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn created_credentials_start_outside_the_active_route_group() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let credential = create_api_credential(&pool, "codex", "New account").await;
+
+        let group_id =
+            crate::database::repositories::route_pool_repository::RoutePoolRepository::group_id_for_account(
+                &pool,
+                "codex",
+                &credential.id,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(group_id.as_deref(), Some("codex-out"));
     }
 
     #[tokio::test]
