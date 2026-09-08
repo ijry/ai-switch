@@ -24,7 +24,7 @@ export const CODEX_REASONING_LEVEL_OPTIONS = [
 /** GPT baseline models ship with a known effort ladder; the editor preselects it
  * so "auto" and "explicit" start from the same place. */
 const CODEX_BASELINE_REASONING_PROFILES: Record<string, readonly string[]> = {
-  "gpt-6-astra": ["low", "medium", "high", "xhigh", "max"],
+  "gpt-6-astra": ["low", "medium", "high", "xhigh", "max", "ultra"],
   "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
   "gpt-5.6-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
   "gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],

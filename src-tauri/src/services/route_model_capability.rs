@@ -125,7 +125,7 @@ pub(crate) struct CodexReasoningProfile {
 }
 
 const SOL_REASONING_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
-const GPT_6_ASTRA_REASONING_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+const GPT_6_ASTRA_REASONING_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
 const TERRA_REASONING_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
 const LUNA_REASONING_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 const GPT_55_REASONING_LEVELS: &[&str] = &["low", "medium", "high", "xhigh"];
@@ -893,7 +893,10 @@ mod tests {
     fn codex_baseline_models_use_distinct_reasoning_profiles() {
         let astra = codex_reasoning_profile("gpt-6-astra");
         assert_eq!(astra.default_level, "medium");
-        assert_eq!(astra.levels, &["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(
+            astra.levels,
+            &["low", "medium", "high", "xhigh", "max", "ultra"]
+        );
 
         let sol = codex_reasoning_profile("gpt-5.6-sol");
         assert_eq!(sol.default_level, "low");

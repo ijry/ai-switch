@@ -21,6 +21,7 @@ describe("codexModelCapability", () => {
       "high",
       "xhigh",
       "max",
+      "ultra",
     ]);
     expect(codexBaselineReasoningLevels("gpt-5.6-sol")).toEqual([
       "low",
