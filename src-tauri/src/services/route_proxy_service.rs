@@ -12680,9 +12680,20 @@ data: [DONE]\n\n";
         // the opposite of what this mode is for.
         assert!(!ids.contains(&"gpt-5.6-sol"), "ids={ids:?}");
         // The official group merges rather than expanding per account.
+        let official_ids: Vec<&str> = ids
+            .iter()
+            .copied()
+            .filter(|id| id.starts_with("official/"))
+            .collect();
         assert_eq!(
-            ids.iter().filter(|id| id.starts_with("official/")).count(),
-            4,
+            official_ids,
+            vec![
+                "official/gpt-6-astra",
+                "official/gpt-5.6-sol",
+                "official/gpt-5.6-terra",
+                "official/gpt-5.6-luna",
+                "official/gpt-5.5",
+            ],
             "ids={ids:?}"
         );
     }

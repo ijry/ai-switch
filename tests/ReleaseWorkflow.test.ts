@@ -81,8 +81,22 @@ describe("standalone server release archive", () => {
       workflow.indexOf("- name: Stage release assets"),
     );
 
-    expect(arm64Step).toContain("cd sidecar/ai-switch-tsnet");
+    expect(arm64Step).toContain("pushd sidecar/ai-switch-tsnet");
     expect(arm64Step).toContain('-o "../../$SIDECAR_ARM64_BIN" .');
+  });
+
+  it("returns to the repository root before building the ARM64 Rust server", () => {
+    const arm64Step = workflow.slice(
+      workflow.indexOf("- name: Build Linux ARM64 standalone server"),
+      workflow.indexOf("- name: Stage release assets"),
+    );
+    const sidecarBuild = arm64Step.indexOf("go build");
+    const restoreDirectory = arm64Step.indexOf("popd");
+    const cargoBuild = arm64Step.indexOf("cargo build");
+
+    expect(restoreDirectory).toBeGreaterThan(sidecarBuild);
+    expect(cargoBuild).toBeGreaterThan(restoreDirectory);
+    expect(arm64Step).toContain("cd src-tauri");
   });
 });
 
