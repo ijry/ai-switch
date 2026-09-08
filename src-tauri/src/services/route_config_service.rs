@@ -2294,6 +2294,29 @@ command = "npx"
     }
 
     #[tokio::test]
+    async fn codex_config_writes_a_high_default_reasoning_effort() {
+        let fixture = ServiceFixture::new().await;
+        seed_codex_pool_member(&fixture.pool, "gpt-5.6-sol").await;
+
+        RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            BASE_URL,
+            "codex",
+            &fixture.home,
+            Some(&["codex".to_string()]),
+        )
+        .await
+        .expect("write");
+
+        let codex_config = tokio::fs::read_to_string(fixture.home.join(".codex/config.toml"))
+            .await
+            .expect("codex config");
+        assert!(codex_config.contains("model_reasoning_effort = \"high\""));
+    }
+
+    #[tokio::test]
     async fn precise_mode_writes_account_prefixed_models_to_every_client() {
         let fixture = ServiceFixture::new().await;
         seed_named_codex_pool_member(&fixture.pool, "Grox", "gpt-5.6-sol").await;

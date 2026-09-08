@@ -108,6 +108,7 @@ fn apply_managed_config(
 ) -> Result<(), AppError> {
     document["model_provider"] = value("ai-switch");
     document["model_catalog_json"] = value(CODEX_MODEL_CATALOG_FILENAME);
+    document["model_reasoning_effort"] = value("high");
     if document.get("model_providers").is_none() {
         document["model_providers"] = Item::Table(Table::new());
     }
