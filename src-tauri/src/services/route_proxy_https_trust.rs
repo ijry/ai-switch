@@ -983,10 +983,19 @@ async fn run_command_output_with_timeout(
     command: &TrustCommand,
     budget: Duration,
 ) -> Result<String, String> {
-    let execution = tokio::process::Command::new(&command.program)
-        .args(&command.args)
-        .kill_on_drop(true)
-        .output();
+    let mut process = tokio::process::Command::new(&command.program);
+    process.args(&command.args).kill_on_drop(true);
+
+    // A Tauri release process has no console. Windows creates a temporary one
+    // for console programs such as certutil.exe unless this flag is set, which
+    // makes a terminal flash whenever HTTPS trust is inspected or changed.
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        process.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let execution = process.output();
     let output = match tokio::time::timeout(budget, execution).await {
         Ok(result) => {
             result.map_err(|error| format!("Could not run {}: {error}", command.program))?
@@ -1146,6 +1155,38 @@ mod tests {
             server_private_key_pem: PathBuf::from("C:/tmp/ai-switch/server-key.pem"),
             expires_at: "2027-01-01T00:00:00Z".to_string(),
         }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_trust_commands_run_without_a_console_window() {
+        use windows_sys::Win32::System::Console::{
+            AttachConsole, FreeConsole, ATTACH_PARENT_PROCESS,
+        };
+
+        let command = TrustCommand {
+            program: "powershell.exe".to_string(),
+            args: vec![
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                r#"$signature = '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();'
+Add-Type -MemberDefinition $signature -Name NativeMethods -Namespace AiSwitchTests
+[int][AiSwitchTests.NativeMethods]::GetConsoleWindow() -eq 0"#
+                    .to_string(),
+            ],
+        };
+
+        // Detach so the probe matches a GUI app: without CREATE_NO_WINDOW,
+        // Windows must allocate a console window for a console subprocess.
+        // Restore the test runner's console even if the probe fails.
+        unsafe { FreeConsole() };
+        let result = run_command_output_with_timeout(&command, Duration::from_secs(20)).await;
+        let reattached = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+
+        let output = result.expect("console probe command should run");
+        assert_eq!(output.to_ascii_lowercase(), "true");
+        assert_ne!(reattached, 0, "test runner console should be restored");
     }
 
     #[test]
