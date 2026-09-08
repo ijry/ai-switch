@@ -745,97 +745,10 @@ function isClaudeTemplateSource(value: string) {
   return claudeRoleTemplates.some((template) => template.value === value.trim());
 }
 
-function modelIdList(models: FetchedRouteModel[]) {
-  return models.map((model) => model.id).filter(Boolean);
-}
-
-function pickModelByKeywords(models: FetchedRouteModel[], keywords: readonly string[]) {
-  const ids = modelIdList(models);
-  for (const keyword of keywords) {
-    const model = ids.find((id) => id.toLowerCase().includes(keyword));
-    if (model) {
-      return model;
-    }
-  }
-  return null;
-}
-
-/// Whether a role should be pre-flagged as 1M-capable during one-click setup.
-///
-/// An upstream that positively advertises 1M (or names it in the model id) is
-/// taken at its word. Silence is *not* treated as "no": most third-party relays
-/// omit `supports_1m` from `/v1/models` entirely, and reading that omission as a
-/// denial meant one-click setup never flagged 1M for anyone on such a relay —
-/// leaving users to tick every role by hand. So an unknown model on a role that
-/// has a 1M tier gets the flag; the proxy only sends the `context-1m` beta
-/// marker when a request actually asks for `[1M]`, and an upstream that cannot
-/// serve it says so.
-function shouldPreflagOneM(
-  models: FetchedRouteModel[],
-  id: string,
-  roleSupportsOneM: boolean,
-) {
-  if (!roleSupportsOneM) {
-    return false;
-  }
-  // Only an explicit `false` is a denial; `null`/`undefined` means unknown, and
-  // unknown defaults to flagged.
-  return models.find((model) => model.id === id)?.supports_1m !== false;
-}
-
-function pickGeneralModel(platform: PlatformKey, models: FetchedRouteModel[]) {
-  const ids = modelIdList(models);
-  if (ids.length === 0) {
-    return null;
-  }
-  if (platform === "gemini") {
-    return pickModelByKeywords(models, ["gemini", "flash", "pro"]) ?? ids[0];
-  }
-  if (platform === "grok") {
-    return (
-      pickModelByKeywords(models, ["grok-4.5", "grok-4", "grok-3", "grok"]) ??
-      ids.find((id) => !id.toLowerCase().includes("embedding")) ??
-      ids[0]
-    );
-  }
-  return (
-    pickModelByKeywords(models, ["gpt-5.5", "gpt-5", "gpt-4o", "gpt", "claude", "sonnet"]) ??
-    ids.find((id) => !id.toLowerCase().includes("embedding")) ??
-    ids[0]
-  );
-}
-
-function buildOneClickMappings(
-  platform: PlatformKey,
-  models: FetchedRouteModel[],
-  interfaceFormat?: InterfaceFormat | string,
-) {
-  if (platform === "claude") {
-    const fallback = pickGeneralModel(platform, models);
-    return claudeModelTemplates
-      .map((template) => {
-        const target = pickModelByKeywords(models, template.keywords) ?? fallback ?? "";
-        return {
-          from: template.value,
-          to: target,
-          label: template.label,
-          ...(target && shouldPreflagOneM(models, target, template.supportsOneM)
-            ? { supports_1m: true }
-            : {}),
-        };
-      })
-      .filter((mapping) => mapping.to.trim());
-  }
-
-  const model = pickGeneralModel(platform, models);
-  return model
-    ? [
-        {
-          from: defaultRequestedModel(platform, interfaceFormat),
-          to: model,
-        },
-      ]
-    : [];
+function buildOneClickMappings(models: FetchedRouteModel[]) {
+  return models
+    .filter((model) => model.id.trim())
+    .map((model) => ({ from: model.id, to: model.id }));
 }
 
 function parseModelMappingsFromConfig(configJson: string): ModelMapping[] {
@@ -1812,7 +1725,6 @@ function ModelMappingsEditor({
   error,
   fetchError,
   fetchedModels = [],
-  interfaceFormat,
   isFetchingModels = false,
   label,
   onChange,
@@ -1880,7 +1792,7 @@ function ModelMappingsEditor({
   };
 
   const oneClickSetup = () => {
-    onChange(buildOneClickMappings(platform, fetchedModels, interfaceFormat));
+    onChange(buildOneClickMappings(fetchedModels));
   };
 
   return (
@@ -1899,15 +1811,17 @@ function ModelMappingsEditor({
               {isFetchingModels ? "获取中..." : "获取模型列表"}
             </button>
           ) : null}
-          <button
-            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[12px] font-semibold text-emerald-900 motion-control hover:bg-emerald-100 disabled:opacity-50"
-            disabled={fetchedModels.length === 0}
-            onClick={oneClickSetup}
-            type="button"
-          >
-            <Wand2 className="h-3.5 w-3.5" />
-            一键设置
-          </button>
+          {isCodex ? (
+            <button
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[12px] font-semibold text-emerald-900 motion-control hover:bg-emerald-100 disabled:opacity-50"
+              disabled={fetchedModels.length === 0}
+              onClick={oneClickSetup}
+              type="button"
+            >
+              <Wand2 className="h-3.5 w-3.5" />
+              一键设置
+            </button>
+          ) : null}
           <button
             className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-stone-700 motion-control hover:bg-stone-50"
             onClick={addRow}
