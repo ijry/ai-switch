@@ -856,7 +856,7 @@ describe("AccountsScreen", () => {
     const accountType = screen.getByLabelText("显示账号类型（API/Token）");
     const modelList = screen.getByLabelText("显示模型列表");
     const requestStats = screen.getByLabelText("显示请求统计");
-    const relayGroupName = screen.getByLabelText("显示Key 分组名称");
+    const relayGroupName = screen.getByLabelText("显示API Key 用户组名");
     expect(accountType).not.toBeChecked();
     expect(modelList).toBeChecked();
     expect(requestStats).toBeChecked();
@@ -4464,7 +4464,7 @@ describe("AccountsScreen", () => {
     expect(badge).toHaveTextContent(/^\$37\.70 · Claude Max$/);
     expect(badge).not.toHaveTextContent("vip");
     expect(badge).toHaveAttribute("title", expect.stringContaining("套餐 Claude Max"));
-    expect(badge).toHaveAttribute("title", expect.stringContaining("Key 分组 vip"));
+    expect(badge).not.toHaveAttribute("title", expect.stringContaining("API Key 用户组 vip"));
     expect(badge).toHaveAttribute("title", expect.stringContaining("到期 2026-10-01T00:00:00Z"));
     expect(badge).toHaveAttribute("title", expect.stringContaining("订阅 5 小时窗口剩余 80%"));
     expect(
@@ -4474,8 +4474,9 @@ describe("AccountsScreen", () => {
     ).toBe(badge);
 
     await userEvent.click(screen.getByLabelText("打开刷新菜单"));
-    await userEvent.click(screen.getByLabelText("显示Key 分组名称"));
+    await userEvent.click(screen.getByLabelText("显示API Key 用户组名"));
     expect(badge).toHaveTextContent(/^\$37\.70 · Claude Max · vip$/);
+    expect(badge).toHaveAttribute("title", expect.stringContaining("API Key 用户组 vip"));
     expect(
       screen.getByRole("button", {
         name: "查询 API Account 余额（当前 $37.70 · Claude Max · vip）",

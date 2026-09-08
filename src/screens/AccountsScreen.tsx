@@ -1373,8 +1373,8 @@ function relayBalanceBadge(
   if (planName) {
     details.unshift(`套餐 ${planName}`);
   }
-  if (groupName) {
-    details.unshift(`Key 分组 ${groupName}`);
+  if (showGroupName && groupName) {
+    details.unshift(`API Key 用户组 ${groupName}`);
   }
   if (typeof snapshot.used === "number") {
     details.push(`已用 ${formatRelayBalanceAmount(snapshot.used, unit)}`);
@@ -6250,7 +6250,7 @@ export function AccountsScreen({
                         ["showRequestStats", "请求统计"],
                         ["showLatencyStats", "请求耗时"],
                         ["showResetTime", "重置时间"],
-                        ["showRelayGroupName", "Key 分组名称"],
+                        ["showRelayGroupName", "API Key 用户组名"],
                       ] as const
                     ).map(([key, label]) => (
                       <label
