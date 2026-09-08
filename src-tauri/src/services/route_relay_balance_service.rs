@@ -1336,8 +1336,13 @@ fn parse_sub2api_usage(body: &Value) -> Result<Sub2ApiUsage, String> {
         return Err("响应里没有可用的余额字段".to_string());
     }
 
+    // Sub2API's wallet group reports `planName: "钱包余额"` as a placeholder,
+    // not as a subscription plan. Storing it makes the badge say "$4.25 · 钱包余额"
+    // and the tooltip call it a plan.
+    let plan_name = string_field(body, "planName").filter(|name| name.trim() != "钱包余额");
+
     Ok(Sub2ApiUsage {
-        plan_name: string_field(body, "planName"),
+        plan_name,
         remaining,
         used,
         limit,
@@ -1836,6 +1841,10 @@ mod tests {
         let usage = parse_sub2api_usage(&body).expect("parses");
         assert_eq!(usage.remaining, Some(4.25));
         assert!(!usage.unlimited);
+        assert_eq!(
+            usage.plan_name, None,
+            "the wallet group's planName is a placeholder, not a subscription plan"
+        );
     }
 
     #[test]

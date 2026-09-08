@@ -1355,12 +1355,16 @@ function relayBalanceBadge(
 ): { amount: string; label: string; toneClass: string; title: string } {
   const unit = snapshot.unit || "USD";
   const storedPlanName = snapshot.plan_name?.trim();
+  // Snapshots written before the backend filtered this value still carry the
+  // panel's wallet placeholder, and it must not be shown as a subscription plan.
+  const sub2ApiWalletPlaceholder =
+    snapshot.provider === "sub2api" && storedPlanName === "钱包余额";
   const storedGroupName = snapshot.group_name?.trim();
   const legacyGroupName =
     !storedGroupName && snapshot.provider === "new_api" && snapshot.account_level
       ? storedPlanName
       : undefined;
-  const planName = legacyGroupName ? undefined : storedPlanName;
+  const planName = legacyGroupName || sub2ApiWalletPlaceholder ? undefined : storedPlanName;
   const groupName = storedGroupName ?? legacyGroupName;
   const visibleNames = [planName, showGroupName ? groupName : undefined].filter(
     (name, index, names): name is string => Boolean(name) && names.indexOf(name) === index,

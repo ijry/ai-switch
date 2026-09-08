@@ -4434,6 +4434,33 @@ describe("AccountsScreen", () => {
     );
   });
 
+  it("hides the sub2api wallet placeholder from a stored balance snapshot", async () => {
+    const relayAccount = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://panel.example.com/v1",
+        interface_format: "openai",
+        model_mappings: [],
+        relay_balance: { provider: "sub2api" },
+        relay_balance_snapshot: {
+          provider: "sub2api",
+          remaining: 4.25,
+          unit: "USD",
+          plan_name: "钱包余额",
+          source_url: "https://panel.example.com/v1/usage",
+          checked_at: "2026-09-02T12:00:00Z",
+        },
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([credentialsFixture[0], relayAccount]);
+    renderScreen();
+
+    const badge = await screen.findByTestId(`credential-relay-balance-${relayAccount.id}`);
+    expect(badge).toHaveTextContent(/^\$4\.25$/);
+    expect(badge).not.toHaveTextContent("钱包余额");
+    expect(badge).not.toHaveAttribute("title", expect.stringContaining("套餐 钱包余额"));
+  });
+
   it("shows the relay plan in the balance badge and its details on hover", async () => {
     const relayAccount = {
       ...credentialsFixture[1],
