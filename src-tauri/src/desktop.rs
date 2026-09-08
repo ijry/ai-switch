@@ -26,9 +26,10 @@ use commands::route_credential_transfer_commands::{
     save_route_credential_export,
 };
 use commands::route_pool_commands::{
-    fetch_route_models, get_route_pool, route_pool_route_once, route_pool_test_model,
+    create_route_pool_group, delete_route_pool_group, fetch_route_models, get_route_pool,
+    route_pool_route_once, route_pool_test_model, set_route_pool_group_members,
     set_route_pool_members, set_route_pool_model_mode, subscribe_route_proxy_live_log,
-    unsubscribe_route_proxy_live_log,
+    unsubscribe_route_proxy_live_log, update_route_pool_group,
 };
 use commands::route_proxy_commands::{
     get_route_proxy_key, get_route_proxy_status, route_config_write_is_stale, start_route_proxy,
@@ -367,6 +368,7 @@ pub fn run() {
             deeplink_protocols: DeepLinkProtocolRuntime::default(),
             close_to_tray,
             route_proxy: RouteProxyRuntimeState::default(),
+            saas: crate::saas::SaasRuntime::default(),
             web_service: WebServiceRuntimeState::default(),
             tailscale: TailscaleRuntimeState::default(),
             terminals: TerminalManager::default(),
@@ -497,6 +499,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            crate::saas::transport::saas_admin,
             get_settings,
             save_settings,
             create_batch,
@@ -537,6 +540,10 @@ pub fn run() {
             import_external_client_accounts,
             import_example_json,
             get_route_pool,
+            create_route_pool_group,
+            update_route_pool_group,
+            delete_route_pool_group,
+            set_route_pool_group_members,
             set_route_pool_members,
             set_route_pool_model_mode,
             route_pool_route_once,

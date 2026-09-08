@@ -209,10 +209,11 @@ impl RoutePoolRepository {
         platform: &str,
     ) -> Result<Vec<String>, AppError> {
         let rows = sqlx::query(
-            "SELECT route_credential_id
-             FROM route_pool_members
-             WHERE platform = ? AND enabled = 1
-             ORDER BY sort_order ASC, created_at ASC",
+            "SELECT rpm.route_credential_id
+             FROM route_pool_members rpm
+             INNER JOIN route_pool_groups g ON g.id = rpm.group_id
+             WHERE rpm.platform = ? AND g.is_active = 1 AND g.deleted_at IS NULL
+             ORDER BY rpm.sort_order ASC, rpm.created_at ASC",
         )
         .bind(platform)
         .fetch_all(pool)
@@ -228,6 +229,74 @@ impl RoutePoolRepository {
             .into_iter()
             .map(|row| row.get::<String, _>("route_credential_id"))
             .collect())
+    }
+
+    pub async fn list_group_member_ids(
+        pool: &SqlitePool,
+        group_id: &str,
+    ) -> Result<Vec<String>, AppError> {
+        sqlx::query_scalar(
+            "SELECT route_credential_id
+             FROM route_pool_members
+             WHERE group_id = ?
+             ORDER BY sort_order ASC, created_at ASC",
+        )
+        .bind(group_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_pool_group_members",
+            message: "Could not load route group members".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })
+    }
+
+    pub async fn create_group(
+        pool: &SqlitePool,
+        platform: &str,
+        name: &str,
+        is_internal: bool,
+    ) -> Result<String, AppError> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let sort_order = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1
+             FROM route_pool_groups
+             WHERE platform = ? AND deleted_at IS NULL",
+        )
+        .bind(platform)
+        .fetch_one(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_pool_group_create_order",
+            message: "Could not allocate route group order".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+
+        sqlx::query(
+            "INSERT INTO route_pool_groups
+               (id, platform, name, sort_order, is_internal, is_active, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
+        )
+        .bind(&id)
+        .bind(platform)
+        .bind(name)
+        .bind(sort_order)
+        .bind(is_internal as i64)
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_pool_group_create",
+            message: "Could not create route group".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+
+        Ok(id)
     }
 
     pub async fn pool_membership_map(
@@ -271,58 +340,260 @@ impl RoutePoolRepository {
             })
     }
 
+    pub async fn update_group(
+        pool: &SqlitePool,
+        platform: &str,
+        group_id: &str,
+        name: Option<&str>,
+        is_internal: Option<bool>,
+        activate: bool,
+        sort_order: Option<i64>,
+    ) -> Result<(), AppError> {
+        let mut tx = pool.begin().await.map_err(|err| AppError::Database {
+            code: "database.route_pool_group_update_tx",
+            message: "Could not start route group update".to_string(),
+            details: Some(err.to_string()),
+            recoverable: false,
+        })?;
+        let now = Utc::now().to_rfc3339();
+        if activate {
+            sqlx::query(
+                "UPDATE route_pool_groups
+                 SET is_active = 0, updated_at = ?
+                 WHERE platform = ? AND deleted_at IS NULL",
+            )
+            .bind(&now)
+            .bind(platform)
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.route_pool_group_deactivate",
+                message: "Could not deactivate route groups".to_string(),
+                details: Some(err.to_string()),
+                recoverable: false,
+            })?;
+        }
+
+        let mut query = QueryBuilder::<Sqlite>::new("UPDATE route_pool_groups SET updated_at = ");
+        query.push_bind(&now);
+        if let Some(name) = name {
+            query.push(", name = ").push_bind(name.to_string());
+        }
+        if let Some(is_internal) = is_internal {
+            query.push(", is_internal = ").push_bind(is_internal as i64);
+        }
+        if activate {
+            query.push(", is_active = 1");
+        }
+        if let Some(sort_order) = sort_order {
+            query.push(", sort_order = ").push_bind(sort_order);
+        }
+        query
+            .push(" WHERE platform = ")
+            .push_bind(platform)
+            .push(" AND id = ")
+            .push_bind(group_id)
+            .push(" AND deleted_at IS NULL");
+        let result = query
+            .build()
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.route_pool_group_update",
+                message: "Could not update route group".to_string(),
+                details: Some(err.to_string()),
+                recoverable: false,
+            })?;
+        if result.rows_affected() != 1 {
+            return Err(AppError::Validation {
+                code: "validation.route_pool_group_not_found",
+                message: "Route group was not found".to_string(),
+                details: Some(format!("{platform}:{group_id}")),
+                recoverable: true,
+            });
+        }
+
+        tx.commit().await.map_err(|err| AppError::Database {
+            code: "database.route_pool_group_update_commit",
+            message: "Could not commit route group update".to_string(),
+            details: Some(err.to_string()),
+            recoverable: false,
+        })?;
+        Ok(())
+    }
+
+    pub async fn delete_group(
+        pool: &SqlitePool,
+        platform: &str,
+        group_id: &str,
+    ) -> Result<(), AppError> {
+        let member_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM route_pool_members WHERE group_id = ?",
+        )
+        .bind(group_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_pool_group_delete_count",
+            message: "Could not count route group members".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+        if member_count > 0 {
+            return Err(AppError::Validation {
+                code: "validation.route_pool_group_nonempty_delete",
+                message: "Move accounts out before deleting this route group".to_string(),
+                details: Some(format!("{platform}:{group_id}:{member_count}")),
+                recoverable: true,
+            });
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE route_pool_groups
+             SET deleted_at = ?, updated_at = ?, is_active = 0
+             WHERE platform = ? AND id = ? AND deleted_at IS NULL",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(platform)
+        .bind(group_id)
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_pool_group_delete",
+            message: "Could not delete route group".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+        if result.rows_affected() != 1 {
+            return Err(AppError::Validation {
+                code: "validation.route_pool_group_not_found",
+                message: "Route group was not found".to_string(),
+                details: Some(format!("{platform}:{group_id}")),
+                recoverable: true,
+            });
+        }
+        Ok(())
+    }
+
+    pub async fn replace_group_members(
+        pool: &SqlitePool,
+        platform: &str,
+        group_id: &str,
+        account_ids: &[String],
+    ) -> Result<(), AppError> {
+        let mut tx = pool.begin().await.map_err(|err| AppError::Database {
+            code: "database.route_pool_group_members_tx",
+            message: "Could not start route group member update".to_string(),
+            details: Some(err.to_string()),
+            recoverable: false,
+        })?;
+        let group_exists = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM route_pool_groups
+             WHERE platform = ? AND id = ? AND deleted_at IS NULL",
+        )
+        .bind(platform)
+        .bind(group_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_pool_group_members_group",
+            message: "Could not verify route group".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
+        if group_exists != 1 {
+            return Err(AppError::Validation {
+                code: "validation.route_pool_group_not_found",
+                message: "Route group was not found".to_string(),
+                details: Some(format!("{platform}:{group_id}")),
+                recoverable: true,
+            });
+        }
+
+        sqlx::query("DELETE FROM route_pool_members WHERE platform = ? AND group_id = ?")
+            .bind(platform)
+            .bind(group_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.route_pool_group_members_clear",
+                message: "Could not clear route group members".to_string(),
+                details: Some(err.to_string()),
+                recoverable: false,
+            })?;
+
+        if !account_ids.is_empty() {
+            let mut delete_query =
+                QueryBuilder::<Sqlite>::new("DELETE FROM route_pool_members WHERE platform = ");
+            delete_query
+                .push_bind(platform)
+                .push(" AND route_credential_id IN (");
+            let mut separated = delete_query.separated(", ");
+            for account_id in account_ids {
+                separated.push_bind(account_id);
+            }
+            separated.push_unseparated(")");
+            delete_query
+                .build()
+                .execute(&mut *tx)
+                .await
+                .map_err(|err| AppError::Database {
+                    code: "database.route_pool_group_members_remove",
+                    message: "Could not remove prior group memberships".to_string(),
+                    details: Some(err.to_string()),
+                    recoverable: false,
+                })?;
+
+            let now = Utc::now().to_rfc3339();
+            for (index, account_id) in account_ids.iter().enumerate() {
+                sqlx::query(
+                    "INSERT INTO route_pool_members
+                       (id, platform, route_credential_id, enabled, sort_order, group_id, created_at, updated_at)
+                     VALUES (?, ?, ?, 1, ?, ?, ?, ?)",
+                )
+                .bind(Uuid::new_v4().to_string())
+                .bind(platform)
+                .bind(account_id)
+                .bind(index as i64)
+                .bind(group_id)
+                .bind(&now)
+                .bind(&now)
+                .execute(&mut *tx)
+                .await
+                .map_err(|err| AppError::Database {
+                    code: "database.route_pool_group_members_insert",
+                    message: "Could not save route group members".to_string(),
+                    details: Some(err.to_string()),
+                    recoverable: false,
+                })?;
+            }
+        }
+
+        tx.commit().await.map_err(|err| AppError::Database {
+            code: "database.route_pool_group_members_commit",
+            message: "Could not commit route group members".to_string(),
+            details: Some(err.to_string()),
+            recoverable: false,
+        })?;
+        Ok(())
+    }
+
     pub async fn replace_members(
         pool: &SqlitePool,
         platform: &str,
         account_ids: &[String],
     ) -> Result<Vec<String>, AppError> {
-        let mut tx = pool.begin().await.map_err(|err| AppError::Database {
-            code: "database.route_pool_tx",
-            message: "Could not start route pool update".to_string(),
-            details: Some(err.to_string()),
-            recoverable: true,
-        })?;
-
-        sqlx::query("DELETE FROM route_pool_members WHERE platform = ?")
-            .bind(platform)
-            .execute(&mut *tx)
-            .await
-            .map_err(|err| AppError::Database {
-                code: "database.route_pool_delete",
-                message: "Could not clear route pool members".to_string(),
-                details: Some(err.to_string()),
+        let group_id = Self::active_group_id(pool, platform)
+            .await?
+            .ok_or_else(|| AppError::Validation {
+                code: "validation.route_pool_group_active_missing",
+                message: "Platform has no active route group".to_string(),
+                details: Some(platform.to_string()),
                 recoverable: true,
             })?;
-
-        let now = Utc::now().to_rfc3339();
-        for (index, account_id) in account_ids.iter().enumerate() {
-            sqlx::query(
-                "INSERT INTO route_pool_members
-                 (id, platform, route_credential_id, enabled, sort_order, created_at, updated_at)
-                 VALUES (?, ?, ?, 1, ?, ?, ?)",
-            )
-            .bind(Uuid::new_v4().to_string())
-            .bind(platform)
-            .bind(account_id)
-            .bind(index as i64)
-            .bind(&now)
-            .bind(&now)
-            .execute(&mut *tx)
-            .await
-            .map_err(|err| AppError::Database {
-                code: "database.route_pool_insert",
-                message: "Could not add route pool member".to_string(),
-                details: Some(err.to_string()),
-                recoverable: true,
-            })?;
-        }
-
-        tx.commit().await.map_err(|err| AppError::Database {
-            code: "database.route_pool_commit",
-            message: "Could not save route pool members".to_string(),
-            details: Some(err.to_string()),
-            recoverable: true,
-        })?;
+        Self::replace_group_members(pool, platform, &group_id, account_ids).await?;
 
         Self::list_member_ids(pool, platform).await
     }

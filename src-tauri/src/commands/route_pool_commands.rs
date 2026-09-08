@@ -1,9 +1,10 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, AppError};
 use crate::models::route_pool::{
-    FetchedRouteModel, RouteModelsFetchRequest, RoutePoolModelTestOutcome,
-    RoutePoolModelTestRequest, RoutePoolRouteOutcome, RoutePoolRouteRequest, RoutePoolState,
-    SetRoutePoolMembersInput, SetRoutePoolModelModeInput,
+    CreateRoutePoolGroupInput, DeleteRoutePoolGroupInput, FetchedRouteModel,
+    RouteModelsFetchRequest, RoutePoolModelTestOutcome, RoutePoolModelTestRequest,
+    RoutePoolRouteOutcome, RoutePoolRouteRequest, RoutePoolState, SetRoutePoolGroupMembersInput,
+    SetRoutePoolMembersInput, SetRoutePoolModelModeInput, UpdateRoutePoolGroupInput,
 };
 use crate::services::route_model_fetch_service::RouteModelFetchService;
 use crate::services::route_model_test_service::RouteModelTestService;
@@ -40,16 +41,58 @@ pub async fn get_route_pool(
     since: Option<String>,
     request_page: Option<i64>,
     request_page_size: Option<i64>,
+    group_id: Option<String>,
 ) -> Result<RoutePoolState, ApiError> {
-    RoutePoolService::get(
+    RoutePoolService::get_for_group(
         &state.pool,
         platform,
+        group_id,
         since,
         request_page,
         request_page_size,
     )
     .await
     .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn create_route_pool_group(
+    state: State<'_, AppState>,
+    input: CreateRoutePoolGroupInput,
+) -> Result<RoutePoolState, ApiError> {
+    RoutePoolService::create_group(&state.pool, input)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn update_route_pool_group(
+    state: State<'_, AppState>,
+    input: UpdateRoutePoolGroupInput,
+) -> Result<RoutePoolState, ApiError> {
+    RoutePoolService::update_group(&state.pool, input)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn delete_route_pool_group(
+    state: State<'_, AppState>,
+    input: DeleteRoutePoolGroupInput,
+) -> Result<RoutePoolState, ApiError> {
+    RoutePoolService::delete_group(&state.pool, input)
+        .await
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn set_route_pool_group_members(
+    state: State<'_, AppState>,
+    input: SetRoutePoolGroupMembersInput,
+) -> Result<RoutePoolState, ApiError> {
+    RoutePoolService::set_group_members(&state.pool, input)
+        .await
+        .map_err(ApiError::from)
 }
 
 #[tauri::command]

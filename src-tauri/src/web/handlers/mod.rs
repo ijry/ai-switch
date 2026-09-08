@@ -33,8 +33,9 @@ use crate::models::route_credential_transfer::{
     ExportRouteCredentialsInput, ImportRouteCredentialsInput, PreviewRouteCredentialImportInput,
 };
 use crate::models::route_pool::{
-    RouteModelsFetchRequest, RoutePoolModelTestRequest, RoutePoolRouteRequest,
-    SetRoutePoolMembersInput, SetRoutePoolModelModeInput,
+    CreateRoutePoolGroupInput, DeleteRoutePoolGroupInput, RouteModelsFetchRequest,
+    RoutePoolModelTestRequest, RoutePoolRouteRequest, SetRoutePoolGroupMembersInput,
+    SetRoutePoolMembersInput, SetRoutePoolModelModeInput, UpdateRoutePoolGroupInput,
 };
 use crate::models::settings::AppSettings;
 use crate::services::agent_launch_service::AgentLaunchService;
@@ -66,7 +67,8 @@ use std::collections::HashMap;
 pub fn is_sensitive_command(command: &str) -> bool {
     matches!(
         command,
-        "export_route_credentials"
+        "saas_admin"
+            | "export_route_credentials"
             | "preview_route_credential_import"
             | "import_route_credentials"
             | "preview_external_client_import"
@@ -125,6 +127,16 @@ pub async fn dispatch_command(
 ) -> Result<Value, ApiError> {
     match command {
         "health" => to_value(json!({ "ok": true })),
+        "saas_admin" => {
+            let operation = required_string_arg(&args, "operation")?;
+            crate::saas::admin_command(
+                &state,
+                &operation,
+                args.get("payload").cloned().unwrap_or_else(|| json!({})),
+            )
+            .await
+            .map_err(ApiError::from)
+        }
         "mcp_scan_local" => to_value(crate::mcp::service::scan_local().map_err(ApiError::from)?),
         "mcp_list_marketplaces" => to_value(crate::mcp::marketplace::list_marketplaces().await),
         "mcp_search_marketplace" => {
@@ -760,13 +772,15 @@ pub async fn dispatch_command(
         }
         "get_route_pool" => {
             let platform = required_string_arg(&args, "platform")?;
+            let group_id = optional_string_arg(&args, "group_id")?;
             let since = optional_string_arg(&args, "since")?;
             let request_page = optional_i64_arg(&args, "request_page")?;
             let request_page_size = optional_i64_arg(&args, "request_page_size")?;
             to_value(
-                RoutePoolService::get(
+                RoutePoolService::get_for_group(
                     &state.pool,
                     platform,
+                    group_id,
                     since,
                     request_page,
                     request_page_size,
@@ -817,6 +831,38 @@ pub async fn dispatch_command(
             let input: SetRoutePoolMembersInput = parse_arg(&args, "input")?;
             to_value(
                 RoutePoolService::set_members(&state.pool, input)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "create_route_pool_group" => {
+            let input: CreateRoutePoolGroupInput = parse_arg(&args, "input")?;
+            to_value(
+                RoutePoolService::create_group(&state.pool, input)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "update_route_pool_group" => {
+            let input: UpdateRoutePoolGroupInput = parse_arg(&args, "input")?;
+            to_value(
+                RoutePoolService::update_group(&state.pool, input)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "delete_route_pool_group" => {
+            let input: DeleteRoutePoolGroupInput = parse_arg(&args, "input")?;
+            to_value(
+                RoutePoolService::delete_group(&state.pool, input)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "set_route_pool_group_members" => {
+            let input: SetRoutePoolGroupMembersInput = parse_arg(&args, "input")?;
+            to_value(
+                RoutePoolService::set_group_members(&state.pool, input)
                     .await
                     .map_err(to_error)?,
             )
@@ -1291,6 +1337,7 @@ mod tests {
                     crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime::default(),
                 close_to_tray: crate::app_state::CloseToTrayRuntime::default(),
                 route_proxy: RouteProxyRuntimeState::default(),
+                saas: crate::saas::SaasRuntime::default(),
                 web_service: WebServiceRuntimeState::default(),
                 tailscale: TailscaleRuntimeState::default(),
                 terminals: TerminalManager::default(),
@@ -1306,6 +1353,73 @@ mod tests {
         let args = json!({ "data": "\r" });
 
         assert_eq!(required_raw_string_arg(&args, "data").unwrap(), "\r");
+    }
+
+    #[tokio::test]
+    async fn route_pool_group_commands_dispatch_dynamic_groups() {
+        let test = test_state().await;
+
+        let state = dispatch_command(
+            test.state.clone(),
+            "create_route_pool_group",
+            json!({
+                "input": {
+                    "platform": "codex",
+                    "name": "Web分组",
+                    "is_internal": false
+                }
+            }),
+        )
+        .await
+        .expect("create group command");
+        let group_id = state["group_id"]
+            .as_str()
+            .expect("created group id")
+            .to_string();
+        assert_eq!(state["groups"].as_array().expect("groups").len(), 4);
+
+        let state = dispatch_command(
+            test.state.clone(),
+            "get_route_pool",
+            json!({
+                "platform": "codex",
+                "group_id": group_id,
+                "since": null,
+                "request_page": null,
+                "request_page_size": null
+            }),
+        )
+        .await
+        .expect("get group state");
+        assert_eq!(state["group_id"].as_str(), Some(group_id.as_str()));
+
+        let state = dispatch_command(
+            test.state.clone(),
+            "update_route_pool_group",
+            json!({
+                "input": {
+                    "platform": "codex",
+                    "id": group_id,
+                    "name": "Web分组二",
+                    "is_internal": null,
+                    "activate": true,
+                    "sort_order": null
+                }
+            }),
+        )
+        .await
+        .expect("update group command");
+        assert_eq!(state["active_group_id"].as_str(), Some(group_id.as_str()));
+
+        dispatch_command(
+            test.state,
+            "delete_route_pool_group",
+            json!({
+                "input": { "platform": "codex", "id": group_id }
+            }),
+        )
+        .await
+        .expect_err("active group delete command must fail");
     }
 
     #[test]

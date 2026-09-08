@@ -602,9 +602,50 @@ export type RoutePoolModelMode = "aggregate" | "precise";
 
 export type RoutePoolState = {
   platform: string;
+  groups: RoutePoolGroup[];
+  group_id?: string | null;
+  active_group_id?: string | null;
   account_ids: string[];
   model_mode: RoutePoolModelMode;
   stats: RoutePoolStats;
+};
+
+export type RoutePoolGroup = {
+  id: string;
+  platform: string;
+  name: string;
+  sort_order: number;
+  is_internal: boolean;
+  is_active: boolean;
+  account_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreateRoutePoolGroupInput = {
+  platform: string;
+  name: string;
+  is_internal: boolean;
+};
+
+export type UpdateRoutePoolGroupInput = {
+  platform: string;
+  id: string;
+  name?: string | null;
+  is_internal?: boolean | null;
+  activate: boolean;
+  sort_order?: number | null;
+};
+
+export type DeleteRoutePoolGroupInput = {
+  platform: string;
+  id: string;
+};
+
+export type SetRoutePoolGroupMembersInput = {
+  platform: string;
+  group_id: string;
+  account_ids: string[];
 };
 
 /** Aggregated token counts and estimated cost for one grouping. */

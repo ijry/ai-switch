@@ -10,6 +10,8 @@ import type {
   ConfigWriteClientStatus,
   ConfigWriteOutcome,
   CopyRouteCredentialInput,
+  CreateRoutePoolGroupInput,
+  DeleteRoutePoolGroupInput,
   DiskSpaceStatus,
   ExternalClientImportOutcome,
   ExternalClientImportPreview,
@@ -44,6 +46,8 @@ import type {
   RoutePoolRouteOutcome,
   RoutePoolRouteRequest,
   RoutePoolState,
+  SetRoutePoolGroupMembersInput,
+  UpdateRoutePoolGroupInput,
   RouteProxyLiveLogEntry,
   RouteProxyHttpsOperationOutcome,
   RouteProxyHttpsStatus,
@@ -158,16 +162,42 @@ export function getDiskSpaceStatus(): Promise<DiskSpaceStatus> {
 
 export function getRoutePool(
   platform: string,
+  groupId?: string | null,
   since?: string | null,
   requestPage?: number | null,
   requestPageSize?: number | null,
 ): Promise<RoutePoolState> {
   return invoke("get_route_pool", {
     platform,
+    group_id: groupId ?? null,
     since: since ?? null,
     request_page: requestPage ?? null,
     request_page_size: requestPageSize ?? null,
   });
+}
+
+export function createRoutePoolGroup(
+  input: CreateRoutePoolGroupInput,
+): Promise<RoutePoolState> {
+  return invoke("create_route_pool_group", { input });
+}
+
+export function updateRoutePoolGroup(
+  input: UpdateRoutePoolGroupInput,
+): Promise<RoutePoolState> {
+  return invoke("update_route_pool_group", { input });
+}
+
+export function deleteRoutePoolGroup(
+  input: DeleteRoutePoolGroupInput,
+): Promise<RoutePoolState> {
+  return invoke("delete_route_pool_group", { input });
+}
+
+export function setRoutePoolGroupMembers(
+  input: SetRoutePoolGroupMembersInput,
+): Promise<RoutePoolState> {
+  return invoke("set_route_pool_group_members", { input });
 }
 
 export function setRoutePoolMembers(input: {

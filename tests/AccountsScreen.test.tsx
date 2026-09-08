@@ -640,6 +640,9 @@ describe("AccountsScreen", () => {
     poolStateByPlatform = new Map<string, string[]>([["codex", []]]);
     vi.mocked(getRoutePool).mockImplementation(async (platform) => ({
       platform,
+      groups: [],
+      group_id: null,
+      active_group_id: null,
       account_ids: [...(poolStateByPlatform.get(platform) ?? [])],
       model_mode: "aggregate",
       stats: statsFixture({
@@ -703,6 +706,9 @@ describe("AccountsScreen", () => {
       poolStateByPlatform.set(input.platform, [...input.account_ids]);
       return {
         platform: input.platform,
+        groups: [],
+        group_id: null,
+        active_group_id: null,
         account_ids: [...input.account_ids],
         model_mode: "aggregate",
         stats: statsFixture({
@@ -2199,6 +2205,9 @@ describe("AccountsScreen", () => {
     ]);
     vi.mocked(getRoutePool).mockResolvedValue({
       platform: "hermes",
+      groups: [],
+      group_id: null,
+      active_group_id: null,
       account_ids: hermesCredentials.map((credential) => credential.id),
       model_mode: "aggregate",
       stats: statsFixture({ member_count: 2 }),
@@ -2569,6 +2578,9 @@ describe("AccountsScreen", () => {
       poolStateByPlatform.set(platform, [...account_ids]);
       return {
         platform,
+        groups: [],
+        group_id: null,
+        active_group_id: null,
         model_mode: "aggregate",
         account_ids: [...account_ids],
         stats: statsFixture({ member_count: account_ids.length }),
@@ -5550,6 +5562,9 @@ describe("AccountsScreen", () => {
   it("switches the model list mode from the write dialog", async () => {
     vi.mocked(setRoutePoolModelMode).mockImplementation(async ({ platform, mode }) => ({
       platform,
+      groups: [],
+      group_id: null,
+      active_group_id: null,
       account_ids: [...(poolStateByPlatform.get(platform) ?? [])],
       model_mode: mode,
       stats: statsFixture({}),

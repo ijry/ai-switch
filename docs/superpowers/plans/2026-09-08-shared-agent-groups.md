@@ -62,10 +62,10 @@
 - `SetRoutePoolGroupMembersInput { platform, group_id, account_ids }`
 - 命令：`create_route_pool_group`、`update_route_pool_group`、`delete_route_pool_group`、`set_route_pool_group_members`；旧 `set_route_pool_members` 兼容为写当前激活组。
 
-- [ ] 写服务测试：创建不抢占激活、激活原子替换、空组排序、非空/激活组删除拒绝、跨平台账号拒绝、移动后旧组无成员。
-- [ ] 实现服务、命令和 API 客户端。
-- [ ] 桌面与 Web 命令分派转绿。
-- [ ] 提交本任务。
+- [x] 写服务测试：创建不抢占激活、激活原子替换、空组排序、非空/激活组删除拒绝、跨平台账号拒绝、移动后旧组无成员。
+- [x] 实现服务、命令和 API 客户端。
+- [x] 桌面与 Web 命令分派转绿。
+- [x] 提交本任务。
 
 ## Task 3: 智能体账号页动态分组
 
