@@ -1,6 +1,7 @@
 use crate::error::AppError;
 use crate::models::route_pool::{
-    ProxyRequestRow, RoutePoolMemberAccount, RoutePoolStats, RoutePoolUsageLog, RouteUsageBreakdown,
+    ProxyRequestRow, RoutePoolGroup, RoutePoolMemberAccount, RoutePoolStats, RoutePoolUsageLog,
+    RouteUsageBreakdown,
 };
 use crate::services::route_pool_model_mode::PoolModelMode;
 use chrono::Utc;
@@ -11,6 +12,198 @@ use uuid::Uuid;
 pub struct RoutePoolRepository;
 
 impl RoutePoolRepository {
+    pub async fn migrate_legacy_pool_views(pool: &SqlitePool) -> Result<(), AppError> {
+        let mut tx = pool.begin().await.map_err(|err| AppError::Database {
+            code: "database.route_pool_group_migrate_tx",
+            message: "Could not start route group migration".to_string(),
+            details: Some(err.to_string()),
+            recoverable: false,
+        })?;
+        let now = Utc::now().to_rfc3339();
+
+        sqlx::query(
+            "UPDATE route_pool_members
+             SET group_id = CASE
+               WHEN rc.archived_at IS NOT NULL THEN printf('%s-archived', rc.platform)
+               WHEN route_pool_members.enabled = 1 THEN printf('%s-default', rc.platform)
+               ELSE printf('%s-out', rc.platform)
+             END,
+             updated_at = ?
+             FROM route_credentials rc
+             WHERE rc.id = route_pool_members.route_credential_id
+               AND route_pool_members.group_id IS NULL",
+        )
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_pool_group_migrate_update",
+            message: "Could not assign legacy route pool memberships".to_string(),
+            details: Some(err.to_string()),
+            recoverable: false,
+        })?;
+
+        sqlx::query(
+            "INSERT INTO route_pool_members
+               (id, platform, route_credential_id, enabled, sort_order, group_id, created_at, updated_at)
+             SELECT
+               printf('legacy-%s', rc.id),
+               rc.platform,
+               rc.id,
+               0,
+               0,
+               CASE WHEN rc.archived_at IS NOT NULL THEN printf('%s-archived', rc.platform)
+                    ELSE printf('%s-out', rc.platform) END,
+               ?,
+               ?
+             FROM route_credentials rc
+             WHERE NOT EXISTS (
+               SELECT 1 FROM route_pool_members existing
+               WHERE existing.platform = rc.platform
+                 AND existing.route_credential_id = rc.id
+             )",
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_pool_group_migrate_insert",
+            message: "Could not create missing route group memberships".to_string(),
+            details: Some(err.to_string()),
+            recoverable: false,
+        })?;
+
+        sqlx::query(
+            "UPDATE route_pool_groups
+             SET is_active = CASE WHEN id = printf('%s-default', platform) THEN 1 ELSE 0 END,
+                 updated_at = ?
+             WHERE platform IN (SELECT DISTINCT platform FROM route_credentials)
+               AND NOT EXISTS (
+                 SELECT 1 FROM route_pool_groups active
+                 WHERE active.platform = route_pool_groups.platform
+                   AND active.is_active = 1
+                   AND active.deleted_at IS NULL
+               )",
+        )
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_pool_group_migrate_active",
+            message: "Could not activate default route groups".to_string(),
+            details: Some(err.to_string()),
+            recoverable: false,
+        })?;
+
+        tx.commit().await.map_err(|err| AppError::Database {
+            code: "database.route_pool_group_migrate_commit",
+            message: "Could not commit route group migration".to_string(),
+            details: Some(err.to_string()),
+            recoverable: false,
+        })?;
+        Ok(())
+    }
+
+    pub async fn list_groups(
+        pool: &SqlitePool,
+        platform: &str,
+        include_deleted: bool,
+    ) -> Result<Vec<RoutePoolGroup>, AppError> {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT g.id, g.platform, g.name, g.sort_order, g.is_internal, g.is_active,
+                    g.created_at, g.updated_at, COUNT(m.route_credential_id) AS account_count
+             FROM route_pool_groups g
+             LEFT JOIN route_pool_members m ON m.group_id = g.id
+             WHERE g.platform = ",
+        );
+        query.push_bind(platform);
+        if !include_deleted {
+            query.push(" AND g.deleted_at IS NULL");
+        }
+        query.push(" GROUP BY g.id ORDER BY g.sort_order ASC, g.created_at ASC");
+        let rows = query
+            .build_query_as::<(String, String, String, i64, i64, i64, String, String, i64)>()
+            .fetch_all(pool)
+            .await
+            .map_err(|err| AppError::Database {
+                code: "database.route_pool_groups",
+                message: "Could not load route groups".to_string(),
+                details: Some(err.to_string()),
+                recoverable: true,
+            })?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    platform,
+                    name,
+                    sort_order,
+                    is_internal,
+                    is_active,
+                    created_at,
+                    updated_at,
+                    account_count,
+                )| {
+                    RoutePoolGroup {
+                        id,
+                        platform,
+                        name,
+                        sort_order,
+                        is_internal: is_internal != 0,
+                        is_active: is_active != 0,
+                        account_count,
+                        created_at,
+                        updated_at,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    pub async fn active_group_id(
+        pool: &SqlitePool,
+        platform: &str,
+    ) -> Result<Option<String>, AppError> {
+        sqlx::query_scalar(
+            "SELECT id FROM route_pool_groups
+             WHERE platform = ? AND is_active = 1 AND deleted_at IS NULL
+             ORDER BY sort_order ASC LIMIT 1",
+        )
+        .bind(platform)
+        .fetch_optional(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_pool_group_active",
+            message: "Could not load the active route group".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })
+    }
+
+    pub async fn group_id_for_account(
+        pool: &SqlitePool,
+        platform: &str,
+        credential_id: &str,
+    ) -> Result<Option<String>, AppError> {
+        sqlx::query_scalar(
+            "SELECT group_id FROM route_pool_members
+             WHERE platform = ? AND route_credential_id = ?",
+        )
+        .bind(platform)
+        .bind(credential_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_pool_group_for_account",
+            message: "Could not load the account route group".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })
+    }
+
     pub async fn list_member_ids(
         pool: &SqlitePool,
         platform: &str,
@@ -717,6 +910,88 @@ mod tests {
                 .unwrap(),
             PoolModelMode::Aggregate
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_pool_views_migrate_to_dynamic_groups_once() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let pool_account = create_credential(&pool, "codex", "Pool").await;
+        let outside_account = create_credential(&pool, "codex", "Outside").await;
+        let archived_account = create_credential(&pool, "codex", "Archived").await;
+        RoutePoolRepository::replace_members(&pool, "codex", &[pool_account.clone()])
+            .await
+            .unwrap();
+        RouteCredentialRepository::set_archived(
+            &pool,
+            std::slice::from_ref(&archived_account),
+            true,
+        )
+        .await
+        .unwrap();
+
+        sqlx::query("UPDATE route_pool_members SET group_id = NULL")
+            .execute(&pool)
+            .await
+            .unwrap();
+        RoutePoolRepository::migrate_legacy_pool_views(&pool)
+            .await
+            .unwrap();
+        RoutePoolRepository::migrate_legacy_pool_views(&pool)
+            .await
+            .unwrap();
+
+        let groups = RoutePoolRepository::list_groups(&pool, "codex", false)
+            .await
+            .unwrap();
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["默认组", "未入池", "已归档"]
+        );
+        let active_group = RoutePoolRepository::active_group_id(&pool, "codex")
+            .await
+            .unwrap()
+            .expect("default group is active");
+        let groups_by_name = groups
+            .iter()
+            .map(|group| (group.name.as_str(), group.id.as_str()))
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(active_group, groups_by_name["默认组"]);
+        assert_eq!(
+            RoutePoolRepository::group_id_for_account(&pool, "codex", &pool_account)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(groups_by_name["默认组"])
+        );
+        assert_eq!(
+            RoutePoolRepository::group_id_for_account(&pool, "codex", &outside_account)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(groups_by_name["未入池"])
+        );
+        assert_eq!(
+            RoutePoolRepository::group_id_for_account(&pool, "codex", &archived_account)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(groups_by_name["已归档"])
+        );
+        assert_eq!(groups[0].account_count, 1);
+        assert_eq!(groups[1].account_count, 1);
+        assert_eq!(groups[2].account_count, 1);
+
+        let archived_at: Option<String> =
+            sqlx::query_scalar("SELECT archived_at FROM route_credentials WHERE id = ?")
+                .bind(&archived_account)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(archived_at.is_some());
     }
 
     #[tokio::test]

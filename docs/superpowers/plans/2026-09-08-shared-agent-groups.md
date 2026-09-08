@@ -37,10 +37,10 @@
 - `RoutePoolRepository::group_id_for_account(pool, platform, credential_id) -> Result<Option<String>, AppError>`
 - 迁移为 7 个支持平台各创建默认组、未入池、已归档，并一次性迁移既有账号。
 
-- [ ] 写仓储失败测试：三类旧账号进入正确组、默认组唯一激活、归档时间不变、重复迁移不重复建组。
-- [ ] 新增迁移和模型，按测试实现分组查询。
-- [ ] 将 `route_pool_groups`、`route_pool_members` 纳入用户数据表清单。
-- [ ] 运行定向 Rust 测试并提交。
+- [x] 写仓储失败测试：三类旧账号进入正确组、默认组唯一激活、归档时间不变、重复迁移不重复建组。
+- [x] 新增迁移和模型，按测试实现分组查询。
+- [x] 将 `route_pool_groups`、`route_pool_members` 纳入用户数据表清单。
+- [x] 运行定向 Rust 测试并提交。
 
 ## Task 2: 分组操作服务与命令
 

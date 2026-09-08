@@ -23,6 +23,8 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 /// every fresh start and would make an empty database look occupied.
 const USER_DATA_TABLES: &[&str] = &[
     "route_credentials",
+    "route_pool_groups",
+    "route_pool_members",
     "providers",
     "official_accounts",
     "route_proxy_keys",
@@ -95,7 +97,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), AppError> {
             details: Some(details),
             recoverable,
         }
-    })
+    })?;
+    repositories::route_pool_repository::RoutePoolRepository::migrate_legacy_pool_views(pool)
+        .await?;
+    Ok(())
 }
 
 /// Open the app database and apply migrations.

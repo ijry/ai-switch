@@ -125,6 +125,19 @@ pub struct RoutePoolState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoutePoolGroup {
+    pub id: String,
+    pub platform: String,
+    pub name: String,
+    pub sort_order: i64,
+    pub is_internal: bool,
+    pub is_active: bool,
+    pub account_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SetRoutePoolModelModeInput {
     pub platform: String,
     /// `"aggregate"` or `"precise"`; anything else is read as `"aggregate"`.
