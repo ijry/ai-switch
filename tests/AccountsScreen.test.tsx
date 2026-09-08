@@ -3432,7 +3432,8 @@ describe("AccountsScreen", () => {
     await userEvent.type(screen.getByLabelText("请求模型 1"), "gpt-5.6-sol");
     await userEvent.type(screen.getByLabelText("上游模型 1"), "provider-sol");
 
-    expect(screen.getByText("跟随基准模型")).toBeInTheDocument();
+    const reasoningMode = screen.getByText("跟随基准模型");
+    expect(reasoningMode).toHaveClass("min-w-[6em]", "shrink-0", "whitespace-nowrap");
     // Ticking an already-checked baseline effort back on is a no-op, so the row
     // must not freeze today's ladder into the config.
     await userEvent.click(screen.getByLabelText("推理程度 ultra 1"));

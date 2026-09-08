@@ -1741,7 +1741,7 @@ function CodexMappingCapabilityFields({
             </label>
           );
         })}
-        <span className="text-[11px] font-medium text-stone-400">
+        <span className="min-w-[6em] shrink-0 whitespace-nowrap text-[11px] font-medium text-stone-400">
           {followsBaseline ? "跟随基准模型" : "自定义"}
         </span>
       </div>
