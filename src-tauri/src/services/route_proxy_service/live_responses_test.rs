@@ -23,6 +23,7 @@ async fn live_responses_encrypted_content_recovery() {
     let source_id =
         std::env::var("AI_SWITCH_LIVE_RESPONSES_CREDENTIAL").expect("set live credential ID");
     let model = std::env::var("AI_SWITCH_LIVE_RESPONSES_MODEL").expect("set live model");
+    let proactive_cleanup = std::env::var("AI_SWITCH_LIVE_RESPONSES_CLEANUP").as_deref() == Ok("1");
     let source = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(
@@ -50,6 +51,7 @@ async fn live_responses_encrypted_content_recovery() {
     let mut config: Value = serde_json::from_str(&config_json).expect("credential config");
     assert_eq!(config["interface_format"], "openai-responses");
     config["failure_policy"] = json!({"retry_count": 0});
+    config["responses_encrypted_content_cleanup"] = json!(proactive_cleanup);
     let pool = create_memory_pool().await.expect("isolated pool");
     run_migrations(&pool).await.expect("isolated migrations");
     let credential = RouteCredentialRepository::create(
@@ -122,21 +124,60 @@ async fn live_responses_encrypted_content_recovery() {
             "x-codex-window-id": window_id, "x-codex-turn-metadata": turn_metadata
         }
     });
+    let mut captured_headers = HeaderMap::new();
+    let mut use_captured_headers = false;
+    if let Ok(path) = std::env::var("AI_SWITCH_LIVE_RESPONSES_FIXTURE") {
+        use_captured_headers = true;
+        let fixture: Value = serde_json::from_slice(&std::fs::read(path).expect("read fixture"))
+            .expect("fixture JSON");
+        request = fixture.get("body").cloned().expect("fixture body");
+        request["model"] = json!(model);
+        for name in [
+            "user-agent",
+            "originator",
+            "accept",
+            "x-codex-beta-features",
+            "x-codex-window-id",
+            "x-codex-turn-metadata",
+            "x-client-request-id",
+            "session-id",
+            "thread-id",
+            "x-openai-internal-codex-responses-lite",
+        ] {
+            if let Some(value) = fixture["headers"][name].as_str() {
+                captured_headers.insert(
+                    HeaderName::from_static(name),
+                    HeaderValue::from_str(value).expect("fixture header"),
+                );
+            }
+        }
+    }
     let mut completed = Vec::new();
-    for phase in ["baseline", "encrypted-replay"] {
-        let response = client
+    let phases = if proactive_cleanup {
+        vec!["baseline", "encrypted-replay", "encrypted-replay-again"]
+    } else {
+        vec!["baseline", "encrypted-replay"]
+    };
+    for phase in &phases {
+        let builder = client
             .post(format!("http://{address}/v1/responses"))
-            .bearer_auth(&route_key)
-            .header("user-agent", client_identity::codex_cli_user_agent())
-            .header("originator", client_identity::CODEX_CLI_ORIGINATOR)
-            .header("accept", "text/event-stream")
-            .header("x-openai-internal-codex-responses-lite", "true")
-            .header("x-codex-beta-features", "remote_compaction_v2")
-            .header("x-codex-window-id", &window_id)
-            .header("x-codex-turn-metadata", &turn_metadata)
-            .header("x-client-request-id", &session_id)
-            .header("session-id", &session_id)
-            .header("thread-id", &session_id)
+            .bearer_auth(&route_key);
+        let builder = if use_captured_headers {
+            builder.headers(captured_headers.clone())
+        } else {
+            builder
+                .header("user-agent", client_identity::codex_cli_user_agent())
+                .header("originator", client_identity::CODEX_CLI_ORIGINATOR)
+                .header("accept", "text/event-stream")
+                .header("x-openai-internal-codex-responses-lite", "true")
+                .header("x-codex-beta-features", "remote_compaction_v2")
+                .header("x-codex-window-id", &window_id)
+                .header("x-codex-turn-metadata", &turn_metadata)
+                .header("x-client-request-id", &session_id)
+                .header("session-id", &session_id)
+                .header("thread-id", &session_id)
+        };
+        let response = builder
             .json(&request)
             .send()
             .await
@@ -164,7 +205,7 @@ async fn live_responses_encrypted_content_recovery() {
             break;
         }
         completed.push(result);
-        if phase == "baseline" {
+        if *phase == "baseline" {
             request["input"].as_array_mut().unwrap().insert(0, json!({
                 "type": "reasoning", "id": "rs_replayed_probe", "summary": [],
                 "encrypted_content": "gAAAAABforeign-encrypted-content-for-isolated-recovery-test"
@@ -199,29 +240,45 @@ async fn live_responses_encrypted_content_recovery() {
             .nth(1)
             .and_then(|tail| tail.split(')').next())
             .unwrap_or("");
-        let transport_error = if metadata["status"].is_null() {
-            metadata["error_message"]
+        let failure_message = metadata["error_message"]
+            .as_str()
+            .unwrap_or("")
+            .replace(api_key, "[REDACTED]");
+        let error_preview = if metadata["success"] == false {
+            metadata["response_body"]
                 .as_str()
                 .unwrap_or("")
                 .replace(api_key, "[REDACTED]")
+                .chars()
+                .take(400)
+                .collect::<String>()
         } else {
             String::new()
         };
-        eprintln!("live upstream status={} code={code} request_id={request_id} transport={transport_error}", metadata["status"]);
+        eprintln!("live upstream status={} code={code} request_id={request_id} error={failure_message} body={error_preview}", metadata["status"]);
         statuses.push(metadata["status"].as_u64().unwrap_or(0));
         errors.push(code.to_string());
     }
     assert_eq!(
         completed.len(),
-        2,
+        phases.len(),
         "live baseline and recovered request must both complete"
     );
-    assert_eq!(
-        statuses,
-        vec![200, 400, 200],
-        "must observe one rewrite retry"
-    );
-    assert_eq!(errors[1], "invalid_encrypted_content");
+    if proactive_cleanup {
+        assert_eq!(
+            statuses,
+            vec![200, 200, 200],
+            "each request must succeed without retry"
+        );
+        assert!(errors.iter().all(String::is_empty));
+    } else {
+        assert_eq!(
+            statuses,
+            vec![200, 400, 200],
+            "must observe one rewrite retry"
+        );
+        assert_eq!(errors[1], "invalid_encrypted_content");
+    }
     let account = RouteCredentialRepository::get(&pool, &credential.id)
         .await
         .expect("isolated account");

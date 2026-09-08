@@ -475,6 +475,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: None,
+                responses_encrypted_content_cleanup: None,
                 user_agent: None,
                 relay_balance_provider: None,
                 relay_balance_access_token: None,

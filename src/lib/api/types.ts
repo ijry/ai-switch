@@ -320,6 +320,7 @@ export type CreateApiRouteCredentialInput = {
   preview_json?: string | null;
   batch_id?: string | null;
   responses_custom_tool_compat?: boolean | null;
+  responses_encrypted_content_cleanup?: boolean | null;
   user_agent?: string | null;
   relay_balance_provider?: RelayBalanceProvider | null;
   /** Relay panel account access token, stored beside the api_key in the secret. */

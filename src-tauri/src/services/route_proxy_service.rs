@@ -307,6 +307,7 @@ pub(crate) struct BuiltUpstreamRequest {
     pub(crate) bridge_kind: Option<ProtocolBridgeKind>,
     pub(crate) tool_namespaces: BTreeMap<String, String>,
     pub(crate) streaming_request: bool,
+    pub(crate) encrypted_content_stripped: bool,
 }
 
 impl RouteProxyKeyCache {
@@ -953,6 +954,7 @@ async fn forward_request(
             bridge_kind,
             tool_namespaces,
             streaming_request,
+            encrypted_content_stripped: outbound_encrypted_content_stripped,
         } = match upstream_request {
             Ok(request) => request,
             Err(error) => {
@@ -1590,7 +1592,7 @@ async fn forward_request(
                 .as_ref()
                 .is_some_and(is_encrypted_content_failure)
         {
-            if !encrypted_content_stripped {
+            if !encrypted_content_stripped && !outbound_encrypted_content_stripped {
                 if let Some(stripped) = strip_replayed_encrypted_content_from_bytes(&body_bytes) {
                     body_bytes = axum::body::Bytes::from(stripped);
                     encrypted_content_stripped = true;
@@ -3718,6 +3720,18 @@ fn build_api_upstream_request(
     // converted a Responses request into `messages` or `contents`, so a reminder
     // written any earlier would land in the wrong shape.
     let mut rewritten_body = rewritten_body;
+    let mut encrypted_content_stripped = false;
+    if bridge_kind == Some(ProtocolBridgeKind::ResponsesToResponses)
+        && config
+            .get("responses_encrypted_content_cleanup")
+            .and_then(Value::as_bool)
+            == Some(true)
+    {
+        if let Some(stripped) = strip_replayed_encrypted_content_from_bytes(&rewritten_body) {
+            rewritten_body = stripped;
+            encrypted_content_stripped = true;
+        }
+    }
     if turn_reminder == TurnReminderMode::Apply {
         if let Some(reminder) = turn_reminder_text(config) {
             rewritten_body =
@@ -3793,6 +3807,7 @@ fn build_api_upstream_request(
         bridge_kind,
         tool_namespaces,
         streaming_request,
+        encrypted_content_stripped,
     })
 }
 
@@ -3873,6 +3888,7 @@ fn build_official_upstream_request(
         bridge_kind: None,
         tool_namespaces: BTreeMap::new(),
         streaming_request: request_body_requests_stream(body),
+        encrypted_content_stripped: false,
     })
 }
 
@@ -10199,6 +10215,100 @@ mod tests {
             value.pointer("/model").and_then(Value::as_str),
             Some("gpt-5")
         );
+    }
+
+    #[test]
+    fn responses_encrypted_content_cleanup_only_strips_opted_in_native_requests() {
+        let request = json!({
+            "model": "gpt-6-astra", "include": ["reasoning.encrypted_content"],
+            "input": [
+                {"type": "reasoning", "summary": [], "encrypted_content": "foreign-history"},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+                {"type": "compaction_trigger"}
+            ],
+            "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}]
+        });
+        for (dialect, path, enabled, should_strip) in [
+            ("openai-responses", "/v1/responses", None, false),
+            ("openai-responses", "/v1/responses", Some(false), false),
+            ("openai-responses", "/v1/responses", Some(true), true),
+            ("openai", "/v1/chat/completions", Some(true), false),
+        ] {
+            let mut config = json!({"base_url": "https://api.example.com/v1", "interface_format": dialect, "model_mappings": []});
+            if let Some(enabled) = enabled {
+                config["responses_encrypted_content_cleanup"] = json!(enabled);
+            }
+            let account = api_credential_with_config("cleanup", &config.to_string());
+            let (_, _, body) = build_upstream_request(
+                &account,
+                "codex",
+                path,
+                None,
+                HeaderMap::new(),
+                &serde_json::to_vec(&request).unwrap(),
+            )
+            .expect("request");
+            let mut expected = request.clone();
+            if should_strip {
+                expected["input"].as_array_mut().unwrap().remove(0);
+            }
+            assert_eq!(
+                serde_json::from_slice::<Value>(&body).unwrap(),
+                expected,
+                "{dialect} {enabled:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn responses_encrypted_content_cleanup_does_not_retry_an_already_clean_request() {
+        let (upstream, calls, bodies) = start_encrypted_content_upstream().await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_proxy_api_credential_with_config(
+            &pool,
+            "cleanup",
+            &upstream,
+            json!({
+                "interface_format": "openai-responses", "responses_encrypted_content_cleanup": true,
+                "failure_policy": {"retry_count": 3, "retry_interval_ms": 0},
+                "model_mappings": [{"from": "gpt-6-astra", "to": "gpt-6-astra"}]
+            }),
+        )
+        .await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
+            .await
+            .expect("members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
+            .await
+            .expect("proxy");
+        for (attempt, expected_status) in [(1, StatusCode::BAD_REQUEST), (2, StatusCode::OK)] {
+            let response = reqwest::Client::new()
+                .post(format!("{}/v1/responses", proxy.base_url.as_deref().unwrap()))
+                .bearer_auth(&route_key).json(&json!({
+                    "model": "gpt-6-astra", "input": [
+                        {"type": "reasoning", "summary": [], "encrypted_content": "foreign-history"},
+                        {"type": "message", "role": "user", "content": "continue"}
+                    ]
+                })).send().await.expect("response");
+            assert_eq!(response.status(), expected_status);
+            assert_eq!(calls.load(Ordering::SeqCst), attempt);
+            assert_eq!(
+                bodies.lock().unwrap()[attempt - 1]["input"][0]["type"],
+                "message"
+            );
+        }
+        let account = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("account");
+        assert_eq!(account.status, "ok");
+        assert_eq!(account.transient_failure_count, 0);
+        RouteProxyService::stop(&runtime).await.expect("stop");
     }
 
     #[test]
