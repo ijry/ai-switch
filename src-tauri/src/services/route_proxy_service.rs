@@ -6020,6 +6020,10 @@ async fn insert_route_credential_request_event(
 }
 
 #[cfg(test)]
+#[path = "route_proxy_service/live_responses_test.rs"]
+mod live_responses_test;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -8281,6 +8285,7 @@ mod tests {
             &upstream,
             json!({
                 "interface_format": "openai-responses",
+                "failure_policy": {"retry_count": 0},
                 "model_mappings": [{"from": "gpt-6-astra", "to": "gpt-6-astra"}]
             }),
         )
@@ -8361,6 +8366,85 @@ mod tests {
     /// When the stripped body is refused too, the pool walk is pointless: every
     /// remaining account refuses the same history for the same reason, and each
     /// one would be parked for it. The upstream's own answer goes back instead.
+    #[tokio::test]
+    async fn responses_encrypted_content_failure_stops_without_polling_or_penalties() {
+        const REJECTION: &str = r#"{"error":{"message":"bad response status code 400 (request id: test-request)","type":"invalid_request_error","param":"","code":"invalid_encrypted_content"}}"#;
+        for replayed_state in [false, true] {
+            let (upstream, calls) = start_status_sequence_upstream(
+                usize::MAX,
+                StatusCode::BAD_REQUEST,
+                REJECTION,
+                "{}",
+            )
+            .await;
+            let pool = create_memory_pool().await.expect("pool");
+            run_migrations(&pool).await.expect("migrations");
+            let config = json!({
+                "interface_format": "openai-responses",
+                "failure_policy": {"retry_count": 3, "retry_interval_ms": 0},
+                "model_mappings": [{"from": "gpt-6-astra", "to": "gpt-6-astra"}]
+            });
+            let first =
+                create_proxy_api_credential_with_config(&pool, "first", &upstream, config.clone())
+                    .await;
+            let second =
+                create_proxy_api_credential_with_config(&pool, "second", &upstream, config).await;
+            RoutePoolRepository::replace_members(&pool, "codex", &[first.clone(), second.clone()])
+                .await
+                .expect("pool members");
+            let route_key =
+                RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                    .await
+                    .expect("route key");
+            let runtime = RouteProxyRuntimeState::default();
+            let proxy =
+                RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
+                    .await
+                    .expect("start proxy");
+            let mut request = json!({
+                "model": "gpt-6-astra", "input": [{"type": "message", "role": "user", "content": "hello"}]
+            });
+            if replayed_state {
+                request["input"].as_array_mut().unwrap().insert(
+                    0,
+                    json!({
+                        "type": "reasoning", "summary": [], "encrypted_content": "foreign-state"
+                    }),
+                );
+            }
+            let response = reqwest::Client::new()
+                .post(format!(
+                    "{}/v1/responses",
+                    proxy.base_url.as_deref().unwrap()
+                ))
+                .bearer_auth(route_key)
+                .json(&request)
+                .send()
+                .await
+                .expect("proxy response");
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(response.text().await.expect("body"), REJECTION);
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                if replayed_state { 2 } else { 1 }
+            );
+            for credential_id in [first, second] {
+                let account = RouteCredentialRepository::get(&pool, &credential_id)
+                    .await
+                    .expect("account");
+                assert_eq!(account.status, "ok");
+                assert_eq!(account.transient_failure_count, 0);
+                assert!(account.next_retry_at.is_none());
+                assert!(account.last_failure_message.is_none());
+            }
+            let affected: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM route_credential_models WHERE status <> 'ok' OR transient_failure_count > 0 OR cooldown_until IS NOT NULL OR last_failure_message IS NOT NULL",
+            ).fetch_one(&pool).await.expect("model health");
+            assert_eq!(affected, 0);
+            RouteProxyService::stop(&runtime).await.expect("stop proxy");
+        }
+    }
+
     #[tokio::test]
     async fn an_unrecoverable_thinking_signature_rejection_stops_at_one_account() {
         use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;

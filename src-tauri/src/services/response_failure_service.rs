@@ -147,8 +147,6 @@ pub fn is_thinking_signature_failure(text: &str) -> bool {
     names_a_replayed_block && rejected
 }
 
-/// Returns whether a Responses upstream rejected opaque encrypted state that
-/// was replayed from another account, model, or conversation owner.
 pub fn is_encrypted_content_failure(failure: &SemanticResponseFailure) -> bool {
     let code = failure
         .code
@@ -161,14 +159,20 @@ pub fn is_encrypted_content_failure(failure: &SemanticResponseFailure) -> bool {
         return true;
     }
 
-    let message = failure.message.to_ascii_lowercase();
-    let compact = message.split_whitespace().collect::<String>();
-    compact.contains("encryptedcontent")
+    let message = failure
+        .message
+        .to_ascii_lowercase()
+        .replace(['`', '_'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    message.contains("encrypted content")
         && (message.contains("could not be verified")
             || message.contains("could not be decrypted")
             || message.contains("cannot be verified")
             || message.contains("cannot be decrypted")
-            || message.contains("invalid"))
+            || message.contains("invalid encrypted content")
+            || message.contains("encrypted content is invalid"))
 }
 
 /// Detects a stream that delivered data but never emitted a terminal marker.
@@ -528,6 +532,23 @@ data: {"type":"response.failed","error":{"message":"down"}}
         )
         .expect("semantic failure");
         assert!(!is_encrypted_content_failure(&unrelated));
+    }
+
+    #[test]
+    fn encrypted_content_failure_does_not_claim_unrelated_invalid_requests() {
+        for message in [
+            "invalid codex request",
+            "invalid max_output_tokens when encrypted content is requested",
+            "encrypted content is valid, but the model is invalid",
+            "encrypted content is required",
+        ] {
+            let failure = SemanticResponseFailure {
+                code: Some("invalid_responses_request".to_string()),
+                error_type: Some("new_api_error".to_string()),
+                message: message.to_string(),
+            };
+            assert!(!is_encrypted_content_failure(&failure), "{message}");
+        }
     }
 
     /// Relays word this differently and wrap it in their own prose, so the rule
