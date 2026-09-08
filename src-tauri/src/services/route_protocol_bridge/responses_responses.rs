@@ -20,8 +20,31 @@ pub(super) fn responses_request_to_responses(body: &[u8]) -> Result<Vec<u8>, Str
         object.insert("tools".to_string(), Value::Array(tools));
     }
 
+    if object.get("store").and_then(Value::as_bool) == Some(false) {
+        drop_non_replayable_reasoning(&mut object);
+    }
+
     serde_json::to_vec(&Value::Object(object))
         .map_err(|error| format!("Could not serialize Responses request: {error}"))
+}
+
+fn drop_non_replayable_reasoning(object: &mut Map<String, Value>) {
+    let Some(input) = object.get_mut("input").and_then(Value::as_array_mut) else {
+        return;
+    };
+    input.retain(|item| {
+        let is_replayable = item
+            .as_object()
+            .and_then(|item| item.get("encrypted_content"))
+            .and_then(Value::as_str)
+            .is_some_and(|content| !content.trim().is_empty());
+        let is_reasoning = item
+            .as_object()
+            .and_then(|item| item.get("type"))
+            .and_then(Value::as_str)
+            .is_some_and(|item_type| item_type == "reasoning");
+        !is_reasoning || is_replayable
+    });
 }
 
 fn flatten_native_responses_tools(
@@ -202,4 +225,78 @@ fn looks_like_sse(body: &[u8]) -> bool {
     String::from_utf8_lossy(body)
         .lines()
         .any(|line| line.trim_start().starts_with("data:"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::responses_request_to_responses;
+    use serde_json::{json, Value};
+
+    fn converted_request(body: Value) -> Value {
+        let body = serde_json::to_vec(&body).expect("request json");
+        let converted = responses_request_to_responses(&body).expect("converted request");
+        serde_json::from_slice(&converted).expect("converted json")
+    }
+
+    #[test]
+    fn store_false_drops_reasoning_without_encrypted_content() {
+        let converted = converted_request(json!({
+            "model": "gpt-5",
+            "store": false,
+            "input": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_chatcmpl-opc-2537eab80ac672361146",
+                    "summary": [{"type": "summary_text", "text": "thinking"}]
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "continue"}]
+                }
+            ]
+        }));
+
+        assert_eq!(
+            converted["input"],
+            json!([{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "continue"}]
+            }])
+        );
+    }
+
+    #[test]
+    fn store_false_keeps_replayable_encrypted_reasoning() {
+        let reasoning = json!({
+            "type": "reasoning",
+            "id": "rs_real",
+            "encrypted_content": "encrypted",
+            "summary": []
+        });
+        let converted = converted_request(json!({
+            "model": "gpt-5",
+            "store": false,
+            "input": [reasoning.clone()]
+        }));
+
+        assert_eq!(converted["input"], json!([reasoning]));
+    }
+
+    #[test]
+    fn store_true_keeps_reasoning_item_references() {
+        let reasoning = json!({
+            "type": "reasoning",
+            "id": "rs_stored",
+            "summary": []
+        });
+        let converted = converted_request(json!({
+            "model": "gpt-5",
+            "store": true,
+            "input": [reasoning.clone()]
+        }));
+
+        assert_eq!(converted["input"], json!([reasoning]));
+    }
 }
