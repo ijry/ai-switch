@@ -21,6 +21,7 @@ pub mod official_agent_identity_service;
 pub mod platform_capability_service;
 pub mod remote_probe;
 pub mod response_failure_service;
+pub mod responses_encrypted_content;
 pub mod route_config_service;
 pub mod route_credential_activity;
 pub mod route_credential_service;

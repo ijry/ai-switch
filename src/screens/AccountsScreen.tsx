@@ -1089,6 +1089,32 @@ function responsesCustomToolCompatFromConfig(config: Record<string, unknown>): b
   return config.responses_custom_tool_compat === true;
 }
 
+function ResponsesEncryptedContentCleanupOption({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (enabled: boolean) => void;
+}) {
+  return (
+    <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
+      <input
+        aria-label="Responses 历史密文净化"
+        checked={checked}
+        className="mt-0.5"
+        onChange={(event) => onChange(event.target.checked)}
+        type="checkbox"
+      />
+      <span className="grid gap-1">
+        <span>Responses 历史密文净化</span>
+        <span className="text-[11px] font-medium text-stone-500">
+          每次发送前移除历史推理和压缩密文，避免密文校验失败后再重试。保留明文和工具数据，但可能丢失加密推理及已压缩上下文。默认关闭，关闭时仍保留密文错误的一次自动恢复。
+        </span>
+      </span>
+    </label>
+  );
+}
+
 function inlineRemoteImagesFromConfig(config: Record<string, unknown>): boolean {
   return config.inline_remote_images === true;
 }
@@ -1403,12 +1429,14 @@ function apiConfigJsonWithFields(
   inlineRemoteImages = false,
   turnReminder = false,
   turnReminderText = "",
+  responsesEncryptedContentCleanup = false,
 ) {
   const config = parseJsonObject(configJson);
   config.base_url = baseUrl.trim();
   config.interface_format = interfaceFormat;
   config.model_mappings = mappings;
   config.responses_custom_tool_compat = responsesCustomToolCompat;
+  config.responses_encrypted_content_cleanup = responsesEncryptedContentCleanup;
   config.inline_remote_images = inlineRemoteImages;
   // Omitted rather than written as `false`/`""`, so an account that never opts in
   // carries no trace of the feature in its config.
@@ -2739,6 +2767,7 @@ export function AccountsScreen({
     defaultInterfaceFormat(activePlatform),
   );
   const [apiResponsesCustomToolCompat, setApiResponsesCustomToolCompat] = useState(false);
+  const [apiResponsesEncryptedContentCleanup, setApiResponsesEncryptedContentCleanup] = useState(false);
   const [apiUserAgent, setApiUserAgent] = useState("");
   const [apiKeyField, setApiKeyField] = useState<AnthropicApiKeyField>(() =>
     defaultAnthropicApiKeyFieldForCreate(activePlatform),
@@ -2784,6 +2813,7 @@ export function AccountsScreen({
   const [editApiBaseUrlAdjustment, setEditApiBaseUrlAdjustment] = useState<CodexBaseUrlAdjustment | null>(null);
   const [editApiInterfaceFormat, setEditApiInterfaceFormat] = useState<InterfaceFormat>("openai");
   const [editResponsesCustomToolCompat, setEditResponsesCustomToolCompat] = useState(false);
+  const [editResponsesEncryptedContentCleanup, setEditResponsesEncryptedContentCleanup] = useState(false);
   const [editInlineRemoteImages, setEditInlineRemoteImages] = useState(false);
   const [editTurnReminder, setEditTurnReminder] = useState(false);
   const [editTurnReminderText, setEditTurnReminderText] = useState("");
@@ -3361,6 +3391,7 @@ export function AccountsScreen({
     setApiKeyOcrError(null);
     setApiInterfaceFormat(nextInterfaceFormat);
     setApiResponsesCustomToolCompat(false);
+    setApiResponsesEncryptedContentCleanup(false);
     setApiUserAgent("");
     setApiBaseUrl(activePlatform === "grok" ? "https://api.x.ai/v1" : "https://api.example.com/v1");
     setApiBaseUrlAdjustment(null);
@@ -3418,6 +3449,7 @@ export function AccountsScreen({
       setEditApiInterfaceFormat(interfaceFormat);
       setEditApiKeyField(anthropicApiKeyFieldFromConfig(config, "ANTHROPIC_API_KEY"));
       setEditResponsesCustomToolCompat(responsesCustomToolCompatFromConfig(config));
+      setEditResponsesEncryptedContentCleanup(config.responses_encrypted_content_cleanup === true);
       setEditInlineRemoteImages(inlineRemoteImagesFromConfig(config));
       setEditTurnReminder(turnReminderFromConfig(config));
       setEditTurnReminderText(turnReminderTextFromConfig(config));
@@ -3432,6 +3464,7 @@ export function AccountsScreen({
       setEditApiInterfaceFormat("openai");
       setEditApiKeyField("ANTHROPIC_API_KEY");
       setEditResponsesCustomToolCompat(false);
+      setEditResponsesEncryptedContentCleanup(false);
       setEditInlineRemoteImages(false);
       // Reset here too, or a value read from the previously edited API account
       // bleeds into an official one that has no such setting.
@@ -3857,6 +3890,7 @@ export function AccountsScreen({
           preview_json: apiPreviewJson.trim() || null,
           batch_id: batch?.id ?? null,
           responses_custom_tool_compat: apiResponsesCustomToolCompat,
+          ...(apiResponsesEncryptedContentCleanup ? { responses_encrypted_content_cleanup: true } : {}),
           user_agent: apiUserAgent.trim() || null,
           relay_balance_provider:
             apiRelayBalance.provider === "none" || apiRelayBalance.provider === "custom"
@@ -4486,6 +4520,7 @@ export function AccountsScreen({
                 editInlineRemoteImages,
                 editTurnReminder,
                 editTurnReminderText,
+                editResponsesEncryptedContentCleanup,
               ),
             )
           : writeUserAgentToConfig(
@@ -8374,6 +8409,12 @@ export function AccountsScreen({
                         </span>
                       </label>
                     ) : null}
+                    {shouldShowResponsesCustomToolCompatForFormat(activePlatform, apiInterfaceFormat) ? (
+                      <ResponsesEncryptedContentCleanupOption
+                        checked={apiResponsesEncryptedContentCleanup}
+                        onChange={setApiResponsesEncryptedContentCleanup}
+                      />
+                    ) : null}
                     <label className={labelClass}>
                       预览 JSON（可选）
                       <textarea
@@ -9151,6 +9192,12 @@ export function AccountsScreen({
                         </span>
                       </span>
                     </label>
+                  ) : null}
+                  {shouldShowResponsesCustomToolCompatForFormat(activePlatform, editApiInterfaceFormat) ? (
+                    <ResponsesEncryptedContentCleanupOption
+                      checked={editResponsesEncryptedContentCleanup}
+                      onChange={setEditResponsesEncryptedContentCleanup}
+                    />
                   ) : null}
                   <label className="flex items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[12px] font-medium text-stone-700">
                     <input

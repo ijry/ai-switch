@@ -170,6 +170,7 @@ impl RouteCredentialService {
             "model_mappings": serde_json::from_str::<serde_json::Value>(&input.model_mappings_json)?,
             "fetched_models": fetched_models,
             "responses_custom_tool_compat": input.responses_custom_tool_compat.unwrap_or(false),
+            "responses_encrypted_content_cleanup": input.responses_encrypted_content_cleanup.unwrap_or(false),
         });
         if let Some(api_key_field) = api_key_field {
             config["api_key_field"] = json!(api_key_field);
@@ -1646,6 +1647,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: None,
+                responses_encrypted_content_cleanup: None,
                 user_agent: None,
                 relay_balance_provider: None,
                 relay_balance_access_token: None,
@@ -1687,6 +1689,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: None,
+                responses_encrypted_content_cleanup: None,
                 user_agent: None,
                 relay_balance_provider: None,
                 relay_balance_access_token: None,
@@ -1731,6 +1734,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: None,
+                responses_encrypted_content_cleanup: None,
                 user_agent: None,
                 relay_balance_provider: None,
                 relay_balance_access_token: None,
@@ -1812,6 +1816,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: Some(true),
+                responses_encrypted_content_cleanup: None,
                 user_agent: Some("shared-client/1.0".into()),
                 relay_balance_provider: None,
                 relay_balance_access_token: None,
@@ -1895,6 +1900,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: None,
+                responses_encrypted_content_cleanup: None,
                 user_agent: None,
                 relay_balance_provider: None,
                 relay_balance_access_token: None,
@@ -1944,6 +1950,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: None,
+                responses_encrypted_content_cleanup: None,
                 user_agent: None,
                 relay_balance_provider: None,
                 relay_balance_access_token: None,
@@ -1991,6 +1998,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: None,
+                responses_encrypted_content_cleanup: None,
                 user_agent: None,
                 relay_balance_provider: None,
                 relay_balance_access_token: None,
@@ -2039,6 +2047,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: Some(true),
+                responses_encrypted_content_cleanup: None,
                 user_agent: None,
                 relay_balance_provider: None,
                 relay_balance_access_token: None,
@@ -2084,6 +2093,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: None,
+                responses_encrypted_content_cleanup: None,
                 user_agent: None,
                 relay_balance_provider: Some("new_api".into()),
                 relay_balance_access_token: Some("pat-panel-token".into()),
@@ -2203,6 +2213,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: None,
+                responses_encrypted_content_cleanup: None,
                 user_agent: None,
                 relay_balance_provider: None,
                 relay_balance_access_token: None,
@@ -2252,6 +2263,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: None,
+                responses_encrypted_content_cleanup: None,
                 user_agent: None,
                 relay_balance_provider: None,
                 relay_balance_access_token: None,
@@ -2275,6 +2287,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_api_credential_persists_responses_encrypted_content_cleanup() {
+        let pool = crate::database::create_memory_pool().await.expect("pool");
+        crate::database::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        for enabled in [None, Some(false), Some(true)] {
+            let mut input = json!({
+                "platform": "codex", "display_name": "Cleanup Relay", "api_key": "sk-test",
+                "base_url": "https://api.example.com/v1", "interface_format": "openai-responses",
+                "model_mappings_json": "[]"
+            });
+            if let Some(enabled) = enabled {
+                input["responses_encrypted_content_cleanup"] = json!(enabled);
+            }
+            let created = RouteCredentialService::create_api(
+                &pool,
+                serde_json::from_value(input).expect("input"),
+            )
+            .await
+            .expect("create");
+            let config: Value = serde_json::from_str(&created.config_json).expect("config");
+            assert_eq!(
+                config["responses_encrypted_content_cleanup"],
+                json!(enabled.unwrap_or(false))
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn create_api_credential_persists_responses_custom_tool_compat() {
         let pool = crate::database::create_memory_pool().await.expect("pool");
         crate::database::run_migrations(&pool)
@@ -2295,6 +2336,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: Some(true),
+                responses_encrypted_content_cleanup: None,
                 user_agent: None,
                 relay_balance_provider: None,
                 relay_balance_access_token: None,
@@ -2332,6 +2374,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: None,
+                responses_encrypted_content_cleanup: None,
                 user_agent: None,
                 relay_balance_provider: None,
                 relay_balance_access_token: None,
@@ -2369,6 +2412,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: None,
+                responses_encrypted_content_cleanup: None,
                 user_agent: Some("  MyGrokClient/9.9.9  ".into()),
                 relay_balance_provider: None,
                 relay_balance_access_token: None,
@@ -2406,6 +2450,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: None,
+                responses_encrypted_content_cleanup: None,
                 user_agent: Some("   ".into()),
                 relay_balance_provider: None,
                 relay_balance_access_token: None,
@@ -2510,6 +2555,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: None,
+                responses_encrypted_content_cleanup: None,
                 user_agent: None,
                 relay_balance_provider: Some("new_api".into()),
                 relay_balance_access_token: None,
@@ -2550,6 +2596,7 @@ mod tests {
                 preview_json: None,
                 batch_id: None,
                 responses_custom_tool_compat: None,
+                responses_encrypted_content_cleanup: None,
                 user_agent: None,
                 relay_balance_provider: Some("new_api".into()),
                 relay_balance_access_token: Some("  pat-panel-token  ".into()),
@@ -2595,6 +2642,7 @@ mod tests {
                     preview_json: None,
                     batch_id: None,
                     responses_custom_tool_compat: None,
+                    responses_encrypted_content_cleanup: None,
                     user_agent: None,
                     relay_balance_provider: Some("new_api".into()),
                     relay_balance_access_token: token.clone(),
@@ -2635,6 +2683,7 @@ mod tests {
                     preview_json: None,
                     batch_id: None,
                     responses_custom_tool_compat: None,
+                    responses_encrypted_content_cleanup: None,
                     user_agent: None,
                     relay_balance_provider: provider.clone(),
                     relay_balance_access_token: None,
@@ -2674,6 +2723,7 @@ mod tests {
                     preview_json: None,
                     batch_id: None,
                     responses_custom_tool_compat: None,
+                    responses_encrypted_content_cleanup: None,
                     user_agent: None,
                     relay_balance_provider: Some(provider.into()),
                     relay_balance_access_token: None,

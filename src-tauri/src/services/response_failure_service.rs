@@ -147,6 +147,34 @@ pub fn is_thinking_signature_failure(text: &str) -> bool {
     names_a_replayed_block && rejected
 }
 
+pub fn is_encrypted_content_failure(failure: &SemanticResponseFailure) -> bool {
+    let code = failure
+        .code
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['_', '-', ':', ' '], "");
+    if code == "invalidencryptedcontent" {
+        return true;
+    }
+
+    let message = failure
+        .message
+        .to_ascii_lowercase()
+        .replace(['`', '_'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    message.contains("encrypted content")
+        && (message.contains("could not be verified")
+            || message.contains("could not be decrypted")
+            || message.contains("cannot be verified")
+            || message.contains("cannot be decrypted")
+            || message.contains("invalid encrypted content")
+            || message.contains("encrypted content is invalid"))
+}
+
 /// Detects a stream that delivered data but never emitted a terminal marker.
 /// A partial Responses stream is commonly surfaced to the caller as
 /// `stream disconnected before completion`.
@@ -483,6 +511,44 @@ data: {"type":"response.failed","error":{"message":"down"}}
         assert!(is_thinking_signature_failure(&failure.message));
         // Not the account's fault, so it must not read as spent quota.
         assert!(!is_quota_exhaustion_failure(&failure));
+    }
+
+    #[test]
+    fn detects_invalid_encrypted_content_by_code_and_narrow_message_fallback() {
+        let coded = detect_response_failed(
+            br#"{"error":{"code":"invalid_encrypted_content","message":"The encrypted content could not be verified"}}"#,
+        )
+        .expect("semantic failure");
+        assert!(is_encrypted_content_failure(&coded));
+
+        let relayed = detect_response_failed(
+            br#"{"error":{"message":"invalid encrypted content: could not be verified"}}"#,
+        )
+        .expect("semantic failure");
+        assert!(is_encrypted_content_failure(&relayed));
+
+        let unrelated = detect_response_failed(
+            br#"{"error":{"code":"invalid_request_error","message":"encrypted content is required"}}"#,
+        )
+        .expect("semantic failure");
+        assert!(!is_encrypted_content_failure(&unrelated));
+    }
+
+    #[test]
+    fn encrypted_content_failure_does_not_claim_unrelated_invalid_requests() {
+        for message in [
+            "invalid codex request",
+            "invalid max_output_tokens when encrypted content is requested",
+            "encrypted content is valid, but the model is invalid",
+            "encrypted content is required",
+        ] {
+            let failure = SemanticResponseFailure {
+                code: Some("invalid_responses_request".to_string()),
+                error_type: Some("new_api_error".to_string()),
+                message: message.to_string(),
+            };
+            assert!(!is_encrypted_content_failure(&failure), "{message}");
+        }
     }
 
     /// Relays word this differently and wrap it in their own prose, so the rule

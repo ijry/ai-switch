@@ -3595,6 +3595,70 @@ describe("AccountsScreen", () => {
     );
   });
 
+  it("creates API account with Responses encrypted content cleanup enabled and resets it", async () => {
+    renderScreen();
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Cleanup API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-cleanup-test");
+    await userEvent.selectOptions(screen.getByLabelText("接口格式"), "openai-responses");
+    await openFormTab("高级");
+    const checkbox = screen.getByLabelText("Responses 历史密文净化");
+    expect(checkbox).not.toBeChecked();
+    await userEvent.click(checkbox);
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+    await waitFor(() => expect(createApiRouteCredential).toHaveBeenCalledWith(
+      expect.objectContaining({ responses_encrypted_content_cleanup: true }),
+    ));
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.selectOptions(screen.getByLabelText("接口格式"), "openai-responses");
+    await openFormTab("高级");
+    expect(screen.getByLabelText("Responses 历史密文净化")).not.toBeChecked();
+  });
+
+  it("loads and disables Responses encrypted content cleanup independently of other settings", async () => {
+    const api = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://api.example.com/v1", interface_format: "openai-responses",
+        model_mappings: [], responses_encrypted_content_cleanup: true,
+        responses_custom_tool_compat: true, unrelated: "keep",
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([api]);
+    renderScreen();
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
+    const checkbox = screen.getByLabelText("Responses 历史密文净化");
+    expect(checkbox).toBeChecked();
+    await userEvent.click(checkbox);
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    await waitFor(() => expect(updateRouteCredential).toHaveBeenCalled());
+    const config = JSON.parse(vi.mocked(updateRouteCredential).mock.calls[0][1].config_json);
+    expect(config.responses_encrypted_content_cleanup).toBe(false);
+    expect(config.responses_custom_tool_compat).toBe(true);
+    expect(config.unrelated).toBe("keep");
+  });
+
+  it("keeps Responses encrypted content cleanup off for existing accounts and hides it for Chat", async () => {
+    const api = {
+      ...credentialsFixture[1],
+      config_json: JSON.stringify({
+        base_url: "https://api.example.com/v1", interface_format: "openai-responses", model_mappings: [],
+      }),
+    };
+    vi.mocked(listRouteCredentials).mockResolvedValue([api]);
+    renderScreen();
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 API Account" }));
+    await openFormTab("高级");
+    expect(screen.getByLabelText("Responses 历史密文净化")).not.toBeChecked();
+    await openFormTab("基础");
+    await userEvent.selectOptions(screen.getByLabelText("接口格式"), "openai");
+    await openFormTab("高级");
+    expect(screen.queryByLabelText("Responses 历史密文净化")).not.toBeInTheDocument();
+  });
+
   it("creates API account with responses custom tool compat enabled when checked", async () => {
     renderScreen();
     await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
