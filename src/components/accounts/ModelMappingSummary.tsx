@@ -20,7 +20,7 @@ export type DisplayModelMapping = {
 };
 
 const baselineModelsByPlatform: Record<string, readonly string[]> = {
-  codex: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
+  codex: ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
   claude: CLAUDE_MENU_ROLES.map((role) => role.alias),
   gemini: ["gemini-2.5-flash"],
   grok: ["grok-4.5"],

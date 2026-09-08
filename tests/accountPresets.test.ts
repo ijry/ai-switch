@@ -32,6 +32,7 @@ describe("accountPresets", () => {
     expect(preset.baseUrl).toBe("https://agentrouter.org/v1");
     expect(preset.interfaceFormat).toBe("openai");
     expect(preset.modelMappings).toEqual([
+      { from: "gpt-6-astra", to: "gpt-6-astra" },
       { from: "gpt-5.6-sol", to: "gpt-5.6-sol" },
       { from: "glm-5.3", to: "glm-5.3" },
       { from: "deepseek-v4-flash", to: "deepseek-v4-flash" },
@@ -46,6 +47,7 @@ describe("accountPresets", () => {
     expect(preset.baseUrl).toBe("https://ps.air-outer.com/v1");
     expect(preset.interfaceFormat).toBe("openai");
     expect(preset.modelMappings).toEqual([
+      { from: "gpt-6-astra", to: "gpt-6-astra" },
       { from: "gpt-5.6-sol", to: "gpt-5.6-sol" },
       { from: "glm-5.3", to: "glm-5.3" },
       { from: "deepseek-v4-flash", to: "deepseek-v4-flash" },

@@ -24,6 +24,7 @@ export const CODEX_REASONING_LEVEL_OPTIONS = [
 /** GPT baseline models ship with a known effort ladder; the editor preselects it
  * so "auto" and "explicit" start from the same place. */
 const CODEX_BASELINE_REASONING_PROFILES: Record<string, readonly string[]> = {
+  "gpt-6-astra": ["low", "medium", "high", "xhigh", "max"],
   "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
   "gpt-5.6-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
   "gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],
@@ -139,6 +140,7 @@ export const CODEX_ONE_M_UPSTREAM_PREFIXES = [
  * account has no mappings. These are not one-click editor options: a user can
  * still declare a different number, and the pool merge keeps the maximum. */
 const CODEX_BASELINE_CONTEXT_WINDOWS: Record<string, number> = {
+  "gpt-6-astra": 1_050_000,
   "gpt-5.6-sol": 272_000,
   "gpt-5.6-terra": 272_000,
   "gpt-5.6-luna": 272_000,

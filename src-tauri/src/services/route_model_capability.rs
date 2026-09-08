@@ -125,6 +125,7 @@ pub(crate) struct CodexReasoningProfile {
 }
 
 const SOL_REASONING_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
+const GPT_6_ASTRA_REASONING_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 const TERRA_REASONING_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
 const LUNA_REASONING_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 const GPT_55_REASONING_LEVELS: &[&str] = &["low", "medium", "high", "xhigh"];
@@ -152,6 +153,7 @@ pub(crate) const CODEX_ONE_M_CONTEXT_WINDOW: u32 = 1_000_000;
 const CODEX_ONE_M_UPSTREAM_PREFIXES: &[&str] =
     &["deepseek-v4", "glm-5.2", "glm-5.3", "qwen-3.8", "kimi-k3"];
 const CODEX_BASELINE_CONTEXT_WINDOWS: &[(&str, u32)] = &[
+    ("gpt-6-astra", 1_050_000),
     ("gpt-5.6-sol", 272_000),
     ("gpt-5.6-terra", 272_000),
     ("gpt-5.6-luna", 272_000),
@@ -191,6 +193,10 @@ pub(crate) fn codex_effective_context_window(declared: Option<u32>, upstream_mod
 
 pub(crate) fn codex_reasoning_profile(model: &str) -> CodexReasoningProfile {
     match model.trim().to_ascii_lowercase().as_str() {
+        "gpt-6-astra" => CodexReasoningProfile {
+            levels: GPT_6_ASTRA_REASONING_LEVELS,
+            default_level: "medium",
+        },
         "gpt-5.6-sol" => CodexReasoningProfile {
             levels: SOL_REASONING_LEVELS,
             default_level: "low",
@@ -632,7 +638,13 @@ fn catalog_entry_id(mode: PoolModelMode, member: &ModelCatalogMember, alias: &st
 
 fn default_client_models(platform: &str) -> &'static [&'static str] {
     match platform {
-        "codex" => &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
+        "codex" => &[
+            "gpt-6-astra",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+        ],
         "claude" => &[
             "claude-sonnet-alias",
             "claude-opus-alias",
@@ -879,6 +891,10 @@ mod tests {
 
     #[test]
     fn codex_baseline_models_use_distinct_reasoning_profiles() {
+        let astra = codex_reasoning_profile("gpt-6-astra");
+        assert_eq!(astra.default_level, "medium");
+        assert_eq!(astra.levels, &["low", "medium", "high", "xhigh", "max"]);
+
         let sol = codex_reasoning_profile("gpt-5.6-sol");
         assert_eq!(sol.default_level, "low");
         assert_eq!(
@@ -954,6 +970,7 @@ mod tests {
         assert_eq!(
             advertised_model_ids("codex", &[wildcard, sol]),
             vec![
+                "gpt-6-astra",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
                 "gpt-5.6-luna",
@@ -1310,6 +1327,7 @@ mod tests {
                 "model={model}"
             );
         }
+        assert_eq!(codex_default_context_window("gpt-6-astra"), 1_050_000);
     }
 
     #[test]
@@ -1461,7 +1479,13 @@ mod tests {
 
         assert_eq!(
             advertised_model_ids("codex", &[capability.clone()]),
-            vec!["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
+            vec![
+                "gpt-6-astra",
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
+                "gpt-5.5"
+            ]
         );
         assert!(supports_requested_model(
             "codex",
@@ -1754,6 +1778,7 @@ mod tests {
         assert_eq!(
             ids,
             vec![
+                "official/gpt-6-astra",
                 "official/gpt-5.6-sol",
                 "official/gpt-5.6-terra",
                 "official/gpt-5.6-luna",

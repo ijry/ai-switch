@@ -24,6 +24,7 @@ export type AccountPreset = {
  * what the proxy will accept for an account created from these presets.
  */
 const AGENTROUTER_CODEX_MODELS = [
+  "gpt-6-astra",
   "gpt-5.6-sol",
   "glm-5.3",
   "deepseek-v4-flash",
