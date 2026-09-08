@@ -24,10 +24,11 @@ use crate::services::official_agent_identity_service::{
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::response_failure_service::{
-    detect_response_failed, is_insufficient_permissions_failure, is_quota_exhaustion_failure,
-    is_thinking_signature_failure, stream_disconnected_before_completion,
-    STREAM_DISCONNECTED_FAILURE_MESSAGE,
+    detect_response_failed, is_encrypted_content_failure, is_insufficient_permissions_failure,
+    is_quota_exhaustion_failure, is_thinking_signature_failure,
+    stream_disconnected_before_completion, STREAM_DISCONNECTED_FAILURE_MESSAGE,
 };
+use crate::services::responses_encrypted_content::strip_replayed_encrypted_content_from_bytes;
 use crate::services::route_config_service::generate_route_proxy_key;
 use crate::services::route_credential_activity::{
     RouteCredentialActivityLease, RouteCredentialActivityRegistry,
@@ -849,6 +850,7 @@ async fn forward_request(
     // reasoning, so a second pass would find nothing and the retry would repeat a
     // request the upstream has already refused.
     let mut thinking_stripped = false;
+    let mut encrypted_content_stripped = false;
 
     while let Some((credential_index, credential_retry_count)) = retry_queue.pop_front() {
         attempt += 1;
@@ -1580,6 +1582,22 @@ async fn forward_request(
             // Nothing left to strip, or the upstream refused the stripped body as
             // well. Its own answer names the problem better than the aggregated
             // "all route credentials failed" error a pool walk would end in.
+            return proxy_upstream_response(status, upstream_headers, response_bytes.to_vec());
+        }
+
+        if bridge_kind == Some(ProtocolBridgeKind::ResponsesToResponses)
+            && semantic_failure
+                .as_ref()
+                .is_some_and(is_encrypted_content_failure)
+        {
+            if !encrypted_content_stripped {
+                if let Some(stripped) = strip_replayed_encrypted_content_from_bytes(&body_bytes) {
+                    body_bytes = axum::body::Bytes::from(stripped);
+                    encrypted_content_stripped = true;
+                    retry_queue.push_front((credential_index, credential_retry_count));
+                    continue;
+                }
+            }
             return proxy_upstream_response(status, upstream_headers, response_bytes.to_vec());
         }
 
@@ -6584,6 +6602,63 @@ mod tests {
         (format!("http://{address}/v1"), calls, bodies)
     }
 
+    #[derive(Clone)]
+    struct EncryptedContentUpstreamState {
+        calls: Arc<AtomicUsize>,
+        bodies: Arc<std::sync::Mutex<Vec<Value>>>,
+    }
+
+    async fn encrypted_content_upstream_handler(
+        AxumState(state): AxumState<EncryptedContentUpstreamState>,
+        body: axum::body::Bytes,
+    ) -> Response {
+        let attempt = state.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        state
+            .bodies
+            .lock()
+            .expect("record Responses upstream body")
+            .push(serde_json::from_slice(&body).unwrap_or(Value::Null));
+        let (status, response_body) = if attempt == 1 {
+            (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":{"code":"invalid_encrypted_content","message":"encrypted content could not be verified"}}"#,
+            )
+        } else {
+            (
+                StatusCode::OK,
+                r#"{"id":"resp_1","object":"response","status":"completed","output":[]}"#,
+            )
+        };
+        Response::builder()
+            .status(status)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(response_body))
+            .expect("encrypted content response")
+    }
+
+    #[allow(clippy::type_complexity)]
+    async fn start_encrypted_content_upstream(
+    ) -> (String, Arc<AtomicUsize>, Arc<std::sync::Mutex<Vec<Value>>>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let app = Router::new()
+            .fallback(encrypted_content_upstream_handler)
+            .with_state(EncryptedContentUpstreamState {
+                calls: Arc::clone(&calls),
+                bodies: Arc::clone(&bodies),
+            });
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind encrypted content upstream");
+        let address = listener.local_addr().expect("encrypted content address");
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve encrypted content upstream");
+        });
+        (format!("http://{address}/v1"), calls, bodies)
+    }
+
     /// A Claude-platform account speaking Anthropic natively, so `/v1/messages`
     /// reaches the upstream as a passthrough and carries the client's own
     /// `thinking` blocks.
@@ -8188,6 +8263,97 @@ mod tests {
         .await
         .expect("model rows");
         assert_eq!(parked, 0, "a working model must not be parked");
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn rejected_responses_encrypted_content_is_retried_with_replayed_state_removed() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let (upstream, calls, bodies) = start_encrypted_content_upstream().await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let credential_id = create_proxy_api_credential_with_config(
+            &pool,
+            "responses relay",
+            &upstream,
+            json!({
+                "interface_format": "openai-responses",
+                "model_mappings": [{"from": "gpt-6-astra", "to": "gpt-6-astra"}]
+            }),
+        )
+        .await;
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&credential_id))
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/responses",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({
+                "model": "gpt-6-astra",
+                "include": ["reasoning.encrypted_content"],
+                "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+                "input": [
+                    {"type": "reasoning", "encrypted_content": "old-reasoning"},
+                    {"type": "compaction", "encrypted_content": "old-compaction"},
+                    {"type": "compaction_trigger"},
+                    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "keep me"}]},
+                    {"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": "{}"},
+                    {"type": "function_call_output", "call_id": "call_1", "output": "done"},
+                    {"type": "agent_message", "content": [
+                        {"type": "input_text", "text": "keep this prose"},
+                        {"type": "encrypted_content", "encrypted_content": "old-agent-state"}
+                    ]}
+                ]
+            }))
+            .send()
+            .await
+            .expect("proxy response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.json::<Value>().await.expect("response body")["id"],
+            "resp_1"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let recorded = bodies.lock().expect("recorded bodies").clone();
+        assert!(serde_json::to_string(&recorded[0])
+            .unwrap()
+            .contains("old-reasoning"));
+        let retry = &recorded[1];
+        let retry_text = serde_json::to_string(retry).unwrap();
+        assert!(!retry_text.contains("old-reasoning"));
+        assert!(!retry_text.contains("old-compaction"));
+        assert!(!retry_text.contains("old-agent-state"));
+        assert_eq!(retry["include"][0], "reasoning.encrypted_content");
+        assert_eq!(retry["input"][0]["type"], "compaction_trigger");
+        assert_eq!(retry["input"][1]["content"][0]["text"], "keep me");
+        assert_eq!(retry["input"][2]["type"], "function_call");
+        assert_eq!(retry["input"][3]["type"], "function_call_output");
+        assert_eq!(retry["input"][4]["content"][0]["text"], "keep this prose");
+        assert_eq!(retry["tools"][0]["name"], "lookup");
+
+        let credential = RouteCredentialRepository::get(&pool, &credential_id)
+            .await
+            .expect("credential");
+        assert_eq!(credential.status, "ok");
+        assert_eq!(credential.transient_failure_count, 0);
+        assert!(credential.last_failure_message.is_none());
 
         RouteProxyService::stop(&runtime).await.expect("stop proxy");
     }
