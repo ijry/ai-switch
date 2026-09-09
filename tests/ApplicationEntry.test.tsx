@@ -7,7 +7,7 @@ vi.mock("../src/App",()=>({ App:()=> <div>administrator</div> }));
 vi.mock("../src/lib/transport",()=>({ isDesktop:()=>state.desktop }));
 vi.mock("../src/saas/entry",()=>({ SaasPortal:()=> <div>user portal</div> }));
 vi.mock("../src/saas/api",()=>({ createUserClient:()=>({publicConfig:state.config}) }));
-beforeEach(()=>{state.desktop=false;state.config.mockReset().mockResolvedValue({enabled:true});window.history.replaceState({},"","/");});
+beforeEach(()=>{state.desktop=false;state.config.mockReset().mockResolvedValue({enabled:true});window.history.replaceState({},"","/");document.documentElement.className="";});
 afterEach(cleanup);
 
 it("keeps bundled desktop and fixed admin route in the administrator app",()=>{
@@ -24,6 +24,14 @@ it("serves the user portal at enabled web root without mounting administrator co
   render(<ApplicationEntry />);
   expect(await screen.findByText("user portal")).toBeInTheDocument();
   expect(screen.queryByText("administrator")).not.toBeInTheDocument();
+});
+
+it("keeps document scrolling locked while the user portal shell owns scrolling",async()=>{
+  const { unmount } = render(<ApplicationEntry />);
+  expect(await screen.findByText("user portal")).toBeInTheDocument();
+  expect(document.documentElement).not.toHaveClass("saas-portal-page");
+  unmount();
+  expect(document.documentElement).not.toHaveClass("saas-portal-page");
 });
 it("replaces the disabled web root with the reserved admin path",async()=>{
   state.config.mockResolvedValue({enabled:false});

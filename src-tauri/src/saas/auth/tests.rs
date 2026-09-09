@@ -320,6 +320,25 @@ async fn administrator_created_password_user_can_sign_in() {
     .await
     .unwrap();
     assert_eq!(login.user.id, created.id);
+    config::save(&pool, serde_json::json!({"passwordLoginEnabled":false}))
+        .await
+        .unwrap();
+    assert_eq!(
+        password_login(
+            &pool,
+            "member@example.com",
+            "secret-pass",
+            "https://saas.example"
+        )
+        .await
+        .err()
+        .expect("password login must be disabled")
+        .code(),
+        "saas.password_login_disabled"
+    );
+    config::save(&pool, serde_json::json!({"passwordLoginEnabled":true}))
+        .await
+        .unwrap();
     assert!(password_login(
         &pool,
         "member@example.com",
@@ -335,4 +354,72 @@ async fn administrator_created_password_user_can_sign_in() {
         .unwrap();
     assert!(stored.starts_with("$argon2"));
     assert!(!stored.contains("secret-pass"));
+}
+
+#[tokio::test]
+async fn administrator_updates_user_email_and_password() {
+    let pool = repository::test_pool().await;
+    repository::test_enable(&pool).await;
+    let first = create_password_user(&pool, "first@example.com", "first-secret")
+        .await
+        .unwrap();
+    let second = create_password_user(&pool, "second@example.com", "second-secret")
+        .await
+        .unwrap();
+
+    let updated = crate::saas::domain::admin(
+        &pool,
+        "users.update",
+        serde_json::json!({
+            "userId": first.id,
+            "email": " Updated@Example.com ",
+            "password": "new-secret-pass"
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(updated["email"].as_str(), Some("updated@example.com"));
+    assert!(password_login(
+        &pool,
+        "updated@example.com",
+        "new-secret-pass",
+        "https://saas.example"
+    )
+    .await
+    .is_ok());
+    assert!(password_login(
+        &pool,
+        "first@example.com",
+        "first-secret",
+        "https://saas.example"
+    )
+    .await
+    .is_err());
+
+    let duplicate = crate::saas::domain::admin(
+        &pool,
+        "users.update",
+        serde_json::json!({"userId": second.id, "email": "updated@example.com"}),
+    )
+    .await
+    .err()
+    .expect("duplicate email must be rejected");
+    assert_eq!(duplicate.code(), "saas.user_exists");
+
+    let unchanged = crate::saas::domain::admin(
+        &pool,
+        "users.update",
+        serde_json::json!({"userId": first.id, "email": "updated@example.com"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(unchanged["id"].as_str(), Some(first.id.as_str()));
+    assert!(password_login(
+        &pool,
+        "updated@example.com",
+        "new-secret-pass",
+        "https://saas.example"
+    )
+    .await
+    .is_ok());
 }

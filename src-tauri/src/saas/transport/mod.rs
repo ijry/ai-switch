@@ -56,6 +56,7 @@ pub fn error_response(error: AppError) -> Response {
         || code.contains("forbidden")
         || code.contains("banned")
         || code.contains("registration")
+        || code.contains("password_login_disabled")
         || code.contains("account_age")
     {
         StatusCode::FORBIDDEN

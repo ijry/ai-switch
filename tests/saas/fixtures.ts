@@ -1,7 +1,7 @@
 import type { SaasConfig, SaasGroup, SaasKey, SaasUser, UserOverview } from "../../src/saas/types";
 
 export const user: SaasUser = { id:"u1",login:"octocat",avatarUrl:"",status:"active",balanceMicros:12500000,frozenMicros:500000,createdAt:"2026-09-01T00:00:00Z" };
-export const publicConfig = { enabled:true,registrationEnabled:true,siteName:"Switch Cloud",publicBaseUrl:"https://cloud.example.com",githubLoginAvailable:true,exchangeRateMicros:7000000 };
+export const publicConfig = { enabled:true,registrationEnabled:true,passwordLoginEnabled:true,siteName:"Switch Cloud",publicBaseUrl:"https://cloud.example.com",githubLoginAvailable:true,exchangeRateMicros:7000000 };
 export const config: SaasConfig = { ...publicConfig,enabled:false,githubClientId:"client-id",githubClientSecretConfigured:true,logs:{ queue:"memory",store:"file",retentionDays:30,maxRecords:10000,maxBytes:16777216,batchSize:100 } };
 export const group: SaasGroup = { id:"g1",name:"Everyday Codex",platform:"codex",isInternal:false,isActive:false,configured:true,accountCount:2,availableAccountCount:2,multiplierMicros:1000000,models:[{ model:"gpt-test",upstreamModel:"gpt-test",inputPriceMicros:2000000,cachePriceMicros:200000,outputPriceMicros:8000000 }],maxConcurrency:3,maxOutputTokens:16384,timeoutSeconds:120 };
 export const key: SaasKey = { id:"k1",name:"Workstation",prefix:"sk-saas-abcd",groupId:"g1",groupName:group.name,status:"active",createdAt:"2026-09-01T00:00:00Z",expiresAt:null,limitMicros:null,spentMicros:0,lastUsedAt:null };

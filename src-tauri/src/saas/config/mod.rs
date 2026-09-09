@@ -13,6 +13,7 @@ const ACTIVATION_KEY: &str = "activation_unlocked";
 pub struct SaasConfig {
     pub enabled: bool,
     pub registration_enabled: bool,
+    pub password_login_enabled: bool,
     pub site_name: String,
     pub public_base_url: String,
     pub github_client_id: String,
@@ -32,6 +33,7 @@ impl Default for SaasConfig {
         Self {
             enabled: false,
             registration_enabled: true,
+            password_login_enabled: true,
             site_name: "AI Switch".into(),
             public_base_url: String::new(),
             github_client_id: String::new(),
@@ -153,7 +155,7 @@ pub(crate) async fn require_enabled(
 pub async fn public_config(pool: &SqlitePool) -> Result<Value, AppError> {
     let config = load(pool).await?;
     Ok(
-        json!({"enabled":config.enabled,"registrationEnabled":config.registration_enabled,"siteName":config.site_name,"publicBaseUrl":config.public_base_url,"exchangeRateMicros":config.exchange_rate_micros,
+        json!({"enabled":config.enabled,"registrationEnabled":config.registration_enabled,"passwordLoginEnabled":config.password_login_enabled,"siteName":config.site_name,"publicBaseUrl":config.public_base_url,"exchangeRateMicros":config.exchange_rate_micros,
         "checkinEnabled":config.checkin_enabled,"checkinRewardMicros":config.checkin_reward_micros,"inviteEnabled":config.invite_enabled,"inviteRegistrationRequired":config.invite_registration_required,
         "githubLoginAvailable":config.enabled && config.github_client_secret_configured && !config.github_client_id.is_empty()}),
     )
@@ -208,6 +210,7 @@ pub async fn save_with_secret_store(
     let allowed = [
         "enabled",
         "registrationEnabled",
+        "passwordLoginEnabled",
         "siteName",
         "publicBaseUrl",
         "githubClientId",

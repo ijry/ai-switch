@@ -345,3 +345,153 @@ async fn external_account_key_reports_balance_and_daily_subscriptions() {
     assert_eq!(subscriptions["items"].as_array().unwrap().len(), 1);
     assert_eq!(subscriptions["items"][0]["todayRemainingMicros"], 1_000_000);
 }
+
+#[tokio::test]
+async fn operating_statistics_and_subscription_management() {
+    let pool = repository::test_pool().await;
+    let (user_id, _) = repository::test_user_group(&pool).await;
+    let plan = admin(&pool, "subscriptions.plans.save", json!({"name":"Monthly", "kind":"month", "durationDays":30,"quotaMicros":1000000,"priceMicros":100000})).await.unwrap();
+    let subscription = admin(
+        &pool,
+        "subscriptions.grant",
+        json!({"userId":user_id,"planId":plan["id"]}),
+    )
+    .await
+    .unwrap();
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    admin(
+        &pool,
+        "users.credit",
+        json!({"userId":user_id,"amountMicros":2000000,"reason":"Gift"}),
+    )
+    .await
+    .unwrap();
+    let report = admin(&pool, "statistics", json!({"from":today,"to":today}))
+        .await
+        .unwrap();
+    assert_eq!(report["current"]["activeSubscriptions"], 1);
+    assert_eq!(report["totals"]["rechargeCnyFen"], 0);
+    assert_eq!(report["totals"]["manualCreditMicros"], 2000000);
+    assert_eq!(report["totals"]["quotaMicros"], 1000000);
+    assert_eq!(report["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        admin(&pool, "subscriptions.list", json!({"userId":user_id}))
+            .await
+            .unwrap()["total"],
+        1
+    );
+    assert!(admin(
+        &pool,
+        "subscriptions.cancel",
+        json!({"userId":"wrong","id":subscription["id"],"reason":"test"})
+    )
+    .await
+    .is_err());
+    admin(
+        &pool,
+        "subscriptions.cancel",
+        json!({"userId":user_id,"id":subscription["id"],"reason":"Cancelled by admin"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        admin(&pool, "statistics", json!({"from":today,"to":today}))
+            .await
+            .unwrap()["current"]["activeSubscriptions"],
+        0
+    );
+    assert!(
+        admin(&pool, "statistics", json!({"from":"2026-02-30","to":today}))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn statistics_separates_cash_from_credits_and_groups_months() {
+    let pool = repository::test_pool().await;
+    let (user_id, _) = repository::test_user_group(&pool).await;
+    let january = chrono::NaiveDate::from_ymd_opt(2025, 1, 31)
+        .unwrap()
+        .and_hms_opt(23, 0, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp();
+    let february = january + 86400;
+    let order = user(
+        &pool,
+        &user_id,
+        "recharges.create",
+        json!({"amountCnyFen":7000,"requestId":"cash-test"}),
+    )
+    .await
+    .unwrap();
+    admin(
+        &pool,
+        "recharges.review",
+        json!({"id":order["id"],"status":"approved","reason":"Cash received"}),
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE saas_recharge_orders SET updated_at=? WHERE id=?")
+        .bind(january)
+        .bind(order["id"].as_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE saas_wallet_ledger SET created_at=? WHERE source_id=?")
+        .bind(january)
+        .bind(order["id"].as_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    admin(
+        &pool,
+        "users.credit",
+        json!({"userId":user_id,"amountMicros":3000000,"reason":"Manual credit"}),
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE saas_wallet_ledger SET created_at=? WHERE source_id<>?")
+        .bind(february)
+        .bind(order["id"].as_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let plan = admin(&pool,"subscriptions.plans.save",json!({"name":"Plan","kind":"month","durationDays":30,"quotaMicros":1000000,"priceMicros":2000000})).await.unwrap();
+    user(
+        &pool,
+        &user_id,
+        "subscriptions.purchase",
+        json!({"planId":plan["id"],"requestId":"purchase-test"}),
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE saas_wallet_ledger SET created_at=? WHERE kind='subscription_purchase'")
+        .bind(february)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let monthly = admin(
+        &pool,
+        "statistics",
+        json!({"from":"2025-01-01","to":"2025-02-28","granularity":"month"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(monthly["items"].as_array().unwrap().len(), 2);
+    assert_eq!(monthly["items"][0]["rechargeCnyFen"], 7000);
+    assert_eq!(monthly["items"][1]["rechargeCnyFen"], 0);
+    assert_eq!(monthly["totals"]["rechargeCreditMicros"], 10000000);
+    assert_eq!(monthly["totals"]["manualCreditMicros"], 3000000);
+    assert_eq!(monthly["totals"]["subscriptionSalesMicros"], 2000000);
+    let daily = admin(
+        &pool,
+        "statistics",
+        json!({"from":"2025-01-01","to":"2025-02-28"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(daily["items"].as_array().unwrap().len(), 59);
+    assert_eq!(daily["totals"], monthly["totals"]);
+}

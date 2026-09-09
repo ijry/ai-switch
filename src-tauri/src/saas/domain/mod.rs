@@ -3,6 +3,7 @@ pub mod groups;
 pub mod growth;
 pub mod invites;
 pub mod keys;
+pub mod statistics;
 
 use crate::error::AppError;
 use crate::saas::{
@@ -16,9 +17,13 @@ use sqlx::SqlitePool;
 pub async fn admin(pool: &SqlitePool, operation: &str, payload: Value) -> Result<Value, AppError> {
     match operation {
         "overview" => billing::operations::overview(pool, None).await,
+        "statistics" => statistics::report(pool, payload).await,
+        "subscriptions.list" => growth::admin_list(pool, payload).await,
+        "subscriptions.cancel" => growth::cancel(pool, payload).await,
         "catalog" => groups::catalog(pool, payload).await,
         "users.list" => list_users(pool, payload).await,
         "users.create" => create_user(pool, payload).await,
+        "users.update" => update_user(pool, payload).await,
         "users.credit" => billing::operations::admin_credit(pool, payload).await,
         "users.status" => user_status(pool, payload).await,
         "groups.list" => groups::list(pool, payload, false).await,
@@ -110,6 +115,14 @@ async fn create_user(pool: &SqlitePool, payload: Value) -> Result<Value, AppErro
     let email = repository::text(&payload, "email")?;
     let password = repository::text(&payload, "password")?;
     serde_json::to_value(auth::create_password_user(pool, email, password).await?)
+        .map_err(|_| invalid("saas.serialization", "Could not encode user"))
+}
+
+async fn update_user(pool: &SqlitePool, payload: Value) -> Result<Value, AppError> {
+    let user_id = repository::text(&payload, "userId")?;
+    let email = repository::text(&payload, "email")?;
+    let password = payload.get("password").and_then(Value::as_str);
+    serde_json::to_value(auth::update_user(pool, user_id, email, password).await?)
         .map_err(|_| invalid("saas.serialization", "Could not encode user"))
 }
 

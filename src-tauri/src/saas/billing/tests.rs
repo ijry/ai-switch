@@ -3,6 +3,58 @@ use crate::saas::{domain, repository};
 use serde_json::json;
 
 #[tokio::test]
+async fn statistics_includes_wallet_and_subscription_settlements_after_cancellation() {
+    let pool = repository::test_pool().await;
+    let principal = repository::test_principal(&pool, 1000000).await;
+    let reserved = reserve(&pool, &principal, "gpt-test", 2, 2).await.unwrap();
+    settle(
+        &pool,
+        &reserved.request_id,
+        Some(BillableUsage {
+            input_tokens: 2,
+            output_tokens: 2,
+            ..Default::default()
+        }),
+        true,
+    )
+    .await
+    .unwrap();
+    let plan = domain::admin(&pool,"subscriptions.plans.save",json!({"name":"Plan","kind":"month","durationDays":30,"quotaMicros":1000000,"priceMicros":0})).await.unwrap();
+    let subscription = domain::admin(
+        &pool,
+        "subscriptions.grant",
+        json!({"userId":principal.user_id,"planId":plan["id"]}),
+    )
+    .await
+    .unwrap();
+    let reserved = reserve(&pool, &principal, "gpt-test", 2, 2).await.unwrap();
+    domain::admin(
+        &pool,
+        "subscriptions.cancel",
+        json!({"userId":principal.user_id,"id":subscription["id"],"reason":"Stop new requests"}),
+    )
+    .await
+    .unwrap();
+    settle(
+        &pool,
+        &reserved.request_id,
+        Some(BillableUsage {
+            input_tokens: 2,
+            output_tokens: 2,
+            ..Default::default()
+        }),
+        true,
+    )
+    .await
+    .unwrap();
+    let report = domain::admin(&pool, "statistics", json!({})).await.unwrap();
+    assert_eq!(report["totals"]["walletUsageMicros"], 6);
+    assert_eq!(report["totals"]["subscriptionUsageMicros"], 6);
+    assert_eq!(report["totals"]["requestCount"], 2);
+    assert_eq!(report["current"]["activeSubscriptions"], 0);
+}
+
+#[tokio::test]
 async fn administrator_can_credit_a_user_with_ledger_and_audit_records() {
     let pool = repository::test_pool().await;
     let (user_id, _) = repository::test_user_group(&pool).await;

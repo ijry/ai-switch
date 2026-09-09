@@ -79,12 +79,12 @@ export type PoolScopeFocus = {
 
 export function App() {
   const [webReady, setWebReady] = useState(canSkipWebAuthGate);
-  const [saasUnlocked,setSaasUnlocked] = useState(false);
+  const [saasEnabled,setSaasEnabled] = useState(false);
   const refreshSaas = useCallback(async()=>{
     try {
-      const status = await adminCall<{unlocked:boolean}>("activation.status");
-      setSaasUnlocked(status.unlocked);
-    } catch { setSaasUnlocked(false); }
+      const config = await adminCall<{enabled:boolean}>("config.get");
+      setSaasEnabled(config.enabled);
+    } catch { setSaasEnabled(false); }
   },[]);
   useEffect(()=>{if (webReady) void refreshSaas();},[refreshSaas, webReady]);
   const [screen, setScreen] = useState("Codex");
@@ -189,7 +189,7 @@ export function App() {
             )}
             {!vibeActive && (
               <AppLayout
-                saasEnabled={saasUnlocked}
+                saasEnabled={saasEnabled}
                 activeScreen={screen}
                 onNavigate={navigate}
                 onOpenVibe={() => navigate("Vibe")}

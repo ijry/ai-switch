@@ -141,6 +141,7 @@ async fn optional_exchange_rate_is_validated_and_secrets_are_never_persisted_in_
     );
     let public = public_config(&pool).await.unwrap();
     assert_eq!(public["exchangeRateMicros"], 7_000_000);
+    assert_eq!(public["passwordLoginEnabled"], true);
     assert!(public.get("githubClientId").is_none());
     assert!(public.get("logs").is_none());
 }

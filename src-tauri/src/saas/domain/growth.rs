@@ -245,3 +245,38 @@ pub async fn checkin(pool: &SqlitePool, user_id: &str) -> Result<Value, AppError
         json!({"day":day,"amountMicros":cfg.checkin_reward_micros,"balanceMicros":user.balance_micros}),
     )
 }
+
+pub async fn admin_list(pool: &SqlitePool, payload: Value) -> Result<Value, AppError> {
+    let user_id = repository::text(&payload, "userId")?;
+    user_list(pool, user_id).await
+}
+
+pub async fn cancel(pool: &SqlitePool, payload: Value) -> Result<Value, AppError> {
+    let user_id = repository::text(&payload, "userId")?;
+    let id = repository::text(&payload, "id")?;
+    let reason = repository::text(&payload, "reason")?.trim();
+    if reason.is_empty() || reason.len() > 1024 {
+        return Err(invalid(
+            "saas.validation",
+            "A cancellation reason is required",
+        ));
+    }
+    let mut tx = repository::begin(pool).await?;
+    let changed = sqlx::query("UPDATE saas_subscriptions SET status='cancelled',updated_at=? WHERE id=? AND user_id=? AND status='active'")
+        .bind(repository::now()).bind(id).bind(user_id).execute(&mut *tx).await.map_err(db_error)?.rows_affected();
+    if changed == 0 {
+        return Err(invalid(
+            "saas.subscription_not_found",
+            "Active subscription not found for this user",
+        ));
+    }
+    repository::audit(
+        &mut tx,
+        "subscriptions.cancel",
+        Some(id),
+        json!({"userId":user_id,"reason":reason}),
+    )
+    .await?;
+    tx.commit().await.map_err(db_error)?;
+    Ok(json!({"ok":true}))
+}

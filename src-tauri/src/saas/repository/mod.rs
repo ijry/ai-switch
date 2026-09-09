@@ -210,7 +210,7 @@ pub(crate) async fn test_pool() -> SqlitePool {
 
 #[cfg(test)]
 pub(crate) async fn test_enable(pool: &SqlitePool) {
-    let value = serde_json::json!({"enabled":true,"registrationEnabled":true,"publicBaseUrl":"https://saas.example","githubClientId":"test-client","githubClientSecretConfigured":true,"exchangeRateMicros":7_000_000});
+    let value = serde_json::json!({"enabled":true,"registrationEnabled":true,"passwordLoginEnabled":true,"publicBaseUrl":"https://saas.example","githubClientId":"test-client","githubClientSecretConfigured":true,"exchangeRateMicros":7_000_000});
     sqlx::query("INSERT INTO saas_settings(key,value_json,updated_at) VALUES('config',?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json")
         .bind(value.to_string()).bind(now()).execute(pool).await.unwrap();
 }

@@ -560,6 +560,69 @@ pub async fn create_password_user(
     Ok(user)
 }
 
+pub async fn update_user(
+    pool: &SqlitePool,
+    user_id: &str,
+    email: &str,
+    password: Option<&str>,
+) -> Result<SafeUser, AppError> {
+    let email = normalize_email(email)?;
+    let encoded = match password {
+        Some(password) => {
+            validate_password(password)?;
+            Some(password_hash(password.to_owned()).await?)
+        }
+        None => None,
+    };
+    let mut transaction = repository::begin(pool).await?;
+    let duplicate: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM saas_users WHERE lower(email)=? AND id<>?)",
+    )
+    .bind(&email)
+    .bind(user_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(db_error)?;
+    if duplicate {
+        return Err(invalid(
+            "saas.user_exists",
+            "A user with this email already exists",
+        ));
+    }
+    let changed = sqlx::query(
+        "UPDATE saas_users SET email=?,password_hash=COALESCE(?,password_hash),updated_at=? WHERE id=?",
+    )
+    .bind(&email)
+    .bind(&encoded)
+    .bind(repository::now())
+    .bind(user_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(db_error)?
+    .rows_affected();
+    if changed == 0 {
+        return Err(invalid("saas.user_not_found", "User does not exist"));
+    }
+    if encoded.is_some() {
+        sqlx::query("UPDATE saas_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL")
+            .bind(repository::now())
+            .bind(user_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db_error)?;
+    }
+    repository::audit(
+        &mut transaction,
+        "users.update",
+        Some(user_id),
+        serde_json::json!({"email":email,"passwordChanged":password.is_some()}),
+    )
+    .await?;
+    let user = safe_user(&mut transaction, user_id).await?;
+    transaction.commit().await?;
+    Ok(user)
+}
+
 pub async fn password_login(
     pool: &SqlitePool,
     email: &str,
@@ -575,6 +638,12 @@ pub async fn password_login(
     }
     let mut transaction = repository::begin(pool).await?;
     let config = config::require_enabled(&mut transaction).await?;
+    if !config.password_login_enabled {
+        return Err(invalid(
+            "saas.password_login_disabled",
+            "Email and password sign-in is disabled",
+        ));
+    }
     let origin = if config.public_base_url.is_empty() {
         config::validate_public_base_url(request_origin)?
             .origin()

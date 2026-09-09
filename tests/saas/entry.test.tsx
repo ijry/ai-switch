@@ -1,8 +1,12 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SaasPortal } from "../../src/saas/entry";
 import { group, key, overview, page, publicConfig, recharge, user } from "./fixtures";
+
+const portalCss = readFileSync(resolve(process.cwd(), "src/saas/saas.css"), "utf8");
 
 const fetcher = vi.fn();
 let authenticated = false;
@@ -31,6 +35,10 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("SaaS user portal", () => {
+  it("keeps the project footer independent of the site name", async () => {
+    render(<SaasPortal />);
+    expect(await screen.findByRole("link", { name: "AISwitch" })).toHaveAttribute("href", "https://github.com/ijry/ai-switch");
+  });
   it("shows GitHub login without fetching private data", async () => {
     render(<SaasPortal />);
     expect(await screen.findByRole("button", { name: /^sign in$/i })).toBeInTheDocument();
@@ -58,12 +66,45 @@ describe("SaaS user portal", () => {
     })));
   });
 
+  it("hides email and password fields when that sign-in method is disabled", async () => {
+    fetcher.mockImplementation(async (path: string) => {
+      if (path.endsWith("public/config")) return Response.json({ ...publicConfig, passwordLoginEnabled: false });
+      if (path.endsWith("auth/session")) return Response.json({ user: null, csrfToken: null });
+      return Response.json({});
+    });
+    render(<SaasPortal />);
+    expect(await screen.findByRole("link", { name: /continue with github/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^email$/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^password$/i)).not.toBeInTheDocument();
+  });
+
   it("renders the actual wallet and aggregates, not seeded statistics", async () => {
     authenticated = true;
     render(<SaasPortal />);
     expect(await screen.findByText("$12.50")).toBeInTheDocument();
     expect(await screen.findByText("$1.234567")).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: /workspace/i })).toBeInTheDocument();
+    expect(portalCss).toMatch(/\.saas-root:not\(\.saas-embedded\)\s*{[^}]*height:\s*100dvh[^}]*overflow:\s*hidden/s);
+    expect(portalCss).toMatch(/\.saas-main\s*{[^}]*overflow-y:\s*auto/s);
+    expect(portalCss).toMatch(/\.saas-main\.saas-scrolling[^{]*{[^}]*scrollbar-color/s);
+    expect(portalCss).toMatch(/\.saas-main\.saas-scrolling::-webkit-scrollbar-thumb[^{]*{[^}]*background-color/s);
+  });
+
+  it("shows the main scrollbar only while scrolling", async () => {
+    authenticated = true;
+    render(<SaasPortal />);
+    await screen.findByRole("navigation", { name: /workspace/i });
+    const main = screen.getByRole("main");
+    expect(main).not.toHaveClass("saas-scrolling");
+    vi.useFakeTimers();
+    try {
+      fireEvent.scroll(main);
+      expect(main).toHaveClass("saas-scrolling");
+      await act(async () => vi.advanceTimersByTime(650));
+      expect(main).not.toHaveClass("saas-scrolling");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("creates a key with a fixed group and forgets the secret after closing", async () => {

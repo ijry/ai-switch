@@ -3,12 +3,13 @@ export type SaasEndpoint = "codex" | "claude";
 export interface SaasHostProps { onConfigChanged?: () => void }
 export interface PageResult<Item> { items: Item[]; total: number; page?: number; pageSize?: number }
 export interface SaasErrorEnvelope { code: string; message: string; details?: unknown }
-export type AdminOperation = "activation.status" | "activation.unlock" | "config.get" | "config.save" | "overview" | "catalog" | "users.list" | "users.create" | "users.credit" | "users.status" | "groups.list" | "groups.available" | "groups.save" | "subscriptions.plans.list" | "subscriptions.plans.save" | "subscriptions.grant" | "invites.codes.list" | "invites.codes.create" | "invites.codes.disable" | "invites.rewards.list" | "invites.rewards.review" | "recharges.list" | "recharges.review" | "codes.list" | "codes.create" | "codes.disable" | "ledger.list" | "ledger.reconcile" | "logs.query";
+export type AdminOperation = "statistics" | "subscriptions.list" | "subscriptions.cancel" | "activation.status" | "activation.unlock" | "config.get" | "config.save" | "overview" | "catalog" | "users.list" | "users.create" | "users.update" | "users.credit" | "users.status" | "groups.list" | "groups.available" | "groups.save" | "subscriptions.plans.list" | "subscriptions.plans.save" | "subscriptions.grant" | "invites.codes.list" | "invites.codes.create" | "invites.codes.disable" | "invites.rewards.list" | "invites.rewards.review" | "recharges.list" | "recharges.review" | "codes.list" | "codes.create" | "codes.disable" | "ledger.list" | "ledger.reconcile" | "logs.query";
 export type UserOperation = "overview" | "usage" | "groups" | "subscriptions.list" | "subscriptions.plans" | "subscriptions.purchase" | "checkin" | "invites.overview" | "invites.rewards" | "external-key.status" | "external-key.rotate" | "external-key.revoke" | "keys.list" | "keys.create" | "keys.update" | "keys.rotate" | "recharges.list" | "recharges.create" | "recharges.cancel" | "redeem" | "logs.query";
 
 export interface SaasPublicConfig {
   enabled: boolean;
   registrationEnabled: boolean;
+  passwordLoginEnabled: boolean;
   siteName: string;
   publicBaseUrl: string;
   githubLoginAvailable?: boolean;
@@ -87,6 +88,8 @@ export interface UserOverview {
   exchangeRateMicros?: number | null;
   redemptionHistory?: LedgerEntry[];
 }
+export interface OperatingRow { period: string; rechargeCnyFen: number; rechargeCreditMicros: number; manualCreditMicros: number; rewardMicros: number; subscriptionSalesMicros: number; walletUsageMicros: number; subscriptionUsageMicros: number; requestCount: number; newUsers: number; quotaMicros: number }
+export interface OperatingReport { from: string; to: string; granularity: "day" | "month"; timezone: string; items: OperatingRow[]; totals: OperatingRow; current: { activeSubscriptions: number; subscribedUsers: number; dailyQuotaMicros: number; expiringSubscriptions: number; todayUsedMicros: number; todayQuotaMicros: number; pendingRewards: number } }
 export interface AdminOverview {
   userCount: number;
   groupCount: number;
