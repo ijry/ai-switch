@@ -24,7 +24,7 @@ use crate::services::official_agent_identity_service::{
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::response_failure_service::{
     detect_response_failed, is_encrypted_content_failure, is_insufficient_permissions_failure,
-    is_quota_exhaustion_failure, is_thinking_signature_failure,
+    is_quota_exhaustion_failure, is_text_only_chat_content_failure, is_thinking_signature_failure,
     stream_disconnected_before_completion, STREAM_DISCONNECTED_FAILURE_MESSAGE,
 };
 use crate::services::responses_encrypted_content::strip_replayed_encrypted_content_from_bytes;
@@ -107,6 +107,7 @@ const ROUTE_PROXY_RESPONSE_BODY_LIMIT: usize = 16 * 1024;
 /// upstream returned real AI content (vs. a fake/empty 200) without bloating
 /// `usage_events`, which is never pruned.
 const ROUTE_PROXY_SUCCESS_BODY_LIMIT: usize = 2 * 1024;
+const TEXT_ONLY_CHAT_CONTENT_MESSAGE: &str = "当前会话包含多模态内容，但目标模型只支持纯文本；请换回多模态模型，或开启新会话后继续。 This conversation contains multimodal content, but the target model only accepts text; switch back to a multimodal model or start a new session.";
 
 async fn wait_for_credential_retry(policy: RouteCredentialFailurePolicy) {
     if policy.retry_interval_ms > 0 {
@@ -1558,6 +1559,30 @@ async fn forward_request(
 
         let next_index = (credential_index + 1) % credentials.len();
         let _ = RoutePoolRepository::save_cursor_index(pool, &platform, next_index as i64).await;
+
+        // A text-only Chat gateway rejects an image/file part from history. Every
+        // account pointed at that model would reject the same conversation, and
+        // retrying cannot rewrite the client's history, so return the actionable
+        // explanation immediately and leave the credential healthy.
+        if bridge_kind == Some(ProtocolBridgeKind::ResponsesToChat)
+            && semantic_failure
+                .as_ref()
+                .is_some_and(is_text_only_chat_content_failure)
+        {
+            let body = json!({
+                "error": {
+                    "message": TEXT_ONLY_CHAT_CONTENT_MESSAGE,
+                    "type": "invalid_request_error",
+                    "param": "",
+                    "code": "text_only_chat_content"
+                }
+            });
+            return proxy_upstream_response(
+                status,
+                upstream_headers,
+                body.to_string().into_bytes(),
+            );
+        }
 
         // A refused `thinking` signature is not this account's doing. The block
         // was minted by whichever account served the previous turn, and the pool
@@ -8763,6 +8788,88 @@ mod tests {
         .await
         .expect("semantic streak");
         assert_eq!(streak_count, 0);
+
+        RouteProxyService::stop(&runtime).await.expect("stop proxy");
+    }
+
+    #[tokio::test]
+    async fn text_only_chat_rejection_returns_a_multimodal_hint_without_retrying() {
+        use crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository;
+        use crate::database::{create_memory_pool, run_migrations};
+
+        let (upstream, calls) = start_status_sequence_upstream(
+            usize::MAX,
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"***.***.type 参数非法，取值范围 ['text'] [trace_id=6bd754407a538295f96be0c99106c25c]","type":"invalid_request_error","param":"","code":null}}"#,
+            r#"{"ok":true}"#,
+        )
+        .await;
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let mapping = json!({"model_mappings": [{"from": "glm-5.3", "to": "glm-5.3"}]});
+        let first = create_proxy_api_credential_with_config(
+            &pool,
+            "glm-text-only",
+            &upstream,
+            mapping.clone(),
+        )
+        .await;
+        let second = create_proxy_api_credential_with_config(
+            &pool,
+            "glm-text-only-backup",
+            &upstream,
+            mapping,
+        )
+        .await;
+        RoutePoolRepository::replace_members(&pool, "codex", &[first.clone(), second.clone()])
+            .await
+            .expect("pool members");
+        let route_key =
+            RouteProxyKeyRepository::ensure_platform_key(&pool, "codex", "sk-ai-switch-test")
+                .await
+                .expect("route key");
+        let runtime = RouteProxyRuntimeState::default();
+        let proxy = RouteProxyService::start(&runtime, pool.clone(), RouteProxyTransport::HttpOnly)
+            .await
+            .expect("start proxy");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/responses",
+                proxy.base_url.as_deref().expect("base url")
+            ))
+            .bearer_auth(route_key)
+            .json(&json!({
+                "model": "glm-5.3",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "continue"},
+                        {"type": "input_image", "image_url": "data:image/png;base64,aGk="}
+                    ]
+                }]
+            }))
+            .send()
+            .await
+            .expect("proxy response");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.json::<Value>().await.expect("proxy body");
+        let message = body["error"]["message"].as_str().expect("friendly message");
+        assert!(message.contains("多模态"), "message: {message}");
+        assert!(message.contains("纯文本"), "message: {message}");
+        assert!(message.contains("新会话"), "message: {message}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        for credential_id in [first, second] {
+            let account = RouteCredentialRepository::get(&pool, &credential_id)
+                .await
+                .expect("account");
+            assert_eq!(account.status, "ok");
+            assert_eq!(account.transient_failure_count, 0);
+            assert!(account.next_retry_at.is_none());
+            assert!(account.last_failure_message.is_none());
+        }
 
         RouteProxyService::stop(&runtime).await.expect("stop proxy");
     }

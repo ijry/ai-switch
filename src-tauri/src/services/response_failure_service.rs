@@ -175,6 +175,23 @@ pub fn is_encrypted_content_failure(failure: &SemanticResponseFailure) -> bool {
             || message.contains("encrypted content is invalid"))
 }
 
+/// Returns whether a Chat upstream rejected a conversation because a content
+/// part's `type` is outside its text-only allowed list.
+///
+/// GLM-style Chat gateways word this as `***.***.type 参数非法，取值范围 ['text']`.
+/// The masked path is expected: the gateway hides message indices from clients.
+/// Requiring the allowed list to contain `text` keeps tool-type and schema-type
+/// rejections out of this rule.
+pub fn is_text_only_chat_content_failure(failure: &SemanticResponseFailure) -> bool {
+    let message = failure.message.to_ascii_lowercase();
+    message.contains(".type")
+        && message.contains("参数非法")
+        && message.contains("取值范围")
+        && (message.contains("['text']")
+            || message.contains("[\"text\"]")
+            || message.contains("[text]"))
+}
+
 /// Detects a stream that delivered data but never emitted a terminal marker.
 /// A partial Responses stream is commonly surfaced to the caller as
 /// `stream disconnected before completion`.
@@ -471,6 +488,23 @@ data: {"type":"response.failed","error":{"message":"down"}}
         // missing, so neither of the neighbouring rules may claim it.
         assert!(!is_quota_exhaustion_failure(&failure));
         assert!(!is_thinking_signature_failure(&failure.message));
+    }
+
+    #[test]
+    fn detects_a_text_only_chat_content_type_rejection() {
+        let failure = detect_response_failed(
+            r#"{"error":{"message":"***.***.type 参数非法，取值范围 ['text'] [trace_id=6bd754407a538295f96be0c99106c25c]","type":"invalid_request_error","param":"","code":null}}"#
+                .as_bytes(),
+        )
+        .expect("semantic failure");
+        assert!(is_text_only_chat_content_failure(&failure));
+
+        let unrelated = detect_response_failed(
+            r#"{"error":{"message":"tools.0.type 参数非法，取值范围 ['function']","type":"invalid_request_error"}}"#
+                .as_bytes(),
+        )
+        .expect("semantic failure");
+        assert!(!is_text_only_chat_content_failure(&unrelated));
     }
 
     #[test]
