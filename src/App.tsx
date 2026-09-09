@@ -38,6 +38,8 @@ import { VibeScreen } from "./screens/VibeScreen";
 import { McpScreen } from "./screens/McpScreen";
 import { SkillsScreen } from "./screens/SkillsScreen";
 import { MotionPage, MotionProvider, type MotionDirection } from "./components/motion/MotionPrimitives";
+import { SaasAdmin } from "./saas";
+import { adminCall } from "./saas/api";
 
 const queryClient = createQueryClient();
 
@@ -61,6 +63,7 @@ const implementedScreens = new Set([
   "CryptoTools",
   "OCR",
   "Settings",
+  "SaaS",
   "Sessions",
   "Updates",
   "Log",
@@ -81,12 +84,20 @@ export type PoolScopeFocus = {
 };
 
 export function App() {
+  const [webReady, setWebReady] = useState(canSkipWebAuthGate);
+  const [saasEnabled,setSaasEnabled] = useState(false);
+  const refreshSaas = useCallback(async()=>{
+    try {
+      const config = await adminCall<{enabled:boolean}>("config.get");
+      setSaasEnabled(config.enabled);
+    } catch { setSaasEnabled(false); }
+  },[]);
+  useEffect(()=>{if (webReady) void refreshSaas();},[refreshSaas, webReady]);
   const [screen, setScreen] = useState("Codex");
   const screenRef = useRef("Codex");
   const [navigationDirection, setNavigationDirection] = useState<MotionDirection>("neutral");
   const [sessionPlatform, setSessionPlatform] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [webReady, setWebReady] = useState(canSkipWebAuthGate);
   const [poolScopeFocus, setPoolScopeFocus] = useState<PoolScopeFocus | null>(null);
   const [agentVisibility, setAgentVisibility] = useState<AgentVisibility>(readAgentVisibility);
   // Vibe keeps live terminals; once it has been opened we keep it mounted and only
@@ -120,7 +131,8 @@ export function App() {
   const handleWebAuthenticated = useCallback(() => {
     queryClient.clear();
     setWebReady(true);
-  }, []);
+    void refreshSaas();
+  }, [refreshSaas]);
 
   const navigate = (nextScreen: string) => {
     const screens = Array.from(implementedScreens);
@@ -196,6 +208,7 @@ export function App() {
             )}
             {!vibeActive && (
               <AppLayout
+                saasEnabled={saasEnabled}
                 activeScreen={screen}
                 agentVisibility={agentVisibility}
                 onAgentVisibilityChange={setAgentVisibility}
@@ -230,9 +243,11 @@ export function App() {
                     onAgentVisibilityChange={(platform, visible) =>
                       setAgentVisibility((current) => ({ ...current, [platform]: visible }))
                     }
+                    onSaasConfigChanged={() => void refreshSaas()}
                     onOpenFeature={navigate}
                   />
                 )}
+                {screen === "SaaS" && <SaasAdmin onConfigChanged={()=>void refreshSaas()} />}
                 {screen === "MCP" && <McpScreen />}
                 {screen === "Skills" && <SkillsScreen />}
                 {screen === "About" && <AboutScreen />}

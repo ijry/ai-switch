@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { defineConfig, type Plugin } from "vite";
 
-const DEV_API_TARGET = process.env.AI_SWITCH_DEV_API_TARGET ?? "http://127.0.0.1:3090";
+const DEV_API_TARGET = process.env.AI_SWITCH_DEV_API_TARGET ?? "http://127.0.0.1:10086";
 
 /// The dev page can never authenticate itself: the local dev runtime skips the web
 /// auth gate (`canSkipWebAuthGate` in App.tsx), so nothing ever writes a token to
@@ -24,7 +24,7 @@ function resolveDevApiAuthHeaders(): Record<string, string> {
     return { Authorization: `Bearer ${fromEnv}` };
   }
 
-  const configPath = join(homedir(), ".ai-switch", "web-service.json");
+  const configPath = join(homedir(), ".ai-switch", "web-service-dev.json");
   try {
     const token = (JSON.parse(readFileSync(configPath, "utf8")) as { token?: string }).token?.trim();
     if (token) {
@@ -103,6 +103,14 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     proxy: {
+      "/api/saas/": {
+        target: DEV_API_TARGET,
+        changeOrigin: false,
+      },
+      "/v1/": {
+        target: DEV_API_TARGET,
+        changeOrigin: true,
+      },
       "/api": {
         target: DEV_API_TARGET,
         changeOrigin: true,

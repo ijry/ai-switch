@@ -15,6 +15,8 @@ fn default_true() -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteCredentialSelectionContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
     pub platform: String,
     pub pool_scope: RouteCredentialPoolScope,
 }
@@ -412,6 +414,7 @@ mod tests {
     fn selection_context_serializes_existing_pool_scope_enum() {
         assert_exact_json(
             &RouteCredentialSelectionContext {
+                group_id: None,
                 platform: "grok".to_string(),
                 pool_scope: RouteCredentialPoolScope::OutOfPool,
             },

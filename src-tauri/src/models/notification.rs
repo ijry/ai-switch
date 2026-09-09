@@ -112,14 +112,24 @@ impl NotificationConfig {
     }
 
     /// Returns enabled channels whose kind matches the given channel type.
-    pub fn enabled_channels(&self, channel: NotificationChannel) -> Vec<&NotificationChannelConfig> {
+    pub fn enabled_channels(
+        &self,
+        channel: NotificationChannel,
+    ) -> Vec<&NotificationChannelConfig> {
         self.channels
             .iter()
-            .filter(|c| c.enabled && match (&c.kind, channel) {
-                (NotificationChannelKind::Feishu { .. }, NotificationChannel::Feishu) => true,
-                (NotificationChannelKind::Bark { .. }, NotificationChannel::Bark) => true,
-                (NotificationChannelKind::Webhook { .. }, NotificationChannel::Webhook) => true,
-                _ => false,
+            .filter(|c| {
+                c.enabled
+                    && match (&c.kind, channel) {
+                        (NotificationChannelKind::Feishu { .. }, NotificationChannel::Feishu) => {
+                            true
+                        }
+                        (NotificationChannelKind::Bark { .. }, NotificationChannel::Bark) => true,
+                        (NotificationChannelKind::Webhook { .. }, NotificationChannel::Webhook) => {
+                            true
+                        }
+                        _ => false,
+                    }
             })
             .collect()
     }

@@ -12,6 +12,20 @@ pub const DATABASE_FILE_NAME: &str = if cfg!(debug_assertions) {
     "ai-switch.db"
 };
 
+/// True only for `tauri dev` desktop runs. Unit tests stay on release-shaped
+/// paths so they keep exercising the installed configuration contract.
+pub fn is_desktop_dev_runtime() -> bool {
+    cfg!(all(dev, not(test)))
+}
+
+fn web_service_file_name(is_dev: bool) -> &'static str {
+    if is_dev {
+        "web-service-dev.json"
+    } else {
+        "web-service.json"
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AppPaths {
     pub data_dir: PathBuf,
@@ -43,7 +57,7 @@ impl AppPaths {
         Self {
             database_file: data_dir.join(DATABASE_FILE_NAME),
             settings_file: data_dir.join("settings.json"),
-            web_service_file: data_dir.join("web-service.json"),
+            web_service_file: data_dir.join(web_service_file_name(is_desktop_dev_runtime())),
             route_proxy_https_config_file: data_dir.join("route-proxy-https.json"),
             backups_dir: data_dir.join("backups"),
             config_snapshots_dir: data_dir.join("backups").join("config-snapshots"),
@@ -82,8 +96,14 @@ async fn set_private_directory_permissions(_path: &std::path::Path) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use super::AppPaths;
+    use super::{web_service_file_name, AppPaths};
     use std::path::PathBuf;
+
+    #[test]
+    fn dev_service_config_is_separate_from_the_installed_release_config() {
+        assert_eq!(web_service_file_name(true), "web-service-dev.json");
+        assert_eq!(web_service_file_name(false), "web-service.json");
+    }
 
     #[test]
     fn app_paths_include_tailscale_dir() {

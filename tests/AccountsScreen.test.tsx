@@ -10,7 +10,9 @@ import {
   createBatch,
   copyRouteCredential,
   createApiRouteCredential,
+  createRoutePoolGroup,
   deleteRouteCredential,
+  deleteRoutePoolGroup,
   fetchRouteModels,
   getRoutePool,
   getRouteProxyKey,
@@ -36,6 +38,7 @@ import {
   setRouteCredentialModelStatus,
   setRouteCredentialCooldown,
   setRouteCredentialStatuses,
+  moveRoutePoolGroupMembers,
   setRoutePoolMembers,
   setRoutePoolModelMode,
   startRouteProxy,
@@ -43,6 +46,7 @@ import {
   subscribeRouteProxyLiveLog,
   unsubscribeRouteProxyLiveLog,
   updateRouteCredential,
+  updateRoutePoolGroup,
   routeConfigWriteIsStale,
   writeRouteProxyConfigs,
   previewExternalClientImport,
@@ -70,6 +74,7 @@ import type {
   RouteCredentialActivityEvent,
   RouteCredentialModelState,
   RoutePoolModelTestOutcome,
+  RoutePoolGroup,
   RoutePoolStats,
   RoutePoolUsageLog,
 } from "../src/lib/api/types";
@@ -85,7 +90,9 @@ vi.mock("../src/lib/api/client", () => ({
   createBatch: vi.fn(),
   copyRouteCredential: vi.fn(),
   createApiRouteCredential: vi.fn(),
+  createRoutePoolGroup: vi.fn(),
   deleteRouteCredential: vi.fn(),
+  deleteRoutePoolGroup: vi.fn(),
   fetchRouteModels: vi.fn(),
   getRoutePool: vi.fn(),
   getRouteProxyKey: vi.fn(),
@@ -111,6 +118,7 @@ vi.mock("../src/lib/api/client", () => ({
   setRouteCredentialModelStatus: vi.fn(),
   setRouteCredentialCooldown: vi.fn(),
   setRouteCredentialStatuses: vi.fn(),
+  moveRoutePoolGroupMembers: vi.fn(),
   setRoutePoolMembers: vi.fn(),
   setRoutePoolModelMode: vi.fn(),
   startRouteProxy: vi.fn(),
@@ -118,6 +126,7 @@ vi.mock("../src/lib/api/client", () => ({
   subscribeRouteProxyLiveLog: vi.fn(),
   unsubscribeRouteProxyLiveLog: vi.fn(),
   updateRouteCredential: vi.fn(),
+  updateRoutePoolGroup: vi.fn(),
   routeConfigWriteIsStale: vi.fn(),
   writeRouteProxyConfigs: vi.fn(),
   previewExternalClientImport: vi.fn(),
@@ -290,6 +299,44 @@ function statsFixture(overrides: Partial<RoutePoolStats> = {}): RoutePoolStats {
   };
 }
 
+function routePoolGroupsFixture(platform = "codex"): RoutePoolGroup[] {
+  return [
+    {
+      id: `${platform}-default`,
+      platform,
+      name: "默认组",
+      sort_order: 0,
+      is_internal: false,
+      is_active: true,
+      account_count: platform === "codex" ? 1 : 0,
+      created_at: "2026-09-08T00:00:00Z",
+      updated_at: "2026-09-08T00:00:00Z",
+    },
+    {
+      id: `${platform}-out`,
+      platform,
+      name: "未入池",
+      sort_order: 1,
+      is_internal: false,
+      is_active: false,
+      account_count: platform === "codex" ? 1 : 0,
+      created_at: "2026-09-08T00:00:00Z",
+      updated_at: "2026-09-08T00:00:00Z",
+    },
+    {
+      id: `${platform}-archived`,
+      platform,
+      name: "已归档",
+      sort_order: 2,
+      is_internal: false,
+      is_active: false,
+      account_count: 0,
+      created_at: "2026-09-08T00:00:00Z",
+      updated_at: "2026-09-08T00:00:00Z",
+    },
+  ];
+}
+
 function modelTestOutcomeFixture(
   overrides: Partial<RoutePoolModelTestOutcome> = {},
 ): RoutePoolModelTestOutcome {
@@ -331,29 +378,29 @@ function renderScreen(
   platform: PlatformId = "codex",
   initialView: "in_pool" | "out_of_pool" | "archived" = "out_of_pool",
   sidebarCollapsed = false,
+  queryClient = createQueryClient(),
 ) {
   const result = render(
-    <QueryClientProvider client={createQueryClient()}>
+    <QueryClientProvider client={queryClient}>
       <AccountsScreen platform={platform} sidebarCollapsed={sidebarCollapsed} />
     </QueryClientProvider>,
   );
   if (initialView !== "in_pool") {
+    const label = initialView === "archived" ? "已归档" : "未入池";
     act(() => {
-      fireEvent.click(
-        screen.getByRole("button", { name: initialView === "archived" ? "已归档" : "未入池" }),
-      );
+      fireEvent.click(screen.getByTitle(new RegExp(`^${label}`)));
     });
   }
   return result;
 }
 
-async function selectAccountView(name: "算力池" | "未入池" | "已归档" | "统计") {
-  const button = screen.getByRole("button", { name });
+async function selectAccountView(name: "默认组" | "未入池" | "已归档" | "统计") {
+  const button = screen.getByTitle(new RegExp(`^${name}`));
   if (button.getAttribute("aria-pressed") !== "true") {
     await userEvent.click(button);
   }
   await waitFor(() =>
-    expect(screen.getByRole("button", { name })).toHaveAttribute("aria-pressed", "true"),
+    expect(screen.getByTitle(new RegExp(`^${name}`))).toHaveAttribute("aria-pressed", "true"),
   );
 }
 
@@ -535,6 +582,10 @@ describe("AccountsScreen", () => {
       },
     );
     vi.mocked(setRoutePoolMembers).mockReset();
+    vi.mocked(createRoutePoolGroup).mockReset();
+    vi.mocked(updateRoutePoolGroup).mockReset();
+    vi.mocked(deleteRoutePoolGroup).mockReset();
+    vi.mocked(moveRoutePoolGroupMembers).mockReset();
     vi.mocked(startRouteProxy).mockReset();
     vi.mocked(stopRouteProxy).mockReset();
     vi.mocked(subscribeRouteProxyLiveLog).mockReset();
@@ -638,20 +689,39 @@ describe("AccountsScreen", () => {
     vi.mocked(refreshRouteCredentialsQuota).mockResolvedValue([]);
     vi.mocked(restoreRouteCredentials).mockResolvedValue(undefined);
     poolStateByPlatform = new Map<string, string[]>([["codex", []]]);
-    vi.mocked(getRoutePool).mockImplementation(async (platform) => ({
+    vi.mocked(getRoutePool).mockImplementation(async (platform, groupId) => {
+      const selectedGroupId = groupId ?? `${platform}-default`;
+      const poolIds = poolStateByPlatform.get(platform) ?? [];
+      const accountIds =
+        selectedGroupId === `${platform}-out`
+          ? ["cred-official-1", "cred-api-1"].filter((id) => !poolIds.includes(id))
+          : selectedGroupId === `${platform}-archived`
+            ? []
+            : poolIds;
+      return {
       platform,
-      account_ids: [...(poolStateByPlatform.get(platform) ?? [])],
+      groups: routePoolGroupsFixture(platform),
+      group_id: selectedGroupId,
+      active_group_id: `${platform}-default`,
+      account_ids: accountIds,
       model_mode: "aggregate",
       stats: statsFixture({
-        member_count: (poolStateByPlatform.get(platform) ?? []).length,
+        member_count: accountIds.length,
       }),
-    }));
+      };
+    });
     vi.mocked(listRouteCredentialPage).mockImplementation(async (input) => {
       const poolIds = poolStateByPlatform.get(input.platform) ?? [];
       const source = await vi.mocked(listRouteCredentials)(input.platform);
       const scoped = source.filter((credential) => {
-        if (input.pool_scope === "archived") {
+        if (input.group_id === `${input.platform}-out`) {
+          return !credential.archived_at && !poolIds.includes(credential.id);
+        }
+        if (input.group_id === `${input.platform}-archived`) {
           return Boolean(credential.archived_at);
+        }
+        if (input.group_id) {
+          return !credential.archived_at && poolIds.includes(credential.id);
         }
         return input.pool_scope === "in_pool"
           ? !credential.archived_at && poolIds.includes(credential.id)
@@ -703,6 +773,9 @@ describe("AccountsScreen", () => {
       poolStateByPlatform.set(input.platform, [...input.account_ids]);
       return {
         platform: input.platform,
+        groups: [],
+        group_id: null,
+        active_group_id: null,
         account_ids: [...input.account_ids],
         model_mode: "aggregate",
         stats: statsFixture({
@@ -710,6 +783,28 @@ describe("AccountsScreen", () => {
           request_count: 1,
           token_count: 4096,
           cost_micros: 2500,
+        }),
+      };
+    });
+    vi.mocked(moveRoutePoolGroupMembers).mockImplementation(async (input) => {
+      if (input.group_id === `${input.platform}-default`) {
+        poolStateByPlatform.set(input.platform, [...input.account_ids]);
+      } else {
+        const current = poolStateByPlatform.get(input.platform) ?? [];
+        poolStateByPlatform.set(
+          input.platform,
+          current.filter((id) => !input.account_ids.includes(id)),
+        );
+      }
+      return {
+        platform: input.platform,
+        groups: routePoolGroupsFixture(input.platform),
+        group_id: input.group_id,
+        active_group_id: `${input.platform}-default`,
+        account_ids: [...input.account_ids],
+        model_mode: "aggregate",
+        stats: statsFixture({
+          member_count: input.account_ids.length,
         }),
       };
     });
@@ -791,11 +886,17 @@ describe("AccountsScreen", () => {
     expect(screen.getByRole("button", { name: "会话管理" }).parentElement).toHaveClass("max-[599px]:hidden");
     expect(screen.getByLabelText("刷新账号列表")).toBeInTheDocument();
     expect(screen.queryByRole("menu", { name: "刷新操作" })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByLabelText("打开刷新菜单"));
+    await waitFor(() => expect(screen.getByLabelText("打开刷新菜单")).toBeEnabled());
+    act(() => {
+      fireEvent.click(screen.getByLabelText("打开刷新菜单"));
+    });
+    expect(screen.getByLabelText("打开刷新菜单")).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("menu", { name: "刷新操作" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "刷新账号列表" })).toBeInTheDocument();
     expect(screen.getByText("刷新账号额度")).toBeInTheDocument();
-    await userEvent.click(screen.getByLabelText("打开刷新菜单"));
+    act(() => {
+      fireEvent.click(screen.getByLabelText("打开刷新菜单"));
+    });
     expect(screen.queryByLabelText("Codex 已支持")).not.toBeInTheDocument();
     expect(await screen.findByText("Team Account")).toBeInTheDocument();
     expect(screen.getByText("API Account")).toBeInTheDocument();
@@ -829,21 +930,19 @@ describe("AccountsScreen", () => {
     expect(screen.queryByText("并发 1")).not.toBeInTheDocument();
 
     expect(screen.queryByLabelText("导出选中账号")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("批量加入算力池")).not.toBeInTheDocument();
     await userEvent.click(screen.getByLabelText("选择 Team Account"));
     expect(screen.getByText("已选 1 个账号")).toBeInTheDocument();
     expect(screen.getByLabelText("导出选中账号")).toBeInTheDocument();
-    await userEvent.click(screen.getByLabelText("批量加入算力池"));
+    await userEvent.selectOptions(screen.getByLabelText("移动到分组"), "codex-default");
 
     await waitFor(() =>
-      expect(setRoutePoolMembers).toHaveBeenCalledWith({
+      expect(moveRoutePoolGroupMembers).toHaveBeenCalledWith({
         platform: "codex",
+        group_id: "codex-default",
         account_ids: ["cred-official-1"],
       }),
     );
-    expect(screen.getByText("已加入 1 个账号")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "算力池" })).toBeInTheDocument();
-    expect(screen.queryByLabelText("批量加入算力池")).not.toBeInTheDocument();
+    expect(screen.getByTitle(/^默认组/)).toBeInTheDocument();
   });
 
   it("customizes account card content from the refresh menu and remembers the choices", async () => {
@@ -919,7 +1018,7 @@ describe("AccountsScreen", () => {
 
     await waitFor(() => {
       expect(onPoolScopeFocusConsumed).toHaveBeenCalledWith(42);
-      expect(screen.getByRole("button", { name: "算力池" })).toHaveAttribute(
+      expect(screen.getByTitle(/^默认组/)).toHaveAttribute(
         "aria-pressed",
         "true",
       );
@@ -973,6 +1072,7 @@ describe("AccountsScreen", () => {
     expect(screen.getAllByText("P3-")).toHaveLength(2);
     expect(screen.queryByText("并发 2")).not.toBeInTheDocument();
     expect(screen.queryByTestId("credential-activity-cred-official-1")).not.toBeInTheDocument();
+    await waitFor(() => expect(transportTestState.activityHandler).toBeTruthy());
 
     const event: RouteCredentialActivityEvent = {
       platform: "codex",
@@ -1287,6 +1387,7 @@ describe("AccountsScreen", () => {
       expect(reorderRouteCredentials).toHaveBeenCalledWith({
         platform: "codex",
         moved_account_id: "cred-official-1",
+        group_id: "codex-out",
         previous_account_id: "cred-api-1",
         next_account_id: null,
         filters: [],
@@ -1318,6 +1419,7 @@ describe("AccountsScreen", () => {
       expect(reorderRouteCredentials).toHaveBeenCalledWith({
         platform: "codex",
         moved_account_id: "cred-api-1",
+        group_id: "codex-out",
         previous_account_id: null,
         next_account_id: "cred-official-1",
         filters: [],
@@ -1860,6 +1962,7 @@ describe("AccountsScreen", () => {
       expect(reorderRouteCredentials).toHaveBeenCalledWith({
         platform: "codex",
         moved_account_id: "cred-official-1",
+        group_id: "codex-out",
         previous_account_id: "cred-api-1",
         next_account_id: null,
         filters: [],
@@ -1885,6 +1988,7 @@ describe("AccountsScreen", () => {
       expect(reorderRouteCredentials).toHaveBeenCalledWith({
         platform: "codex",
         moved_account_id: "cred-official-1",
+        group_id: "codex-out",
         previous_account_id: "cred-api-1",
         next_account_id: null,
         filters: [],
@@ -2060,32 +2164,36 @@ describe("AccountsScreen", () => {
   it("supports batch remove from pool and batch delete for selected accounts", async () => {
     renderScreen();
 
-    await userEvent.click(await screen.findByLabelText("选择 Team Account"));
+    await selectAccountView("未入池");
+    expect(await screen.findByText("Team Account")).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("选择 Team Account"));
     await userEvent.click(screen.getByLabelText("选择 API Account"));
     expect(screen.getByText("已选 2 个账号")).toBeInTheDocument();
-    await userEvent.click(screen.getByLabelText("批量加入算力池"));
+    await userEvent.selectOptions(screen.getByLabelText("移动到分组"), "codex-default");
 
     await waitFor(() => {
-      expect(setRoutePoolMembers).toHaveBeenCalled();
-      const lastCall = vi.mocked(setRoutePoolMembers).mock.calls.at(-1)?.[0];
+      expect(moveRoutePoolGroupMembers).toHaveBeenCalled();
+      const lastCall = vi.mocked(moveRoutePoolGroupMembers).mock.calls.at(-1)?.[0];
       expect(lastCall?.platform).toBe("codex");
+      expect(lastCall?.group_id).toBe("codex-default");
       expect(new Set(lastCall?.account_ids ?? [])).toEqual(new Set(["cred-official-1", "cred-api-1"]));
     });
-    await selectAccountView("算力池");
+    await selectAccountView("默认组");
     expect(await screen.findByText("Team Account")).toBeInTheDocument();
     expect(screen.getByText("API Account")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("选择 Team Account"));
-    await userEvent.click(screen.getByLabelText("批量移出算力池"));
+    await userEvent.selectOptions(screen.getByLabelText("移动到分组"), "codex-out");
 
     await waitFor(() => {
-      const lastCall = vi.mocked(setRoutePoolMembers).mock.calls.at(-1)?.[0];
-      expect(lastCall?.account_ids).toEqual(["cred-api-1"]);
+      const lastCall = vi.mocked(moveRoutePoolGroupMembers).mock.calls.at(-1)?.[0];
+      expect(lastCall?.group_id).toBe("codex-out");
+      expect(lastCall?.account_ids).toEqual(["cred-official-1"]);
     });
-    await waitFor(() => expect(screen.queryByText("Team Account")).not.toBeInTheDocument());
-    expect(screen.getByText("API Account")).toBeInTheDocument();
+    expect(await screen.findByText("Team Account")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("API Account")).not.toBeInTheDocument());
 
-    await userEvent.click(screen.getByLabelText("选择 API Account"));
+    await userEvent.click(screen.getByLabelText("选择 Team Account"));
     expect(screen.getByText("已选 1 个账号")).toBeInTheDocument();
     await userEvent.click(screen.getByLabelText("批量删除账号"));
     expect(deleteRouteCredential).not.toHaveBeenCalled();
@@ -2093,11 +2201,13 @@ describe("AccountsScreen", () => {
 
     await waitFor(() => {
       expect(deleteRouteCredential).toHaveBeenCalledTimes(1);
-      expect(deleteRouteCredential).toHaveBeenCalledWith("cred-api-1");
+      expect(deleteRouteCredential).toHaveBeenCalledWith("cred-official-1");
     });
     await waitFor(() => {
-      const lastCall = vi.mocked(setRoutePoolMembers).mock.calls.at(-1)?.[0];
-      expect(lastCall?.account_ids).toEqual([]);
+      const lastCall = vi.mocked(moveRoutePoolGroupMembers).mock.calls.at(-1)?.[0];
+      expect(lastCall?.group_id).toBe("codex-out");
+      expect(lastCall?.account_ids).toEqual(["cred-official-1"]);
+      expect(vi.mocked(moveRoutePoolGroupMembers).mock.calls).toHaveLength(2);
     });
   });
 
@@ -2165,37 +2275,121 @@ describe("AccountsScreen", () => {
     expect(emptyState).toHaveClass("flex-1", "items-center", "justify-center");
   });
 
-  it("switches between pooled, unpooled, and statistics segments with scoped actions", async () => {
-    renderScreen("codex", "in_pool");
+  it("renders dynamic groups and supports creation, editing, and moving accounts", async () => {
+    poolStateByPlatform.set("codex", ["cred-official-1"]);
+    renderScreen();
 
-    expect(screen.getByRole("button", { name: "算力池" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTitle(/^默认组/)).toBeInTheDocument();
+    expect(screen.getByTitle(/^未入池/)).toBeInTheDocument();
+    expect(screen.getByTitle(/^已归档/)).toBeInTheDocument();
+    expect(screen.getByLabelText("新建分组")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("新建分组"));
+    await userEvent.type(
+      within(screen.getByRole("dialog", { name: "新建分组" })).getByLabelText("分组名称"),
+      "备选组",
+    );
+    vi.mocked(createRoutePoolGroup).mockResolvedValue({
+      platform: "codex",
+      groups: [...routePoolGroupsFixture(), {
+        id: "codex-new",
+        platform: "codex",
+        name: "备选组",
+        sort_order: 3,
+        is_internal: false,
+        is_active: false,
+        account_count: 0,
+        created_at: "2026-09-08T00:00:00Z",
+        updated_at: "2026-09-08T00:00:00Z",
+      }],
+      group_id: "codex-new",
+      active_group_id: "codex-default",
+      account_ids: [],
+      model_mode: "aggregate",
+      stats: statsFixture(),
+    });
+    await userEvent.click(
+      within(screen.getByRole("dialog", { name: "新建分组" })).getByRole("button", { name: "保存" }),
+    );
     await waitFor(() =>
-      expect(listRouteCredentialPage).toHaveBeenLastCalledWith(
-        expect.objectContaining({ platform: "codex", pool_scope: "in_pool" }),
+      expect(createRoutePoolGroup).toHaveBeenCalledWith({
+        platform: "codex",
+        name: "备选组",
+        is_internal: false,
+      }),
+    );
+
+    fireEvent.contextMenu(screen.getByTitle(/^默认组/));
+    expect(screen.getByRole("dialog", { name: "编辑分组" })).toBeInTheDocument();
+    await userEvent.clear(
+      within(screen.getByRole("dialog", { name: "编辑分组" })).getByLabelText("分组名称"),
+    );
+    await userEvent.type(
+      within(screen.getByRole("dialog", { name: "编辑分组" })).getByLabelText("分组名称"),
+      "主分组",
+    );
+    vi.mocked(updateRoutePoolGroup).mockResolvedValue({
+      platform: "codex",
+      groups: routePoolGroupsFixture().map((group) =>
+        group.id === "codex-default" ? { ...group, name: "主分组" } : group,
+      ),
+      group_id: "codex-default",
+      active_group_id: "codex-default",
+      account_ids: ["cred-official-1"],
+      model_mode: "aggregate",
+      stats: statsFixture(),
+    });
+    await userEvent.click(
+      within(screen.getByRole("dialog", { name: "编辑分组" })).getByRole("button", { name: "保存" }),
+    );
+    await waitFor(() =>
+      expect(updateRoutePoolGroup).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "codex-default", name: "主分组" }),
       ),
     );
-    expect(screen.queryByLabelText("批量加入算力池")).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: "未入池" }));
-    expect(screen.getByRole("button", { name: "未入池" })).toHaveAttribute("aria-pressed", "true");
-    expect(await screen.findByText("Team Account")).toBeInTheDocument();
-    await userEvent.click(screen.getByLabelText("选择 Team Account"));
-    expect(screen.getByLabelText("批量加入算力池")).toBeInTheDocument();
-    expect(screen.queryByLabelText("批量移出算力池")).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByLabelText("选择 Team Account"));
+    await userEvent.selectOptions(screen.getByLabelText("移动到分组"), "codex-default");
+    await waitFor(() => {
+      const lastCall = vi.mocked(moveRoutePoolGroupMembers).mock.calls.at(-1)?.[0];
+      expect(lastCall?.group_id).toBe("codex-default");
+      expect(lastCall?.account_ids).toContain("cred-official-1");
+    });
+  });
 
-    await userEvent.click(screen.getByRole("button", { name: "已归档" }));
-    expect(screen.getByRole("button", { name: "已归档" })).toHaveAttribute("aria-pressed", "true");
+  it("switches between dynamic groups and statistics with scoped actions", async () => {
+    renderScreen("codex", "in_pool");
+
+    await waitFor(() =>
+      expect(screen.getByTitle(/^默认组/)).toHaveAttribute("aria-pressed", "true"),
+    );
+    const activeGroup = screen.getByRole("button", { name: "默认组，当前激活" });
+    expect(within(activeGroup).queryByText("激活")).not.toBeInTheDocument();
+    expect(within(activeGroup).getByTestId("active-route-group-dot")).toBeInTheDocument();
     await waitFor(() =>
       expect(listRouteCredentialPage).toHaveBeenLastCalledWith(
-        expect.objectContaining({ pool_scope: "archived" }),
+        expect.objectContaining({ platform: "codex", group_id: "codex-default" }),
+      ),
+    );
+
+    await userEvent.click(screen.getByTitle(/^未入池/));
+    expect(screen.getByTitle(/^未入池/)).toHaveAttribute("aria-pressed", "true");
+    expect(await screen.findByText("Team Account")).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("选择 Team Account"));
+    expect(screen.getByLabelText("移动到分组")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTitle(/^已归档/));
+    expect(screen.getByTitle(/^已归档/)).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() =>
+      expect(listRouteCredentialPage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ group_id: "codex-archived" }),
       ),
     );
 
     await userEvent.click(screen.getByRole("button", { name: "统计" }));
     expect(await screen.findByText("用量总览")).toBeInTheDocument();
     expect(screen.queryByText("筛选：")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("批量加入算力池")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("批量移出算力池")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("移动到分组")).not.toBeInTheDocument();
   });
 
   it("shows Hermes as partial while letting it write its own config", async () => {
@@ -2221,6 +2415,9 @@ describe("AccountsScreen", () => {
     ]);
     vi.mocked(getRoutePool).mockResolvedValue({
       platform: "hermes",
+      groups: [],
+      group_id: null,
+      active_group_id: null,
       account_ids: hermesCredentials.map((credential) => credential.id),
       model_mode: "aggregate",
       stats: statsFixture({ member_count: 2 }),
@@ -2271,23 +2468,27 @@ describe("AccountsScreen", () => {
 
     expect(await screen.findByText("异常")).toBeInTheDocument();
     await userEvent.click(screen.getByLabelText("选择 Team Account"));
-    await userEvent.click(screen.getByLabelText("批量加入算力池"));
+    await userEvent.selectOptions(screen.getByLabelText("移动到分组"), "codex-default");
     await waitFor(() =>
-      expect(setRoutePoolMembers).toHaveBeenLastCalledWith({
+      expect(moveRoutePoolGroupMembers).toHaveBeenLastCalledWith({
         platform: "codex",
+        group_id: "codex-default",
         account_ids: ["cred-official-1"],
       }),
     );
 
-    await selectAccountView("算力池");
+    await selectAccountView("默认组");
     expect(await screen.findByText("Team Account")).toBeInTheDocument();
     await userEvent.click(screen.getByLabelText("选择 Team Account"));
-    await userEvent.click(screen.getByLabelText("批量移出算力池"));
+    await userEvent.selectOptions(screen.getByLabelText("移动到分组"), "codex-out");
     await waitFor(() =>
-      expect(setRoutePoolMembers).toHaveBeenLastCalledWith({
-        platform: "codex",
-        account_ids: [],
-      }),
+      expect(moveRoutePoolGroupMembers).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          platform: "codex",
+          group_id: "codex-out",
+          account_ids: expect.arrayContaining(["cred-official-1"]),
+        }),
+      ),
     );
     await selectAccountView("未入池");
     expect(await screen.findByText("Team Account")).toBeInTheDocument();
@@ -2482,7 +2683,7 @@ describe("AccountsScreen", () => {
         { ...credentialsFixture[0], status: "error" },
         credentialsFixture[1],
       ]);
-    vi.mocked(setRoutePoolMembers).mockRejectedValueOnce({
+    vi.mocked(moveRoutePoolGroupMembers).mockRejectedValueOnce({
       code: "database.route_pool_commit",
       message: "Could not save route pool members",
       details: "disk I/O error",
@@ -2492,7 +2693,7 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByLabelText("选择 Team Account"));
-    await userEvent.click(screen.getByLabelText("批量加入算力池"));
+    await userEvent.selectOptions(screen.getByLabelText("移动到分组"), "codex-default");
 
     expect(
       await screen.findByText("算力池更新失败：Could not save route pool members (disk I/O error)"),
@@ -2500,7 +2701,7 @@ describe("AccountsScreen", () => {
     expect(
       within(screen.getByLabelText("放置在 Team Account 前")).queryByText("已入池"),
     ).not.toBeInTheDocument();
-    expect(screen.getByText("已加入 0 个账号")).toBeInTheDocument();
+    expect(screen.queryByText("已移动 1 个账号")).not.toBeInTheDocument();
     expect(await screen.findByText("异常")).toBeInTheDocument();
   });
 
@@ -2587,15 +2788,6 @@ describe("AccountsScreen", () => {
       imported: [created, credentialsFixture[1]],
       created_ids: [created.id],
     });
-    vi.mocked(setRoutePoolMembers).mockImplementation(async ({ platform, account_ids }) => {
-      poolStateByPlatform.set(platform, [...account_ids]);
-      return {
-        platform,
-        model_mode: "aggregate",
-        account_ids: [...account_ids],
-        stats: statsFixture({ member_count: account_ids.length }),
-      };
-    });
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
@@ -2628,10 +2820,13 @@ describe("AccountsScreen", () => {
     // Only the created id joins the pool: an overwrite must not move an account
     // the user had deliberately left out.
     await waitFor(() =>
-      expect(setRoutePoolMembers).toHaveBeenCalledWith({
-        platform: "codex",
-        account_ids: ["cred-api-new"],
-      }),
+      expect(moveRoutePoolGroupMembers).toHaveBeenCalledWith(
+        expect.objectContaining({
+          platform: "codex",
+          group_id: "codex-out",
+          account_ids: expect.arrayContaining(["cred-api-new"]),
+        }),
+      ),
     );
     expect(await screen.findByText(/新增 1 个，覆盖 1 个/)).toBeInTheDocument();
   });
@@ -2794,36 +2989,36 @@ describe("AccountsScreen", () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
-    expect(screen.getByLabelText("创建后加入算力池")).toBeChecked();
+    expect(screen.getByLabelText("创建后加入当前分组")).toBeChecked();
     await userEvent.type(screen.getByLabelText("API 账号名称"), "Pooled API");
     await userEvent.type(screen.getByLabelText("API Key"), "sk-pooled");
     await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
 
     await waitFor(() =>
-      expect(setRoutePoolMembers).toHaveBeenCalledWith({
-        platform: "codex",
-        account_ids: ["cred-api-1"],
-      }),
+      expect(moveRoutePoolGroupMembers).toHaveBeenCalledWith(
+        expect.objectContaining({
+          platform: "codex",
+          group_id: "codex-out",
+          account_ids: expect.arrayContaining(["cred-api-1"]),
+        }),
+      ),
     );
-    expect(screen.getByRole("button", { name: "算力池" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTitle(/^未入池/)).toHaveAttribute("aria-pressed", "true");
   });
 
   it("keeps a newly created API account out of the pool when unchecked", async () => {
     renderScreen();
 
     await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
-    await userEvent.click(screen.getByLabelText("创建后加入算力池"));
+    await userEvent.click(screen.getByLabelText("创建后加入当前分组"));
     await userEvent.type(screen.getByLabelText("API 账号名称"), "Unpooled API");
     await userEvent.type(screen.getByLabelText("API Key"), "sk-unpooled");
     await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
 
     await waitFor(() =>
-      expect(setRoutePoolMembers).toHaveBeenCalledWith({
-        platform: "codex",
-        account_ids: [],
-      }),
+      expect(moveRoutePoolGroupMembers).not.toHaveBeenCalled(),
     );
-    expect(screen.getByRole("button", { name: "未入池" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTitle(/^未入池/)).toHaveAttribute("aria-pressed", "true");
   });
 
   it("creates an API route credential with custom User-Agent", async () => {
@@ -4342,6 +4537,29 @@ describe("AccountsScreen", () => {
     expect(screen.getByLabelText("编辑 余额查询面板访问令牌")).toBeInTheDocument();
   });
 
+  it("sends the SaaS account security key when creating an ai-switch-saas relay account", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "AI Switch SaaS");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-relay");
+    await openFormTab("高级");
+    await userEvent.click(screen.getByLabelText("创建 余额查询 AI Switch SaaS"));
+    await userEvent.type(
+      screen.getByLabelText("创建 余额查询 SaaS 账户安全密钥"),
+      "sk-saas-account-test",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() => expect(createApiRouteCredential).toHaveBeenCalled());
+    const lastCall = vi.mocked(createApiRouteCredential).mock.calls.at(-1);
+    expect(lastCall![0]).toMatchObject({
+      relay_balance_provider: "ai-switch-saas",
+      relay_balance_access_token: "sk-saas-account-test",
+    });
+    expect(lastCall![0].relay_balance_access_token_user_id).toBeUndefined();
+  });
+
   it("refuses a custom balance query with no request URL", async () => {
     renderScreen();
 
@@ -5783,6 +6001,9 @@ describe("AccountsScreen", () => {
   it("switches the model list mode from the write dialog", async () => {
     vi.mocked(setRoutePoolModelMode).mockImplementation(async ({ platform, mode }) => ({
       platform,
+      groups: [],
+      group_id: null,
+      active_group_id: null,
       account_ids: [...(poolStateByPlatform.get(platform) ?? [])],
       model_mode: mode,
       stats: statsFixture({}),
@@ -5917,6 +6138,27 @@ describe("AccountsScreen", () => {
     expect(
       await screen.findByText(/现有配置文件无法解析，已拒绝覆盖以免丢失你的 provider 配置/),
     ).toBeInTheDocument();
+  });
+
+  it("does not offer to stop the process-owned shared listener from the browser", async () => {
+    vi.mocked(isDesktop).mockReturnValue(false);
+    vi.mocked(getRouteProxyStatus).mockResolvedValue({ running:true, shared_listener:true, bind_host:"127.0.0.1", port:19527, base_url:"http://127.0.0.1:19527" });
+    renderScreen("codex", "in_pool");
+    expect(await screen.findByLabelText("停止本地路由代理")).toBeDisabled();
+    expect(stopRouteProxy).not.toHaveBeenCalled();
+  });
+
+  it("refreshes Web service status when pool controls start or stop the shared listener", async () => {
+    const client = createQueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    renderScreen("codex", "in_pool", false, client);
+    await userEvent.click(await screen.findByLabelText("启动本地路由代理"));
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["web-server-status"] }));
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["tailscale-status"] });
+    invalidate.mockClear();
+    await userEvent.click(await screen.findByLabelText("停止本地路由代理"));
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["web-server-status"] }));
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["tailscale-status"] });
   });
 
   it("uses distinct service start, stop, and send-test controls", async () => {

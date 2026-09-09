@@ -447,6 +447,7 @@ async fn fetch_with_dialect(
             fetch_new_api_balance(client, headers, config, request).await
         }
         RelayBalanceProvider::Sub2Api => fetch_sub2api_balance(client, headers, request).await,
+        RelayBalanceProvider::AiSwitchSaas => fetch_ai_switch_saas_balance(client, request).await,
         RelayBalanceProvider::Custom => {
             fetch_custom_balance(client, headers, config, &request.api_key).await
         }
@@ -1262,6 +1263,75 @@ async fn fetch_sub2api_balance(
     })
 }
 
+/// Reads an AI Switch SaaS account through its sub2api-compatible usage route.
+///
+/// The request authenticates with the account security key from the SaaS profile,
+/// not the model API key stored in the account row.
+async fn fetch_ai_switch_saas_balance(
+    client: &Client,
+    request: &BalanceRequest,
+) -> Result<RelayBalanceSnapshot, AppError> {
+    let access_token = request
+        .access_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            validation_error(
+                "validation.route_relay_balance_security_key_required",
+                "请填写 AI Switch SaaS 账户安全密钥",
+                None,
+            )
+        })?;
+    let headers = account_request_headers(access_token, None, request.user_agent.as_deref())
+        .map_err(|err| {
+            validation_error(
+                "validation.route_relay_balance_account_headers",
+                "无法构造 AI Switch SaaS 余额查询请求头",
+                Some(err),
+            )
+        })?;
+    let candidates = panel_root_candidates(&request.base_url)
+        .into_iter()
+        .map(|root| format!("{root}/v1/usage"))
+        .collect::<Vec<_>>();
+    let (url, body) = get_json_from_candidates(client, &headers, &candidates, access_token).await?;
+    let usage = parse_sub2api_usage(&body).map_err(|message| {
+        validation_error(
+            "validation.route_relay_balance_parse",
+            message,
+            Some(redact_secret(
+                format!("{url}: {}", truncate_body(&body.to_string())),
+                access_token,
+            )),
+        )
+    })?;
+    let mut notes = usage.notes;
+    if let Some(subscription) = body.get("subscription") {
+        if let Some(remaining) = number_field(subscription, "dailyRemainingMicros") {
+            notes.push(format!(
+                "订阅今日剩余 {} USD（UTC 00:00 重置）",
+                format_usd(remaining / 1_000_000.0)
+            ));
+        }
+    }
+    Ok(RelayBalanceSnapshot {
+        provider: RelayBalanceProvider::AiSwitchSaas,
+        plan_name: usage.plan_name,
+        group_name: None,
+        remaining: usage.remaining,
+        used: usage.used,
+        limit: usage.limit,
+        unit: usage.unit,
+        unlimited: usage.unlimited,
+        account_level: true,
+        expires_at: usage.expires_at,
+        source_url: url,
+        checked_at: Utc::now().to_rfc3339(),
+        notes,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct Sub2ApiUsage {
     plan_name: Option<String>,
@@ -1708,7 +1778,10 @@ mod tests {
                 {"plan": {"id": 12, "title": "周卡"}}
             ]
         });
-        assert_eq!(parse_new_api_subscription_plan_name(&body, 12).as_deref(), Some("周卡"));
+        assert_eq!(
+            parse_new_api_subscription_plan_name(&body, 12).as_deref(),
+            Some("周卡")
+        );
     }
 
     /// The account route stamps its envelope on `success`, and new-api does refuse
@@ -2122,6 +2195,58 @@ mod tests {
             .await
             .expect("refresh");
         assert_eq!(snapshot_of(&outcome.credential).remaining, Some(0.5));
+    }
+
+    #[tokio::test]
+    async fn ai_switch_saas_refresh_uses_the_account_security_key() {
+        let body = json!({
+            "isValid": true,
+            "mode": "subscription",
+            "planName": "AI Switch SaaS 每日订阅 + 余额",
+            "remaining": 2.5,
+            "unit": "USD",
+            "subscription": {
+                "dailyRemainingMicros": 1_250_000,
+                "reset": "UTC 00:00"
+            }
+        });
+        let app = Router::new().route(
+            "/v1/usage",
+            get(move |headers: AxumHeaderMap| {
+                let body = body.clone();
+                async move {
+                    if header_value(&headers, "authorization")
+                        != Some("Bearer sk-saas-account-test")
+                    {
+                        return (
+                            HttpStatus::UNAUTHORIZED,
+                            Json(json!({"isValid": false, "message": "invalid security key"})),
+                        )
+                            .into_response();
+                    }
+                    Json(body).into_response()
+                }
+            }),
+        );
+        let base_url = format!("http://{}", serve(app).await);
+        let pool = memory_pool().await;
+        let credential = seed_relay_credential_with_access_token(
+            &pool,
+            &base_url,
+            Some(json!({"provider": "ai-switch-saas"})),
+            Some("sk-saas-account-test"),
+        )
+        .await;
+
+        let outcome = RouteRelayBalanceService::refresh_one(&pool, credential.id)
+            .await
+            .expect("refresh");
+        assert_eq!(outcome.source, "ai-switch-saas");
+        let snapshot = snapshot_of(&outcome.credential);
+        assert_eq!(snapshot.provider, RelayBalanceProvider::AiSwitchSaas);
+        assert_eq!(snapshot.remaining, Some(2.5));
+        assert!(snapshot.account_level);
+        assert!(snapshot.notes.iter().any(|note| note.contains("UTC 00:00")));
     }
 
     #[tokio::test]

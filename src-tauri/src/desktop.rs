@@ -26,9 +26,10 @@ use commands::route_credential_transfer_commands::{
     save_route_credential_export,
 };
 use commands::route_pool_commands::{
-    fetch_route_models, get_route_pool, route_pool_route_once, route_pool_test_model,
-    set_route_pool_members, set_route_pool_model_mode, subscribe_route_proxy_live_log,
-    unsubscribe_route_proxy_live_log,
+    create_route_pool_group, delete_route_pool_group, fetch_route_models, get_route_pool,
+    move_route_pool_group_members, route_pool_route_once, route_pool_test_model,
+    set_route_pool_group_members, set_route_pool_members, set_route_pool_model_mode,
+    subscribe_route_proxy_live_log, unsubscribe_route_proxy_live_log, update_route_pool_group,
 };
 use commands::route_proxy_commands::{
     get_route_proxy_key, get_route_proxy_status, route_config_write_is_stale, start_route_proxy,
@@ -311,7 +312,7 @@ pub fn run() {
     let tray_quit_requested = Arc::new(AtomicBool::new(false));
     let close_tray_quit_requested = Arc::clone(&tray_quit_requested);
 
-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    // Debug/`tauri dev` must be able to run beside an installed release. The\n    // plugin uses the same app identifier, so keep release-only single-instance\n    // protection and let dev instances coexist.\n    #[cfg(all(\n        not(debug_assertions),\n        any(\n            target_os = "macos",\n            target_os = "windows",\n            target_os = "linux"\n        )\n    ))]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             for arg in &args {
@@ -367,6 +368,7 @@ pub fn run() {
             deeplink_protocols: DeepLinkProtocolRuntime::default(),
             close_to_tray,
             route_proxy: RouteProxyRuntimeState::default(),
+            saas: crate::saas::SaasRuntime::default(),
             web_service: WebServiceRuntimeState::default(),
             tailscale: TailscaleRuntimeState::default(),
             terminals: TerminalManager::default(),
@@ -443,20 +445,19 @@ pub fn run() {
                     }
                 }
             }
+            // One serialized startup path: legacy pool auto-start now restores
+            // the same Web listener instead of racing a second proxy listener.
             tauri::async_runtime::spawn(async move {
-                let Ok(config) = WebService::load_config(&state.paths).await else {
-                    return;
-                };
-                if !config.auto_start {
-                    return;
+                if WebService::load_config(&state.paths)
+                    .await
+                    .is_ok_and(|config| config.auto_start)
+                {
+                    if let Err(error) = WebService::start(Arc::new(state.clone())).await {
+                        eprintln!("Shared Web/compute-pool auto-start failed: {error}");
+                    }
+                } else {
+                    services::route_proxy_https_service::restore_auto_started_proxy(&state).await;
                 }
-                let _ = WebService::start(Arc::new(state)).await;
-            });
-
-            let route_proxy_state = app.state::<AppState>().inner().clone();
-            tauri::async_runtime::spawn(async move {
-                services::route_proxy_https_service::restore_auto_started_proxy(&route_proxy_state)
-                    .await;
             });
 
             // Auto-recovery scheduler: periodically re-enable accounts per their
@@ -497,6 +498,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            crate::saas::transport::saas_admin,
             get_settings,
             save_settings,
             create_batch,
@@ -537,6 +539,11 @@ pub fn run() {
             import_external_client_accounts,
             import_example_json,
             get_route_pool,
+            create_route_pool_group,
+            update_route_pool_group,
+            delete_route_pool_group,
+            set_route_pool_group_members,
+            move_route_pool_group_members,
             set_route_pool_members,
             set_route_pool_model_mode,
             route_pool_route_once,
@@ -620,6 +627,11 @@ pub fn run() {
             // watchdog is what covers that path.
             if let RunEvent::Exit = event {
                 let state = app_handle.state::<AppState>();
+                tauri::async_runtime::block_on(async {
+                    if state.saas.logs.shutdown().await.is_err() {
+                        eprintln!("SaaS log queue could not drain before exit");
+                    }
+                });
                 tauri::async_runtime::block_on(TailscaleService::shutdown(&state.tailscale));
                 state.terminals.kill_all();
             }

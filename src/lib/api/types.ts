@@ -265,7 +265,7 @@ export type QuotaRefreshOutcome = {
 };
 
 /** Which relay panel dialect an account's balance is read with. */
-export type RelayBalanceProvider = "new_api" | "sub2api" | "custom";
+export type RelayBalanceProvider = "new_api" | "sub2api" | "ai-switch-saas" | "custom";
 
 /** Mirrors `config_json.relay_balance`; an absent block means querying is off. */
 export type RelayBalanceConfig = {
@@ -372,6 +372,7 @@ export type TransferPlatformChoice = {
 };
 
 export type RouteCredentialSelectionContext = {
+  group_id?: string | null;
   platform: string;
   pool_scope: RouteCredentialPoolScope;
 };
@@ -544,9 +545,11 @@ export type RouteCredentialPageRequest = {
   page_size: number;
   filters: string[];
   pool_scope: RouteCredentialPoolScope;
+  group_id?: string | null;
 };
 
 export type ReorderRouteCredentialInput = {
+  group_id?: string | null;
   platform: string;
   moved_account_id: string;
   previous_account_id?: string | null;
@@ -603,9 +606,50 @@ export type RoutePoolModelMode = "aggregate" | "precise";
 
 export type RoutePoolState = {
   platform: string;
+  groups: RoutePoolGroup[];
+  group_id?: string | null;
+  active_group_id?: string | null;
   account_ids: string[];
   model_mode: RoutePoolModelMode;
   stats: RoutePoolStats;
+};
+
+export type RoutePoolGroup = {
+  id: string;
+  platform: string;
+  name: string;
+  sort_order: number;
+  is_internal: boolean;
+  is_active: boolean;
+  account_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreateRoutePoolGroupInput = {
+  platform: string;
+  name: string;
+  is_internal: boolean;
+};
+
+export type UpdateRoutePoolGroupInput = {
+  platform: string;
+  id: string;
+  name?: string | null;
+  is_internal?: boolean | null;
+  activate: boolean;
+  sort_order?: number | null;
+};
+
+export type DeleteRoutePoolGroupInput = {
+  platform: string;
+  id: string;
+};
+
+export type SetRoutePoolGroupMembersInput = {
+  platform: string;
+  group_id: string;
+  account_ids: string[];
 };
 
 /** Aggregated token counts and estimated cost for one grouping. */
@@ -850,12 +894,14 @@ export type ModelPriceConfig = {
 
 export type RouteProxyStatus = {
   running: boolean;
+  /** True when Web pages and model APIs share the same listener. */
+  shared_listener?: boolean;
   bind_host: string;
   port?: number | null;
-  /** The address clients should use, and always the HTTP one. */
+  /** Shared Web endpoint, or the HTTP endpoint in legacy independent mode. */
   base_url?: string | null;
   https_port?: number | null;
-  /** HTTPS endpoint on its own port; null when HTTPS is off or failed to start. */
+  /** HTTPS endpoint; uses the same port for a TLS-enabled shared listener. */
   https_base_url?: string | null;
   /** Why HTTPS is absent. HTTP keeps serving when this is set. */
   https_error?: string | null;
@@ -887,6 +933,8 @@ export type WebServiceConfig = {
   port: number;
   token?: string | null;
   autoStart: boolean;
+  /** Internal one-time marker for resetting legacy Web-only ports. */
+  sharedPortMigrated?: boolean;
   tailscaleEnabled: boolean;
   tailscaleHostname?: string | null;
   tailscaleAuthKeyPresent?: boolean;

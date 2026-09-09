@@ -39,6 +39,27 @@ describe("AppLayout", () => {
     (window as Window & { innerWidth: number }).innerWidth = 1024;
   });
 
+  it("shows SaaS first in system navigation only when enabled", async () => {
+    const onNavigate = vi.fn();
+    const renderLayout = (saasEnabled: boolean) => (
+      <I18nProvider initialLanguage="zh-CN">
+        <AppLayout activeScreen="SaaS" onNavigate={onNavigate}
+          onToggleSidebar={vi.fn()} sidebarCollapsed={false} saasEnabled={saasEnabled}>
+          <div>content</div>
+        </AppLayout>
+      </I18nProvider>
+    );
+    const { rerender } = render(renderLayout(false));
+    expect(screen.queryByRole("button", { name: /SaaS/ })).not.toBeInTheDocument();
+    rerender(renderLayout(true));
+    const saas = screen.getByRole("button", { name: /SaaS/ });
+    const mcp = screen.getByRole("button", { name: /MCP/ });
+    expect(saas.compareDocumentPosition(mcp) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(saas).toHaveAttribute("aria-current", "page");
+    await userEvent.click(saas);
+    expect(onNavigate).toHaveBeenCalledWith("SaaS");
+  });
+
   it("renders system utility nav entries and navigates to their screens", async () => {
     const onNavigate = vi.fn();
 

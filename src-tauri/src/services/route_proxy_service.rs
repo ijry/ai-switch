@@ -61,7 +61,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -148,9 +148,12 @@ fn describe_upstream_transport_error(
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteProxyStatus {
     pub running: bool,
+    #[serde(default)]
+    pub shared_listener: bool,
     pub bind_host: String,
     pub port: Option<u16>,
-    /// The address clients should use, and always the HTTP one. Writing client
+    /// The address clients should use: the shared Web endpoint, or the HTTP
+    /// endpoint in legacy independent-listener mode. Writing client
     /// configs, model connectivity tests and the stale-config nudge all read this
     /// field, so it has to mean "which endpoint a client should point at" rather
     /// than "which protocol is running" — a client that cannot read the local root
@@ -188,6 +191,9 @@ pub struct RouteProxyRuntimeState {
 
 /// A started listener together with the handle that stops it.
 struct ProxyListener {
+    // Retain a duplicate socket so the shared Web listener can take ownership
+    // of the same address without closing/rebinding it (and racing another process).
+    socket: std::net::TcpListener,
     port: u16,
     base_url: String,
     shutdown: oneshot::Sender<()>,
@@ -198,10 +204,9 @@ struct ProxyListener {
 struct RouteProxyInner {
     http: Option<ProxyListener>,
     https: Option<ProxyListener>,
-    /// The standalone server owns the listener that serves both the panel and
-    /// model APIs. It is tracked separately because the desktop route proxy
-    /// listener has its own shutdown handle and must remain independently
-    /// controllable.
+    /// The Web service or standalone process owns the combined listener.
+    /// Only its owner may shut it down; low-level pool controls must not
+    /// detach status from a listener that still serves requests.
     shared: Option<SharedListenerStatus>,
     /// Why the HTTPS listener is absent while HTTP serves on.
     https_error: Option<String>,
@@ -225,17 +230,25 @@ impl RouteProxyInner {
         if let Some(shared) = &self.shared {
             return RouteProxyStatus {
                 running: true,
+                shared_listener: true,
                 bind_host: shared.bind_host.clone(),
                 port: Some(shared.port),
                 base_url: Some(shared.base_url.clone()),
-                https_port: None,
-                https_base_url: None,
+                https_port: shared
+                    .base_url
+                    .starts_with("https://")
+                    .then_some(shared.port),
+                https_base_url: shared
+                    .base_url
+                    .starts_with("https://")
+                    .then(|| shared.base_url.clone()),
                 https_error: None,
             };
         }
 
         RouteProxyStatus {
             running: self.http.is_some() || self.https.is_some(),
+            shared_listener: false,
             bind_host: BIND_HOST.to_string(),
             port: self.http.as_ref().map(|listener| listener.port),
             base_url: self.http.as_ref().map(|listener| listener.base_url.clone()),
@@ -250,8 +263,7 @@ impl RouteProxyInner {
 
     async fn shutdown_all(&mut self) {
         for listener in [self.http.take(), self.https.take()].into_iter().flatten() {
-            let _ = listener.shutdown.send(());
-            let _ = listener.join_handle.await;
+            shutdown_proxy_listener(listener).await;
         }
         self.shared = None;
         self.https_error = None;
@@ -261,6 +273,7 @@ impl RouteProxyInner {
 #[derive(Clone)]
 pub(crate) struct ProxyAppState {
     pool: SqlitePool,
+    access_scope: Option<Arc<ProxyAccessScope>>,
     key_cache: Arc<Mutex<RouteProxyKeyCache>>,
     activity: RouteCredentialActivityRegistry,
     live_log: RouteProxyLiveLog,
@@ -271,7 +284,25 @@ pub(crate) struct ProxyAppState {
     upstream_timeouts: OutboundTimeouts,
 }
 
+#[derive(Clone)]
+struct ProxyAccessScope {
+    platform: PlatformId,
+    credential_ids: HashSet<String>,
+}
+
 impl ProxyAppState {
+    pub(crate) fn with_access_scope(
+        mut self,
+        platform: PlatformId,
+        credential_ids: HashSet<String>,
+    ) -> Self {
+        self.access_scope = Some(Arc::new(ProxyAccessScope {
+            platform,
+            credential_ids,
+        }));
+        self
+    }
+
     fn default_upstream_timeouts() -> OutboundTimeouts {
         OutboundTimeouts {
             connect: Some(UPSTREAM_CONNECT_TIMEOUT),
@@ -340,6 +371,7 @@ pub(crate) fn build_proxy_state(
 ) -> ProxyAppState {
     ProxyAppState {
         pool,
+        access_scope: None,
         key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
         activity: runtime.activity.clone(),
         live_log: runtime.live_log.clone(),
@@ -386,7 +418,7 @@ impl RouteProxyService {
         state.inner.lock().await.status()
     }
 
-    /// Records the standalone server's shared panel/API listener so status
+    /// Records the shared desktop/server panel/API listener so status
     /// requests and client-config actions see the real endpoint without
     /// starting a second route-proxy listener.
     pub async fn mark_shared_listener(
@@ -396,6 +428,9 @@ impl RouteProxyService {
         base_url: impl Into<String>,
     ) {
         let mut inner = state.inner.lock().await;
+        // Startup/HTTPS operations use the same mutex: no independent listener
+        // can be left behind or created while the shared endpoint is installed.
+        inner.shutdown_all().await;
         inner.shared = Some(SharedListenerStatus {
             bind_host: bind_host.into(),
             port,
@@ -403,10 +438,52 @@ impl RouteProxyService {
         });
     }
 
-    /// Clears the standalone listener status after its server loop exits.
+    /// Clears shared status after the owning Web/server loop exits.
     pub async fn clear_shared_listener(state: &RouteProxyRuntimeState) {
         let mut inner = state.inner.lock().await;
         inner.shared = None;
+    }
+
+    pub async fn has_shared_listener(state: &RouteProxyRuntimeState) -> bool {
+        state.inner.lock().await.shared.is_some()
+    }
+
+    /// Reuse an owned pool socket when its address matches; unrelated occupied
+    /// ports remain errors and must not interrupt an already working pool.
+    pub(crate) async fn bind_shared_web_listener(
+        state: &RouteProxyRuntimeState,
+        address: SocketAddr,
+    ) -> Result<TcpListener, AppError> {
+        let mut inner = state.inner.lock().await;
+        let slot = if inner
+            .http
+            .as_ref()
+            .is_some_and(|listener| listener.socket.local_addr().ok() == Some(address))
+        {
+            Some(&mut inner.http)
+        } else if inner
+            .https
+            .as_ref()
+            .is_some_and(|listener| listener.socket.local_addr().ok() == Some(address))
+        {
+            Some(&mut inner.https)
+        } else {
+            None
+        };
+        if let Some(slot) = slot {
+            let socket = slot
+                .as_ref()
+                .unwrap()
+                .socket
+                .try_clone()
+                .map_err(shared_web_bind_error)?;
+            let listener = TcpListener::from_std(socket).map_err(shared_web_bind_error)?;
+            shutdown_proxy_listener(slot.take().unwrap()).await;
+            return Ok(listener);
+        }
+        TcpListener::bind(address)
+            .await
+            .map_err(shared_web_bind_error)
     }
 
     pub async fn start(
@@ -497,6 +574,33 @@ impl RouteProxyService {
     }
 }
 
+fn shared_web_bind_error(error: std::io::Error) -> AppError {
+    AppError::Filesystem {
+        code: "web_service.bind",
+        message: "Could not start web service".to_string(),
+        details: Some(error.to_string()),
+        recoverable: true,
+    }
+}
+
+async fn shutdown_proxy_listener(listener: ProxyListener) {
+    let ProxyListener {
+        socket,
+        shutdown,
+        mut join_handle,
+        ..
+    } = listener;
+    drop(socket);
+    let _ = shutdown.send(());
+    if tokio::time::timeout(Duration::from_secs(5), &mut join_handle)
+        .await
+        .is_err()
+    {
+        join_handle.abort();
+        let _ = join_handle.await;
+    }
+}
+
 /// Folds an HTTPS start failure into the single string the status carries.
 /// `Display` is only the message, and for these two errors the message is generic
 /// ("Could not load local route proxy HTTPS certificate") while the detail names
@@ -522,6 +626,9 @@ async fn spawn_listener(
         details: Some(err.to_string()),
         recoverable: true,
     })?;
+    let socket = listener.into_std().map_err(shared_web_bind_error)?;
+    let listener = TcpListener::from_std(socket.try_clone().map_err(shared_web_bind_error)?)
+        .map_err(shared_web_bind_error)?;
     let port = addr.port();
     let scheme = if tls.is_some() { "https" } else { "http" };
     let base_url = format!("{scheme}://{BIND_HOST}:{port}");
@@ -585,6 +692,7 @@ async fn spawn_listener(
     };
 
     Ok(ProxyListener {
+        socket,
         port,
         base_url,
         shutdown: shutdown_tx,
@@ -715,10 +823,11 @@ async fn forward_request(
             )
                 .into_response());
         }
-        let candidates = load_pool_candidates(pool, &platform)
+        let candidates = load_request_candidates(state, &platform)
             .await
             .map_err(|err| err.to_string())?;
         let candidates = filter_candidates_for_rule(candidates, &routing_rule);
+        let candidates = restrict_candidates(state, candidates);
         let credentials = partition_by_cooldown(candidates, &HashMap::new(), Utc::now());
         let mode = RoutePoolRepository::model_mode(pool, &platform)
             .await
@@ -759,10 +868,11 @@ async fn forward_request(
     }
 
     let requested_model = requested_model_from_body(&body_bytes);
-    let candidates = load_pool_candidates(pool, &platform)
+    let candidates = load_request_candidates(state, &platform)
         .await
         .map_err(|err| err.to_string())?;
     let candidates = filter_candidates_for_rule(candidates, &routing_rule);
+    let candidates = restrict_candidates(state, candidates);
     if candidates.is_empty() {
         return Err("No enabled route credentials in pool".to_string());
     }
@@ -901,7 +1011,7 @@ async fn forward_request(
                         None,
                     );
                     let _ = insert_route_credential_request_event(
-                        pool,
+                        state,
                         &selected.id,
                         &metadata,
                         &RouteUsageBreakdown::default(),
@@ -909,7 +1019,7 @@ async fn forward_request(
                     )
                     .await;
                     emit_live_log(
-                        &state.live_log,
+                        state,
                         &platform,
                         selected,
                         attempt,
@@ -983,7 +1093,7 @@ async fn forward_request(
                     None,
                 );
                 let _ = insert_route_credential_request_event(
-                    pool,
+                    state,
                     &credential.id,
                     &metadata,
                     &RouteUsageBreakdown::default(),
@@ -991,7 +1101,7 @@ async fn forward_request(
                 )
                 .await;
                 emit_live_log(
-                    &state.live_log,
+                    state,
                     &platform,
                     &credential,
                     attempt,
@@ -1053,7 +1163,7 @@ async fn forward_request(
                     None,
                 );
                 let _ = insert_route_credential_request_event(
-                    pool,
+                    state,
                     &credential.id,
                     &metadata,
                     &RouteUsageBreakdown::default(),
@@ -1061,7 +1171,7 @@ async fn forward_request(
                 )
                 .await;
                 emit_live_log(
-                    &state.live_log,
+                    state,
                     &platform,
                     &credential,
                     attempt,
@@ -1301,7 +1411,7 @@ async fn forward_request(
                     None,
                 );
                 let _ = insert_route_credential_request_event(
-                    pool,
+                    state,
                     &credential.id,
                     &metadata,
                     &RouteUsageBreakdown::default(),
@@ -1309,7 +1419,7 @@ async fn forward_request(
                 )
                 .await;
                 emit_live_log(
-                    &state.live_log,
+                    state,
                     &platform,
                     &credential,
                     attempt,
@@ -1411,7 +1521,7 @@ async fn forward_request(
                         Some(&response_bytes),
                     );
                     let _ = insert_route_credential_request_event(
-                        pool,
+                        state,
                         &credential.id,
                         &metadata,
                         &RouteUsageBreakdown::default(),
@@ -1422,7 +1532,7 @@ async fn forward_request(
                     )
                     .await;
                     emit_live_log(
-                        &state.live_log,
+                        state,
                         &platform,
                         &credential,
                         attempt,
@@ -1526,7 +1636,7 @@ async fn forward_request(
             .or_else(|| requested_model.clone());
         apply_estimated_price(&mut usage, priced_model.as_deref());
         let _ = insert_route_credential_request_event(
-            pool,
+            state,
             &credential.id,
             &metadata,
             &usage,
@@ -1535,7 +1645,7 @@ async fn forward_request(
         )
         .await;
         emit_live_log(
-            &state.live_log,
+            state,
             &platform,
             &credential,
             attempt,
@@ -1889,7 +1999,7 @@ fn route_proxy_response_body_metadata(
 /// stages are available at the call site (missing stages pass `None`).
 #[allow(clippy::too_many_arguments)]
 fn emit_live_log(
-    live_log: &RouteProxyLiveLog,
+    state: &ProxyAppState,
     platform: &str,
     credential: &SelectedCredential,
     attempt: usize,
@@ -1909,6 +2019,9 @@ fn emit_live_log(
     upstream_response: Option<&[u8]>,
     final_response: Option<&[u8]>,
 ) {
+    if state.access_scope.is_some() {
+        return;
+    }
     let client_request = redact_verbose_request_fields(client_request);
     let upstream_request = redact_verbose_request_fields(upstream_request);
     let (client_request, t1) = stage_preview(client_request.as_deref());
@@ -1916,7 +2029,7 @@ fn emit_live_log(
     let (upstream_response, t3) = stage_preview(upstream_response);
     let notes = diagnostic_notes(success, bridge, client_request.as_deref(), final_response);
     let (final_response, t4) = stage_preview(final_response);
-    live_log.record(RouteProxyLiveLogEntry {
+    state.live_log.record(RouteProxyLiveLogEntry {
         id: uuid::Uuid::new_v4().to_string(),
         trace_id: trace_id.map(str::to_string),
         platform: platform.to_string(),
@@ -2268,7 +2381,7 @@ async fn handle_stream_prime_failure(
         None,
     );
     let _ = insert_route_credential_request_event(
-        pool,
+        state,
         &credential.id,
         &metadata,
         &RouteUsageBreakdown::default(),
@@ -2276,7 +2389,7 @@ async fn handle_stream_prime_failure(
     )
     .await;
     emit_live_log(
-        &state.live_log,
+        state,
         platform,
         credential,
         context.attempt,
@@ -2397,7 +2510,7 @@ impl StreamCompletion {
             Some(&preview),
         );
         let _ = insert_route_credential_request_event(
-            &state.pool,
+            &state,
             &credential.id,
             &metadata,
             &usage,
@@ -2406,7 +2519,7 @@ impl StreamCompletion {
         )
         .await;
         emit_live_log(
-            &state.live_log,
+            &state,
             &platform,
             &credential,
             attempt,
@@ -2750,6 +2863,9 @@ async fn resolve_platform(
     headers: &HeaderMap,
     inbound_key: Option<&str>,
 ) -> Result<PlatformId, AppError> {
+    if let Some(scope) = &state.access_scope {
+        return Ok(scope.platform);
+    }
     // Preferred: stable per-platform local proxy key written into CLI configs.
     // Keys are cached in memory and refreshed at most every 30s.
     if let Some(key) = inbound_key {
@@ -2921,30 +3037,70 @@ pub async fn load_pool_candidates(
     pool: &SqlitePool,
     platform: &str,
 ) -> Result<Vec<PoolCandidate>, AppError> {
-    let rows = sqlx::query(
+    load_scoped_candidates(pool, platform, None).await
+}
+
+async fn load_request_candidates(
+    state: &ProxyAppState,
+    platform: &str,
+) -> Result<Vec<PoolCandidate>, AppError> {
+    load_scoped_candidates(
+        &state.pool,
+        platform,
+        state
+            .access_scope
+            .as_ref()
+            .map(|scope| &scope.credential_ids),
+    )
+    .await
+}
+
+async fn load_scoped_candidates(
+    pool: &SqlitePool,
+    platform: &str,
+    credential_ids: Option<&HashSet<String>>,
+) -> Result<Vec<PoolCandidate>, AppError> {
+    if credential_ids.is_some_and(HashSet::is_empty) {
+        return Ok(Vec::new());
+    }
+    let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
         "SELECT c.id, c.platform, c.kind, c.display_name, c.status,
                 c.route_priority, c.max_concurrency,
                 c.secret_payload_json, c.config_json,
                 c.next_retry_at, c.cooldown_until
          FROM route_pool_members rpm
          INNER JOIN route_credentials c ON c.id = rpm.route_credential_id
-         WHERE rpm.platform = ?
-           AND rpm.enabled = 1
+         INNER JOIN route_pool_groups groups ON groups.id = rpm.group_id
+         WHERE rpm.platform = c.platform AND groups.platform = c.platform
+           AND groups.deleted_at IS NULL
            AND c.archived_at IS NULL
            AND c.status = 'ok'
            AND (c.primary_remain IS NULL OR c.primary_remain > 0)
            AND (c.weekly_remain IS NULL OR c.weekly_remain > 0)
-         ORDER BY c.route_priority ASC, rpm.sort_order ASC, rpm.created_at ASC",
-    )
-    .bind(platform)
-    .fetch_all(pool)
-    .await
-    .map_err(|err| AppError::Database {
-        code: "database.route_proxy_credentials",
-        message: "Could not load route credentials for proxy".to_string(),
-        details: Some(err.to_string()),
-        recoverable: true,
-    })?;
+           AND c.platform = ",
+    );
+    query.push_bind(platform);
+    if let Some(credential_ids) = credential_ids {
+        query.push(" AND c.id IN (");
+        let mut separated = query.separated(", ");
+        for credential_id in credential_ids {
+            separated.push_bind(credential_id);
+        }
+        separated.push_unseparated(")");
+    } else {
+        query.push(" AND groups.is_active = 1");
+    }
+    query.push(" ORDER BY c.route_priority ASC, rpm.sort_order ASC, rpm.created_at ASC");
+    let rows = query
+        .build()
+        .fetch_all(pool)
+        .await
+        .map_err(|err| AppError::Database {
+            code: "database.route_proxy_credentials",
+            message: "Could not load route credentials for proxy".to_string(),
+            details: Some(err.to_string()),
+            recoverable: true,
+        })?;
 
     let mut candidates = Vec::with_capacity(rows.len());
     for row in rows {
@@ -6008,15 +6164,28 @@ fn normalize_price_currency(value: &Value) -> Option<&'static str> {
     }
 }
 
+fn restrict_candidates(
+    state: &ProxyAppState,
+    mut candidates: Vec<PoolCandidate>,
+) -> Vec<PoolCandidate> {
+    if let Some(scope) = &state.access_scope {
+        candidates.retain(|candidate| scope.credential_ids.contains(&candidate.credential.id));
+    }
+    candidates
+}
+
 async fn insert_route_credential_request_event(
-    pool: &SqlitePool,
+    state: &ProxyAppState,
     route_credential_id: &str,
     metadata_json: &str,
     usage: &RouteUsageBreakdown,
     upstream_response_id: Option<&str>,
 ) -> Result<(), AppError> {
+    if state.access_scope.is_some() {
+        return Ok(());
+    }
     RoutePoolRepository::insert_request_event(
-        pool,
+        &state.pool,
         route_credential_id,
         "route_proxy",
         metadata_json,
@@ -11055,6 +11224,7 @@ data: [DONE]\n\n";
 
         let state = ProxyAppState {
             pool,
+            access_scope: None,
             key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
             activity: RouteCredentialActivityRegistry::default(),
             live_log: RouteProxyLiveLog::default(),
@@ -11087,6 +11257,7 @@ data: [DONE]\n\n";
         run_migrations(&pool).await.expect("migrations");
         let state = ProxyAppState {
             pool,
+            access_scope: None,
             key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
             activity: RouteCredentialActivityRegistry::default(),
             live_log: RouteProxyLiveLog::default(),
@@ -11114,6 +11285,7 @@ data: [DONE]\n\n";
         run_migrations(&pool).await.expect("migrations");
         let state = ProxyAppState {
             pool,
+            access_scope: None,
             key_cache: Arc::new(Mutex::new(RouteProxyKeyCache::default())),
             activity: RouteCredentialActivityRegistry::default(),
             live_log: RouteProxyLiveLog::default(),
@@ -12361,6 +12533,146 @@ data: [DONE]\n\n";
         let baseline =
             filter_credentials_for_model("claude", vec![official], Some("claude-sonnet-alias"));
         assert_eq!(baseline.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn saas_access_scope_filters_accounts_and_suppresses_sqlite_details() {
+        let pool = create_memory_pool().await.unwrap();
+        run_migrations(&pool).await.unwrap();
+        let state = build_proxy_state(pool.clone(), &RouteProxyRuntimeState::default())
+            .with_access_scope(
+                PlatformId::parse("codex").unwrap(),
+                ["allowed".to_string()].into_iter().collect(),
+            );
+        let candidates = restrict_candidates(
+            &state,
+            vec![
+                candidate("allowed", None, None),
+                candidate("forbidden", None, None),
+            ],
+        );
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].credential.id, "allowed");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            ROUTE_PROXY_PLATFORM_HEADER,
+            HeaderValue::from_static("claude"),
+        );
+        assert_eq!(
+            resolve_platform(&state, &headers, None)
+                .await
+                .unwrap()
+                .as_str(),
+            "codex"
+        );
+        insert_route_credential_request_event(
+            &state,
+            "allowed",
+            "{}",
+            &RouteUsageBreakdown::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM usage_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+        let empty_state = build_proxy_state(pool, &RouteProxyRuntimeState::default())
+            .with_access_scope(PlatformId::parse("codex").unwrap(), Default::default());
+        assert!(
+            restrict_candidates(&empty_state, vec![candidate("allowed", None, None)]).is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_candidate_source_separates_active_pool_from_saas_key_scope() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let first = RouteCredentialRepository::create(
+            &pool,
+            "codex",
+            "api",
+            "ordinary",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"test"}"#,
+            r#"{"base_url":"http://127.0.0.1:1","interface_format":"openai"}"#,
+            "{}",
+        )
+        .await
+        .unwrap();
+        let second = RouteCredentialRepository::create(
+            &pool,
+            "codex",
+            "api",
+            "saas",
+            None,
+            "ok",
+            None,
+            r#"{"api_key":"test"}"#,
+            r#"{"base_url":"http://127.0.0.1:1","interface_format":"openai"}"#,
+            "{}",
+        )
+        .await
+        .unwrap();
+        RoutePoolRepository::replace_group_members(
+            &pool,
+            "codex",
+            "codex-default",
+            std::slice::from_ref(&first.id),
+        )
+        .await
+        .unwrap();
+        RoutePoolRepository::replace_group_members(
+            &pool,
+            "codex",
+            "codex-out",
+            std::slice::from_ref(&second.id),
+        )
+        .await
+        .unwrap();
+        let ordinary = build_proxy_state(pool.clone(), &RouteProxyRuntimeState::default());
+        let scoped = ordinary
+            .clone()
+            .with_access_scope(PlatformId::Codex, HashSet::from([second.id.clone()]));
+        let candidates = load_request_candidates(&ordinary, "codex").await.unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.credential.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![first.id.as_str()]
+        );
+        let candidates = load_request_candidates(&scoped, "codex").await.unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.credential.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![second.id.as_str()]
+        );
+        RoutePoolRepository::update_group(&pool, "codex", "codex-archived", None, None, true, None)
+            .await
+            .unwrap();
+        assert!(load_request_candidates(&ordinary, "codex")
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            load_request_candidates(&scoped, "codex")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let empty = ordinary.with_access_scope(PlatformId::Codex, HashSet::new());
+        assert!(load_request_candidates(&empty, "codex")
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     fn candidate(id: &str, cooldown_until: Option<&str>, model_key: Option<&str>) -> PoolCandidate {

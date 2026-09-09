@@ -317,6 +317,8 @@ pub struct RouteCredentialPageRequest {
     pub filters: Vec<String>,
     #[serde(default)]
     pub pool_scope: RouteCredentialPoolScope,
+    #[serde(default)]
+    pub group_id: Option<String>,
 }
 
 impl RouteCredentialPageRequest {
@@ -353,6 +355,8 @@ pub struct RouteCredentialPage {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReorderRouteCredentialInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
     pub platform: String,
     pub moved_account_id: String,
     pub previous_account_id: Option<String>,

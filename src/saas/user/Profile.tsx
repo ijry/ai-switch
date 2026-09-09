@@ -1,0 +1,14 @@
+import { Github, LogOut, ShieldCheck } from "lucide-react";
+import type { SaasUserClient } from "../api";
+import type { SaasUser, UserOverview } from "../types";
+import { formatDate, formatMoney } from "../format";
+import { useSaasLocale } from "../i18n";
+import { Button, Card, ErrorState, Heading, Loading, Notice, Status, useResource } from "../components/ui";
+import { AccountApiKeyCard } from "./Growth";
+
+export function ProfilePage({ client, user, logout, busy }: { client: SaasUserClient; user: SaasUser; logout: () => void; busy: boolean }) {
+  const { locale, text } = useSaasLocale();
+  const overview = useResource(() => client.call<UserOverview>("overview"));
+  const avatar = user.avatarUrl?.startsWith("https://") ? user.avatarUrl : null;
+  return <><Heading eyebrow={text("你的身份", "YOUR IDENTITY")} title={text("个人信息", "Profile")} description={text("账号由 GitHub 身份验证保护。", "Your account is secured by GitHub authentication.")} /><div className="saas-profile-grid"><Card><div className="saas-profile-person">{avatar ? <img className="saas-profile-avatar" src={avatar} alt={user.displayName || user.login} referrerPolicy="no-referrer" /> : <span className="saas-profile-avatar">{user.login.slice(0, 1).toUpperCase()}</span>}<h2>{user.displayName || user.login}</h2><p className="saas-muted">@{user.login}</p><Status value={user.status} /></div><dl className="saas-details"><dt>{text("账号 ID", "Account ID")}</dt><dd className="saas-mono">{user.id}</dd><dt>{text("加入时间", "Joined")}</dt><dd>{formatDate(user.createdAt, locale)}</dd>{user.githubCreatedAt && <><dt>{text("GitHub 注册时间", "GitHub account created")}</dt><dd>{formatDate(user.githubCreatedAt, locale)}</dd></>}</dl><Button onClick={logout} busy={busy}><LogOut size={16} />{text("退出登录", "Sign out")}</Button></Card><div className="saas-stack"><Card title={text("余额概况", "Balance summary")}>{overview.loading ? <Loading /> : overview.error ? <ErrorState error={overview.error} retry={overview.reload} /> : <dl className="saas-details"><dt>{text("美元余额", "USD balance")}</dt><dd>{formatMoney(overview.data?.balanceMicros, locale)}</dd><dt>{text("冻结金额", "Reserved funds")}</dt><dd>{formatMoney(overview.data?.frozenMicros, locale)}</dd></dl>}</Card><AccountApiKeyCard client={client} /><Card title={text("登录与安全", "Sign-in & security")}><div className="saas-row"><Github size={22} /><strong>{text("GitHub 已关联", "GitHub connected")}</strong><ShieldCheck size={18} /></div><p className="saas-muted">{text("本站不保存你的 GitHub 密码。个人会话、API 密钥和管理员凭证彼此独立。", "We do not store your GitHub password. Personal sessions, API keys, and administrator credentials are kept separate.")}</p><Notice>{text("退出只结束浏览器会话。如密钥泄露，请前往 API 密钥页面停用或轮换。", "Signing out ends your browser session. If a key is exposed, disable or rotate it on the API keys page.")}</Notice></Card></div></div></>;
+}

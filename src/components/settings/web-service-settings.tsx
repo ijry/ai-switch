@@ -15,7 +15,7 @@ import { TailscaleSettings } from "./tailscale-settings";
 
 const defaultConfig: WebServiceConfig = {
   host: "127.0.0.1",
-  port: 3090,
+  port: process.env.NODE_ENV !== "production" ? 10086 : 19527,
   token: "",
   autoStart: false,
   tailscaleEnabled: false,
@@ -87,7 +87,11 @@ export function WebServiceSettings() {
       queryClient.setQueryData(["web-service-config"], saved);
       const status = await startWebServer();
       queryClient.setQueryData(["web-server-status"], status);
-      await queryClient.invalidateQueries({ queryKey: ["tailscale-status"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["tailscale-status"] }),
+        queryClient.invalidateQueries({ queryKey: ["route-proxy-status"] }),
+        queryClient.invalidateQueries({ queryKey: ["route-proxy-https-status"] }),
+      ]);
       return status;
     },
   });
@@ -96,7 +100,11 @@ export function WebServiceSettings() {
     mutationFn: async () => {
       const status = await stopWebServer();
       queryClient.setQueryData(["web-server-status"], status);
-      await queryClient.invalidateQueries({ queryKey: ["tailscale-status"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["tailscale-status"] }),
+        queryClient.invalidateQueries({ queryKey: ["route-proxy-status"] }),
+        queryClient.invalidateQueries({ queryKey: ["route-proxy-https-status"] }),
+      ]);
       return status;
     },
   });
@@ -123,6 +131,8 @@ export function WebServiceSettings() {
           onClick={() => {
             void configQuery.refetch();
             void statusQuery.refetch();
+            void queryClient.invalidateQueries({ queryKey: ["route-proxy-status"] });
+            void queryClient.invalidateQueries({ queryKey: ["route-proxy-https-status"] });
           }}
           type="button"
         >
@@ -158,6 +168,7 @@ export function WebServiceSettings() {
               />
             </label>
           </div>
+          <p className="text-[12px] text-stone-500">{t("settings.webService.sharedHint")}</p>
           {httpTransportRequiresTls ? (
             <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
               {t("settings.webService.hostTransportHint")}

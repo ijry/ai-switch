@@ -87,9 +87,13 @@ pub(crate) fn build_router_with_sensitive_command_gate(
     static_dir: PathBuf,
     sensitive_command_gate: Arc<AtomicBool>,
 ) -> Router {
-    let context = make_context(state, token, static_dir, sensitive_command_gate);
+    let mut context = make_context(state, token, static_dir, sensitive_command_gate);
+    context.proxy = Some(build_proxy_state(
+        context.state.pool.clone(),
+        &context.state.route_proxy,
+    ));
     build_panel_routes(context.clone())
-        .fallback(static_fallback)
+        .fallback(shared_fallback)
         .with_state(context)
 }
 
@@ -102,14 +106,12 @@ pub(crate) fn build_shared_server_router(
     token: String,
     static_dir: PathBuf,
 ) -> Router {
-    let mut context = make_context(state, token, static_dir, Arc::new(AtomicBool::new(true)));
-    context.proxy = Some(build_proxy_state(
-        context.state.pool.clone(),
-        &context.state.route_proxy,
-    ));
-    build_panel_routes(context.clone())
-        .fallback(shared_fallback)
-        .with_state(context)
+    build_router_with_sensitive_command_gate(
+        state,
+        token,
+        static_dir,
+        Arc::new(AtomicBool::new(true)),
+    )
 }
 
 fn build_panel_routes(context: WebServerContext) -> Router<WebServerContext> {
@@ -139,19 +141,55 @@ fn build_panel_routes(context: WebServerContext) -> Router<WebServerContext> {
         .route("/ws/terminal/:session_id", get(terminal_socket))
         .nest("/api", api_router)
         .layer(h5_cors_layer())
+        .merge(crate::saas::transport::routes())
 }
 
 async fn shared_fallback(
     State(context): State<WebServerContext>,
     method: Method,
-    headers: axum::http::HeaderMap,
+    mut headers: axum::http::HeaderMap,
     uri: Uri,
     body: Body,
 ) -> Response {
     if is_shared_model_api_path(uri.path()) {
-        let Some(proxy_state) = context.proxy.clone() else {
+        if let Err(error) = context.state.saas.initialize(&context.state.pool).await {
+            return crate::saas::transport::error_response(error);
+        }
+        let saas_config = match crate::saas::config::load(&context.state.pool).await {
+            Ok(config) => config,
+            Err(error) => return crate::saas::transport::error_response(error),
+        };
+        let key = crate::services::route_proxy_service::extract_inbound_api_key(&headers, None);
+        if key
+            .as_deref()
+            .is_some_and(|key| key.starts_with("sk-saas-"))
+        {
+            return crate::saas::proxy::handle(&context.state, method, headers, uri, body).await;
+        }
+        if saas_config.enabled && !crate::web::auth::is_authorized(&headers, &context.token) {
+            let valid = match crate::database::repositories::route_proxy_key_repository::RouteProxyKeyRepository::list_all(&context.state.pool).await {
+                Ok(keys) => key.as_ref().is_some_and(|key| keys.iter().any(|(stored,_)|stored==key)),
+                Err(_) => false,
+            };
+            if !valid {
+                return crate::saas::transport::error_response(crate::saas::repository::invalid(
+                    "saas.invalid_key",
+                    "A valid API key is required",
+                ));
+            }
+        }
+        let Some(proxy_state) = context.proxy.clone().or_else(|| {
+            saas_config
+                .enabled
+                .then(|| build_proxy_state(context.state.pool.clone(), &context.state.route_proxy))
+        }) else {
             return static_fallback(State(context), uri).await;
         };
+        // This listener can be exposed beyond loopback. The platform header is
+        // a privileged diagnostic override, not an alternative to API-key auth.
+        if !crate::web::auth::is_authorized(&headers, &context.token) {
+            headers.remove("x-ai-switch-platform");
+        }
         return proxy_handler(
             axum::extract::State(proxy_state),
             method,
@@ -233,7 +271,7 @@ async fn disable_api_caching(request: Request, next: Next) -> Response {
     response
 }
 
-async fn static_fallback(State(context): State<WebServerContext>, uri: Uri) -> Response {
+pub(crate) async fn static_fallback(State(context): State<WebServerContext>, uri: Uri) -> Response {
     let Some(file_path) = resolve_static_file(&context.static_dir, uri.path()) else {
         if static_bundle_present(&context.static_dir) {
             return error_response(StatusCode::NOT_FOUND, "AI Switch web asset not found");
@@ -380,6 +418,7 @@ mod tests {
             deeplink_protocols: DeepLinkProtocolRuntime::default(),
             close_to_tray: crate::app_state::CloseToTrayRuntime::default(),
             route_proxy: RouteProxyRuntimeState::default(),
+            saas: crate::saas::SaasRuntime::default(),
             web_service: WebServiceRuntimeState::default(),
             tailscale: TailscaleRuntimeState::default(),
             terminals: TerminalManager::default(),
@@ -419,6 +458,7 @@ mod tests {
             deeplink_protocols: DeepLinkProtocolRuntime::default(),
             close_to_tray: crate::app_state::CloseToTrayRuntime::default(),
             route_proxy: RouteProxyRuntimeState::default(),
+            saas: crate::saas::SaasRuntime::default(),
             web_service: WebServiceRuntimeState::default(),
             tailscale: TailscaleRuntimeState::default(),
             terminals: TerminalManager::default(),
@@ -452,6 +492,7 @@ mod tests {
             deeplink_protocols: DeepLinkProtocolRuntime::default(),
             close_to_tray: crate::app_state::CloseToTrayRuntime::default(),
             route_proxy: RouteProxyRuntimeState::default(),
+            saas: crate::saas::SaasRuntime::default(),
             web_service: WebServiceRuntimeState::default(),
             tailscale: TailscaleRuntimeState::default(),
             terminals: TerminalManager::default(),
@@ -483,6 +524,71 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("no-cache")
         );
+    }
+
+    #[tokio::test]
+    async fn disabled_saas_root_redirects_without_permanent_caching() {
+        let (address, handle, _state, _temp) =
+            spawn_test_router_with_state(Arc::new(AtomicBool::new(true)), "test-primary-token")
+                .await;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let response = client
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(response.headers()[header::LOCATION], "/ai-switch-admin");
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn saas_bootstrap_is_public_but_never_returns_the_primary_token() {
+        let (address, handle, _state, _temp) =
+            spawn_test_router_with_state(Arc::new(AtomicBool::new(true)), "test-primary-token")
+                .await;
+        let response = reqwest::get(format!("http://{address}/api/saas/public/config"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let value: Value = response.json().await.unwrap();
+        assert_eq!(value["enabled"], false);
+        assert!(!value.to_string().contains("test-primary-token"));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn saas_model_gateway_requires_keys_and_never_trusts_platform_headers() {
+        let (address, server, state, _temp) =
+            spawn_test_router_with_state(Arc::new(AtomicBool::new(true)), "primary-secret").await;
+        state.saas.initialize(&state.pool).await.unwrap();
+        crate::saas::repository::test_enable(&state.pool).await;
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://{address}/v1/models"))
+            .header("x-ai-switch-platform", "codex")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = client
+            .get(format!("http://{address}/v1/models"))
+            .bearer_auth("sk-saas-invalid")
+            .header("x-ai-switch-platform", "codex")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["code"],
+            "saas.invalid_key"
+        );
+        server.abort();
     }
 
     fn assert_h5_cors_origin(response: &reqwest::Response) {

@@ -31,7 +31,10 @@ pub fn dispatch_notification(config: &NotificationConfig, event: &NotificationEv
         let kind = channel_config.kind.clone();
         tokio::spawn(async move {
             if let Err(e) = send_one(&client, &kind, &event).await {
-                eprintln!("[Notification] delivery failed on {}: {e}", channel_type_name(&kind));
+                eprintln!(
+                    "[Notification] delivery failed on {}: {e}",
+                    channel_type_name(&kind)
+                );
             }
         });
     }
@@ -55,12 +58,11 @@ async fn send_one(
         NotificationChannelKind::Feishu { webhook_url } => {
             send_feishu(client, webhook_url, event).await
         }
-        NotificationChannelKind::Bark { server_url, device_key } => {
-            send_bark(client, server_url, device_key, event).await
-        }
-        NotificationChannelKind::Webhook { url } => {
-            send_webhook(client, url, event).await
-        }
+        NotificationChannelKind::Bark {
+            server_url,
+            device_key,
+        } => send_bark(client, server_url, device_key, event).await,
+        NotificationChannelKind::Webhook { url } => send_webhook(client, url, event).await,
     }
 }
 
@@ -72,7 +74,10 @@ async fn send_feishu(
 ) -> Result<(), String> {
     // Build a rich-text body with fields
     let mut content_lines: Vec<String> = Vec::new();
-    content_lines.push(format!("{{\"tag\":\"text\",\"text\":\"{}\"}}", escape_feishu(&event.body)));
+    content_lines.push(format!(
+        "{{\"tag\":\"text\",\"text\":\"{}\"}}",
+        escape_feishu(&event.body)
+    ));
     for (key, value) in &event.fields {
         content_lines.push(format!(
             "{{\"tag\":\"text\",\"text\":\"\\n{}: {}\"}}",
@@ -185,7 +190,10 @@ pub async fn test_channel(kind: &NotificationChannelKind) -> Result<(), String> 
     let event = NotificationEvent {
         title: "AI Switch 测试通知".to_string(),
         body: "如果您收到这条消息，说明通知渠道配置正确。".to_string(),
-        fields: vec![("时间".to_string(), chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string())],
+        fields: vec![(
+            "时间".to_string(),
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        )],
     };
     send_one(&client, kind, &event).await
 }
@@ -243,7 +251,10 @@ mod tests {
                 if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
                     let len: usize = String::from_utf8_lossy(&buf[..pos])
                         .lines()
-                        .find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0)))
+                        .find_map(|l| {
+                            l.strip_prefix("content-length:")
+                                .map(|v| v.trim().parse().unwrap_or(0))
+                        })
                         .unwrap_or(0);
                     if buf.len() >= pos + 4 + len {
                         break;
@@ -260,7 +271,11 @@ mod tests {
             url: format!("http://{addr}/hook"),
         };
         let result = test_channel(&kind).await;
-        assert!(result.is_ok(), "webhook test should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "webhook test should succeed: {:?}",
+            result.err()
+        );
 
         let request = server.await.unwrap();
         assert!(request.starts_with("POST /hook"));

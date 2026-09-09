@@ -3,8 +3,9 @@ use crate::database::repositories::route_pool_repository::RoutePoolRepository;
 use crate::error::AppError;
 use crate::models::platform::{PlatformId, PlatformOperation};
 use crate::models::route_pool::{
-    RoutePoolRouteOutcome, RoutePoolRouteRequest, RoutePoolState, SetRoutePoolMembersInput,
-    SetRoutePoolModelModeInput,
+    CreateRoutePoolGroupInput, DeleteRoutePoolGroupInput, RoutePoolRouteOutcome,
+    RoutePoolRouteRequest, RoutePoolState, SetRoutePoolGroupMembersInput, SetRoutePoolMembersInput,
+    SetRoutePoolModelModeInput, UpdateRoutePoolGroupInput,
 };
 use crate::services::platform_capability_service::PlatformCapabilityService;
 use crate::services::route_credential_activity::RouteCredentialActivityRegistry;
@@ -41,6 +42,122 @@ impl RoutePoolService {
         .await
     }
 
+    pub async fn get_for_group(
+        pool: &SqlitePool,
+        platform: String,
+        group_id: Option<String>,
+        since: Option<String>,
+        request_page: Option<i64>,
+        request_page_size: Option<i64>,
+    ) -> Result<RoutePoolState, AppError> {
+        let platform = PlatformId::parse(&platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
+        let group_id = normalize_optional_id(group_id);
+        let since = normalize_since(since)?;
+        let pagination = normalize_request_pagination(request_page, request_page_size);
+        Self::state_for_group(
+            pool,
+            platform.as_str(),
+            group_id.as_deref(),
+            since.as_deref(),
+            pagination.page,
+            pagination.page_size,
+        )
+        .await
+    }
+
+    pub async fn create_group(
+        pool: &SqlitePool,
+        input: CreateRoutePoolGroupInput,
+    ) -> Result<RoutePoolState, AppError> {
+        let platform = PlatformId::parse(&input.platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
+        let name = normalize_group_name(&input.name)?;
+        Self::ensure_group_name_is_available(pool, platform.as_str(), &name, None).await?;
+        let group_id =
+            RoutePoolRepository::create_group(pool, platform.as_str(), &name, input.is_internal)
+                .await?;
+        Self::state_for_group(
+            pool,
+            platform.as_str(),
+            Some(&group_id),
+            None,
+            DEFAULT_REQUEST_PAGE,
+            DEFAULT_REQUEST_PAGE_SIZE,
+        )
+        .await
+    }
+
+    pub async fn update_group(
+        pool: &SqlitePool,
+        input: UpdateRoutePoolGroupInput,
+    ) -> Result<RoutePoolState, AppError> {
+        let platform = PlatformId::parse(&input.platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
+        let group_id = normalize_group_id(&input.id)?;
+        let name = match input.name {
+            Some(value) => Some(normalize_group_name(&value)?),
+            None => None,
+        };
+        if let Some(name) = &name {
+            Self::ensure_group_name_is_available(pool, platform.as_str(), name, Some(&group_id))
+                .await?;
+        }
+        RoutePoolRepository::update_group(
+            pool,
+            platform.as_str(),
+            &group_id,
+            name.as_deref(),
+            input.is_internal,
+            input.activate,
+            input.sort_order,
+        )
+        .await?;
+        Self::state_for_group(
+            pool,
+            platform.as_str(),
+            Some(&group_id),
+            None,
+            DEFAULT_REQUEST_PAGE,
+            DEFAULT_REQUEST_PAGE_SIZE,
+        )
+        .await
+    }
+
+    pub async fn delete_group(
+        pool: &SqlitePool,
+        input: DeleteRoutePoolGroupInput,
+    ) -> Result<RoutePoolState, AppError> {
+        let platform = PlatformId::parse(&input.platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
+        let group_id = normalize_group_id(&input.id)?;
+        let active_group_id = RoutePoolRepository::active_group_id(pool, platform.as_str())
+            .await?
+            .ok_or_else(|| AppError::Validation {
+                code: "validation.route_pool_group_active_missing",
+                message: "Platform has no active route group".to_string(),
+                details: Some(platform.as_str().to_string()),
+                recoverable: true,
+            })?;
+        if active_group_id == group_id {
+            return Err(AppError::Validation {
+                code: "validation.route_pool_group_active_delete",
+                message: "Switch the active route group before deleting this one".to_string(),
+                details: Some(format!("{}:{}", platform.as_str(), group_id)),
+                recoverable: true,
+            });
+        }
+        RoutePoolRepository::delete_group(pool, platform.as_str(), &group_id).await?;
+        Self::state(
+            pool,
+            platform.as_str(),
+            None,
+            DEFAULT_REQUEST_PAGE,
+            DEFAULT_REQUEST_PAGE_SIZE,
+        )
+        .await
+    }
+
     /// Switch how this platform names the models it advertises. Stored per
     /// platform because the dialog that offers it always opens in one platform's
     /// context, and one agent tab may want pinning while another wants rotation.
@@ -72,6 +189,42 @@ impl RoutePoolService {
     ) -> Result<RoutePoolState, AppError> {
         let platform = PlatformId::parse(&input.platform)?;
         PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
+        let group_id = RoutePoolRepository::active_group_id(pool, platform.as_str())
+            .await?
+            .ok_or_else(|| AppError::Validation {
+                code: "validation.route_pool_group_active_missing",
+                message: "Platform has no active route group".to_string(),
+                details: Some(platform.as_str().to_string()),
+                recoverable: true,
+            })?;
+        Self::set_group_members(
+            pool,
+            SetRoutePoolGroupMembersInput {
+                platform: platform.as_str().to_string(),
+                group_id,
+                account_ids: input.account_ids,
+            },
+        )
+        .await
+    }
+
+    pub async fn set_group_members(
+        pool: &SqlitePool,
+        input: SetRoutePoolGroupMembersInput,
+    ) -> Result<RoutePoolState, AppError> {
+        let platform = PlatformId::parse(&input.platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
+        let group_id = normalize_group_id(&input.group_id)?;
+        let groups = RoutePoolRepository::list_groups(pool, platform.as_str(), false).await?;
+        if !groups.iter().any(|group| group.id == group_id) {
+            return Err(AppError::Validation {
+                code: "validation.route_pool_group_not_found",
+                message: "Route group was not found".to_string(),
+                details: Some(format!("{}:{}", platform.as_str(), group_id)),
+                recoverable: true,
+            });
+        }
+
         let mut seen = HashSet::new();
         let account_ids: Vec<String> = input
             .account_ids
@@ -94,10 +247,41 @@ impl RoutePoolService {
             }
         }
 
-        RoutePoolRepository::replace_members(pool, platform.as_str(), &account_ids).await?;
+        RoutePoolRepository::replace_group_members(
+            pool,
+            platform.as_str(),
+            &group_id,
+            &account_ids,
+        )
+        .await?;
         Self::state(
             pool,
             platform.as_str(),
+            None,
+            DEFAULT_REQUEST_PAGE,
+            DEFAULT_REQUEST_PAGE_SIZE,
+        )
+        .await
+    }
+
+    pub async fn move_group_members(
+        pool: &SqlitePool,
+        input: SetRoutePoolGroupMembersInput,
+    ) -> Result<RoutePoolState, AppError> {
+        let platform = PlatformId::parse(&input.platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
+        let group_id = normalize_group_id(&input.group_id)?;
+        RoutePoolRepository::move_group_members(
+            pool,
+            platform.as_str(),
+            &group_id,
+            &input.account_ids,
+        )
+        .await?;
+        Self::state_for_group(
+            pool,
+            platform.as_str(),
+            Some(&group_id),
             None,
             DEFAULT_REQUEST_PAGE,
             DEFAULT_REQUEST_PAGE_SIZE,
@@ -252,9 +436,45 @@ impl RoutePoolService {
         request_page: i64,
         request_page_size: i64,
     ) -> Result<RoutePoolState, AppError> {
+        Self::state_for_group(pool, platform, None, since, request_page, request_page_size).await
+    }
+
+    async fn state_for_group(
+        pool: &SqlitePool,
+        platform: &str,
+        group_id: Option<&str>,
+        since: Option<&str>,
+        request_page: i64,
+        request_page_size: i64,
+    ) -> Result<RoutePoolState, AppError> {
+        let groups = RoutePoolRepository::list_groups(pool, platform, false).await?;
+        let active_group_id = RoutePoolRepository::active_group_id(pool, platform).await?;
+        let selected_group_id = match group_id {
+            Some(value) => Some(value.to_string()),
+            None => active_group_id.clone(),
+        };
+        if let Some(selected_group_id) = &selected_group_id {
+            if !groups.iter().any(|group| group.id == *selected_group_id) {
+                return Err(AppError::Validation {
+                    code: "validation.route_pool_group_not_found",
+                    message: "Route group was not found".to_string(),
+                    details: Some(format!("{platform}:{selected_group_id}")),
+                    recoverable: true,
+                });
+            }
+        }
+
+        let account_ids = match &selected_group_id {
+            Some(group_id) => RoutePoolRepository::list_group_member_ids(pool, group_id).await?,
+            None => Vec::new(),
+        };
+
         Ok(RoutePoolState {
             platform: platform.to_string(),
-            account_ids: RoutePoolRepository::list_member_ids(pool, platform).await?,
+            groups,
+            group_id: selected_group_id,
+            active_group_id,
+            account_ids,
             model_mode: RoutePoolRepository::model_mode(pool, platform)
                 .await?
                 .as_str()
@@ -314,6 +534,68 @@ fn normalize_since(since: Option<String>) -> Result<Option<String>, AppError> {
     })?;
 
     Ok(Some(value))
+}
+
+fn normalize_optional_id(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_group_id(value: &str) -> Result<String, AppError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(AppError::Validation {
+            code: "validation.route_pool_group_id",
+            message: "Route group id is required".to_string(),
+            details: None,
+            recoverable: true,
+        });
+    }
+    Ok(value.to_string())
+}
+
+fn normalize_group_name(value: &str) -> Result<String, AppError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(AppError::Validation {
+            code: "validation.route_pool_group_name",
+            message: "Route group name is required".to_string(),
+            details: None,
+            recoverable: true,
+        });
+    }
+    if value.chars().count() > 60 {
+        return Err(AppError::Validation {
+            code: "validation.route_pool_group_name",
+            message: "Route group name must be 60 characters or fewer".to_string(),
+            details: Some(value.chars().take(61).collect()),
+            recoverable: true,
+        });
+    }
+    Ok(value.to_string())
+}
+
+impl RoutePoolService {
+    async fn ensure_group_name_is_available(
+        pool: &SqlitePool,
+        platform: &str,
+        name: &str,
+        excluded_group_id: Option<&str>,
+    ) -> Result<(), AppError> {
+        let groups = RoutePoolRepository::list_groups(pool, platform, false).await?;
+        if groups.iter().any(|group| {
+            group.name.eq_ignore_ascii_case(name) && excluded_group_id != Some(group.id.as_str())
+        }) {
+            return Err(AppError::Validation {
+                code: "validation.route_pool_group_name_duplicate",
+                message: "A route group with this name already exists".to_string(),
+                details: Some(format!("{platform}:{name}")),
+                recoverable: true,
+            });
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -417,6 +699,215 @@ mod tests {
         .execute(pool)
         .await
         .expect("usage event");
+    }
+
+    #[tokio::test]
+    async fn dynamic_groups_create_move_activate_and_delete_safely() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let account_id = account(&pool, "codex", "CodexOne").await;
+
+        let state = RoutePoolService::create_group(
+            &pool,
+            CreateRoutePoolGroupInput {
+                platform: "codex".to_string(),
+                name: "内部测试组".to_string(),
+                is_internal: true,
+            },
+        )
+        .await
+        .expect("create group");
+        let created = state
+            .groups
+            .iter()
+            .find(|group| group.name == "内部测试组")
+            .expect("created group is listed");
+        assert!(!created.is_active);
+        assert_eq!(created.account_count, 0);
+
+        let default_group_id = RoutePoolRepository::active_group_id(&pool, "codex")
+            .await
+            .expect("active group")
+            .expect("default active group");
+        RoutePoolService::set_group_members(
+            &pool,
+            SetRoutePoolGroupMembersInput {
+                platform: "codex".to_string(),
+                group_id: default_group_id.clone(),
+                account_ids: vec![account_id.clone()],
+            },
+        )
+        .await
+        .expect("assign default member");
+
+        RoutePoolService::set_group_members(
+            &pool,
+            SetRoutePoolGroupMembersInput {
+                platform: "codex".to_string(),
+                group_id: created.id.clone(),
+                account_ids: vec![account_id.clone()],
+            },
+        )
+        .await
+        .expect("move account");
+        let groups = RoutePoolRepository::list_groups(&pool, "codex", false)
+            .await
+            .expect("groups");
+        assert_eq!(
+            groups
+                .iter()
+                .find(|group| group.id == default_group_id)
+                .expect("default group")
+                .account_count,
+            0
+        );
+        assert_eq!(
+            groups
+                .iter()
+                .find(|group| group.id == created.id)
+                .expect("created group")
+                .account_count,
+            1
+        );
+
+        let state = RoutePoolService::update_group(
+            &pool,
+            UpdateRoutePoolGroupInput {
+                platform: "codex".to_string(),
+                id: created.id.clone(),
+                name: Some("内部测试组二".to_string()),
+                is_internal: None,
+                activate: true,
+                sort_order: None,
+            },
+        )
+        .await
+        .expect("activate group");
+        assert_eq!(state.active_group_id.as_deref(), Some(created.id.as_str()));
+        assert_eq!(
+            state
+                .groups
+                .iter()
+                .find(|group| group.id == created.id)
+                .expect("renamed group")
+                .name,
+            "内部测试组二"
+        );
+
+        let active_delete_error = RoutePoolService::delete_group(
+            &pool,
+            DeleteRoutePoolGroupInput {
+                platform: "codex".to_string(),
+                id: created.id.clone(),
+            },
+        )
+        .await
+        .expect_err("active groups cannot be deleted");
+        assert!(matches!(
+            active_delete_error,
+            AppError::Validation {
+                code: "validation.route_pool_group_active_delete",
+                ..
+            }
+        ));
+
+        RoutePoolService::update_group(
+            &pool,
+            UpdateRoutePoolGroupInput {
+                platform: "codex".to_string(),
+                id: default_group_id.clone(),
+                name: None,
+                is_internal: None,
+                activate: true,
+                sort_order: None,
+            },
+        )
+        .await
+        .expect("activate default group");
+
+        let nonempty_delete_error = RoutePoolService::delete_group(
+            &pool,
+            DeleteRoutePoolGroupInput {
+                platform: "codex".to_string(),
+                id: created.id.clone(),
+            },
+        )
+        .await
+        .expect_err("nonempty groups cannot be deleted");
+        assert!(matches!(
+            nonempty_delete_error,
+            AppError::Validation {
+                code: "validation.route_pool_group_nonempty_delete",
+                ..
+            }
+        ));
+
+        RoutePoolService::set_group_members(
+            &pool,
+            SetRoutePoolGroupMembersInput {
+                platform: "codex".to_string(),
+                group_id: default_group_id.clone(),
+                account_ids: vec![account_id],
+            },
+        )
+        .await
+        .expect("move account back");
+        RoutePoolService::update_group(
+            &pool,
+            UpdateRoutePoolGroupInput {
+                platform: "codex".to_string(),
+                id: default_group_id,
+                name: None,
+                is_internal: None,
+                activate: true,
+                sort_order: None,
+            },
+        )
+        .await
+        .expect("activate default group");
+        RoutePoolService::delete_group(
+            &pool,
+            DeleteRoutePoolGroupInput {
+                platform: "codex".to_string(),
+                id: created.id.clone(),
+            },
+        )
+        .await
+        .expect("delete empty inactive group");
+        assert!(!RoutePoolRepository::list_groups(&pool, "codex", false)
+            .await
+            .expect("groups")
+            .iter()
+            .any(|group| group.name == "内部测试组二"));
+    }
+
+    #[tokio::test]
+    async fn dynamic_group_membership_rejects_foreign_platform_accounts() {
+        let pool = create_memory_pool().await.expect("pool");
+        run_migrations(&pool).await.expect("migrations");
+        let claude_account = account(&pool, "claude", "ClaudeOne").await;
+        let default_group_id = RoutePoolRepository::active_group_id(&pool, "codex")
+            .await
+            .expect("active group")
+            .expect("default active group");
+
+        let error = RoutePoolService::set_group_members(
+            &pool,
+            SetRoutePoolGroupMembersInput {
+                platform: "codex".to_string(),
+                group_id: default_group_id,
+                account_ids: vec![claude_account],
+            },
+        )
+        .await
+        .expect_err("foreign platform accounts must fail");
+        assert!(matches!(
+            error,
+            AppError::Validation {
+                code: "validation.route_pool_platform_mismatch",
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

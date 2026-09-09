@@ -6,6 +6,7 @@ pub mod provider_repository;
 pub mod route_credential_model_repository;
 pub mod route_credential_repository;
 pub mod route_credential_transfer_repository;
+mod route_group_repository;
 pub mod route_pool_repository;
 pub mod route_proxy_key_repository;
 pub mod target_repository;

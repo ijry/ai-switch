@@ -50,6 +50,7 @@ impl CloseToTrayRuntime {
 pub struct AppState {
     pub paths: AppPaths,
     pub pool: SqlitePool,
+    pub saas: crate::saas::SaasRuntime,
     pub config_writes: ConfigWriteRuntimeState,
     pub deeplink_protocols: DeepLinkProtocolRuntime,
     pub close_to_tray: CloseToTrayRuntime,

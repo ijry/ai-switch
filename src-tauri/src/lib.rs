@@ -10,6 +10,7 @@ mod importers;
 mod mcp;
 mod models;
 mod paths;
+mod saas;
 mod security;
 pub mod server;
 mod services;

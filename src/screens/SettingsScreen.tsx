@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "motion/react";
 import {
   Bell,
+  CloudCog,
   Layers3,
   LockKeyhole,
   Network,
@@ -23,15 +24,26 @@ import {
   type AgentPlatform,
   type AgentVisibility,
 } from "../lib/agentVisibility";
+import { SaasSettings } from "../saas";
 
 type FeatureEntry = {
   screen?: string;
-  section?: "webService" | "https" | "notification";    titleKey: "nav.sessions" | "nav.updates" | "nav.log" | "nav.webService" | "settings.https.title" | "notification.title";    descriptionKey:
+  section?: "webService" | "https" | "notification" | "saas";
+  titleKey:
+    | "nav.sessions"
+    | "nav.updates"
+    | "nav.log"
+    | "nav.webService"
+    | "settings.https.title"
+    | "settings.saas.title"
+    | "notification.title";
+  descriptionKey:
     | "settings.feature.sessions"
     | "settings.feature.updates"
     | "settings.feature.log"
     | "settings.feature.webService"
     | "settings.feature.https"
+    | "settings.feature.saas"
     | "notification.subtitle";
   icon: ComponentType<{ className?: string }>;
 };
@@ -69,6 +81,12 @@ const featureEntries: FeatureEntry[] = [
     icon: LockKeyhole,
   },
   {
+    section: "saas",
+    titleKey: "settings.saas.title",
+    descriptionKey: "settings.feature.saas",
+    icon: CloudCog,
+  },
+  {
     section: "notification",
     titleKey: "notification.title",
     descriptionKey: "notification.subtitle",
@@ -80,6 +98,7 @@ type SettingsScreenProps = {
   onOpenFeature?: (screen: string) => void;
   agentVisibility?: AgentVisibility;
   onAgentVisibilityChange?: (platform: AgentPlatform, visible: boolean) => void;
+  onSaasConfigChanged?: () => void;
 };
 
 const agentLabelKeys = {
@@ -96,10 +115,11 @@ export function SettingsScreen({
   onOpenFeature,
   agentVisibility,
   onAgentVisibilityChange,
+  onSaasConfigChanged,
 }: SettingsScreenProps) {
   const queryClient = useQueryClient();
   const { language, setLanguage, t } = useI18n();
-  const [activeSection, setActiveSection] = useState<"webService" | "https" | "notification">("webService");
+  const [activeSection, setActiveSection] = useState<"webService" | "https" | "notification" | "saas">("webService");
   const [localAgentVisibility, setLocalAgentVisibility] = useState(createDefaultAgentVisibility);
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const saveMutation = useMutation({
@@ -192,6 +212,7 @@ export function SettingsScreen({
             <WebServiceSettings />
           </motion.div>
         )}
+        {activeSection === "saas" && <SaasSettings onConfigChanged={onSaasConfigChanged} />}
         {activeSection === "https" && (
           <motion.div
             key="settings-https"

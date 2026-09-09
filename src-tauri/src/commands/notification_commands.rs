@@ -7,10 +7,12 @@ use crate::services::notification_service;
 pub async fn test_notification(kind: NotificationChannelKind) -> Result<(), ApiError> {
     notification_service::test_channel(&kind)
         .await
-        .map_err(|e| ApiError::from(crate::error::AppError::Validation {
-            code: "notification.test_failed",
-            message: format!("Notification test failed: {e}"),
-            details: None,
-            recoverable: true,
-        }))
+        .map_err(|e| {
+            ApiError::from(crate::error::AppError::Validation {
+                code: "notification.test_failed",
+                message: format!("Notification test failed: {e}"),
+                details: None,
+                recoverable: true,
+            })
+        })
 }

@@ -23,6 +23,8 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 /// every fresh start and would make an empty database look occupied.
 const USER_DATA_TABLES: &[&str] = &[
     "route_credentials",
+    "route_pool_groups",
+    "route_pool_members",
     "providers",
     "official_accounts",
     "route_proxy_keys",
@@ -32,6 +34,13 @@ const USER_DATA_TABLES: &[&str] = &[
     "sessions",
     "usage_events",
     "config_snapshots",
+    "saas_users",
+    "saas_api_keys",
+    "saas_wallet_ledger",
+    "saas_recharge_orders",
+    "saas_redemption_codes",
+    "saas_group_settings",
+    "saas_settings",
 ];
 
 pub async fn create_pool(database_file: &Path) -> Result<SqlitePool, AppError> {
@@ -95,7 +104,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), AppError> {
             details: Some(details),
             recoverable,
         }
-    })
+    })?;
+    repositories::route_pool_repository::RoutePoolRepository::migrate_legacy_pool_views(pool)
+        .await?;
+    Ok(())
 }
 
 /// Open the app database and apply migrations.
@@ -192,10 +204,14 @@ async fn has_user_data(pool: &SqlitePool) -> Result<bool, AppError> {
     for table in USER_DATA_TABLES {
         // EXISTS stops at the first row, so this stays cheap even next to a
         // usage_events table with a million rows.
-        let present =
-            sqlx::query_scalar::<_, bool>(&format!("SELECT EXISTS(SELECT 1 FROM \"{table}\")"))
-                .fetch_one(pool)
-                .await;
+        let query = if *table == "route_pool_groups" {
+            "SELECT EXISTS(SELECT 1 FROM route_pool_groups WHERE is_internal<>0 OR deleted_at IS NOT NULL OR name<>CASE id WHEN platform||'-default' THEN '默认组' WHEN platform||'-out' THEN '未入池' WHEN platform||'-archived' THEN '已归档' ELSE '' END OR is_active<>CASE WHEN id=platform||'-default' THEN 1 ELSE 0 END)".to_string()
+        } else if *table == "saas_settings" {
+            "SELECT EXISTS(SELECT 1 FROM saas_settings WHERE key<>'instance_id')".to_string()
+        } else {
+            format!("SELECT EXISTS(SELECT 1 FROM \"{table}\")")
+        };
+        let present = sqlx::query_scalar::<_, bool>(&query).fetch_one(pool).await;
         match present {
             Ok(true) => return Ok(true),
             Ok(false) => {}
@@ -904,5 +920,16 @@ mod recovery_tests {
             backup_count >= 1,
             "expected quarantined database backup files"
         );
+    }
+    #[tokio::test]
+    async fn seeded_dynamic_groups_do_not_make_a_fresh_database_look_occupied() {
+        let pool = super::create_memory_pool().await.unwrap();
+        super::run_migrations(&pool).await.unwrap();
+        assert!(!super::has_user_data(&pool).await.unwrap());
+        sqlx::query("UPDATE route_pool_groups SET is_internal=1 WHERE id='codex-default'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(super::has_user_data(&pool).await.unwrap());
     }
 }

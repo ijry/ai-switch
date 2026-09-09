@@ -71,6 +71,9 @@ describe("DeepLinkImportDialog", () => {
     vi.mocked(createApiRouteCredential).mockResolvedValue(created as never);
     vi.mocked(getRoutePool).mockResolvedValue({
       platform: "codex",
+      groups: [],
+      group_id: null,
+      active_group_id: null,
       account_ids: ["existing-account"],
       model_mode: "aggregate",
       stats: {

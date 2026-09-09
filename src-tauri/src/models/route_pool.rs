@@ -115,6 +115,9 @@ pub struct RoutePoolStats {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RoutePoolState {
     pub platform: String,
+    pub groups: Vec<RoutePoolGroup>,
+    pub group_id: Option<String>,
+    pub active_group_id: Option<String>,
     /// Selected route_credentials.id values, independent of current credential status.
     pub account_ids: Vec<String>,
     /// How this platform names the models it advertises: `"aggregate"` merges the
@@ -122,6 +125,49 @@ pub struct RoutePoolState {
     /// rather than an enum because it crosses to the UI as one.
     pub model_mode: String,
     pub stats: RoutePoolStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateRoutePoolGroupInput {
+    pub platform: String,
+    pub name: String,
+    pub is_internal: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateRoutePoolGroupInput {
+    pub platform: String,
+    pub id: String,
+    pub name: Option<String>,
+    pub is_internal: Option<bool>,
+    pub activate: bool,
+    pub sort_order: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeleteRoutePoolGroupInput {
+    pub platform: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SetRoutePoolGroupMembersInput {
+    pub platform: String,
+    pub group_id: String,
+    pub account_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoutePoolGroup {
+    pub id: String,
+    pub platform: String,
+    pub name: String,
+    pub sort_order: i64,
+    pub is_internal: bool,
+    pub is_active: bool,
+    pub account_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

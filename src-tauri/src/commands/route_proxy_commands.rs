@@ -15,13 +15,9 @@ pub async fn start_route_proxy(state: State<'_, AppState>) -> Result<RouteProxyS
 
 #[tauri::command]
 pub async fn stop_route_proxy(state: State<'_, AppState>) -> Result<RouteProxyStatus, ApiError> {
-    let status = RouteProxyService::stop(&state.route_proxy)
+    RouteProxyHttpsService::stop_proxy(state.inner())
         .await
-        .map_err(ApiError::from)?;
-    RouteProxyHttpsService::clear_auto_start(&state.paths)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(status)
+        .map_err(ApiError::from)
 }
 
 #[tauri::command]
