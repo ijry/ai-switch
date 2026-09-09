@@ -173,9 +173,6 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), AppError> {
         if applied.iter().any(|(current, _)| *current == version) {
             continue;
         }
-        if version == 4 {
-            normalize_oauth_invite_column(&mut transaction).await?;
-        }
         let sql = source.replace("\r\n", "\n");
         let checksum = hash_secret(&sql);
         sqlx::Executor::execute(&mut *transaction, sql.as_str())
@@ -202,31 +199,6 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), AppError> {
         }
     }
     transaction.commit().await.map_err(db_error)
-}
-
-async fn normalize_oauth_invite_column(
-    transaction: &mut sqlx::Transaction<'_, Sqlite>,
-) -> Result<(), AppError> {
-    let columns: Vec<String> =
-        sqlx::query_scalar("SELECT name FROM pragma_table_info('saas_oauth_states')")
-            .fetch_all(&mut **transaction)
-            .await
-            .map_err(db_error)?;
-    if columns.iter().any(|column| column == "invite_code") {
-        return Ok(());
-    }
-    if columns.iter().any(|column| column == "invite_code_hash") {
-        sqlx::query("ALTER TABLE saas_oauth_states RENAME COLUMN invite_code_hash TO invite_code")
-            .execute(&mut **transaction)
-            .await
-            .map_err(db_error)?;
-    } else {
-        sqlx::query("ALTER TABLE saas_oauth_states ADD COLUMN invite_code TEXT")
-            .execute(&mut **transaction)
-            .await
-            .map_err(db_error)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

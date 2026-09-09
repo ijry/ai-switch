@@ -1,4 +1,6 @@
-CREATE TABLE IF NOT EXISTS saas_subscription_daily_usage (
+ALTER TABLE saas_oauth_states RENAME COLUMN invite_code_hash TO invite_code;
+
+CREATE TABLE saas_subscription_daily_usage (
     subscription_id TEXT NOT NULL REFERENCES saas_subscriptions(id),
     day TEXT NOT NULL,
     used_micros INTEGER NOT NULL DEFAULT 0 CHECK(used_micros>=0),
