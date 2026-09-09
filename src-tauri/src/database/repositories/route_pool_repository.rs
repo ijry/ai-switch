@@ -13,12 +13,48 @@ pub struct RoutePoolRepository;
 
 impl RoutePoolRepository {
     pub async fn migrate_legacy_pool_views(pool: &SqlitePool) -> Result<(), AppError> {
-        let mut tx = pool.begin().await.map_err(|err| AppError::Database {
-            code: "database.route_pool_group_migrate_tx",
-            message: "Could not start route group migration".to_string(),
-            details: Some(err.to_string()),
-            recoverable: false,
+        let mut tx =
+            pool.begin_with("BEGIN IMMEDIATE")
+                .await
+                .map_err(|err| AppError::Database {
+                    code: "database.route_pool_group_migrate_tx",
+                    message: "Could not start route group migration".to_string(),
+                    details: Some(err.to_string()),
+                    recoverable: false,
+                })?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS route_pool_group_migrations(version INTEGER PRIMARY KEY)",
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| {
+            super::route_credential_repository::database_error(
+                "database.route_group_migration",
+                "Could not initialize group migration",
+                error,
+            )
         })?;
+        let applied: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM route_pool_group_migrations WHERE version=1)",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|error| {
+            super::route_credential_repository::database_error(
+                "database.route_group_migration",
+                "Could not load group migration",
+                error,
+            )
+        })?;
+        if applied {
+            return tx.commit().await.map_err(|error| {
+                super::route_credential_repository::database_error(
+                    "database.route_group_migration",
+                    "Could not close group migration",
+                    error,
+                )
+            });
+        }
         let now = Utc::now().to_rfc3339();
 
         sqlx::query(
@@ -96,6 +132,16 @@ impl RoutePoolRepository {
             recoverable: false,
         })?;
 
+        sqlx::query("INSERT INTO route_pool_group_migrations(version) VALUES(1)")
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| {
+                super::route_credential_repository::database_error(
+                    "database.route_group_migration",
+                    "Could not record group migration",
+                    error,
+                )
+            })?;
         tx.commit().await.map_err(|err| AppError::Database {
             code: "database.route_pool_group_migrate_commit",
             message: "Could not commit route group migration".to_string(),
@@ -320,7 +366,7 @@ impl RoutePoolRepository {
         );
         query
             .push_bind(platform)
-            .push(" AND enabled = 1 AND route_credential_id IN (");
+            .push(" AND group_id IN (SELECT id FROM route_pool_groups WHERE is_active=1 AND deleted_at IS NULL) AND route_credential_id IN (");
         let mut separated = query.separated(", ");
         for id in unique_ids {
             separated.push_bind(id);
@@ -427,54 +473,7 @@ impl RoutePoolRepository {
         platform: &str,
         group_id: &str,
     ) -> Result<(), AppError> {
-        let member_count = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM route_pool_members WHERE group_id = ?",
-        )
-        .bind(group_id)
-        .fetch_one(pool)
-        .await
-        .map_err(|err| AppError::Database {
-            code: "database.route_pool_group_delete_count",
-            message: "Could not count route group members".to_string(),
-            details: Some(err.to_string()),
-            recoverable: true,
-        })?;
-        if member_count > 0 {
-            return Err(AppError::Validation {
-                code: "validation.route_pool_group_nonempty_delete",
-                message: "Move accounts out before deleting this route group".to_string(),
-                details: Some(format!("{platform}:{group_id}:{member_count}")),
-                recoverable: true,
-            });
-        }
-
-        let now = Utc::now().to_rfc3339();
-        let result = sqlx::query(
-            "UPDATE route_pool_groups
-             SET deleted_at = ?, updated_at = ?, is_active = 0
-             WHERE platform = ? AND id = ? AND deleted_at IS NULL",
-        )
-        .bind(&now)
-        .bind(&now)
-        .bind(platform)
-        .bind(group_id)
-        .execute(pool)
-        .await
-        .map_err(|err| AppError::Database {
-            code: "database.route_pool_group_delete",
-            message: "Could not delete route group".to_string(),
-            details: Some(err.to_string()),
-            recoverable: true,
-        })?;
-        if result.rows_affected() != 1 {
-            return Err(AppError::Validation {
-                code: "validation.route_pool_group_not_found",
-                message: "Route group was not found".to_string(),
-                details: Some(format!("{platform}:{group_id}")),
-                recoverable: true,
-            });
-        }
-        Ok(())
+        super::route_group_repository::delete_group_atomic(pool, platform, group_id).await
     }
 
     pub async fn replace_group_members(
@@ -512,6 +511,42 @@ impl RoutePoolRepository {
             });
         }
 
+        let current: Vec<String> = sqlx::query_scalar(
+            "SELECT route_credential_id FROM route_pool_members WHERE group_id=? AND platform=?",
+        )
+        .bind(group_id)
+        .bind(platform)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|error| {
+            super::route_credential_repository::database_error(
+                "database.route_group_replace",
+                "Could not load group members",
+                error,
+            )
+        })?;
+        let retained: HashSet<&str> = account_ids.iter().map(String::as_str).collect();
+        let removed: Vec<&String> = current
+            .iter()
+            .filter(|id| !retained.contains(id.as_str()))
+            .collect();
+        if !removed.is_empty() {
+            let fallback = format!("{platform}-out");
+            let available:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM route_pool_groups WHERE id=? AND platform=? AND deleted_at IS NULL AND is_active=0)")
+                .bind(&fallback).bind(platform).fetch_one(&mut *tx).await.map_err(|error|super::route_credential_repository::database_error("database.route_group_replace","Could not load destination",error))?;
+            if fallback == group_id || !available {
+                return Err(AppError::Validation {
+                    code: "validation.route_pool_group_move_required",
+                    message: "Move omitted accounts to an explicit group instead".into(),
+                    details: None,
+                    recoverable: true,
+                });
+            }
+            for id in removed {
+                sqlx::query("UPDATE route_pool_members SET group_id=?,enabled=0,updated_at=? WHERE route_credential_id=? AND platform=?")
+                    .bind(&fallback).bind(Utc::now().to_rfc3339()).bind(id).bind(platform).execute(&mut *tx).await.map_err(|error|super::route_credential_repository::database_error("database.route_group_replace","Could not preserve membership",error))?;
+            }
+        }
         sqlx::query("DELETE FROM route_pool_members WHERE platform = ? AND group_id = ?")
             .bind(platform)
             .bind(group_id)
@@ -1241,6 +1276,10 @@ mod tests {
         .await
         .unwrap();
 
+        sqlx::query("DELETE FROM route_pool_group_migrations")
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query("UPDATE route_pool_members SET group_id = NULL")
             .execute(&pool)
             .await
@@ -1440,7 +1479,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "UPDATE route_pool_members SET enabled = 0 WHERE platform = ? AND route_credential_id = ?",
+            "UPDATE route_pool_members SET enabled = 0, group_id = 'codex-out' WHERE platform = ? AND route_credential_id = ?",
         )
         .bind("codex")
         .bind(&ids[0])
@@ -1809,5 +1848,65 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(members, vec![existing]);
+    }
+    #[tokio::test]
+    async fn group_moves_are_additive_atomic_and_preserve_every_account_membership() {
+        let pool = crate::database::create_memory_pool().await.unwrap();
+        crate::database::run_migrations(&pool).await.unwrap();
+        let first = create_credential(&pool, "codex", "first").await;
+        let second = create_credential(&pool, "codex", "second").await;
+        let foreign = create_credential(&pool, "claude", "foreign").await;
+        RoutePoolRepository::move_group_members(
+            &pool,
+            "codex",
+            "codex-default",
+            std::slice::from_ref(&first),
+        )
+        .await
+        .unwrap();
+        RoutePoolRepository::move_group_members(
+            &pool,
+            "codex",
+            "codex-default",
+            std::slice::from_ref(&second),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            RoutePoolRepository::list_member_ids(&pool, "codex")
+                .await
+                .unwrap(),
+            vec![first.clone(), second.clone()]
+        );
+        assert!(RoutePoolRepository::move_group_members(
+            &pool,
+            "codex",
+            "codex-archived",
+            &[first.clone(), foreign]
+        )
+        .await
+        .is_err());
+        assert_eq!(
+            RoutePoolRepository::group_id_for_account(&pool, "codex", &first)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("codex-default")
+        );
+        RoutePoolRepository::replace_members(&pool, "codex", std::slice::from_ref(&second))
+            .await
+            .unwrap();
+        assert_eq!(
+            RoutePoolRepository::group_id_for_account(&pool, "codex", &first)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("codex-out")
+        );
+        assert!(
+            RoutePoolRepository::delete_group(&pool, "codex", "codex-default")
+                .await
+                .is_err()
+        );
     }
 }

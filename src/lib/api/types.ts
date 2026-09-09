@@ -265,7 +265,7 @@ export type QuotaRefreshOutcome = {
 };
 
 /** Which relay panel dialect an account's balance is read with. */
-export type RelayBalanceProvider = "new_api" | "sub2api" | "custom";
+export type RelayBalanceProvider = "new_api" | "sub2api" | "ai-switch-saas" | "custom";
 
 /** Mirrors `config_json.relay_balance`; an absent block means querying is off. */
 export type RelayBalanceConfig = {
@@ -371,6 +371,7 @@ export type TransferPlatformChoice = {
 };
 
 export type RouteCredentialSelectionContext = {
+  group_id?: string | null;
   platform: string;
   pool_scope: RouteCredentialPoolScope;
 };
@@ -547,6 +548,7 @@ export type RouteCredentialPageRequest = {
 };
 
 export type ReorderRouteCredentialInput = {
+  group_id?: string | null;
   platform: string;
   moved_account_id: string;
   previous_account_id?: string | null;
@@ -891,12 +893,14 @@ export type ModelPriceConfig = {
 
 export type RouteProxyStatus = {
   running: boolean;
+  /** True when Web pages and model APIs share the same listener. */
+  shared_listener?: boolean;
   bind_host: string;
   port?: number | null;
-  /** The address clients should use, and always the HTTP one. */
+  /** Shared Web endpoint, or the HTTP endpoint in legacy independent mode. */
   base_url?: string | null;
   https_port?: number | null;
-  /** HTTPS endpoint on its own port; null when HTTPS is off or failed to start. */
+  /** HTTPS endpoint; uses the same port for a TLS-enabled shared listener. */
   https_base_url?: string | null;
   /** Why HTTPS is absent. HTTP keeps serving when this is set. */
   https_error?: string | null;
@@ -928,6 +932,8 @@ export type WebServiceConfig = {
   port: number;
   token?: string | null;
   autoStart: boolean;
+  /** Internal one-time marker for resetting legacy Web-only ports. */
+  sharedPortMigrated?: boolean;
   tailscaleEnabled: boolean;
   tailscaleHostname?: string | null;
   tailscaleAuthKeyPresent?: boolean;

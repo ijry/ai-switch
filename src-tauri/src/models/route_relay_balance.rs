@@ -40,6 +40,9 @@ pub enum RelayBalanceProvider {
     /// `GET <panel>/v1/usage`, authenticated with the account's own key.
     #[serde(rename = "sub2api", alias = "sub_2_api")]
     Sub2Api,
+    /// `GET <panel>/v1/usage`, authenticated with an AI Switch SaaS account security key.
+    #[serde(rename = "ai-switch-saas", alias = "ai_switch_saas")]
+    AiSwitchSaas,
     /// User-declared endpoint plus dotted paths to the numbers.
     #[serde(rename = "custom")]
     Custom,
@@ -50,6 +53,7 @@ impl RelayBalanceProvider {
         match self {
             Self::NewApi => "new_api",
             Self::Sub2Api => "sub2api",
+            Self::AiSwitchSaas => "ai-switch-saas",
             Self::Custom => "custom",
         }
     }
@@ -58,6 +62,7 @@ impl RelayBalanceProvider {
         match self {
             Self::NewApi => "new-api",
             Self::Sub2Api => "sub2api",
+            Self::AiSwitchSaas => "ai-switch-saas",
             Self::Custom => "自定义",
         }
     }
@@ -75,6 +80,7 @@ impl RelayBalanceProvider {
         match self {
             Self::NewApi => Some(Self::Sub2Api),
             Self::Sub2Api => Some(Self::NewApi),
+            Self::AiSwitchSaas => None,
             Self::Custom => None,
         }
     }

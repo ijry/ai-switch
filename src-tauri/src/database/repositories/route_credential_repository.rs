@@ -167,7 +167,7 @@ fn push_pool_scope_predicate(
                     SELECT 1 FROM route_pool_members rpm
                     WHERE rpm.platform = rc.platform
                       AND rpm.route_credential_id = rc.id
-                      AND rpm.enabled = 1
+                      AND rpm.group_id IN (SELECT id FROM route_pool_groups WHERE is_active=1 AND deleted_at IS NULL)
                 )",
             );
         }
@@ -859,7 +859,11 @@ impl RouteCredentialRepository {
             separated.push_bind(id);
         }
         separated.push_unseparated(")");
-        push_pool_scope_predicate(&mut query, selection.pool_scope, None);
+        push_pool_scope_predicate(
+            &mut query,
+            selection.pool_scope,
+            selection.group_id.as_deref(),
+        );
         query.push(" ORDER BY rc.sort_order ASC, rc.created_at DESC, rc.id ASC");
 
         query
@@ -1173,9 +1177,12 @@ impl RouteCredentialRepository {
                     rc.archived_at IS NOT NULL AS archived
              FROM route_credentials rc
              WHERE rc.platform = ?
+               AND (? IS NULL OR EXISTS(SELECT 1 FROM route_pool_members members JOIN route_pool_groups groups ON groups.id=members.group_id WHERE members.route_credential_id=rc.id AND groups.platform=rc.platform AND groups.deleted_at IS NULL AND groups.id=?))
              ORDER BY rc.sort_order ASC, rc.created_at DESC, rc.id ASC",
         )
         .bind(&input.platform)
+        .bind(&input.group_id)
+        .bind(&input.group_id)
         .fetch_all(&mut *tx)
         .await
         .map_err(|err| {
@@ -1186,10 +1193,16 @@ impl RouteCredentialRepository {
             )
         })?;
         let all_ids: Vec<String> = rows.iter().map(|(id, _, _, _)| id.clone()).collect();
-        let pool_matches = |in_pool: i64, archived: i64| match input.pool_scope {
-            RouteCredentialPoolScope::InPool => archived == 0 && in_pool != 0,
-            RouteCredentialPoolScope::OutOfPool => archived == 0 && in_pool == 0,
-            RouteCredentialPoolScope::Archived => archived != 0,
+        let pool_matches = |in_pool: i64, archived: i64| {
+            if input.group_id.is_some() {
+                true
+            } else {
+                match input.pool_scope {
+                    RouteCredentialPoolScope::InPool => archived == 0 && in_pool != 0,
+                    RouteCredentialPoolScope::OutOfPool => archived == 0 && in_pool == 0,
+                    RouteCredentialPoolScope::Archived => archived != 0,
+                }
+            }
         };
         let matches = |batch_id: &Option<String>, in_pool: i64, archived: i64| {
             (input.filters.is_empty()
@@ -1308,7 +1321,7 @@ impl RouteCredentialRepository {
                 page_size,
                 filters: input.filters,
                 pool_scope: input.pool_scope,
-                group_id: None,
+                group_id: input.group_id,
             },
         )
         .await
@@ -2939,7 +2952,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "UPDATE route_pool_members SET enabled = 0 WHERE platform = ? AND route_credential_id = ?",
+            "UPDATE route_pool_members SET enabled = 0, group_id = 'codex-out' WHERE platform = ? AND route_credential_id = ?",
         )
         .bind("codex")
         .bind(&disabled_member.id)
@@ -2983,6 +2996,7 @@ mod tests {
             &pool,
             &all_ids,
             &RouteCredentialSelectionContext {
+                group_id: None,
                 platform: "codex".to_string(),
                 pool_scope: RouteCredentialPoolScope::InPool,
             },
@@ -3008,6 +3022,7 @@ mod tests {
             &pool,
             &all_ids,
             &RouteCredentialSelectionContext {
+                group_id: None,
                 platform: "codex".to_string(),
                 pool_scope: RouteCredentialPoolScope::OutOfPool,
             },
@@ -3032,6 +3047,7 @@ mod tests {
             &pool,
             &[],
             &RouteCredentialSelectionContext {
+                group_id: None,
                 platform: "codex".to_string(),
                 pool_scope: RouteCredentialPoolScope::InPool,
             },
@@ -3464,6 +3480,7 @@ mod tests {
         let reordered_page = RouteCredentialRepository::reorder(
             &pool,
             ReorderRouteCredentialInput {
+                group_id: None,
                 platform: "codex".to_string(),
                 moved_account_id: member_ids[20].clone(),
                 previous_account_id: Some(member_ids[18].clone()),
@@ -3520,6 +3537,7 @@ mod tests {
         let reordered_page = RouteCredentialRepository::reorder(
             &pool,
             ReorderRouteCredentialInput {
+                group_id: None,
                 platform: "codex".to_string(),
                 moved_account_id: ids[2].clone(),
                 previous_account_id: None,
@@ -3560,6 +3578,7 @@ mod tests {
         let error = RouteCredentialRepository::reorder(
             &pool,
             ReorderRouteCredentialInput {
+                group_id: None,
                 platform: "codex".to_string(),
                 moved_account_id: ids[2].clone(),
                 previous_account_id: None,

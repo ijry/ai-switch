@@ -200,6 +200,10 @@ export function setRoutePoolGroupMembers(
   return invoke("set_route_pool_group_members", { input });
 }
 
+export function moveRoutePoolGroupMembers(input: SetRoutePoolGroupMembersInput): Promise<RoutePoolState> {
+  return invoke("move_route_pool_group_members", { input });
+}
+
 export function setRoutePoolMembers(input: {
   platform: string;
   account_ids: string[];

@@ -104,6 +104,7 @@ export function RouteProxyHttpsSettings() {
     mutationFn: openRouteProxyHttpsCertificateDirectory,
   });
 
+  const sharedListener = Boolean(proxyQuery.data?.shared_listener);
   const https = httpsQuery.data;
   const isMutating =
     enableMutation.isPending ||
@@ -140,7 +141,9 @@ export function RouteProxyHttpsSettings() {
     }
   };
 
-  const statusLabel = !https?.enabled
+  const statusLabel = sharedListener
+    ? t(proxyQuery.data?.https_base_url ? "settings.https.sharedTlsActive" : "settings.https.statusDisabled")
+    : !https?.enabled
     ? t("settings.https.statusDisabled")
     : https.certReady
       ? t("settings.https.statusCertificateReady")
@@ -187,8 +190,8 @@ export function RouteProxyHttpsSettings() {
           <label className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-medium text-stone-700">
             <input
               aria-label={t("settings.https.enabled")}
-              checked={https.enabled}
-              disabled={isMutating}
+              checked={sharedListener ? Boolean(proxyQuery.data?.https_base_url) : https.enabled}
+              disabled={isMutating || sharedListener}
               onChange={(event) => {
                 if (event.target.checked) {
                   enableMutation.mutate();
@@ -200,7 +203,7 @@ export function RouteProxyHttpsSettings() {
             />
             {t("settings.https.enabled")}
           </label>
-          <p className="px-1 text-[11px] text-stone-500">{t("settings.https.separatePortHint")}</p>
+          <p className="px-1 text-[11px] text-stone-500">{t(sharedListener ? "settings.https.sharedListenerHint" : "settings.https.separatePortHint")}</p>
 
           <div className="grid gap-2 rounded-xl border border-stone-200 bg-stone-50 p-3 text-[12px] text-stone-600 sm:grid-cols-2">
             <p>
@@ -213,7 +216,7 @@ export function RouteProxyHttpsSettings() {
             {/* Both addresses have to be selectable: only the HTTP one is written
                 into client configs, so the HTTPS one can only be pasted by hand. */}
             <p className="min-w-0 select-text break-all sm:col-span-2">
-              <span className="font-semibold text-stone-800">{t("settings.https.httpEndpoint")}:</span>{" "}
+              <span className="font-semibold text-stone-800">{t(sharedListener ? "settings.https.sharedEndpoint" : "settings.https.httpEndpoint")}:</span>{" "}
               {proxyQuery.data?.base_url ?? t("settings.https.notAvailable")}
             </p>
             <p className="min-w-0 select-text break-all sm:col-span-2">
@@ -269,7 +272,7 @@ export function RouteProxyHttpsSettings() {
             {!https.certReady ? (
               <button
                 className="inline-flex items-center gap-1.5 rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white motion-control hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60"
-                disabled={isMutating}
+                disabled={isMutating || sharedListener}
                 onClick={() => enableMutation.mutate()}
                 type="button"
               >

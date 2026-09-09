@@ -486,6 +486,7 @@ impl RouteConfigService {
             pool,
             &ids,
             &RouteCredentialSelectionContext {
+                group_id: None,
                 platform: PlatformId::Claude.as_str().to_string(),
                 pool_scope: RouteCredentialPoolScope::InPool,
             },
@@ -591,6 +592,7 @@ impl RouteConfigService {
             pool,
             &ids,
             &RouteCredentialSelectionContext {
+                group_id: None,
                 platform: platform.as_str().to_string(),
                 pool_scope: RouteCredentialPoolScope::InPool,
             },
@@ -2081,14 +2083,15 @@ command = "npx"
         .await
         .expect("insert credential");
         sqlx::query(
-            "INSERT INTO route_pool_members (id, platform, route_credential_id, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO route_pool_members (id, platform, route_credential_id, created_at, updated_at, group_id)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(platform)
         .bind(&credential_id)
         .bind(&now)
         .bind(&now)
+        .bind(format!("{platform}-default"))
         .execute(pool)
         .await
         .expect("insert pool member");

@@ -68,6 +68,11 @@ pub fn is_sensitive_command(command: &str) -> bool {
     matches!(
         command,
         "saas_admin"
+            | "create_route_pool_group"
+            | "update_route_pool_group"
+            | "delete_route_pool_group"
+            | "set_route_pool_group_members"
+            | "move_route_pool_group_members"
             | "export_route_credentials"
             | "preview_route_credential_import"
             | "import_route_credentials"
@@ -863,6 +868,14 @@ pub async fn dispatch_command(
             let input: SetRoutePoolGroupMembersInput = parse_arg(&args, "input")?;
             to_value(
                 RoutePoolService::set_group_members(&state.pool, input)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "move_route_pool_group_members" => {
+            let input: SetRoutePoolGroupMembersInput = parse_arg(&args, "input")?;
+            to_value(
+                RoutePoolService::move_group_members(&state.pool, input)
                     .await
                     .map_err(to_error)?,
             )

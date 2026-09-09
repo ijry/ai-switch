@@ -95,6 +95,7 @@ type AppLayoutProps = {
   onLanguageChange?: (language: Language) => void;
   languageSaving?: boolean;
   sidebarCollapsed: boolean;
+  saasEnabled?: boolean;
 };
 
 type AgentNavItem = {
@@ -207,6 +208,7 @@ export function AppLayout({
   onLanguageChange,
   languageSaving = false,
   sidebarCollapsed,
+  saasEnabled = false,
 }: AppLayoutProps) {
   const { language, setLanguage, t } = useI18n();
   const appShellRef = useRef<HTMLDivElement | null>(null);
@@ -431,6 +433,15 @@ export function AppLayout({
                 >
                   {t("layout.system")}
                 </p>
+                {saasEnabled && (
+                  <NavButton
+                    active={activeScreen === "SaaS"}
+                    collapsed={sidebarContentCollapsed}
+                    icon={PlugZap}
+                    label="SaaS"
+                    onClick={() => handleNavigate("SaaS")}
+                  />
+                )}
                 <NavButton
                   active={activeScreen === "MCP"}
                   collapsed={sidebarContentCollapsed}

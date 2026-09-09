@@ -264,6 +264,31 @@ impl RoutePoolService {
         .await
     }
 
+    pub async fn move_group_members(
+        pool: &SqlitePool,
+        input: SetRoutePoolGroupMembersInput,
+    ) -> Result<RoutePoolState, AppError> {
+        let platform = PlatformId::parse(&input.platform)?;
+        PlatformCapabilityService::require(platform, PlatformOperation::RouteCredentials)?;
+        let group_id = normalize_group_id(&input.group_id)?;
+        RoutePoolRepository::move_group_members(
+            pool,
+            platform.as_str(),
+            &group_id,
+            &input.account_ids,
+        )
+        .await?;
+        Self::state_for_group(
+            pool,
+            platform.as_str(),
+            Some(&group_id),
+            None,
+            DEFAULT_REQUEST_PAGE,
+            DEFAULT_REQUEST_PAGE_SIZE,
+        )
+        .await
+    }
+
     pub async fn route_once(
         pool: &SqlitePool,
         request: RoutePoolRouteRequest,

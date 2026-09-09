@@ -74,6 +74,9 @@ describe("command contract", () => {
       readSource("src/lib/api/client.ts"),
       /\binvoke(?:<[^>]+>)?\(\s*"([a-z0-9_]+)"/g,
     );
+    for (const command of extractMatches(readSource("src/saas/api.ts"), /\.call(?:<[^>]+>)?\(\s*"([a-z0-9_]+)"/g)) {
+      clientCommands.add(command);
+    }
     const tauriSource = readTauriSources();
     const tauriBlock = tauriSource.match(/tauri::generate_handler!\[([\s\S]*?)\]\)/)?.[1];
     expect(tauriBlock).toBeTruthy();

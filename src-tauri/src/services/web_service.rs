@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::error::AppError;
-use crate::paths::AppPaths;
+use crate::paths::{is_desktop_dev_runtime, AppPaths};
 use crate::server::{
     advertised_web_host, format_web_base_url, is_loopback_host, normalize_tls_paths,
     validate_sensitive_web_transport,
@@ -9,6 +9,8 @@ use crate::services::mobile_pairing::{
     MobilePairingPayload, MobilePairingRedeemResponse, MobilePairingStore, MobileTokenRegistry,
 };
 use crate::services::remote_probe::{probe_access_url, should_probe_access_url};
+use crate::services::route_proxy_https_service::RouteProxyHttpsService;
+use crate::services::route_proxy_service::RouteProxyService;
 use crate::services::tailscale_service::{TailscaleLogin, TailscaleService, TailscaleStatus};
 use crate::web::router::build_router_with_sensitive_command_gate;
 use crate::web::static_assets::resolve_static_dir;
@@ -41,6 +43,10 @@ pub struct WebServiceConfig {
     /// private = tailnet only; public = Tailscale Funnel internet access
     #[serde(default = "default_exposure_mode")]
     pub tailscale_exposure_mode: String,
+    /// One-time upgrade marker: legacy Web-only ports are reset to the shared
+    /// service port, while later user changes are preserved.
+    #[serde(default)]
+    pub shared_port_migrated: bool,
     #[serde(default)]
     pub tls_enabled: bool,
     #[serde(default)]
@@ -201,13 +207,16 @@ impl WebService {
         paths.ensure().await?;
         if !paths.web_service_file.exists() {
             let config = WebServiceConfig::default();
-            Self::save_config(paths, &config).await?;
-            return Ok(config);
+            return Self::save_config(paths, &config).await;
         }
 
         let contents = tokio::fs::read_to_string(&paths.web_service_file).await?;
         let config: WebServiceConfig = serde_json::from_str(&contents)?;
-        let normalized = Self::normalize_config(config.clone());
+        let legacy_port = !config.shared_port_migrated;
+        let mut normalized = Self::normalize_config(config.clone());
+        if legacy_port {
+            normalized.port = default_service_port(is_desktop_dev_runtime());
+        }
         if normalized != config {
             Self::save_config(paths, &normalized).await?;
         }
@@ -255,13 +264,21 @@ impl WebService {
             })
     }
 
-    pub async fn start(state: Arc<AppState>) -> Result<WebServerStatus, AppError> {
-        let _guard = state.web_service.config_reconciliation_lock.lock().await;
-        Self::set_sensitive_command_policy(&state.web_service, false).await;
-        let config = Self::load_config(&state.paths).await?;
-        let status = Self::start_server_locked(Arc::clone(&state), config.clone()).await?;
-        Self::reconcile_sensitive_command_policy_locked(&state, &config).await;
-        Ok(status)
+    // Box the future because the shared router contains commands that can start
+    // this service; this breaks the recursive handler Send/type dependency.
+    pub fn start(
+        state: Arc<AppState>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<WebServerStatus, AppError>> + Send>,
+    > {
+        Box::pin(async move {
+            let _guard = state.web_service.config_reconciliation_lock.lock().await;
+            Self::set_sensitive_command_policy(&state.web_service, false).await;
+            let config = Self::load_config(&state.paths).await?;
+            let status = Self::start_server_locked(Arc::clone(&state), config.clone()).await?;
+            Self::reconcile_sensitive_command_policy_locked(&state, &config).await;
+            Ok(status)
+        })
     }
 
     async fn start_server_locked(
@@ -302,14 +319,8 @@ impl WebService {
         {
             let rustls_config = load_rustls_config(&certificate_path, &private_key_path).await?;
             let addr = resolve_bind_address(&config.host, config.port).await?;
-            let listener = tokio::net::TcpListener::bind(addr).await.map_err(|error| {
-                AppError::Filesystem {
-                    code: "web_service.bind",
-                    message: "Could not start web service".to_string(),
-                    details: Some(error.to_string()),
-                    recoverable: true,
-                }
-            })?;
+            let listener =
+                RouteProxyService::bind_shared_web_listener(&state.route_proxy, addr).await?;
             let addr = listener
                 .local_addr()
                 .map_err(|error| AppError::Filesystem {
@@ -348,14 +359,9 @@ impl WebService {
             });
             (host, port, "https", join_handle)
         } else {
-            let listener = tokio::net::TcpListener::bind((config.host.as_str(), config.port))
-                .await
-                .map_err(|error| AppError::Filesystem {
-                    code: "web_service.bind",
-                    message: "Could not start web service".to_string(),
-                    details: Some(error.to_string()),
-                    recoverable: true,
-                })?;
+            let addr = resolve_bind_address(&config.host, config.port).await?;
+            let listener =
+                RouteProxyService::bind_shared_web_listener(&state.route_proxy, addr).await?;
             let addr = listener
                 .local_addr()
                 .map_err(|error| AppError::Filesystem {
@@ -377,6 +383,13 @@ impl WebService {
             (host, port, "http", join_handle)
         };
         let base_url = format_web_base_url(scheme, &host, port);
+        RouteProxyService::mark_shared_listener(
+            &state.route_proxy,
+            config.host.clone(),
+            port,
+            base_url.clone(),
+        )
+        .await;
 
         let status = WebServerStatus {
             running: true,
@@ -405,17 +418,33 @@ impl WebService {
         let _guard = state.web_service.config_reconciliation_lock.lock().await;
         Self::set_sensitive_command_policy(&state.web_service, false).await;
         let config = Self::load_config(&state.paths).await.unwrap_or_default();
-        let (shutdown, join_handle) = {
+        let (shutdown, join_handle, owned_listener) = {
             let mut inner = state.web_service.inner.lock().await;
-            inner.status = None;
+            let owned_listener = inner.status.take().is_some_and(|status| status.running);
             inner.sensitive_command_gate = None;
-            (inner.shutdown.take(), inner.join_handle.take())
+            (
+                inner.shutdown.take(),
+                inner.join_handle.take(),
+                owned_listener,
+            )
         };
         if let Some(shutdown) = shutdown {
             let _ = shutdown.send(());
         }
-        if let Some(handle) = join_handle {
-            let _ = handle.await;
+        if let Some(mut handle) = join_handle {
+            if tokio::time::timeout(Duration::from_secs(5), &mut handle)
+                .await
+                .is_err()
+            {
+                handle.abort();
+                let _ = handle.await;
+            }
+        }
+        if owned_listener {
+            RouteProxyService::clear_shared_listener(&state.route_proxy).await;
+            if let Err(error) = RouteProxyHttpsService::clear_auto_start(&state.paths).await {
+                eprintln!("Could not clear legacy pool auto-start: {error}");
+            }
         }
 
         let _ = TailscaleService::disconnect(&state.tailscale, &state.paths, &config).await;
@@ -614,6 +643,7 @@ impl WebService {
             },
             token,
             auto_start: config.auto_start,
+            shared_port_migrated: true,
             tailscale_enabled: config.tailscale_enabled,
             tailscale_hostname: hostname,
             tailscale_auth_key_present: config.tailscale_auth_key_present,
@@ -629,9 +659,10 @@ impl Default for WebServiceConfig {
     fn default() -> Self {
         Self {
             host: "127.0.0.1".to_string(),
-            port: 3090,
+            port: default_service_port(is_desktop_dev_runtime()),
             token: Some(Uuid::new_v4().to_string()),
             auto_start: false,
+            shared_port_migrated: false,
             tailscale_enabled: false,
             tailscale_hostname: None,
             tailscale_auth_key_present: false,
@@ -640,6 +671,14 @@ impl Default for WebServiceConfig {
             tls_cert_path: None,
             tls_key_path: None,
         }
+    }
+}
+
+fn default_service_port(is_dev: bool) -> u16 {
+    if is_dev {
+        10086
+    } else {
+        crate::server::standalone_default_port()
     }
 }
 
@@ -972,6 +1011,7 @@ mod tests {
             deeplink_protocols: DeepLinkProtocolRuntime::default(),
             close_to_tray: crate::app_state::CloseToTrayRuntime::default(),
             route_proxy: RouteProxyRuntimeState::default(),
+            saas: crate::saas::SaasRuntime::default(),
             web_service: WebServiceRuntimeState::default(),
             tailscale: TailscaleRuntimeState::default(),
             terminals: TerminalManager::default(),
@@ -1458,6 +1498,7 @@ mod tests {
             deeplink_protocols: DeepLinkProtocolRuntime::default(),
             close_to_tray: crate::app_state::CloseToTrayRuntime::default(),
             route_proxy: RouteProxyRuntimeState::default(),
+            saas: crate::saas::SaasRuntime::default(),
             web_service: WebServiceRuntimeState::default(),
             tailscale: TailscaleRuntimeState::default(),
             terminals: TerminalManager::default(),
@@ -1546,6 +1587,7 @@ mod tests {
             deeplink_protocols: DeepLinkProtocolRuntime::default(),
             close_to_tray: crate::app_state::CloseToTrayRuntime::default(),
             route_proxy: RouteProxyRuntimeState::default(),
+            saas: crate::saas::SaasRuntime::default(),
             web_service: WebServiceRuntimeState::default(),
             tailscale: TailscaleRuntimeState::default(),
             terminals: TerminalManager::default(),
@@ -1616,6 +1658,7 @@ mod tests {
             deeplink_protocols: DeepLinkProtocolRuntime::default(),
             close_to_tray: crate::app_state::CloseToTrayRuntime::default(),
             route_proxy: RouteProxyRuntimeState::default(),
+            saas: crate::saas::SaasRuntime::default(),
             web_service: WebServiceRuntimeState::default(),
             tailscale: TailscaleRuntimeState::default(),
             terminals: TerminalManager::default(),
@@ -1648,3 +1691,6 @@ mod tests {
         assert!(status.base_url.is_none());
     }
 }
+
+#[cfg(test)]
+mod shared_listener_tests;

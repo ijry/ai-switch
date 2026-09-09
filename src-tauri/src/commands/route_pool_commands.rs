@@ -105,6 +105,16 @@ pub async fn set_route_pool_members(
         .map_err(ApiError::from)
 }
 
+#[tauri::command]
+pub async fn move_route_pool_group_members(
+    state: State<'_, AppState>,
+    input: SetRoutePoolGroupMembersInput,
+) -> Result<RoutePoolState, ApiError> {
+    RoutePoolService::move_group_members(&state.pool, input)
+        .await
+        .map_err(ApiError::from)
+}
+
 /// Switch the platform between the aggregated model list and the per-account
 /// one. Takes effect immediately for `/v1/models`; client config files only
 /// change on the next write.

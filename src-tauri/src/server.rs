@@ -374,6 +374,9 @@ async fn shutdown_signal() {
 /// such hook, so it has to do it before returning or PTY children and the
 /// tailscale sidecar are left running.
 async fn shutdown_runtime(state: &Arc<AppState>) {
+    if state.saas.logs.shutdown().await.is_err() {
+        eprintln!("SaaS log queue could not drain before exit");
+    }
     crate::services::tailscale_service::TailscaleService::shutdown(&state.tailscale).await;
     state.terminals.kill_all();
 }
@@ -432,6 +435,7 @@ pub async fn run_from_env() -> Result<(), String> {
         deeplink_protocols: DeepLinkProtocolRuntime::default(),
         close_to_tray: crate::app_state::CloseToTrayRuntime::default(),
         route_proxy: RouteProxyRuntimeState::default(),
+        saas: crate::saas::SaasRuntime::default(),
         web_service: WebServiceRuntimeState::default(),
         tailscale: TailscaleRuntimeState::default(),
         terminals: TerminalManager::default(),

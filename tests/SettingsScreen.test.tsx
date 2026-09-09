@@ -413,6 +413,47 @@ describe("SettingsScreen", () => {
     });
   });
 
+  it("labels the shared service port and falls back to the dev port", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settingsFixture);
+    const existing = await getWebServiceConfig();
+    vi.mocked(getWebServiceConfig).mockResolvedValue({ ...existing, port: 0 });
+    render(<QueryClientProvider client={createQueryClient()}><I18nProvider initialLanguage="en"><SettingsScreen /></I18nProvider></QueryClientProvider>);
+    await waitFor(() => expect(screen.getByRole("spinbutton", { name: "Service port" })).toHaveValue(10086));
+  });
+
+  it("shows active shared TLS instead of the legacy certificate status", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settingsFixture);
+    vi.mocked(getRouteProxyStatus).mockResolvedValue({ running:true, shared_listener:true, bind_host:"127.0.0.1", port:3090, base_url:"https://127.0.0.1:3090", https_port:3090, https_base_url:"https://127.0.0.1:3090" });
+    render(<QueryClientProvider client={createQueryClient()}><I18nProvider initialLanguage="en"><SettingsScreen /></I18nProvider></QueryClientProvider>);
+    await userEvent.click(await screen.findByRole("button", { name: /HTTPS/ }));
+    expect(await screen.findByText(/Web Service TLS is active/)).toBeInTheDocument();
+  });
+
+  it("invalidates pool status when the shared Web service starts or stops", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settingsFixture);
+    const client = createQueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    render(<QueryClientProvider client={client}><I18nProvider initialLanguage="en"><SettingsScreen /></I18nProvider></QueryClientProvider>);
+    expect(await screen.findByText(/share one port/i)).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "Start service" }));
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["route-proxy-status"] }));
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["route-proxy-https-status"] });
+    invalidate.mockClear();
+    await userEvent.click(screen.getByRole("button", { name: "Stop service" }));
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["route-proxy-status"] }));
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["route-proxy-https-status"] });
+  });
+
+  it("directs shared-listener TLS changes to the Web Service configuration", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settingsFixture);
+    vi.mocked(getRouteProxyStatus).mockResolvedValue({ running:true, shared_listener:true, bind_host:"127.0.0.1", port:3090, base_url:"http://127.0.0.1:3090" });
+    render(<QueryClientProvider client={createQueryClient()}><I18nProvider initialLanguage="zh-CN"><SettingsScreen /></I18nProvider></QueryClientProvider>);
+    await userEvent.click(await screen.findByRole("button", { name: /HTTPS/ }));
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "为本地算力池启用 HTTPS" })).toBeDisabled());
+    expect(screen.getByText(/请在 Web 服务中配置 TLS/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成并导入根证书" })).toBeDisabled();
+  });
+
   it("refreshes secure-network status after starting and stopping Web Service", async () => {
     vi.mocked(getSettings).mockResolvedValue(settingsFixture);
 

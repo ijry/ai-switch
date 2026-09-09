@@ -127,9 +127,13 @@ Desktop and browser share one React UI. Desktop uses Tauri IPC. Browser mode use
 
 1. Open Settings
 2. Choose **Web Service**
-3. Set host, port, and access token
+3. Set host, service port, and access token
 4. Start the service
 5. Optionally enable Tailscale, choose private or public access, and click **Login with Tailscale**
+
+Like the standalone server, the GUI hosts Web pages, SaaS (when enabled), and compute-pool model APIs on one listener. Starting from either **Web Service** or the pool toolbar uses the Web Service configuration; either GUI stop control stops the shared service. Desktop dev mode defaults to port `10086` and uses a separate `web-service-dev.json`, so it never changes the installed release configuration; installed and standalone-server configurations default to service port `19527`. historical custom Web ports are reset once during the upgrade. Later changes to the service port also change the compute-pool port. A successfully started Web Service takes over any legacy independent pool listeners instead of leaving a second set of ports running.
+
+Configure HTTPS under **Web Service → TLS**, not on the legacy independent pool HTTPS port. Restart the shared service after changing its host, service port, or TLS settings, and rewrite client route configs if their endpoint changes. Sharing a port does not merge administrator, mobile, compute-pool-key, or SaaS-key permissions.
 
 Default bind is `127.0.0.1:19527`. Without TLS, non-loopback hosts such as `0.0.0.0` are rejected; enable Web service TLS before binding to all interfaces.
 
@@ -195,3 +199,7 @@ The installer creates the `ai-switch` system user, installs under `/opt/ai-switc
 ## Clean-Room Boundary
 
 This project may study public behavior, public documentation, and public file formats from related tools.
+
+## License
+
+The repository is generally available under the MIT License in the root LICENSE. The SaaS plugin has a separate license scope: src/saas/ and src-tauri/src/saas/ are licensed under the GNU General Public License v3.0 only (GPL-3.0-only), as stated in each directory's LICENSE. See docs/saas-license.md for the scope, distribution notes, and bilingual explanation.

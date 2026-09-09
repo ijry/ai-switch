@@ -17,6 +17,7 @@ import { NotificationSettings } from "../components/settings/notification-settin
 import { WebServiceSettings } from "../components/settings/web-service-settings";
 import { useState } from "react";
 import { MotionPresence } from "../components/motion/MotionPrimitives";
+import { SaasSettings } from "../saas";
 
 type FeatureEntry = {
   screen?: string;
@@ -72,12 +73,13 @@ const featureEntries: FeatureEntry[] = [
 
 type SettingsScreenProps = {
   onOpenFeature?: (screen: string) => void;
+  onSaasConfigChanged?: () => void;
 };
 
-export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
+export function SettingsScreen({ onOpenFeature, onSaasConfigChanged }: SettingsScreenProps) {
   const queryClient = useQueryClient();
   const { language, setLanguage, t } = useI18n();
-  const [activeSection, setActiveSection] = useState<"webService" | "https" | "notification">("webService");
+  const [activeSection, setActiveSection] = useState<"webService" | "https" | "notification" | "saas">("webService");
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const saveMutation = useMutation({
     mutationFn: saveSettings,
@@ -146,6 +148,10 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
               </button>
             );
           })}
+          <button type="button" aria-label={language==="en"?"SaaS plugin":"SaaS 插件"} className="rounded-xl border border-stone-200 bg-stone-50/70 px-3 py-2.5 text-left hover:bg-white" onClick={()=>setActiveSection("saas")}>
+            <span className="flex items-center gap-2 text-[13px] font-semibold"><Layers3 className="h-4 w-4" />{language==="en"?"SaaS plugin":"SaaS 插件"}</span>
+            <p className="mt-1 text-[12px] text-stone-500">{language==="en"?"User portal, GitHub login, billing and request logs":"用户面板、GitHub 登录、计费与请求日志"}</p>
+          </button>
         </div>
       </div>
 
@@ -161,6 +167,7 @@ export function SettingsScreen({ onOpenFeature }: SettingsScreenProps) {
             <WebServiceSettings />
           </motion.div>
         )}
+        {activeSection === "saas" && <SaasSettings onConfigChanged={onSaasConfigChanged} />}
         {activeSection === "https" && (
           <motion.div
             key="settings-https"

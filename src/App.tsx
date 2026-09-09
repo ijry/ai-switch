@@ -32,6 +32,8 @@ import { VibeScreen } from "./screens/VibeScreen";
 import { McpScreen } from "./screens/McpScreen";
 import { SkillsScreen } from "./screens/SkillsScreen";
 import { MotionPage, MotionProvider, type MotionDirection } from "./components/motion/MotionPrimitives";
+import { SaasAdmin } from "./saas";
+import { adminCall } from "./saas/api";
 
 const queryClient = createQueryClient();
 
@@ -55,6 +57,7 @@ const implementedScreens = new Set([
   "CryptoTools",
   "OCR",
   "Settings",
+  "SaaS",
   "Sessions",
   "Updates",
   "Log",
@@ -75,12 +78,20 @@ export type PoolScopeFocus = {
 };
 
 export function App() {
+  const [webReady, setWebReady] = useState(canSkipWebAuthGate);
+  const [saasUnlocked,setSaasUnlocked] = useState(false);
+  const refreshSaas = useCallback(async()=>{
+    try {
+      const status = await adminCall<{unlocked:boolean}>("activation.status");
+      setSaasUnlocked(status.unlocked);
+    } catch { setSaasUnlocked(false); }
+  },[]);
+  useEffect(()=>{if (webReady) void refreshSaas();},[refreshSaas, webReady]);
   const [screen, setScreen] = useState("Codex");
   const screenRef = useRef("Codex");
   const [navigationDirection, setNavigationDirection] = useState<MotionDirection>("neutral");
   const [sessionPlatform, setSessionPlatform] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [webReady, setWebReady] = useState(canSkipWebAuthGate);
   const [poolScopeFocus, setPoolScopeFocus] = useState<PoolScopeFocus | null>(null);
   // Vibe keeps live terminals; once it has been opened we keep it mounted and only
   // hide it so switching back and forth never drops running sessions or scrollback.
@@ -101,7 +112,8 @@ export function App() {
   const handleWebAuthenticated = useCallback(() => {
     queryClient.clear();
     setWebReady(true);
-  }, []);
+    void refreshSaas();
+  }, [refreshSaas]);
 
   const navigate = (nextScreen: string) => {
     const screens = Array.from(implementedScreens);
@@ -177,6 +189,7 @@ export function App() {
             )}
             {!vibeActive && (
               <AppLayout
+                saasEnabled={saasUnlocked}
                 activeScreen={screen}
                 onNavigate={navigate}
                 onOpenVibe={() => navigate("Vibe")}
@@ -203,7 +216,8 @@ export function App() {
                 {screen === "OCR" && <OcrScreen />}
                 {screen === "Sessions" && <SessionsScreen initialPlatform={sessionPlatform} />}
                 {screen === "Updates" && <UpdatesScreen />}
-                {screen === "Settings" && <SettingsScreen onOpenFeature={navigate} />}
+                {screen === "Settings" && <SettingsScreen onOpenFeature={navigate} onSaasConfigChanged={()=>void refreshSaas()} />}
+                {screen === "SaaS" && <SaasAdmin onConfigChanged={()=>void refreshSaas()} />}
                 {screen === "MCP" && <McpScreen />}
                 {screen === "Skills" && <SkillsScreen />}
                 {screen === "About" && <AboutScreen />}

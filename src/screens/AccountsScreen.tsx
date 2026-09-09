@@ -128,7 +128,7 @@ import {
   routePoolTestModel,
   saveSettings,
   setRouteCredentialStatuses,
-  setRoutePoolGroupMembers,
+  moveRoutePoolGroupMembers,
   setRoutePoolModelMode,
   startRouteProxy,
   stopRouteProxy,
@@ -1243,6 +1243,11 @@ const relayBalanceProviderOptions: Array<{
     label: "sub2api",
     hint: "用账号自己的 API Key 查 /v1/usage，无需额外填写；选错了会自动改按 new-api 再试一次",
   },
+  {
+    value: "ai-switch-saas",
+    label: "AI Switch SaaS",
+    hint: "用 SaaS 个人设置里的账户安全密钥查 /v1/usage；不会使用模型 API Key",
+  },
   { value: "custom", label: "自定义", hint: "自己填请求 URL 与取值路径" },
 ];
 
@@ -1287,7 +1292,12 @@ function relayBalanceFormFromConfig(config: Record<string, unknown>): RelayBalan
   }
   const block = raw as Record<string, unknown>;
   const provider = stringFromRecord(block, "provider");
-  if (provider !== "new_api" && provider !== "sub2api" && provider !== "custom") {
+  if (
+    provider !== "new_api" &&
+    provider !== "sub2api" &&
+    provider !== "ai-switch-saas" &&
+    provider !== "custom"
+  ) {
     return emptyRelayBalanceForm;
   }
   const divisor = block.divisor;
@@ -2542,7 +2552,11 @@ function RelayBalanceFields({
       <legend className="text-[12px] font-semibold text-stone-600">中转站余额查询</legend>
       <div
         className={`mt-1.5 grid gap-1 rounded-lg bg-stone-100 p-1 ${
-          options.length === 4 ? "grid-cols-4" : "grid-cols-3"
+          options.length === 5
+            ? "grid-cols-5"
+            : options.length === 4
+              ? "grid-cols-4"
+              : "grid-cols-3"
         }`}
       >
         {options.map((option) => {
@@ -2565,6 +2579,24 @@ function RelayBalanceFields({
         })}
       </div>
       <p className="text-[11px] text-stone-500">{active.hint}</p>
+      {value.provider === "ai-switch-saas" ? (
+        <label className={labelClass}>
+          SaaS 账户安全密钥
+          <input
+            aria-label={`${idPrefix} 余额查询 SaaS 账户安全密钥`}
+            autoComplete="off"
+            className={fieldClass}
+            onChange={(event) =>
+              onPanelAccountChange({ ...panelAccount, accessToken: event.target.value })
+            }
+            placeholder="sk-saas-account-…"
+            value={panelAccount.accessToken}
+          />
+          <span className="text-[11px] font-medium text-stone-500">
+            在 SaaS 用户站点「个人信息 → 账户查询安全密钥」创建；服务端只保存摘要，明文仅显示一次。
+          </span>
+        </label>
+      ) : null}
       {value.provider === "new_api" ? (
         <div className="grid gap-2">
           <label className={labelClass}>
@@ -2961,7 +2993,6 @@ export function AccountsScreen({
         : accountGroupId.endsWith("-archived")
           ? "archived"
           : "in_pool";
-  const archivedGroupSelected = accountGroupId?.endsWith("-archived") ?? false;
   const poolMemberKey = useMemo(
     () => Array.from(draftPoolIds).sort().join(","),
     [draftPoolIds],
@@ -3181,7 +3212,7 @@ export function AccountsScreen({
     setModelTestMenuOpen(false);
     setModelTestMenuCopied(null);
     setBatchStatus("");
-  }, [accountView]);
+  }, [accountView, selectedGroupId]);
 
   const credentialsQuery = useQuery<RouteCredentialPage>({
     queryKey: [
@@ -3278,6 +3309,10 @@ export function AccountsScreen({
     queryFn: () => getRoutePool(activePlatform, selectedGroupId, null, null, null),
     placeholderData: keepPreviousData,
   });
+  const activeRoutePoolQuery = useQuery({
+    queryKey: ["route-pool", activePlatform, "active"],
+    queryFn: () => getRoutePool(activePlatform),
+  });
   const routePoolGroups = routePoolQuery.data?.groups ?? fallbackRoutePoolGroups(activePlatform);
 
   useEffect(() => {
@@ -3286,10 +3321,10 @@ export function AccountsScreen({
   }, [activePlatform]);
 
   useEffect(() => {
-    if (selectedGroupId == null && routePoolQuery.data?.group_id) {
+    if (selectedGroupId == null && routePoolQuery.data?.platform === activePlatform && !routePoolQuery.isPlaceholderData && routePoolQuery.data?.group_id) {
       setSelectedGroupId(routePoolQuery.data.group_id);
     }
-  }, [routePoolQuery.data?.group_id, selectedGroupId]);
+  }, [routePoolQuery.data?.group_id, routePoolQuery.data?.platform, routePoolQuery.isPlaceholderData, selectedGroupId, activePlatform]);
   // Counts *consecutive* stopped polls, not total updates. `dataUpdateCount` is
   // cumulative over the query's whole life and includes every `setQueryData`, so
   // it never resets: by the time the user stopped the proxy the count was already
@@ -3452,10 +3487,10 @@ export function AccountsScreen({
   }, [activePlatform]);
 
   useEffect(() => {
-    if (routePoolQuery.data) {
-      setDraftPoolIds(new Set(routePoolQuery.data.account_ids));
+    if (activeRoutePoolQuery.data?.platform === activePlatform) {
+      setDraftPoolIds(new Set(activeRoutePoolQuery.data.account_ids));
     }
-  }, [routePoolQuery.data]);
+  }, [activeRoutePoolQuery.data, activePlatform]);
 
   // Every field the 新增账号 dialog owns, back to what a fresh open would show.
   // Also used after a successful save, so anything added to that form belongs
@@ -3776,7 +3811,7 @@ export function AccountsScreen({
       return;
     }
     setExportRequest({
-      selection_context: { platform: activePlatform, pool_scope: accountScope },
+      selection_context: { platform: activePlatform, pool_scope: accountScope, group_id: accountGroupId },
       credential_ids: Array.from(selectedAccountIds),
     });
   };
@@ -3953,10 +3988,13 @@ export function AccountsScreen({
       // Only meaningful for the new-api dialect, and only when actually typed: the
       // other providers have nowhere to send it.
       const panelAccount =
-        apiRelayBalance.provider === "new_api"
+        apiRelayBalance.provider === "new_api" || apiRelayBalance.provider === "ai-switch-saas"
           ? {
               accessToken: apiRelayBalancePanelAccount.accessToken.trim(),
-              userId: apiRelayBalancePanelAccount.userId.trim(),
+              userId:
+                apiRelayBalance.provider === "new_api"
+                  ? apiRelayBalancePanelAccount.userId.trim()
+                  : "",
             }
           : emptyRelayBalancePanelAccount;
       for (const [index, key] of apiKeys.entries()) {
@@ -4026,17 +4064,12 @@ export function AccountsScreen({
           const targetGroupId =
             selectedGroupId ?? routePoolQuery.data?.group_id ?? routePoolQuery.data?.active_group_id;
           if (targetGroupId) {
-            const nextPoolIds = new Set(routePoolQuery.data?.account_ids ?? draftPoolIds);
-            for (const credentialId of poolCandidateIds) {
-              nextPoolIds.add(credentialId);
-            }
             try {
-              const state = await setRoutePoolGroupMembers({
+              await moveRoutePoolGroupMembers({
                 platform: activePlatform,
                 group_id: targetGroupId,
-                account_ids: Array.from(nextPoolIds),
+                account_ids: poolCandidateIds,
               });
-              setDraftPoolIds(new Set(state.account_ids));
               if (!external) {
                 setRoutePoolFeedback({
                   type: "success",
@@ -4066,7 +4099,7 @@ export function AccountsScreen({
 
   const routePoolMutation = useMutation({
     mutationFn: ({ platform, group_id, account_ids }: RoutePoolMutationInput) =>
-      setRoutePoolGroupMembers({
+      moveRoutePoolGroupMembers({
         platform,
         group_id: group_id ?? selectedGroupId ?? routePoolQuery.data?.group_id ?? "",
         account_ids,
@@ -4078,7 +4111,6 @@ export function AccountsScreen({
       if (variables.group_id) {
         setSelectedGroupId(variables.group_id);
       }
-      setDraftPoolIds(new Set(state.account_ids));
       const message =
         variables.action === "add"
           ? `已加入 ${variables.affectedCount} 个账号。`
@@ -4192,7 +4224,7 @@ export function AccountsScreen({
         ["route-pool", activePlatform],
         {
           platform: outcome.platform,
-          account_ids: routePoolQuery.data?.account_ids ?? Array.from(draftPoolIds),
+          account_ids: activeRoutePoolQuery.data?.account_ids ?? Array.from(draftPoolIds),
           stats: outcome.stats,
         },
       );
@@ -4381,15 +4413,24 @@ export function AccountsScreen({
     },
   });
 
+  const refreshSharedServiceStatus = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ["web-server-status"] }),
+    queryClient.invalidateQueries({ queryKey: ["tailscale-status"] }),
+    queryClient.invalidateQueries({ queryKey: ["route-proxy-https-status"] }),
+  ]);
   const startProxyMutation = useMutation({
     mutationFn: startRouteProxy,
-    onSuccess: (status) => queryClient.setQueryData(["route-proxy-status"], status),
+    onSuccess: async (status) => {
+      queryClient.setQueryData(["route-proxy-status"], status);
+      await refreshSharedServiceStatus();
+    },
   });
   const stopProxyMutation = useMutation({
     mutationFn: stopRouteProxy,
-    onSuccess: (status) => {
+    onSuccess: async (status) => {
       queryClient.setQueryData(["route-proxy-status"], status);
       setConfigWriteOutcomes([]);
+      await refreshSharedServiceStatus();
     },
   });
   // Pool-wide client behavior switches. Claude Code reads these from its own
@@ -5161,6 +5202,7 @@ export function AccountsScreen({
     reorderMutation.mutate({
       platform: activePlatform,
       moved_account_id: movedId,
+      group_id: accountGroupId,
       previous_account_id: neighbors.previousAccountId,
       next_account_id: neighbors.nextAccountId,
       filters: accountFilters,
@@ -5263,15 +5305,10 @@ export function AccountsScreen({
       return;
     }
     try {
-      const targetState = await getRoutePool(activePlatform, targetGroupId, null, null, null);
-      const nextAccountIds = new Set(targetState.account_ids);
-      for (const id of selectedAccountIds) {
-        nextAccountIds.add(id);
-      }
       routePoolMutation.mutate({
         platform: activePlatform,
         group_id: targetGroupId,
-        account_ids: Array.from(nextAccountIds),
+        account_ids: Array.from(selectedAccountIds),
         action: "move",
         affectedCount: selectedAccountIds.size,
       });
@@ -5296,15 +5333,8 @@ export function AccountsScreen({
       return;
     }
     const ids = Array.from(selectedAccountIds);
-    const remainingPool = Array.from(draftPoolIds).filter((id) => !selectedAccountIds.has(id));
     clearAccountSelection();
-    batchDeleteMutation.mutate(ids, {
-      onSuccess: () => {
-        if (remainingPool.length !== draftPoolIds.size) {
-          applyPoolMembership(remainingPool, "sync", ids.length);
-        }
-      },
-    });
+    batchDeleteMutation.mutate(ids);
   };
 
   const openRouteTestDialog = () => {
@@ -5838,9 +5868,9 @@ export function AccountsScreen({
                 <button
                   aria-label="停止本地路由代理"
                   className="grid h-6 w-6 place-items-center border border-red-700 bg-red-600 text-white motion-control hover:bg-red-700 disabled:opacity-50"
-                  disabled={startProxyMutation.isPending || stopProxyMutation.isPending}
+                  disabled={startProxyMutation.isPending || stopProxyMutation.isPending || Boolean(routeProxyQuery.data.shared_listener && !isDesktop())}
                   onClick={() => stopProxyMutation.mutate()}
-                  title="停止本地路由代理"
+                  title={routeProxyQuery.data.shared_listener ? (isDesktop() ? "停止共享服务（Web 与算力池）" : "共享监听由宿主控制，请在桌面端或服务器进程中停止服务") : "停止本地路由代理"}
                   type="button"
                 >
                   <Square aria-hidden="true" className="h-3.5 w-3.5 fill-current" />
@@ -5851,7 +5881,7 @@ export function AccountsScreen({
                   className="grid h-6 w-6 place-items-center border border-emerald-700 bg-emerald-600 text-white motion-control hover:bg-emerald-700 disabled:opacity-50"
                   disabled={startProxyMutation.isPending || stopProxyMutation.isPending}
                   onClick={() => startProxyMutation.mutate()}
-                  title="启动本地路由代理"
+                  title="启动共享服务（Web 与算力池）"
                   type="button"
                 >
                   <Play aria-hidden="true" className="h-3.5 w-3.5 fill-current" />
@@ -6610,7 +6640,7 @@ export function AccountsScreen({
                       </option>
                     ))}
                   </select>
-                    {archivedGroupSelected ? (
+                    <>
                       <button
                         aria-label="批量恢复账号"
                         className="grid h-7 w-7 place-items-center border border-emerald-200 bg-white text-emerald-800 motion-control hover:bg-emerald-50 disabled:opacity-50"
@@ -6622,7 +6652,6 @@ export function AccountsScreen({
                         <ArchiveRestore aria-hidden="true" className="h-3.5 w-3.5" />
                         <span className="sr-only">批量恢复账号</span>
                       </button>
-                    ) : (
                       <button
                         aria-label="批量归档账号"
                         className="inline-flex h-7 items-center justify-center gap-1.5 border border-amber-200 bg-white px-2.5 text-[12px] font-semibold text-amber-800 motion-control hover:bg-amber-50 disabled:opacity-50"
@@ -6634,7 +6663,7 @@ export function AccountsScreen({
                         <Archive aria-hidden="true" className="h-3.5 w-3.5" />
                         归档
                       </button>
-                    )}
+                    </>
                   </>
                 <button
                   aria-label="批量删除账号"
@@ -7562,7 +7591,7 @@ export function AccountsScreen({
                 <button
                   aria-label={`${group.name}${group.is_active ? "，当前激活" : ""}`}
                   aria-pressed={selected}
-                  className={`relative grid h-6 shrink-0 place-items-center rounded-md px-1.5 text-[11px] font-semibold motion-control ${selected ? "bg-stone-900 text-white shadow-sm" : "text-stone-600 hover:bg-stone-100"}`}
+                  className={`relative inline-flex h-6 shrink-0 items-center justify-center rounded-md px-1.5 text-[11px] font-semibold motion-control ${selected ? "bg-stone-900 text-white shadow-sm" : "text-stone-600 hover:bg-stone-100"}`}
                   key={group.id}
                   onClick={() => selectRouteGroup(group.id)}
                   onContextMenu={(event) => {
@@ -7570,7 +7599,7 @@ export function AccountsScreen({
                     openGroupEditor(group);
                   }}
                   onKeyDown={(event) => {
-                    if (event.key === "ContextMenu") {
+                    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
                       event.preventDefault();
                       openGroupEditor(group);
                     }
@@ -7578,11 +7607,9 @@ export function AccountsScreen({
                   title={`${group.name} · ${group.account_count} 个账号${group.is_internal ? " · 内部" : ""}${group.is_active ? " · 当前承接普通路由" : ""}（右键编辑）`}
                   type="button"
                 >
-                  {group.name}
+                  <span className="whitespace-nowrap">{group.name}</span>
                   {group.is_active ? (
-                    <span aria-hidden="true" className="ml-1 rounded bg-amber-400/90 px-1 text-[9px] font-bold text-stone-900">
-                      激活
-                    </span>
+                    <span aria-hidden="true" className="ml-1 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400 ring-1 ring-amber-500/40" data-testid="active-route-group-dot" />
                   ) : null}
                   {selected ? (
                     <motion.span

@@ -150,15 +150,36 @@ impl RouteProxyHttpsService {
     }
 
     pub async fn start_proxy(state: &AppState) -> Result<RouteProxyStatus, AppError> {
-        let transport = Self::transport(&state.paths).await?;
-        let route_proxy =
-            RouteProxyService::start(&state.route_proxy, state.pool.clone(), transport).await?;
+        let route_proxy = if RouteProxyService::has_shared_listener(&state.route_proxy).await {
+            RouteProxyService::status(&state.route_proxy).await
+        } else {
+            #[cfg(feature = "desktop")]
+            {
+                crate::services::web_service::WebService::start(std::sync::Arc::new(state.clone()))
+                    .await?;
+                RouteProxyService::status(&state.route_proxy).await
+            }
+            #[cfg(not(feature = "desktop"))]
+            {
+                let transport = Self::transport(&state.paths).await?;
+                RouteProxyService::start(&state.route_proxy, state.pool.clone(), transport).await?
+            }
+        };
 
         let mut config = Self::load_config(&state.paths).await?;
         config.auto_start = true;
         Self::save_config(&state.paths, &config).await?;
 
         Ok(route_proxy)
+    }
+
+    /// Desktop controls own the combined listener. Web API pool-stop commands
+    /// retain their existing no-op behavior for the process-owned server listener.
+    pub async fn stop_proxy(state: &AppState) -> Result<RouteProxyStatus, AppError> {
+        crate::services::web_service::WebService::stop(state).await;
+        let status = RouteProxyService::stop(&state.route_proxy).await?;
+        Self::clear_auto_start(&state.paths).await?;
+        Ok(status)
     }
 
     pub async fn clear_auto_start(paths: &AppPaths) -> Result<(), AppError> {
@@ -175,6 +196,18 @@ impl RouteProxyHttpsService {
         Self::status(&state.paths, proxy.https_base_url).await
     }
 
+    async fn require_independent_listener(state: &AppState) -> Result<(), AppError> {
+        if RouteProxyService::has_shared_listener(&state.route_proxy).await {
+            return Err(AppError::Validation {
+                code: "validation.route_proxy_shared_listener",
+                message: "The pool shares the Web Service listener. Configure TLS in Web Service and restart it.".to_string(),
+                details: None,
+                recoverable: true,
+            });
+        }
+        Ok(())
+    }
+
     pub async fn enable(state: &AppState) -> Result<RouteProxyHttpsOperationOutcome, AppError> {
         Self::enable_with_trust(state, &SystemRouteProxyHttpsTrustExecutor).await
     }
@@ -183,6 +216,7 @@ impl RouteProxyHttpsService {
         state: &AppState,
         trust_executor: &dyn RouteProxyHttpsTrustExecutor,
     ) -> Result<RouteProxyHttpsOperationOutcome, AppError> {
+        Self::require_independent_listener(state).await?;
         let material = Self::ensure_material(&state.paths).await?;
         let trust = trust_executor.install(&material).await;
         Self::save_trust_outcome(&state.paths, trust).await?;
@@ -245,6 +279,7 @@ impl RouteProxyHttpsService {
     }
 
     pub async fn disable(state: &AppState) -> Result<RouteProxyHttpsOperationOutcome, AppError> {
+        Self::require_independent_listener(state).await?;
         let previous = RouteProxyService::status(&state.route_proxy).await;
         if previous.running {
             RouteProxyService::stop(&state.route_proxy).await?;
@@ -1441,6 +1476,7 @@ mod tests {
                     crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime::default(),
                 close_to_tray: crate::app_state::CloseToTrayRuntime::default(),
                 route_proxy: RouteProxyRuntimeState::default(),
+                saas: crate::saas::SaasRuntime::default(),
                 web_service: WebServiceRuntimeState::default(),
                 tailscale: TailscaleRuntimeState::default(),
                 terminals: TerminalManager::default(),
@@ -1458,6 +1494,15 @@ mod tests {
         let fixture = test_state().await;
         let state = &fixture.state;
         state.paths.ensure().await.expect("paths");
+        let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let web_config = crate::services::web_service::WebServiceConfig {
+            port: reservation.local_addr().unwrap().port(),
+            ..Default::default()
+        };
+        crate::services::web_service::WebService::save_config(&state.paths, &web_config)
+            .await
+            .unwrap();
+        drop(reservation);
 
         RouteProxyHttpsService::save_config(
             &state.paths,
@@ -1483,7 +1528,7 @@ mod tests {
         restore_auto_started_proxy(state).await;
         assert!(RouteProxyService::status(&state.route_proxy).await.running);
 
-        RouteProxyService::stop(&state.route_proxy).await.ok();
+        RouteProxyHttpsService::stop_proxy(state).await.unwrap();
     }
 
     #[tokio::test]
