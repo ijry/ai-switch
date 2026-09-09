@@ -7,7 +7,7 @@ description: Reach AI Switch over a Tailscale private network or Funnel, and gen
 
 This page covers two independent things. Separate them before reading on:
 
-- **Remote access**: letting other devices reach the AI Switch management UI on your machine (the web service, port `3090` by default).
+- **Remote access**: letting other devices reach the AI Switch management UI on your machine (the web service, port `19527` by default).
 - **Local pool HTTPS**: making the local routing proxy (port `19527` by default) serve `https://` for clients that only accept HTTPS upstream URLs.
 
 Different ports, different certificate stories. Do not conflate them.
@@ -37,7 +37,7 @@ AI Switch ships a Go sidecar (`ai-switch-tsnet`, built on Tailscale's `tsnet` li
 After sign-in the UI shows a MagicDNS HTTPS address for private mode, in this shape:
 
 ```text
-https://ai-switch.<your-tailnet>.ts.net:3090
+https://ai-switch.<your-tailnet>.ts.net:19527
 ```
 
 Do not enter the `100.x.y.z` address in the mobile client: Tailscale HTTPS certificates are issued for the MagicDNS hostname, so an IP URL fails hostname verification. Enable **MagicDNS** and **HTTPS certificates** in the Tailscale admin console first. The sidecar uses the hostname `ai-switch` by default and keeps its state in `~/.ai-switch/tailscale/`.

@@ -1,0 +1,70 @@
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - redis-data:/data
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${SAAS_POSTGRES_USER:-ai_switch}
+      POSTGRES_PASSWORD: ${SAAS_POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${SAAS_POSTGRES_DB:-ai_switch_logs}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SAAS_POSTGRES_USER:-ai_switch} -d ${SAAS_POSTGRES_DB:-ai_switch_logs}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  ai-switch:
+    image: ${AI_SWITCH_DOCKER_IMAGE:-ijry/ai-switch:latest}
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${AI_SWITCH_PORT:-19527}:19527"
+    environment:
+      AI_SWITCH_HOST: 0.0.0.0
+      AI_SWITCH_PORT: "19527"
+      AI_SWITCH_ALLOW_INSECURE_HTTP: "1"
+      AI_SWITCH_STATIC_DIR: /app/web
+      AI_SWITCH_TOKEN: ${AI_SWITCH_TOKEN:-}
+      AI_SWITCH_SAAS_ENABLE: ${AI_SWITCH_SAAS_ENABLE:-1}
+      AI_SWITCH_SAAS_ACTIVATION_CODE: ${AI_SWITCH_SAAS_ACTIVATION_CODE:-ai-switch-ok}
+      AI_SWITCH_SAAS_INSTANCE_ID: ${AI_SWITCH_SAAS_INSTANCE_ID:-docker}
+      AI_SWITCH_SAAS_SITE_NAME: ${AI_SWITCH_SAAS_SITE_NAME:-AI Switch}
+      AI_SWITCH_SAAS_PUBLIC_BASE_URL: ${AI_SWITCH_SAAS_PUBLIC_BASE_URL:-}
+      AI_SWITCH_SAAS_GITHUB_CLIENT_ID: ${AI_SWITCH_SAAS_GITHUB_CLIENT_ID:-}
+      AI_SWITCH_SAAS_GITHUB_CLIENT_SECRET: ${AI_SWITCH_SAAS_GITHUB_CLIENT_SECRET:-}
+      AI_SWITCH_SAAS_REGISTRATION_ENABLED: ${AI_SWITCH_SAAS_REGISTRATION_ENABLED:-1}
+      AI_SWITCH_SAAS_PASSWORD_LOGIN_ENABLED: ${AI_SWITCH_SAAS_PASSWORD_LOGIN_ENABLED:-1}
+      AI_SWITCH_SAAS_EXCHANGE_RATE_MICROS: ${AI_SWITCH_SAAS_EXCHANGE_RATE_MICROS:-}
+      AI_SWITCH_SAAS_CHECKIN_ENABLED: ${AI_SWITCH_SAAS_CHECKIN_ENABLED:-0}
+      AI_SWITCH_SAAS_CHECKIN_REWARD_MICROS: ${AI_SWITCH_SAAS_CHECKIN_REWARD_MICROS:-0}
+      AI_SWITCH_SAAS_INVITE_ENABLED: ${AI_SWITCH_SAAS_INVITE_ENABLED:-0}
+      AI_SWITCH_SAAS_INVITE_REGISTRATION_REQUIRED: ${AI_SWITCH_SAAS_INVITE_REGISTRATION_REQUIRED:-0}
+      AI_SWITCH_SAAS_INVITE_SIGNUP_REWARD_MICROS: ${AI_SWITCH_SAAS_INVITE_SIGNUP_REWARD_MICROS:-0}
+      AI_SWITCH_SAAS_INVITE_RECHARGE_RATE_MICROS: ${AI_SWITCH_SAAS_INVITE_RECHARGE_RATE_MICROS:-0}
+      AI_SWITCH_SAAS_LOGS_QUEUE: ${AI_SWITCH_SAAS_LOGS_QUEUE:-redis}
+      AI_SWITCH_SAAS_LOGS_STORE: ${AI_SWITCH_SAAS_LOGS_STORE:-postgres}
+      AI_SWITCH_SAAS_LOGS_REDIS_URL_ENV: SAAS_LOGS_REDIS_URL
+      AI_SWITCH_SAAS_LOGS_POSTGRES_URL_ENV: SAAS_LOGS_POSTGRES_URL
+      SAAS_LOGS_REDIS_URL: redis://redis:6379
+      SAAS_LOGS_POSTGRES_URL: postgresql://${SAAS_POSTGRES_USER:-ai_switch}:${SAAS_POSTGRES_PASSWORD:-change-me}@postgres:5432/${SAAS_POSTGRES_DB:-ai_switch_logs}?sslmode=disable
+    volumes:
+      - ai-switch-data:/home/ai-switch/.ai-switch
+    restart: unless-stopped
+
+volumes:
+  ai-switch-data:
+  redis-data:
+  postgres-data:

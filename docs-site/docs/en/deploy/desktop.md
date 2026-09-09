@@ -75,12 +75,12 @@ Two practical consequences follow:
 
 Nearly every command works over both transports. Exactly three are desktop-only, because they need native desktop capabilities: opening the certificate directory, launching a session in your system terminal app, and exporting credentials through a native save dialog. Calling them from a browser returns a "desktop only" result.
 
-## Auto-start
+## Startup restoration
 
-Three independent switches remember their own state and take effect at launch as needed:
+Several states remember their own value and take effect at launch as needed:
 
-- **Web service**: when `autoStart` in `web-service.json` is true, the HTTP server comes up right after the app starts.
-- **Local pool proxy**: `route-proxy-https.json` records whether the proxy was running last time; if so, launching the app restores it, including its HTTPS configuration.
+- **Compute-pool route access**: when `routeAccessEnabled` in `web-service.json` is true, the app restores the shared listener after launch.
+- **Local pool proxy**: `route-proxy-https.json` still stores the legacy independent-proxy restoration state; the current shared-listener path is driven by the route-access switch.
 - **The desktop app**: enable "Start AI Switch with the system" in App preferences to launch the desktop app when you sign in. The tray and background services remain available, while the main window starts hidden; use the tray menu to show it.
 
 The app also keeps an auto-recovery scheduler running, which re-enables tripped accounts on the schedule you configured, with no manual intervention.

@@ -150,21 +150,18 @@ impl RouteProxyHttpsService {
     }
 
     pub async fn start_proxy(state: &AppState) -> Result<RouteProxyStatus, AppError> {
-        let route_proxy = if RouteProxyService::has_shared_listener(&state.route_proxy).await {
-            RouteProxyService::status(&state.route_proxy).await
-        } else {
-            #[cfg(feature = "desktop")]
-            {
-                crate::services::web_service::WebService::start(std::sync::Arc::new(state.clone()))
-                    .await?;
-                RouteProxyService::status(&state.route_proxy).await
-            }
-            #[cfg(not(feature = "desktop"))]
-            {
-                let transport = Self::transport(&state.paths).await?;
-                RouteProxyService::start(&state.route_proxy, state.pool.clone(), transport).await?
-            }
-        };
+        #[cfg(feature = "desktop")]
+        {
+            crate::services::web_service::WebService::set_route_access(state, true).await?;
+        }
+        #[cfg(not(feature = "desktop"))]
+        {
+            let transport = Self::transport(&state.paths).await?;
+            RouteProxyService::start(&state.route_proxy, state.pool.clone(), transport).await?;
+            RouteProxyService::set_route_access_enabled(&state.route_proxy, true).await;
+        }
+
+        let route_proxy = RouteProxyService::status(&state.route_proxy).await;
 
         let mut config = Self::load_config(&state.paths).await?;
         config.auto_start = true;
@@ -176,8 +173,8 @@ impl RouteProxyHttpsService {
     /// Desktop controls own the combined listener. Web API pool-stop commands
     /// retain their existing no-op behavior for the process-owned server listener.
     pub async fn stop_proxy(state: &AppState) -> Result<RouteProxyStatus, AppError> {
-        crate::services::web_service::WebService::stop(state).await;
-        let status = RouteProxyService::stop(&state.route_proxy).await?;
+        crate::services::web_service::WebService::set_route_access(state, false).await?;
+        let status = RouteProxyService::status(&state.route_proxy).await;
         Self::clear_auto_start(&state.paths).await?;
         Ok(status)
     }

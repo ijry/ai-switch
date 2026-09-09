@@ -59,7 +59,7 @@ AI Switch 的核心设计目标是**一份业务逻辑，两种运行形态**。
 
 `src-tauri/src/lib.rs` 的 `run()` 里通过 `tauri::generate_handler!` 注册了 **87 个命令**，覆盖设置、账号与凭据、算力池、路由代理、HTTPS 证书、会话、目标应用、终端、Web 服务、Tailscale、MCP 与技能。命令实现集中在 `src-tauri/src/commands/` 的 13 个模块中，它们大多只做参数解析，真正的逻辑落在 `services/`。
 
-`setup()` 阶段还会启动几个常驻任务：托盘菜单与窗口隐藏行为、按配置自动拉起 Web 服务、按配置恢复路由代理、以及 `RouteRecoveryService::run_loop`（周期性按恢复规则重新启用账号）。
+`setup()` 阶段还会启动几个常驻任务：托盘菜单与窗口隐藏行为、按路由接入开关恢复共享监听、以及 `RouteRecoveryService::run_loop`（周期性按恢复规则重新启用账号）。
 
 ### 浏览器：axum HTTP + WebSocket
 
@@ -149,17 +149,17 @@ AI Switch 的核心设计目标是**一份业务逻辑，两种运行形态**。
 
 `services/route_protocol_bridge/mod.rs` 的 `ProtocolBridgeKind` 定义了 **7 条桥接链路**：`ResponsesToChat`、`ResponsesToResponses`、`ResponsesToAnthropic`、`ResponsesToGemini`、`ClaudeToChat`、`ClaudeToResponses`、`ClaudeToGemini`。每条链路都有独立的请求改写、响应改写与 SSE 流式转换模块。原理说明见[协议路由与桥接](/guide/protocol-routing)。
 
-### 两个容易混淆的端口
+### 一个共享监听端口
 
-| | 本地路由代理 | Web 服务 |
+| | 面板流量 | 模型 API 流量 |
 | --- | --- | --- |
-| 默认地址 | `127.0.0.1:19527` | `127.0.0.1:3090` |
-| 定义位置 | `services/route_proxy_service.rs` 的 `DEFAULT_ROUTE_PROXY_PORT` | `services/web_service.rs` 默认配置 |
-| 服务对象 | 本机的 AI CLI（Codex、Claude Code……） | 浏览器/手机上的 AI Switch 界面 |
-| 流量内容 | 模型推理请求，会被改写并转发到上游 | 应用自身的 API 与事件 |
-| 鉴权方式 | 路由代理密钥（写入各 CLI 配置） | Web 访问令牌（Bearer） |
+| 默认地址 | `127.0.0.1:19527`（同一个 listener） | `127.0.0.1:19527`（同一个 listener） |
+| 分流位置 | `web/router.rs` 的 panel routes | `web/router.rs` 的 shared fallback |
+| 服务对象 | 浏览器/手机上的 AI Switch 界面 | 本机或远程的 AI CLI（Codex、Claude Code……） |
+| 流量内容 | 应用自身的 API 与事件 | 模型推理请求，会被改写并转发到上游 |
+| 鉴权方式 | Web 访问令牌（Bearer） | 路由代理密钥（写入各 CLI 配置） |
 
-这两者互不依赖：只用桌面端管理账号可以不开 Web 服务；只在浏览器里看统计也不必开路由代理。
+路由接入开关独立于监听：关闭路由只让模型 API 返回 `route_proxy.access_disabled`，面板流量不受影响；开启路由时如果监听未启动，会自动启动共享端口。
 
 ## 存储层
 

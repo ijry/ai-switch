@@ -5,7 +5,7 @@ use crate::services::route_proxy_https_service::{
     restore_auto_started_proxy, RouteProxyHttpsService,
 };
 use crate::services::route_proxy_service::{
-    RouteProxyRuntimeState, RouteProxyService, RouteProxyTransport,
+    RouteProxyRuntimeState, RouteProxyService, RouteProxyStatus, RouteProxyTransport,
 };
 use serde_json::json;
 use tempfile::{tempdir, TempDir};
@@ -31,6 +31,7 @@ async fn fixture() -> (TempDir, Arc<AppState>, WebServiceConfig) {
     let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = WebServiceConfig {
         port: reservation.local_addr().unwrap().port(),
+        route_access_enabled: true,
         ..Default::default()
     };
     WebService::save_config(&state.paths, &config)
@@ -210,7 +211,14 @@ async fn a_failed_web_bind_preserves_the_independent_pool() {
             .code(),
         "web_service.bind"
     );
-    assert_eq!(RouteProxyService::status(&state.route_proxy).await, old);
+    let expected = RouteProxyStatus {
+        route_access_enabled: true,
+        ..old
+    };
+    assert_eq!(
+        RouteProxyService::status(&state.route_proxy).await,
+        expected
+    );
     assert!(
         !WebService::status(&state.web_service, &config)
             .await
@@ -246,9 +254,10 @@ async fn starting_the_desktop_pool_first_uses_the_configured_web_port() {
             .running
     );
     let stopped = RouteProxyHttpsService::stop_proxy(&state).await.unwrap();
-    assert!(!stopped.running);
+    assert!(stopped.running);
+    assert!(!stopped.route_access_enabled);
     assert!(
-        !WebService::status(&state.web_service, &config)
+        WebService::status(&state.web_service, &config)
             .await
             .running
     );

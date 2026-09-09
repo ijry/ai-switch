@@ -1,6 +1,6 @@
 ---
 title: FAQ
-description: Answers to common AI Switch questions — how it differs from hand-editing CLI configs, platform coverage, protocol bridging, the difference between ports 19527 and 3090, key storage, quota failover, phone access, backups, and licensing.
+description: Answers to common AI Switch questions — how it differs from hand-editing CLI configs, platform coverage, protocol bridging, panel versus model traffic on the shared port 19527, key storage, quota failover, phone access, backups, and licensing.
 ---
 
 # FAQ
@@ -48,21 +48,21 @@ AI Switch supports **four upstream protocols**: `openai`, `openai-responses`, `a
 
 How each path behaves is covered in [protocol routing and bridging](/en/guide/protocol-routing).
 
-## What is the difference between port 19527 and port 3090?
+## Why does port 19527 serve both the web UI and model APIs?
 
-These are two completely different things, and mixing them up is the most common source of confusion:
+The default shared listener port is `19527`. Paths split traffic into two classes:
 
-| | **Local route proxy · 19527** | **Web service · 3090** |
+| | **Panel traffic** | **Model API traffic** |
 | --- | --- | --- |
-| Default address | `127.0.0.1:19527` | `127.0.0.1:3090` |
-| Who connects | AI CLIs on your machine | Your browser or phone |
-| What flows | Model inference requests, rewritten and forwarded upstream | The AI Switch UI's own API calls and event stream |
-| Auth | Route proxy key (AI Switch writes it into each CLI config) | Web access token (HTTP bearer) |
-| If it is off | CLIs cannot route through AI Switch, but the UI works fine | You can only use the desktop app; browsers cannot connect |
+| Paths | `/`, `/api/*`, `/ws/*`, `/health` | `/models`, `/v1/*`, `/v1beta/*`, `/messages`, `/responses` |
+| Who connects | Your browser or phone | AI CLIs on your machine or remotely |
+| What flows | The AI Switch UI's own API calls and event stream | Model inference requests, rewritten and forwarded upstream |
+| Auth | Web access token (HTTP bearer) | Route proxy key (AI Switch writes it into each CLI config) |
+| When route access is off | Still available | Returns `route_proxy.access_disabled` |
 
-One-line version: **19527 is for the AI, 3090 is for you.**
+One-line version: **One port, separate permissions per traffic class.**
 
-They are independent. Managing accounts on the desktop works with 3090 off entirely; checking usage stats from your phone works with 19527 off. Route proxy setup is in [accounts and the pool](/en/guide/accounts); web service setup is in [web service mode](/en/deploy/web-service).
+Route access is an independent switch: turning it off does not stop the shared port, so Web pages and the health check remain available; turning it on starts the shared port when needed. Route proxy setup is in [accounts and the pool](/en/guide/accounts); web service setup is in [web service mode](/en/deploy/web-service).
 
 ## Where are my API keys stored, and is that safe?
 
@@ -137,7 +137,7 @@ Yes. Enable the web service, open it in your phone's browser, and enter the acce
 
 Things to know:
 
-- The default bind is `127.0.0.1:3090`, which only the host machine can reach. A phone requires either changing the bind address or going through Tailscale.
+- The default bind is `127.0.0.1:19527`, which only the host machine can reach. A phone requires either changing the bind address or going through Tailscale.
 - **Binding to a non-loopback address (such as `0.0.0.0`) requires TLS to be configured at the same time.** Without it the web service refuses to start and reports `web.sensitive_transport_requires_tls`. This is a hard block rather than a warning — plaintext HTTP on a LAN would expose your access token and credentials in the clear.
 - The better option is Tailscale: install the client on your phone, join the same tailnet, and you get access without exposing a public port or sourcing certificates yourself.
 

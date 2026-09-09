@@ -13,15 +13,15 @@ Web Service mode fits a few situations: switching accounts from your phone; chec
 
 1. Open **Settings** in the desktop app.
 2. Select the **Web Service** panel.
-3. Fill in **Host** and **Port**. The defaults are `127.0.0.1` and `3090`.
+3. Fill in **Host** and **Port** under **Shared service port**. The defaults are `127.0.0.1` and `19527`.
 4. Confirm the **Access Token**. A random UUID is generated the first time the config is written; keep it or replace it with your own string.
-5. Click **Save**, then **Start Service**.
+5. Click **Save**, then **Start service port** when needed.
 
-Once it is up, open `http://127.0.0.1:3090` (or whatever address you configured) in a browser. The first visit asks for the access token, which is then stored in `localStorage` under the key `ai-switch.webToken`, so the same browser will not ask again.
+Once it is up, open `http://127.0.0.1:19527` (or whatever address you configured) in a browser. The first visit asks for the access token, which is then stored in `localStorage` under the key `ai-switch.webToken`, so the same browser will not ask again.
 
-The panel has two more optional toggles:
+The panel has two independent toggles:
 
-- **Auto-start on launch**: bring the web service up automatically when the desktop app starts.
+- **Enable compute-pool route access**: controls whether model APIs accept pool routing. Enabling it starts the shared port when needed; disabling it leaves the port available for Web pages. The desktop remembers this switch and restores the shared port on launch when it is on.
 - **Enable secure network**: expose the service to your own devices — or the public internet — through Tailscale, with an **Access mode** of either private-only or public. See [Remote Access and HTTPS](/en/deploy/remote-access) for the details.
 
 ## The three browser-facing endpoints
@@ -39,14 +39,14 @@ API responses always carry `Cache-Control: no-store`, and the request body limit
 A manual call, for reference:
 
 ```bash
-curl -X POST http://127.0.0.1:3090/api/list_accounts \
+curl -X POST http://127.0.0.1:19527/api/list_accounts \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
 
 ```powershell
-curl.exe -X POST http://127.0.0.1:3090/api/list_accounts `
+curl.exe -X POST http://127.0.0.1:19527/api/list_accounts `
   -H "Authorization: Bearer YOUR_TOKEN" `
   -H "Content-Type: application/json" `
   -d '{}'
@@ -59,9 +59,9 @@ Web service settings persist to `~/.ai-switch/web-service.json`. Every control i
 | Field | Default | Notes |
 | --- | --- | --- |
 | `host` | `127.0.0.1` | Bind address. Non-loopback addresses require TLS — see the next section |
-| `port` | `3090` | Listening port |
+| `port` | `19527` | Listening port |
 | `token` | Random UUID written on first config creation | Access token |
-| `autoStart` | `false` | Start the service when the desktop app launches |
+| `routeAccessEnabled` | `false` | Whether compute-pool model routes are accepted. Legacy `autoStart: true` migrates to `true` |
 | `tailscaleEnabled` | `false` | Whether to expose the service through Tailscale |
 | `tailscaleExposureMode` | `private` | `private` (tailnet only) or `public` (Funnel) |
 | `tlsEnabled` | `false` | Enable TLS. **No UI toggle; file only** |

@@ -53,6 +53,9 @@ vi.mock("../src/lib/api/client", () => ({
   deleteRouteProxyHttpsCertificates: vi.fn(),
   openRouteProxyHttpsCertificateDirectory: vi.fn(),
 }));
+vi.mock("../src/lib/transport", () => ({
+  isDesktop: vi.fn(() => true),
+}));
 
 const httpsStatusFixture = {
   enabled: false,
@@ -127,7 +130,7 @@ describe("SettingsScreen", () => {
       host: "127.0.0.1",
       port: 3090,
       token: "secret-token-123456",
-      autoStart: false,
+      routeAccessEnabled: false,
       tailscaleEnabled: true,
       tlsEnabled: false,
       tlsCertPath: null,
@@ -258,7 +261,7 @@ describe("SettingsScreen", () => {
     expect(screen.queryByRole("button", { name: /AI 模型/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /导入/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /目标/ })).not.toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: "Web 服务" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "共享服务端口" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /使用 OAuth 登录/ })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "切换主题值" }));
@@ -428,7 +431,7 @@ describe("SettingsScreen", () => {
       host: "127.0.0.1",
       port: 3090,
       token: "secret-token-123456",
-      autoStart: false,
+      routeAccessEnabled: false,
       tailscaleEnabled: false,
       tlsEnabled: true,
       tlsCertPath: " C:/secure/web-cert.pem ",
@@ -443,7 +446,7 @@ describe("SettingsScreen", () => {
       </QueryClientProvider>,
     );
 
-    await screen.findByRole("heading", { name: "Web 服务" });
+    await screen.findByRole("heading", { name: "共享服务端口" });
     await userEvent.click(await screen.findByRole("button", { name: "保存" }));
 
     await waitFor(() => expect(saveWebServiceConfig).toHaveBeenCalledTimes(1));
@@ -475,12 +478,12 @@ describe("SettingsScreen", () => {
     const client = createQueryClient();
     const invalidate = vi.spyOn(client, "invalidateQueries");
     render(<QueryClientProvider client={client}><I18nProvider initialLanguage="en"><SettingsScreen /></I18nProvider></QueryClientProvider>);
-    expect(await screen.findByText(/share one port/i)).toBeInTheDocument();
-    await userEvent.click(await screen.findByRole("button", { name: "Start service" }));
+    expect(await screen.findByText(/use this listener/i)).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "Start service port" }));
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["route-proxy-status"] }));
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["route-proxy-https-status"] });
     invalidate.mockClear();
-    await userEvent.click(screen.getByRole("button", { name: "Stop service" }));
+    await userEvent.click(screen.getByRole("button", { name: "Stop service port" }));
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["route-proxy-status"] }));
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["route-proxy-https-status"] });
   });
@@ -506,11 +509,11 @@ describe("SettingsScreen", () => {
       </QueryClientProvider>,
     );
 
-    await userEvent.click(await screen.findByRole("button", { name: "Start service" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Start service port" }));
     await waitFor(() => expect(startWebServer).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(getTailscaleStatus).toHaveBeenCalledTimes(2));
 
-    await userEvent.click(await screen.findByRole("button", { name: "Stop service" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Stop service port" }));
     await waitFor(() => expect(stopWebServer).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(getTailscaleStatus).toHaveBeenCalledTimes(3));
   });
@@ -521,7 +524,7 @@ describe("SettingsScreen", () => {
       host: "127.0.0.1",
       port: 10086,
       token: "123456",
-      autoStart: false,
+      routeAccessEnabled: false,
       tailscaleEnabled: false,
       tlsEnabled: false,
       tlsCertPath: null,
@@ -536,7 +539,7 @@ describe("SettingsScreen", () => {
       </QueryClientProvider>,
     );
 
-    await userEvent.click(await screen.findByRole("button", { name: "启动服务" }));
+    await userEvent.click(await screen.findByRole("button", { name: "启动服务端口" }));
 
     expect(await screen.findByText("访问令牌至少需要 16 个字符，请更换后再启动。")).toBeInTheDocument();
     expect(startWebServer).not.toHaveBeenCalled();
@@ -555,7 +558,7 @@ describe("SettingsScreen", () => {
       host: "127.0.0.1",
       port: 3090,
       token: "secret-token-123456",
-      autoStart: false,
+      routeAccessEnabled: false,
       tailscaleEnabled: false,
       tlsEnabled: false,
       tlsCertPath: null,

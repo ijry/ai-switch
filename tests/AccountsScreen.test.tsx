@@ -764,6 +764,7 @@ describe("AccountsScreen", () => {
     });
     vi.mocked(getRouteProxyStatus).mockResolvedValue({
       running: false,
+      route_access_enabled: false,
       bind_host: "127.0.0.1",
       port: null,
       base_url: null,
@@ -813,12 +814,14 @@ describe("AccountsScreen", () => {
     vi.mocked(setRouteCredentialRecovery).mockResolvedValue(credentialsFixture[0]);
     vi.mocked(startRouteProxy).mockResolvedValue({
       running: true,
+      route_access_enabled: true,
       bind_host: "127.0.0.1",
       port: 43111,
       base_url: "http://127.0.0.1:43111",
     });
     vi.mocked(stopRouteProxy).mockResolvedValue({
       running: false,
+      route_access_enabled: false,
       bind_host: "127.0.0.1",
       port: null,
       base_url: null,
@@ -1238,6 +1241,7 @@ describe("AccountsScreen", () => {
     ]);
     vi.mocked(getRouteProxyStatus).mockResolvedValue({
       running: true,
+      route_access_enabled: true,
       bind_host: "127.0.0.1",
       port: 43111,
       base_url: "http://127.0.0.1:43111",
@@ -1352,7 +1356,7 @@ describe("AccountsScreen", () => {
     await userEvent.click(screen.getByRole("menuitem", { name: "查看模型列表" }));
 
     expect(
-      await screen.findByText("请先启动本地路由代理，再查看算力池模型列表。"),
+      await screen.findByText("请先启用算力池路由接入，再查看算力池模型列表。"),
     ).toBeInTheDocument();
     expect(fetchRouteProxyModels).not.toHaveBeenCalled();
   });
@@ -2424,6 +2428,7 @@ describe("AccountsScreen", () => {
     });
     vi.mocked(getRouteProxyStatus).mockResolvedValue({
       running: true,
+      route_access_enabled: true,
       bind_host: "127.0.0.1",
       port: 43111,
       base_url: "http://127.0.0.1:43111",
@@ -5180,7 +5185,7 @@ describe("AccountsScreen", () => {
     poolStateByPlatform.set("codex", ["cred-official-1"]);
     renderScreen("codex", "in_pool");
 
-    expect(await screen.findByText("本地代理：未启动")).toBeInTheDocument();
+    expect(await screen.findByText("算力池路由：已关闭")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText("真实生成测试算力池路由")).toBeEnabled());
     await userEvent.click(screen.getByLabelText("真实生成测试算力池路由"));
     expect(await screen.findByLabelText("真实生成测试弹窗")).toBeInTheDocument();
@@ -5211,7 +5216,7 @@ describe("AccountsScreen", () => {
     expect(screen.getByText("上游接口")).toBeInTheDocument();
     expect(screen.queryByText("用量总览")).not.toBeInTheDocument();
 
-    const proxyStatus = screen.getByText("本地代理：未启动");
+    const proxyStatus = screen.getByText("算力池路由：已关闭");
     const recentRouteStatus = screen.getByText("最近路由到：Team Account");
     expect(proxyStatus.className).not.toContain("bg-white");
     expect(recentRouteStatus.className).not.toContain("bg-white");
@@ -5246,6 +5251,7 @@ describe("AccountsScreen", () => {
     poolStateByPlatform.set("codex", ["cred-official-1"]);
     vi.mocked(getRouteProxyStatus).mockResolvedValue({
       running: true,
+      route_access_enabled: true,
       bind_host: "127.0.0.1",
       port: 43111,
       base_url: "https://127.0.0.1:43111",
@@ -5305,6 +5311,7 @@ describe("AccountsScreen", () => {
   it("hands out the pool endpoint from the config write dialog instead of the menu", async () => {
     vi.mocked(getRouteProxyStatus).mockResolvedValue({
       running: true,
+      route_access_enabled: true,
       bind_host: "127.0.0.1",
       port: 43111,
       base_url: "http://127.0.0.1:43111",
@@ -5884,9 +5891,9 @@ describe("AccountsScreen", () => {
     vi.mocked(routeConfigWriteIsStale).mockResolvedValue(true);
     renderScreen();
 
-    await screen.findByText("本地代理：未启动");
-    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
-    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+    await screen.findByText("算力池路由：已关闭");
+    await userEvent.click(screen.getByLabelText("启用算力池路由接入"));
+    expect(await screen.findByText("算力池路由：http://127.0.0.1:43111")).toBeInTheDocument();
 
     expect(await screen.findByText("配置已变更，需重新写入")).toBeInTheDocument();
     expect(screen.getByLabelText("写入路由配置文件")).toHaveAttribute(
@@ -5908,9 +5915,9 @@ describe("AccountsScreen", () => {
   it("clears route config write results after a short delay", async () => {
     renderScreen();
 
-    await screen.findByText("本地代理：未启动");
-    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
-    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+    await screen.findByText("算力池路由：已关闭");
+    await userEvent.click(screen.getByLabelText("启用算力池路由接入"));
+    expect(await screen.findByText("算力池路由：http://127.0.0.1:43111")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
     await screen.findByText("接入算力池");
@@ -5940,9 +5947,9 @@ describe("AccountsScreen", () => {
   it("dismisses the route config write results on demand", async () => {
     renderScreen();
 
-    await screen.findByText("本地代理：未启动");
-    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
-    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+    await screen.findByText("算力池路由：已关闭");
+    await userEvent.click(screen.getByLabelText("启用算力池路由接入"));
+    expect(await screen.findByText("算力池路由：http://127.0.0.1:43111")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
     await screen.findByText("接入算力池");
@@ -5959,9 +5966,9 @@ describe("AccountsScreen", () => {
   it("opens the client dialog instead of writing immediately", async () => {
     renderScreen();
 
-    await screen.findByText("本地代理：未启动");
-    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
-    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+    await screen.findByText("算力池路由：已关闭");
+    await userEvent.click(screen.getByLabelText("启用算力池路由接入"));
+    expect(await screen.findByText("算力池路由：http://127.0.0.1:43111")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
 
@@ -5973,9 +5980,9 @@ describe("AccountsScreen", () => {
   it("writes the selected clients and persists the choice", async () => {
     renderScreen();
 
-    await screen.findByText("本地代理：未启动");
-    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
-    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+    await screen.findByText("算力池路由：已关闭");
+    await userEvent.click(screen.getByLabelText("启用算力池路由接入"));
+    expect(await screen.findByText("算力池路由：http://127.0.0.1:43111")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
     await screen.findByText("接入算力池");
@@ -6010,9 +6017,9 @@ describe("AccountsScreen", () => {
     }));
     renderScreen();
 
-    await screen.findByText("本地代理：未启动");
-    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
-    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+    await screen.findByText("算力池路由：已关闭");
+    await userEvent.click(screen.getByLabelText("启用算力池路由接入"));
+    expect(await screen.findByText("算力池路由：http://127.0.0.1:43111")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
     await screen.findByText("接入算力池");
@@ -6051,9 +6058,9 @@ describe("AccountsScreen", () => {
     ]);
     renderScreen();
 
-    await screen.findByText("本地代理：未启动");
-    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
-    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+    await screen.findByText("算力池路由：已关闭");
+    await userEvent.click(screen.getByLabelText("启用算力池路由接入"));
+    expect(await screen.findByText("算力池路由：http://127.0.0.1:43111")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
     await screen.findByText("接入算力池");
@@ -6101,9 +6108,9 @@ describe("AccountsScreen", () => {
     ]);
     renderScreen();
 
-    await screen.findByText("本地代理：未启动");
-    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
-    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+    await screen.findByText("算力池路由：已关闭");
+    await userEvent.click(screen.getByLabelText("启用算力池路由接入"));
+    expect(await screen.findByText("算力池路由：http://127.0.0.1:43111")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
     await screen.findByText("接入算力池");
@@ -6125,9 +6132,9 @@ describe("AccountsScreen", () => {
     });
     renderScreen();
 
-    await screen.findByText("本地代理：未启动");
-    await userEvent.click(screen.getByLabelText("启动本地路由代理"));
-    expect(await screen.findByText("本地代理：http://127.0.0.1:43111")).toBeInTheDocument();
+    await screen.findByText("算力池路由：已关闭");
+    await userEvent.click(screen.getByLabelText("启用算力池路由接入"));
+    expect(await screen.findByText("算力池路由：http://127.0.0.1:43111")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("写入路由配置文件"));
     await screen.findByText("接入算力池");
@@ -6140,23 +6147,40 @@ describe("AccountsScreen", () => {
     ).toBeInTheDocument();
   });
 
-  it("does not offer to stop the process-owned shared listener from the browser", async () => {
+  it("lets the browser disable route access without stopping the process-owned listener", async () => {
     vi.mocked(isDesktop).mockReturnValue(false);
-    vi.mocked(getRouteProxyStatus).mockResolvedValue({ running:true, shared_listener:true, bind_host:"127.0.0.1", port:19527, base_url:"http://127.0.0.1:19527" });
+    vi.mocked(getRouteProxyStatus).mockResolvedValue({
+      running: true,
+      route_access_enabled: true,
+      shared_listener: true,
+      bind_host: "127.0.0.1",
+      port: 19527,
+      base_url: "http://127.0.0.1:19527",
+    });
+    vi.mocked(stopRouteProxy).mockResolvedValue({
+      running: true,
+      route_access_enabled: false,
+      shared_listener: true,
+      bind_host: "127.0.0.1",
+      port: 19527,
+      base_url: "http://127.0.0.1:19527",
+    });
     renderScreen("codex", "in_pool");
-    expect(await screen.findByLabelText("停止本地路由代理")).toBeDisabled();
-    expect(stopRouteProxy).not.toHaveBeenCalled();
+
+    await userEvent.click(await screen.findByLabelText("关闭算力池路由接入"));
+    await waitFor(() => expect(stopRouteProxy).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("路由接入已关闭（端口运行中）")).toBeInTheDocument();
   });
 
   it("refreshes Web service status when pool controls start or stop the shared listener", async () => {
     const client = createQueryClient();
     const invalidate = vi.spyOn(client, "invalidateQueries");
     renderScreen("codex", "in_pool", false, client);
-    await userEvent.click(await screen.findByLabelText("启动本地路由代理"));
+    await userEvent.click(await screen.findByLabelText("启用算力池路由接入"));
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["web-server-status"] }));
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["tailscale-status"] });
     invalidate.mockClear();
-    await userEvent.click(await screen.findByLabelText("停止本地路由代理"));
+    await userEvent.click(await screen.findByLabelText("关闭算力池路由接入"));
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["web-server-status"] }));
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["tailscale-status"] });
   });
@@ -6165,14 +6189,14 @@ describe("AccountsScreen", () => {
     poolStateByPlatform.set("codex", ["cred-official-1"]);
     renderScreen("codex", "in_pool");
 
-    const startButton = await screen.findByLabelText("启动本地路由代理");
+    const startButton = await screen.findByLabelText("启用算力池路由接入");
     expect(startButton).toHaveClass("bg-emerald-600");
     expect(screen.getByLabelText("真实生成测试算力池路由")).toHaveClass("bg-transparent");
 
     await userEvent.click(startButton);
-    const stopButton = await screen.findByLabelText("停止本地路由代理");
+    const stopButton = await screen.findByLabelText("关闭算力池路由接入");
     expect(stopButton).toHaveClass("bg-red-600");
-    expect(screen.queryByLabelText("启动本地路由代理")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("启用算力池路由接入")).not.toBeInTheDocument();
 
     await userEvent.click(stopButton);
     await waitFor(() => expect(stopRouteProxy).toHaveBeenCalledTimes(1));

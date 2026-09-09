@@ -120,6 +120,8 @@ C:\ai-switch\ai-switch-server.exe
 
 启动后的接口与浏览器行为和桌面端 Web 服务完全一致：`POST /api/:command`、`GET /ws/events`、`GET /health`（不鉴权）。详见 [Web 服务模式](/deploy/web-service)。
 
+独立 server 的监听地址、端口、TLS 和进程启停由环境变量与进程管理器控制，浏览器端不能修改或启停共享端口。浏览器端可以切换**算力池路由接入**；关闭后模型 API 返回 `route_proxy.access_disabled`，面板与健康检查不受影响。
+
 ## 面板与算力池共用端口
 
 独立服务器只监听一个端口，默认是 `19527`。浏览器面板和算力池 API 可以同时使用它：

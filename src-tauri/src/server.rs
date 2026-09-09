@@ -11,7 +11,7 @@ use crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime;
 use crate::services::route_proxy_service::{RouteProxyRuntimeState, RouteProxyService};
 use crate::services::route_recovery_service::RouteRecoveryService;
 use crate::services::tailscale_service::TailscaleRuntimeState;
-use crate::services::web_service::WebServiceRuntimeState;
+use crate::services::web_service::{WebService, WebServiceRuntimeState};
 use crate::terminal_manager::TerminalManager;
 use crate::web::event_bridge::{EventEmitter, WebEventBroadcaster};
 use crate::web::router::build_shared_server_router;
@@ -428,6 +428,9 @@ pub async fn run_from_env() -> Result<(), String> {
     let pool = open_migrated_pool(&paths.database_file, &paths.backups_dir)
         .await
         .map_err(|error| error.to_string())?;
+    crate::saas::config::apply_env_config(&pool)
+        .await
+        .map_err(|error| error.to_string())?;
     let state = Arc::new(AppState {
         paths,
         pool,
@@ -495,6 +498,14 @@ pub async fn run_from_env() -> Result<(), String> {
     RouteProxyService::mark_shared_listener(
         &shutdown_state.route_proxy,
         host.clone(),
+        bound_address.port(),
+        bound_web_base_url(scheme, bound_address),
+    )
+    .await;
+    RouteProxyService::set_route_access_enabled(&shutdown_state.route_proxy, true).await;
+    WebService::mark_standalone_listener(
+        &shutdown_state,
+        advertised_web_host(bound_address),
         bound_address.port(),
         bound_web_base_url(scheme, bound_address),
     )

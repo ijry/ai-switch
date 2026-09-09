@@ -138,7 +138,7 @@ It is configured entirely through environment variables (PowerShell example):
 
 ```powershell
 $env:AI_SWITCH_HOST = "127.0.0.1"
-$env:AI_SWITCH_PORT = "3090"
+$env:AI_SWITCH_PORT = "19527"
 $env:AI_SWITCH_TOKEN = "replace-me"
 $env:AI_SWITCH_STATIC_DIR = "$PWD\dist"
 .\src-tauri\target\debug\ai-switch-server.exe

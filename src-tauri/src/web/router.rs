@@ -152,6 +152,7 @@ async fn shared_fallback(
     body: Body,
 ) -> Response {
     if is_shared_model_api_path(uri.path()) {
+        let key = crate::services::route_proxy_service::extract_inbound_api_key(&headers, None);
         if let Err(error) = context.state.saas.initialize(&context.state.pool).await {
             return crate::saas::transport::error_response(error);
         }
@@ -159,7 +160,6 @@ async fn shared_fallback(
             Ok(config) => config,
             Err(error) => return crate::saas::transport::error_response(error),
         };
-        let key = crate::services::route_proxy_service::extract_inbound_api_key(&headers, None);
         if key
             .as_deref()
             .is_some_and(|key| key.starts_with("sk-saas-"))
@@ -177,6 +177,16 @@ async fn shared_fallback(
                     "A valid API key is required",
                 ));
             }
+        }
+        if !crate::services::route_proxy_service::RouteProxyService::is_route_access_enabled(
+            &context.state.route_proxy,
+        )
+        .await
+            && !key
+                .as_deref()
+                .is_some_and(|key| key.starts_with("sk-saas-"))
+        {
+            return route_access_disabled_response();
         }
         let Some(proxy_state) = context.proxy.clone().or_else(|| {
             saas_config
@@ -200,6 +210,19 @@ async fn shared_fallback(
         .await;
     }
     static_fallback(State(context), uri).await
+}
+
+fn route_access_disabled_response() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "error": {
+                "code": "route_proxy.access_disabled",
+                "message": "Compute-pool route access is disabled"
+            }
+        })),
+    )
+        .into_response()
 }
 
 async fn health() -> Json<Value> {
@@ -380,7 +403,7 @@ mod tests {
     use crate::services::config_write_service::ConfigWriteRuntimeState;
     use crate::services::deeplink_protocol_service::DeepLinkProtocolRuntime;
     use crate::services::route_credential_service::RouteCredentialService;
-    use crate::services::route_proxy_service::RouteProxyRuntimeState;
+    use crate::services::route_proxy_service::{RouteProxyRuntimeState, RouteProxyService};
     use crate::services::tailscale_service::TailscaleRuntimeState;
     use crate::services::web_service::{WebService, WebServiceConfig, WebServiceRuntimeState};
     use crate::terminal_manager::TerminalManager;
@@ -481,7 +504,12 @@ mod tests {
 
     async fn spawn_shared_test_router(
         token: &str,
-    ) -> (SocketAddr, tokio::task::JoinHandle<()>, TempDir) {
+    ) -> (
+        SocketAddr,
+        tokio::task::JoinHandle<()>,
+        Arc<AppState>,
+        TempDir,
+    ) {
         let temp = tempdir().unwrap();
         let pool = create_memory_pool().await.unwrap();
         run_migrations(&pool).await.unwrap();
@@ -499,14 +527,18 @@ mod tests {
             terminal_hub: Arc::new(crate::web::terminal_hub::TerminalHub::default()),
             event_broadcaster: Arc::new(WebEventBroadcaster::default()),
         });
-        let router =
-            build_shared_server_router(state, token.to_string(), temp.path().to_path_buf());
+        RouteProxyService::set_route_access_enabled(&state.route_proxy, true).await;
+        let router = build_shared_server_router(
+            Arc::clone(&state),
+            token.to_string(),
+            temp.path().to_path_buf(),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
         });
-        (address, handle, temp)
+        (address, handle, state, temp)
     }
 
     fn assert_sensitive_cache_headers(response: &reqwest::Response) {
@@ -1394,7 +1426,7 @@ mod tests {
 
     #[tokio::test]
     async fn shared_listener_preserves_panel_routes_and_dispatches_model_routes() {
-        let (address, server, _temp) = spawn_shared_test_router("primary-secret").await;
+        let (address, server, _state, _temp) = spawn_shared_test_router("primary-secret").await;
         let client = reqwest::Client::new();
 
         let health = client
@@ -1428,7 +1460,7 @@ mod tests {
 
     #[tokio::test]
     async fn shared_listener_keeps_unknown_browser_routes_on_static_fallback() {
-        let (address, server, _temp) = spawn_shared_test_router("primary-secret").await;
+        let (address, server, _state, _temp) = spawn_shared_test_router("primary-secret").await;
         let response = reqwest::get(format!("http://{address}/settings/general"))
             .await
             .unwrap();
@@ -1440,6 +1472,28 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("text/html; charset=utf-8")
         );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn disabling_route_access_returns_a_clear_error_without_touching_panel_routes() {
+        let (address, server, state, _temp) = spawn_shared_test_router("primary-secret").await;
+        RouteProxyService::set_route_access_enabled(&state.route_proxy, false).await;
+
+        let model_response = reqwest::get(format!("http://{address}/v1/models"))
+            .await
+            .unwrap();
+        assert_eq!(model_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(model_response
+            .text()
+            .await
+            .unwrap()
+            .contains("route_proxy.access_disabled"));
+
+        let health = reqwest::get(format!("http://{address}/health"))
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
         server.abort();
     }
 

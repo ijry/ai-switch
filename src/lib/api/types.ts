@@ -894,6 +894,8 @@ export type ModelPriceConfig = {
 
 export type RouteProxyStatus = {
   running: boolean;
+  /** True when compute-pool model routes are accepted. */
+  route_access_enabled?: boolean;
   /** True when Web pages and model APIs share the same listener. */
   shared_listener?: boolean;
   bind_host: string;
@@ -932,7 +934,7 @@ export type WebServiceConfig = {
   host: string;
   port: number;
   token?: string | null;
-  autoStart: boolean;
+  routeAccessEnabled: boolean;
   /** Internal one-time marker for resetting legacy Web-only ports. */
   sharedPortMigrated?: boolean;
   tailscaleEnabled: boolean;

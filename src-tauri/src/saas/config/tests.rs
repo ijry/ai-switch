@@ -250,3 +250,108 @@ async fn enabled_preview_does_not_require_auth_or_billing_configuration() {
     assert!(saved.github_client_id.is_empty());
     assert!(saved.exchange_rate_micros.is_none());
 }
+
+#[tokio::test]
+async fn apply_env_config_initializes_saas_with_external_log_dependencies() {
+    let pool = repository::test_pool().await;
+    let variables = [
+        ("AI_SWITCH_SAAS_ENABLE", Some("1")),
+        ("AI_SWITCH_SAAS_ACTIVATION_CODE", Some("ai-switch-nb")),
+        ("AI_SWITCH_SAAS_INSTANCE_ID", Some("docker")),
+        ("AI_SWITCH_SAAS_SITE_NAME", Some("Docker SaaS")),
+        (
+            "AI_SWITCH_SAAS_PUBLIC_BASE_URL",
+            Some("https://saas.docker.example"),
+        ),
+        ("AI_SWITCH_SAAS_GITHUB_CLIENT_ID", Some("client-id")),
+        ("AI_SWITCH_SAAS_REGISTRATION_ENABLED", Some("1")),
+        ("AI_SWITCH_SAAS_PASSWORD_LOGIN_ENABLED", Some("0")),
+        ("AI_SWITCH_SAAS_EXCHANGE_RATE_MICROS", Some("7000000")),
+        ("AI_SWITCH_SAAS_CHECKIN_ENABLED", Some("1")),
+        ("AI_SWITCH_SAAS_CHECKIN_REWARD_MICROS", Some("1000")),
+        ("AI_SWITCH_SAAS_INVITE_ENABLED", Some("1")),
+        ("AI_SWITCH_SAAS_INVITE_REGISTRATION_REQUIRED", Some("0")),
+        ("AI_SWITCH_SAAS_INVITE_SIGNUP_REWARD_MICROS", Some("2000")),
+        ("AI_SWITCH_SAAS_INVITE_RECHARGE_RATE_MICROS", Some("10")),
+        ("AI_SWITCH_SAAS_LOGS_QUEUE", Some("redis")),
+        ("AI_SWITCH_SAAS_LOGS_STORE", Some("postgres")),
+        (
+            "AI_SWITCH_SAAS_LOGS_REDIS_URL_ENV",
+            Some("SAAS_LOGS_REDIS_URL"),
+        ),
+        (
+            "AI_SWITCH_SAAS_LOGS_POSTGRES_URL_ENV",
+            Some("SAAS_LOGS_POSTGRES_URL"),
+        ),
+    ];
+    let original = variables
+        .iter()
+        .map(|(name, _)| (name.to_string(), std::env::var(name)))
+        .collect::<Vec<_>>();
+    for (name, value) in variables {
+        if let Some(value) = value {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
+    }
+    let restore =
+        move |original: &[(String, std::result::Result<String, std::env::VarError>)]| {
+            for (name, value) in original {
+                match value {
+                    Ok(value) => std::env::set_var(name, value),
+                    Err(_) => std::env::remove_var(name),
+                }
+            }
+        };
+    apply_env_config(&pool).await.unwrap();
+    restore(&original);
+
+    let config = load(&pool).await.unwrap();
+    assert!(config.enabled);
+    assert!(is_unlocked(&pool).await.unwrap());
+    assert_eq!(config.site_name, "Docker SaaS");
+    assert_eq!(config.public_base_url, "https://saas.docker.example");
+    assert_eq!(config.github_client_id, "client-id");
+    assert!(!config.password_login_enabled);
+    assert_eq!(config.exchange_rate_micros, Some(7_000_000));
+    assert_eq!(config.checkin_enabled, true);
+    assert_eq!(config.checkin_reward_micros, 1_000);
+    assert_eq!(config.invite_enabled, true);
+    assert_eq!(config.invite_registration_required, false);
+    assert_eq!(config.invite_signup_reward_micros, 2_000);
+    assert_eq!(config.invite_recharge_rate_micros, 10);
+    assert_eq!(config.logs["queue"], "redis");
+    assert_eq!(config.logs["store"], "postgres");
+    assert_eq!(config.logs["redisUrlEnv"], "SAAS_LOGS_REDIS_URL");
+    assert_eq!(config.logs["postgresUrlEnv"], "SAAS_LOGS_POSTGRES_URL");
+}
+
+#[tokio::test]
+async fn apply_env_config_disables_persisted_saas_when_environment_opt_out_is_set() {
+    let pool = repository::test_pool().await;
+    unlock(&pool, "ai-switch-ok").await.unwrap();
+    save(
+        &pool,
+        serde_json::json!({
+            "enabled": true,
+            "logs": {
+                "queue": "memory",
+                "store": "file",
+                "directory": "."
+            }
+        }),
+    )
+    .await
+    .unwrap();
+
+    let original = std::env::var("AI_SWITCH_SAAS_ENABLE");
+    std::env::set_var("AI_SWITCH_SAAS_ENABLE", "0");
+    apply_env_config(&pool).await.unwrap();
+    match original {
+        Ok(value) => std::env::set_var("AI_SWITCH_SAAS_ENABLE", value),
+        Err(_) => std::env::remove_var("AI_SWITCH_SAAS_ENABLE"),
+    }
+
+    assert!(!load(&pool).await.unwrap().enabled);
+}

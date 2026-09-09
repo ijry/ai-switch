@@ -128,12 +128,14 @@ tag 去掉 `v` 前缀后的版本号，必须与 `package.json` 和 `src-tauri/t
 1. 打开设置
 2. 选择 **Web 服务**
 3. 填写主机、服务端口和访问令牌
-4. 启动服务
+4. 点击**保存**，再按需要启动**共享服务端口**
 5. 可选：启用安全网络（Tailscale），选择访问模式（仅私网 / 公网访问），再点**使用 OAuth 登录**
 
-GUI 版和独立 server 版一样，Web 页面、SaaS（启用时）与算力池模型 API 共用一个监听端口。GUI 从 **Web 服务** 或算力池工具栏启动时都使用 Web 服务配置；任一 GUI 停止入口会关闭这个共享服务。桌面 dev 模式默认使用 `10086`，并使用独立的 `web-service-dev.json`，不会改动正式版配置；安装版和独立 server 的新配置默认使用服务端口 `19527`。历史自定义 Web 端口会在升级后一次性重置。之后修改服务端口会同时改变算力池端口。旧独立算力池监听会在 Web 服务成功启动后收拢，不会并行保留第二套端口。
+GUI 版和独立 server 版一样，Web 页面、SaaS（启用时）与算力池模型 API 共用一个监听端口。设置页把它拆成两块：**共享服务端口**只负责监听地址、端口、TLS 和启停；**算力池路由接入**只决定模型 API 是否接受池路由。开启路由接入时会在需要时自动启动共享端口；关闭路由接入不会停止端口，Web 页面仍可访问。桌面 dev 模式默认使用 `10086`，并使用独立的 `web-service-dev.json`，不会改动正式版配置；安装版和独立 server 的新配置默认使用服务端口 `19527`。旧独立算力池监听会在共享服务成功启动后收拢，不会并行保留第二套端口。
 
-共享服务的 HTTPS 在 **Web 服务 → TLS** 中配置，不使用旧的独立算力池 HTTPS 端口。修改地址、服务端口或 TLS 后请重启共享服务；若客户端仍指向旧地址，请重新执行“写入路由配置文件”。管理令牌、移动端令牌、算力池 Key 与 SaaS Key 的权限不会因端口共享而合并。
+桌面端会记住路由接入开关；应用启动时如果该开关为开，会自动恢复共享端口，因此不再需要单独的 Web 服务自动启动选项。独立 server 与 Docker 的监听地址、端口、TLS 和进程启停始终由环境变量与进程管理器控制，浏览器端不能修改或启停；路由接入开关仍可在浏览器端切换。
+
+共享服务的 HTTPS 在 **Web 服务 → TLS** 中配置，不使用旧的独立算力池 HTTPS 端口。修改地址、服务端口或 TLS 后请重启共享服务；若客户端仍指向旧地址，请重新执行“写入路由配置文件”。管理令牌、移动端令牌、算力池 Key 与 SaaS Key 的权限不会因端口共享而合并。路由接入关闭时，模型 API 返回 `route_proxy.access_disabled`，面板与健康检查不受影响。
 
 默认绑定 `127.0.0.1:19527`。未启用 TLS 时，`0.0.0.0` 等非环回地址会拒绝启动；需要绑定所有网卡时，请先启用 Web 服务 TLS。
 
@@ -188,6 +190,34 @@ Linux x86_64 可以一键安装：
 ```
 
 安装器会创建 `ai-switch` 系统用户、安装到 `/opt/ai-switch`，持久化 `/etc/ai-switch/server.env`，并启用 systemd 服务；重复运行保留现有令牌和数据。它不会自动配置 Nginx、Certbot 或防火墙。
+
+### Docker 一键启动 server 与 SaaS
+
+Docker 镜像直接复用 GitHub Release 里已打包的 standalone server，不在本机编译 Rust，也不需要桌面 WebKitGTK。正式版本发布后，CI 会同步推送 `ijry/ai-switch` 的 `linux/amd64` 与 `linux/arm64` 镜像。默认会启动 Redis 作为日志队列、PostgreSQL 作为日志存储，并自动开启 SaaS：
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+容器内日志队列与存储默认使用 `redis://redis:6379` 和 `postgresql://ai_switch:change-me@postgres:5432/ai_switch_logs?sslmode=disable`，对应环境变量是 `SAAS_LOGS_REDIS_URL` 和 `SAAS_LOGS_POSTGRES_URL`。SaaS 设置只保存环境名引用，不在数据库里落库连接串。
+
+常用覆盖参数：
+
+- `AI_SWITCH_PORT`：宿主映射端口，默认 `19527`。
+- `AI_SWITCH_DOCKER_IMAGE`：镜像地址，默认 `ijry/ai-switch:latest`；固定版本可用 `ijry/ai-switch:0.8.7` 或 `ijry/ai-switch:0.8`。
+- `AI_SWITCH_TOKEN`：不设置时 entrypoint 会生成并打印一个容器本地令牌；跨重启请显式设置。
+- `AI_SWITCH_SAAS_ENABLE`：默认 `1`，设为 `0` 只启动独立 server。
+- `AI_SWITCH_SAAS_ACTIVATION_CODE`、`AI_SWITCH_SAAS_INSTANCE_ID`、`AI_SWITCH_SAAS_SITE_NAME`、`AI_SWITCH_SAAS_PUBLIC_BASE_URL`。
+- `AI_SWITCH_SAAS_LOGS_QUEUE`、`AI_SWITCH_SAAS_LOGS_STORE`，默认分别为 `redis` 和 `postgres`。
+- `AI_SWITCH_SAAS_LOGS_REDIS_URL_ENV`、`AI_SWITCH_SAAS_LOGS_POSTGRES_URL_ENV`，默认分别引用 `SAAS_LOGS_REDIS_URL` 和 `SAAS_LOGS_POSTGRES_URL`。
+
+数据保存在 named volumes：`ai-switch-data`、`redis-data`、`postgres-data`。生产环境请替换默认 PostgreSQL 密码，并在前端反向代理处终止 HTTPS。
+
+如需本地构造镜像，Dockerfile 也会下载并校验 Release 包，而不是编译源码：
+
+```bash
+docker build --build-arg AI_SWITCH_VERSION=v0.8.7 .
+```
 
 ### 安全说明
 

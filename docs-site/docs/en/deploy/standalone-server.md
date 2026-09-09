@@ -120,6 +120,8 @@ If you would rather not terminate TLS in the server, keep `AI_SWITCH_HOST=127.0.
 
 Once running, the endpoints and browser behaviour are identical to the desktop web service: `POST /api/:command`, `GET /ws/events`, and the unauthenticated `GET /health`. See [Web Service Mode](/en/deploy/web-service).
 
+The standalone server's bind address, port, TLS, and process lifecycle are controlled by environment variables and its process supervisor; the browser cannot change or restart the shared listener. The browser can toggle **compute-pool route access**. When it is off, model APIs return `route_proxy.access_disabled` while panel routes and the health check remain available.
+
 ## Shared panel and compute-pool port
 
 The standalone server owns one listener, `19527` by default. The browser panel and compute-pool API share it:

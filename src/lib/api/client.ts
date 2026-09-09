@@ -611,6 +611,10 @@ export function stopWebServer(): Promise<WebServerStatus> {
   return invoke("stop_web_server");
 }
 
+export function setRouteAccess(enabled: boolean): Promise<RouteProxyStatus> {
+  return invoke("set_route_access", { enabled });
+}
+
 export function getTailscaleStatus(): Promise<TailscaleStatus> {
   return invoke("get_tailscale_status");
 }

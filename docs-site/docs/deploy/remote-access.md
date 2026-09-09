@@ -7,7 +7,7 @@ description: 通过 Tailscale 私网或 Funnel 公网访问 AI Switch，以及�
 
 这一页涉及两件相互独立的事，先分清再往下读：
 
-- **远程访问**：让别的设备连上你这台机器的 AI Switch 管理界面（Web 服务，默认端口 `3090`）。
+- **远程访问**：让别的设备连上你这台机器的 AI Switch 管理界面（Web 服务，默认端口 `19527`）。
 - **本地算力池 HTTPS**：让本机的路由代理（默认端口 `19527`）以 `https://` 提供服务，给那些只接受 HTTPS 上游地址的客户端使用。
 
 两者用的是不同的端口、不同的证书体系，不要混在一起。
@@ -37,7 +37,7 @@ AI Switch 内置了一个 Go 编写的 sidecar（`ai-switch-tsnet`，基于 Tail
 登录成功后界面会给出可用的访问地址。私网只发布带 MagicDNS 名称的 HTTPS 地址，形如：
 
 ```text
-https://ai-switch.<your-tailnet>.ts.net:3090
+https://ai-switch.<your-tailnet>.ts.net:19527
 ```
 
 不要把 `100.x.y.z` 直接填入移动端：Tailscale HTTPS 证书按 MagicDNS 主机名签发，使用 IP 会导致证书主机名校验失败。请先在 Tailscale 管理后台启用 **MagicDNS** 和 **HTTPS certificates**。sidecar 默认使用主机名 `ai-switch`，状态数据保存在 `~/.ai-switch/tailscale/`。

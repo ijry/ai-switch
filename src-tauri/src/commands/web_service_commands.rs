@@ -5,6 +5,7 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::app_state::AppState;
 use crate::error::ApiError;
+use crate::services::route_proxy_service::{RouteProxyService, RouteProxyStatus};
 use crate::services::tailscale_service::{TailscaleLogin, TailscaleStatus};
 use crate::services::web_service::{WebServerStatus, WebService, WebServiceConfig};
 
@@ -48,6 +49,15 @@ pub async fn start_web_server(state: State<'_, AppState>) -> Result<WebServerSta
 #[tauri::command]
 pub async fn stop_web_server(state: State<'_, AppState>) -> Result<WebServerStatus, ApiError> {
     Ok(WebService::stop(state.inner()).await)
+}
+
+#[tauri::command]
+pub async fn set_route_access(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<RouteProxyStatus, ApiError> {
+    WebService::set_route_access(state.inner(), enabled).await?;
+    Ok(RouteProxyService::status(&state.route_proxy).await)
 }
 
 #[tauri::command]

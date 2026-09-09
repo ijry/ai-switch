@@ -166,6 +166,92 @@ fn env_secret() -> Option<String> {
         .ok()
         .filter(|value| !value.trim().is_empty())
 }
+pub async fn apply_env_config(pool: &SqlitePool) -> Result<(), AppError> {
+    let enabled = match env_text("AI_SWITCH_SAAS_ENABLE") {
+        None => return Ok(()),
+        Some(value) if value.trim() == "1" || value.eq_ignore_ascii_case("true") => true,
+        Some(value) if value.trim() == "0" || value.eq_ignore_ascii_case("false") => false,
+        Some(_) => {
+            return Err(invalid(
+                "saas.config_enable",
+                "AI_SWITCH_SAAS_ENABLE must be 1, 0, true, or false",
+            ))
+        }
+    };
+
+    if !enabled {
+        let config = load(pool).await?;
+        if config.enabled {
+            save(pool, json!({"enabled": false})).await?;
+        }
+        return Ok(());
+    }
+
+    let activation_code =
+        env_text("AI_SWITCH_SAAS_ACTIVATION_CODE").unwrap_or_else(|| "ai-switch-ok".to_string());
+    unlock(pool, &activation_code).await?;
+
+    let logs = json!({
+        "queue": env_text("AI_SWITCH_SAAS_LOGS_QUEUE").unwrap_or_else(|| "redis".to_string()),
+        "store": env_text("AI_SWITCH_SAAS_LOGS_STORE").unwrap_or_else(|| "postgres".to_string()),
+        "redisUrlEnv": env_text("AI_SWITCH_SAAS_LOGS_REDIS_URL_ENV").unwrap_or_else(|| "SAAS_LOGS_REDIS_URL".to_string()),
+        "postgresUrlEnv": env_text("AI_SWITCH_SAAS_LOGS_POSTGRES_URL_ENV").unwrap_or_else(|| "SAAS_LOGS_POSTGRES_URL".to_string()),
+    });
+
+    save_instance_id(pool).await?;
+
+    let payload = json!({
+        "enabled": true,
+        "siteName": env_text("AI_SWITCH_SAAS_SITE_NAME").unwrap_or_else(|| "AI Switch".to_string()),
+        "publicBaseUrl": env_text("AI_SWITCH_SAAS_PUBLIC_BASE_URL").unwrap_or_default(),
+        "githubClientId": env_text("AI_SWITCH_SAAS_GITHUB_CLIENT_ID").unwrap_or_default(),
+        "registrationEnabled": env_flag("AI_SWITCH_SAAS_REGISTRATION_ENABLED").unwrap_or(true),
+        "passwordLoginEnabled": env_flag("AI_SWITCH_SAAS_PASSWORD_LOGIN_ENABLED").unwrap_or(true),
+        "exchangeRateMicros": parse_env_i64("AI_SWITCH_SAAS_EXCHANGE_RATE_MICROS"),
+        "checkinEnabled": env_flag("AI_SWITCH_SAAS_CHECKIN_ENABLED").unwrap_or(false),
+        "checkinRewardMicros": env_i64("AI_SWITCH_SAAS_CHECKIN_REWARD_MICROS").unwrap_or(0),
+        "inviteEnabled": env_flag("AI_SWITCH_SAAS_INVITE_ENABLED").unwrap_or(false),
+        "inviteRegistrationRequired": env_flag("AI_SWITCH_SAAS_INVITE_REGISTRATION_REQUIRED").unwrap_or(false),
+        "inviteSignupRewardMicros": env_i64("AI_SWITCH_SAAS_INVITE_SIGNUP_REWARD_MICROS").unwrap_or(0),
+        "inviteRechargeRateMicros": env_i64("AI_SWITCH_SAAS_INVITE_RECHARGE_RATE_MICROS").unwrap_or(0),
+        "logs": logs,
+    });
+    save(pool, payload).await?;
+    Ok(())
+}
+
+fn env_text(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn env_flag(name: &str) -> Option<bool> {
+    env_text(name).map(|value| value.trim() == "1" || value.eq_ignore_ascii_case("true"))
+}
+
+fn env_i64(name: &str) -> Option<i64> {
+    env_text(name).and_then(|value| value.trim().parse().ok())
+}
+
+fn parse_env_i64(name: &str) -> Value {
+    env_i64(name).map(Value::from).unwrap_or(Value::Null)
+}
+
+async fn save_instance_id(pool: &SqlitePool) -> Result<(), AppError> {
+    let instance_id =
+        env_text("AI_SWITCH_SAAS_INSTANCE_ID").unwrap_or_else(|| "docker".to_string());
+    if instance_id.trim().is_empty() {
+        return Err(invalid("saas.config_logs", "SaaS instance ID is required"));
+    }
+    sqlx::query("INSERT INTO saas_settings(key,value_json,updated_at) VALUES('instance_id',?,?) ON CONFLICT(key) DO NOTHING")
+        .bind(serde_json::to_string(&instance_id).map_err(|_| invalid("saas.config_invalid", "Invalid SaaS instance identifier"))?)
+        .bind(repository::now())
+        .execute(pool)
+        .await
+        .map_err(db_error)?;
+    Ok(())
+}
 
 async fn secret_key(connection: &mut SqliteConnection) -> Result<String, AppError> {
     let raw: String =

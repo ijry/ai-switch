@@ -220,10 +220,29 @@ git tag -d v0.6.8
 - **每个目标**：`ai-switch-tsnet_<tag>_<平台>.zip`（Tailscale sidecar）
 - **macOS**：`ai-switch-updater-<版本>-darwin-aarch64.app.tar.gz` 与 `ai-switch-updater-<版本>-darwin-x86_64.app.tar.gz`（只有自动更新会下载）
 - **`latest.json`**：Tauri 更新器清单，桌面端自动更新的数据源
+- **Docker Hub**：`ijry/ai-switch:<版本>`、`ijry/ai-switch:<major>.<minor>`，正式版另有 `latest`（预发布不打 `latest`）
 
 `.sig` 不作为独立资产发布，签名内联在 `latest.json` 里。Release 正文顶部另有一张下载表，直接指向上面前三类文件。
 
 用户如何拿到这些产物见[安装](/guide/installation)，独立服务器的用法见[独立服务器](/deploy/standalone-server)。
+
+## 发布 Docker 镜像
+
+`release.yml` 的 `publish-image` 作业在 GitHub Release 发布完成后运行。它按当前 tag 下载两个架构的 `ai-switch-server_<tag>_linux-<arch>.zip`，校验 GitHub API 返回的 `sha256` digest，再构建 `linux/amd64` 与 `linux/arm64` 多架构镜像并推送 Docker Hub。镜像本身不编译源码，所以发布耗时主要取决于下载和解压发布包。
+
+镜像会打三类 tag：完整版本（如 `0.8.7`）、`major.minor`（如 `0.8`），以及正式版的 `latest`。`-rc`、`-beta`、`-alpha` 预发布不会占用 `latest`。
+
+### 需要配置什么
+
+| Secret / Variable | 类型 | 用途 |
+| --- | --- | --- |
+| `DOCKERHUB_USERNAME` | secret | Docker Hub 用户名或组织内有推送权限的机器人账号 |
+| `DOCKERHUB_TOKEN` | secret | Docker Hub Access Token，需要读写权限 |
+| `DOCKERHUB_REPOSITORY` | variable，可选 | 镜像仓库，默认 `ijry/ai-switch` |
+
+先在 Docker Hub 创建对应仓库，并确认该账号对仓库有写权限。缺少 secrets 时，`publish-image` 作业会明确失败；此时 GitHub Release 已经发布，可以补齐 secrets 后重新运行该 job，不需要重新构建安装包。
+
+用户侧用法见根目录 README 的 Docker 一键启动章节。
 
 ## 发布到包管理器（Homebrew / WinGet）
 

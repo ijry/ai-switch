@@ -1,15 +1,17 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleStop, Server, ShieldCheck, RefreshCcw } from "lucide-react";
+import { CircleStop, RefreshCcw, Server, ShieldCheck } from "lucide-react";
 import {
   getWebServerStatus,
   getWebServiceConfig,
   saveWebServiceConfig,
+  setRouteAccess,
   startWebServer,
   stopWebServer,
 } from "../../lib/api/client";
 import type { WebServiceConfig } from "../../lib/api/types";
 import { useI18n } from "../../lib/i18n";
+import { isDesktop } from "../../lib/transport";
 import { TokenInput } from "../auth/TokenInput";
 import { TailscaleSettings } from "./tailscale-settings";
 
@@ -17,7 +19,7 @@ const defaultConfig: WebServiceConfig = {
   host: "127.0.0.1",
   port: process.env.NODE_ENV !== "production" ? 10086 : 19527,
   token: "",
-  autoStart: false,
+  routeAccessEnabled: false,
   tailscaleEnabled: false,
   tailscaleExposureMode: "private",
   tlsEnabled: false,
@@ -38,7 +40,7 @@ function normalizeConfig(config: WebServiceConfig): WebServiceConfig {
     host: config.host.trim() || defaultConfig.host,
     port: Number.isFinite(config.port) && config.port > 0 ? config.port : defaultConfig.port,
     token: config.token?.trim() || "",
-    autoStart: Boolean(config.autoStart),
+    routeAccessEnabled: Boolean(config.routeAccessEnabled),
     tailscaleEnabled: Boolean(config.tailscaleEnabled),
     tailscaleHostname: config.tailscaleHostname?.trim() || null,
     tailscaleAuthKeyPresent: Boolean(config.tailscaleAuthKeyPresent),
@@ -52,6 +54,7 @@ function normalizeConfig(config: WebServiceConfig): WebServiceConfig {
 export function WebServiceSettings() {
   const queryClient = useQueryClient();
   const { t } = useI18n();
+  const desktop = isDesktop();
   const configQuery = useQuery({
     queryKey: ["web-service-config"],
     queryFn: getWebServiceConfig,
@@ -109,185 +112,259 @@ export function WebServiceSettings() {
     },
   });
 
+  const routeAccessMutation = useMutation({
+    mutationFn: (enabled: boolean) => setRouteAccess(enabled),
+    onSuccess: (status) => {
+      setForm((current) => ({
+        ...current,
+        routeAccessEnabled: Boolean(status.route_access_enabled),
+      }));
+      queryClient.setQueryData(["route-proxy-status"], status);
+      void queryClient.invalidateQueries({ queryKey: ["web-server-status"] });
+    },
+    onError: () => {
+      void configQuery.refetch();
+    },
+  });
+
   const status = statusQuery.data;
   const httpTransportRequiresTls = !form.tlsEnabled && !isLoopbackHost(form.host);
+  const serviceHost = status?.host ?? form.host;
+  const servicePort = status?.port ?? form.port;
 
   return (
-    <section className="space-y-3 rounded-2xl border border-stone-200 bg-white/82 p-4 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="grid h-8 w-8 place-items-center rounded-xl bg-stone-950 text-white">
-              <Server className="h-4 w-4" />
-            </span>
-            <div>
-              <h2 className="text-[15px] font-semibold text-stone-950">{t("settings.webService.title")}</h2>
-              <p className="text-[12px] text-stone-500">{t("settings.webService.subtitle")}</p>
+    <>
+      <section className="space-y-3 rounded-2xl border border-stone-200 bg-white/82 p-4 shadow-sm">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="grid h-8 w-8 place-items-center rounded-xl bg-stone-950 text-white">
+                <Server className="h-4 w-4" />
+              </span>
+              <div>
+                <h2 className="text-[15px] font-semibold text-stone-950">
+                  {t("settings.webService.listenerTitle")}
+                </h2>
+                <p className="text-[12px] text-stone-500">
+                  {t("settings.webService.listenerSubtitle")}
+                </p>
+              </div>
             </div>
           </div>
+          <button
+            className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-semibold text-stone-700 motion-control hover:border-stone-300 hover:bg-white"
+            onClick={() => {
+              void configQuery.refetch();
+              void statusQuery.refetch();
+              void queryClient.invalidateQueries({ queryKey: ["route-proxy-status"] });
+              void queryClient.invalidateQueries({ queryKey: ["route-proxy-https-status"] });
+            }}
+            type="button"
+          >
+            <RefreshCcw className="h-3.5 w-3.5" />
+            {t("settings.webService.refresh")}
+          </button>
         </div>
-        <button
-          className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-semibold text-stone-700 motion-control hover:border-stone-300 hover:bg-white"
-          onClick={() => {
-            void configQuery.refetch();
-            void statusQuery.refetch();
-            void queryClient.invalidateQueries({ queryKey: ["route-proxy-status"] });
-            void queryClient.invalidateQueries({ queryKey: ["route-proxy-https-status"] });
-          }}
-          type="button"
-        >
-          <RefreshCcw className="h-3.5 w-3.5" />
-          {t("settings.webService.refresh")}
-        </button>
-      </div>
 
-      {configQuery.isLoading ? (
-        <p className="text-[12px] text-stone-500">{t("settings.webService.loading")}</p>
-      ) : (
-        <>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="flex flex-col gap-1.5 text-[12px] font-medium text-stone-600">
-              <span>{t("settings.webService.host")}</span>
-              <input
-                className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
-                onChange={(event) => setForm((current) => ({ ...current, host: event.target.value }))}
-                value={form.host}
-              />
-            </label>
-            <label className="flex flex-col gap-1.5 text-[12px] font-medium text-stone-600">
-              <span>{t("settings.webService.port")}</span>
-              <input
-                className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
-                min={1}
-                max={65535}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, port: Number(event.target.value) }))
-                }
-                type="number"
-                value={form.port}
-              />
-            </label>
-          </div>
-          <p className="text-[12px] text-stone-500">{t("settings.webService.sharedHint")}</p>
-          {httpTransportRequiresTls ? (
-            <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-              {t("settings.webService.hostTransportHint")}
-            </p>
-          ) : null}
-
-          <TokenInput
-            label={t("settings.webService.token")}
-            onChange={(value) => setForm((current) => ({ ...current, token: value }))}
-            value={form.token ?? ""}
-            copy
-          />
-
-          <div className="flex flex-wrap gap-3">
-            <label className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-medium text-stone-700">
-              <input
-                checked={form.autoStart}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, autoStart: event.target.checked }))
-                }
-                type="checkbox"
-              />
-              {t("settings.webService.autoStart")}
-            </label>
-            <label className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-medium text-stone-700">
-              <input
-                checked={form.tailscaleEnabled}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, tailscaleEnabled: event.target.checked }))
-                }
-                type="checkbox"
-              />
-              {t("settings.webService.tailscaleEnabled")}
-            </label>
-            {form.tailscaleEnabled ? (
-              <label className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-medium text-stone-700">
-                <span>{t("settings.webService.exposureMode")}</span>
-                <select
-                  className="rounded-lg border border-stone-200 bg-white px-2 py-1 text-[12px] font-semibold text-stone-800 outline-none focus:border-stone-400"
-                  onChange={(event) => {
-                    const nextMode = event.target.value === "public" ? "public" : "private";
-                    if (nextMode === "public") {
-                      const ok = window.confirm(t("settings.webService.publicConfirm"));
-                      if (!ok) {
-                        return;
+        {configQuery.isLoading ? (
+          <p className="text-[12px] text-stone-500">{t("settings.webService.loading")}</p>
+        ) : (
+          <>
+            {desktop ? (
+              <>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="flex flex-col gap-1.5 text-[12px] font-medium text-stone-600">
+                    <span>{t("settings.webService.host")}</span>
+                    <input
+                      className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
+                      onChange={(event) =>
+                        setForm((current) => ({ ...current, host: event.target.value }))
                       }
-                    }
-                    setForm((current) => ({ ...current, tailscaleExposureMode: nextMode }));
-                  }}
-                  value={form.tailscaleExposureMode ?? "private"}
+                      value={form.host}
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1.5 text-[12px] font-medium text-stone-600">
+                    <span>{t("settings.webService.port")}</span>
+                    <input
+                      className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
+                      min={1}
+                      max={65535}
+                      onChange={(event) =>
+                        setForm((current) => ({ ...current, port: Number(event.target.value) }))
+                      }
+                      type="number"
+                      value={form.port}
+                    />
+                  </label>
+                </div>
+                {httpTransportRequiresTls ? (
+                  <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                    {t("settings.webService.hostTransportHint")}
+                  </p>
+                ) : null}
+                <TokenInput
+                  label={t("settings.webService.token")}
+                  onChange={(value) => setForm((current) => ({ ...current, token: value }))}
+                  value={form.token ?? ""}
+                  copy
+                />
+                <div className="flex flex-wrap gap-3">
+                  <label className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-medium text-stone-700">
+                    <input
+                      checked={form.tailscaleEnabled}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          tailscaleEnabled: event.target.checked,
+                        }))
+                      }
+                      type="checkbox"
+                    />
+                    {t("settings.webService.tailscaleEnabled")}
+                  </label>
+                  {form.tailscaleEnabled ? (
+                    <label className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-medium text-stone-700">
+                      <span>{t("settings.webService.exposureMode")}</span>
+                      <select
+                        className="rounded-lg border border-stone-200 bg-white px-2 py-1 text-[12px] font-semibold text-stone-800 outline-none focus:border-stone-400"
+                        onChange={(event) => {
+                          const nextMode = event.target.value === "public" ? "public" : "private";
+                          if (nextMode === "public") {
+                            const ok = window.confirm(t("settings.webService.publicConfirm"));
+                            if (!ok) {
+                              return;
+                            }
+                          }
+                          setForm((current) => ({
+                            ...current,
+                            tailscaleExposureMode: nextMode,
+                          }));
+                        }}
+                        value={form.tailscaleExposureMode ?? "private"}
+                      >
+                        <option value="private">
+                          {t("settings.webService.exposurePrivate")}
+                        </option>
+                        <option value="public">{t("settings.webService.exposurePublic")}</option>
+                      </select>
+                    </label>
+                  ) : null}
+                </div>
+                {form.tailscaleEnabled && form.tailscaleExposureMode === "public" ? (
+                  <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                    {t("settings.webService.publicHint")}
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <div className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] text-stone-600">
+                <p className="font-semibold text-stone-700">
+                  {t("settings.webService.standaloneManaged")}
+                </p>
+                <p>
+                  {serviceHost}:{servicePort}
+                </p>
+              </div>
+            )}
+
+            <p className="text-[12px] text-stone-500">{t("settings.webService.sharedHint")}</p>
+
+            {desktop ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  className="rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white motion-control hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={saveMutation.isPending}
+                  onClick={() => saveMutation.mutate()}
+                  type="button"
                 >
-                  <option value="private">{t("settings.webService.exposurePrivate")}</option>
-                  <option value="public">{t("settings.webService.exposurePublic")}</option>
-                </select>
-              </label>
+                  {t("settings.webService.save")}
+                </button>
+                {status?.running ? (
+                  <button
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 motion-control hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={stopMutation.isPending}
+                    onClick={() => stopMutation.mutate()}
+                    type="button"
+                  >
+                    <CircleStop className="h-3.5 w-3.5" />
+                    {t("settings.webService.stop")}
+                  </button>
+                ) : (
+                  <button
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 motion-control hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={startMutation.isPending}
+                    onClick={() => startMutation.mutate()}
+                    type="button"
+                  >
+                    <ShieldCheck className="h-3.5 w-3.5" />
+                    {t("settings.webService.start")}
+                  </button>
+                )}
+              </div>
             ) : null}
-          </div>
-          {form.tailscaleEnabled && form.tailscaleExposureMode === "public" ? (
-            <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-              {t("settings.webService.publicHint")}
+
+            <div className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] text-stone-600">
+              {status?.running && status.baseUrl ? (
+                <p>{t("settings.webService.running", { url: status.baseUrl })}</p>
+              ) : (
+                <p>{t("settings.webService.stopped")}</p>
+              )}
+              {saveMutation.isError ? (
+                <p className="mt-1 text-red-700">{t("settings.webService.saveError")}</p>
+              ) : null}
+              {startMutation.isError ? (
+                <p className="mt-1 text-red-700">
+                  {startMutation.error instanceof Error && startMutation.error.message
+                    ? startMutation.error.message
+                    : t("settings.webService.startError")}
+                </p>
+              ) : null}
+              {stopMutation.isError ? (
+                <p className="mt-1 text-red-700">{t("settings.webService.stopError")}</p>
+              ) : null}
+              {saveMutation.isSuccess ? (
+                <p className="mt-1 text-emerald-700">{t("settings.webService.saved")}</p>
+              ) : null}
+            </div>
+
+            {desktop ? (
+              <TailscaleSettings
+                enabled={form.tailscaleEnabled}
+                exposureMode={form.tailscaleExposureMode ?? "private"}
+              />
+            ) : null}
+          </>
+        )}
+      </section>
+
+      <section className="space-y-3 rounded-2xl border border-stone-200 bg-white/82 p-4 shadow-sm">
+        <div className="flex items-center gap-2">
+          <span className="grid h-8 w-8 place-items-center rounded-xl bg-stone-950 text-white">
+            <ShieldCheck className="h-4 w-4" />
+          </span>
+          <div>
+            <h2 className="text-[15px] font-semibold text-stone-950">
+              {t("settings.webService.routeTitle")}
+            </h2>
+            <p className="text-[12px] text-stone-500">
+              {t("settings.webService.routeSubtitle")}
             </p>
-          ) : null}
-
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              className="rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white motion-control hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={saveMutation.isPending}
-              onClick={() => saveMutation.mutate()}
-              type="button"
-            >
-              {t("settings.webService.save")}
-            </button>
-            {status?.running ? (
-              <button
-                className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 motion-control hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
-                disabled={stopMutation.isPending}
-                onClick={() => stopMutation.mutate()}
-                type="button"
-              >
-                <CircleStop className="h-3.5 w-3.5" />
-                {t("settings.webService.stop")}
-              </button>
-            ) : (
-              <button
-                className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-semibold text-stone-700 motion-control hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
-                disabled={startMutation.isPending}
-                onClick={() => startMutation.mutate()}
-                type="button"
-              >
-                <ShieldCheck className="h-3.5 w-3.5" />
-                {t("settings.webService.start")}
-              </button>
-            )}
           </div>
-
-          <div className="rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] text-stone-600">
-            {status?.running && status.baseUrl ? (
-              <p>{t("settings.webService.running", { url: status.baseUrl })}</p>
-            ) : (
-              <p>{t("settings.webService.stopped")}</p>
-            )}
-            {saveMutation.isError && <p className="mt-1 text-red-700">{t("settings.webService.saveError")}</p>}
-            {startMutation.isError && (
-              <p className="mt-1 text-red-700">
-                {startMutation.error instanceof Error && startMutation.error.message
-                  ? startMutation.error.message
-                  : t("settings.webService.startError")}
-              </p>
-            )}
-            {stopMutation.isError && <p className="mt-1 text-red-700">{t("settings.webService.stopError")}</p>}
-            {saveMutation.isSuccess && <p className="mt-1 text-emerald-700">{t("settings.webService.saved")}</p>}
-          </div>
-
-          <TailscaleSettings
-            enabled={form.tailscaleEnabled}
-            exposureMode={form.tailscaleExposureMode ?? "private"}
+        </div>
+        <label className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-medium text-stone-700">
+          <input
+            checked={form.routeAccessEnabled}
+            disabled={routeAccessMutation.isPending}
+            onChange={(event) => routeAccessMutation.mutate(event.target.checked)}
+            type="checkbox"
           />
-        </>
-      )}
-    </section>
+          {t("settings.webService.routeEnabled")}
+        </label>
+        <p className="text-[12px] text-stone-500">{t("settings.webService.routeHint")}</p>
+        {routeAccessMutation.isError ? (
+          <p className="text-[12px] text-red-700">{t("settings.webService.routeError")}</p>
+        ) : null}
+      </section>
+    </>
   );
 }

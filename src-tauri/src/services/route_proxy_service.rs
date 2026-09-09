@@ -149,6 +149,10 @@ fn describe_upstream_transport_error(
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteProxyStatus {
     pub running: bool,
+    /// Whether pool model routes are accepted. Independent from `running`,
+    /// which reports whether a listener exists.
+    #[serde(default)]
+    pub route_access_enabled: bool,
     #[serde(default)]
     pub shared_listener: bool,
     pub bind_host: String,
@@ -205,6 +209,7 @@ struct ProxyListener {
 struct RouteProxyInner {
     http: Option<ProxyListener>,
     https: Option<ProxyListener>,
+    route_access_enabled: bool,
     /// The Web service or standalone process owns the combined listener.
     /// Only its owner may shut it down; low-level pool controls must not
     /// detach status from a listener that still serves requests.
@@ -231,6 +236,7 @@ impl RouteProxyInner {
         if let Some(shared) = &self.shared {
             return RouteProxyStatus {
                 running: true,
+                route_access_enabled: self.route_access_enabled,
                 shared_listener: true,
                 bind_host: shared.bind_host.clone(),
                 port: Some(shared.port),
@@ -249,6 +255,7 @@ impl RouteProxyInner {
 
         RouteProxyStatus {
             running: self.http.is_some() || self.https.is_some(),
+            route_access_enabled: self.route_access_enabled,
             shared_listener: false,
             bind_host: BIND_HOST.to_string(),
             port: self.http.as_ref().map(|listener| listener.port),
@@ -417,6 +424,14 @@ impl RouteProxyService {
 
     pub async fn status(state: &RouteProxyRuntimeState) -> RouteProxyStatus {
         state.inner.lock().await.status()
+    }
+
+    pub async fn set_route_access_enabled(state: &RouteProxyRuntimeState, enabled: bool) {
+        state.inner.lock().await.route_access_enabled = enabled;
+    }
+
+    pub async fn is_route_access_enabled(state: &RouteProxyRuntimeState) -> bool {
+        state.inner.lock().await.route_access_enabled
     }
 
     /// Records the shared desktop/server panel/API listener so status

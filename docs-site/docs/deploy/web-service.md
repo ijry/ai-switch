@@ -13,15 +13,15 @@ Web 服务模式适合这些场景：在手机上临时切换账号；在同一�
 
 1. 打开桌面端的**设置**。
 2. 选择 **Web 服务** 面板。
-3. 填写**主机**与**端口**。默认是 `127.0.0.1` 和 `3090`。
+3. 在**共享服务端口**里填写**主机**与**端口**。默认是 `127.0.0.1` 和 `19527`。
 4. 确认**访问令牌**。首次生成配置时会自动填入一个随机 UUID，可以直接用，也可以替换成自己的字符串。
-5. 点击**保存**，再点击**启动服务**。
+5. 点击**保存**，再按需要点击**启动服务端口**。
 
-启动成功后，用浏览器访问 `http://127.0.0.1:3090`（或你设置的地址）即可。首次打开需要输入访问令牌，令牌保存在浏览器 `localStorage` 的 `ai-switch.webToken` 键下，之后同一浏览器不必重复输入。
+启动成功后，用浏览器访问 `http://127.0.0.1:19527`（或你设置的地址）即可。首次打开需要输入访问令牌，令牌保存在浏览器 `localStorage` 的 `ai-switch.webToken` 键下，之后同一浏览器不必重复输入。
 
-面板上还有两个可选开关：
+面板上还有两个独立开关：
 
-- **启动时自动运行**：桌面端启动后自动拉起 Web 服务，不必每次手动点。
+- **启用算力池路由接入**：控制模型 API 是否接受池路由。开启时会自动启动共享端口；关闭时端口仍可服务 Web 页面。桌面端会记住这个开关，应用启动时如果它为开，会自动恢复共享端口。
 - **启用安全网络**：通过 Tailscale 把服务暴露给你自己的设备或公网，配套的**访问模式**可选「仅私网」或「公网访问」。这部分详见 [远程访问与 HTTPS](/deploy/remote-access)。
 
 ## 浏览器端的三个入口
@@ -39,14 +39,14 @@ API 响应统一带上 `Cache-Control: no-store`，请求体上限为 12 MiB（�
 一个手动调用的例子：
 
 ```bash
-curl -X POST http://127.0.0.1:3090/api/list_accounts \
+curl -X POST http://127.0.0.1:19527/api/list_accounts \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
 
 ```powershell
-curl.exe -X POST http://127.0.0.1:3090/api/list_accounts `
+curl.exe -X POST http://127.0.0.1:19527/api/list_accounts `
   -H "Authorization: Bearer YOUR_TOKEN" `
   -H "Content-Type: application/json" `
   -d '{}'
@@ -59,9 +59,9 @@ Web 服务的配置持久化在 `~/.ai-switch/web-service.json`。界面上的�
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `host` | `127.0.0.1` | 监听地址。非环回地址必须同时配好 TLS，见下一节 |
-| `port` | `3090` | 监听端口 |
+| `port` | `19527` | 监听端口 |
 | `token` | 首次生成时自动写入随机 UUID | 访问令牌 |
-| `autoStart` | `false` | 桌面端启动后自动运行服务 |
+| `routeAccessEnabled` | `false` | 是否接受算力池模型路由。旧配置里的 `autoStart: true` 会迁移为 `true` |
 | `tailscaleEnabled` | `false` | 是否启用 Tailscale 暴露 |
 | `tailscaleExposureMode` | `private` | `private`（仅私网）或 `public`（Funnel 公网） |
 | `tlsEnabled` | `false` | 是否启用 TLS。**界面无此开关，只能改文件** |

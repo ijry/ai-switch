@@ -58,7 +58,7 @@ use commands::usage_stats_commands::{
 use commands::web_service_commands::{
     create_mobile_pairing, disconnect_tailscale, get_tailscale_status, get_web_server_status,
     get_web_service_config, save_web_service_config, start_tailscale_login,
-    start_tailscale_with_auth_key, start_web_server, stop_web_server,
+    start_tailscale_with_auth_key, start_web_server, stop_web_server, set_route_access,
 };
 use database::open_migrated_pool;
 use mcp::command::{
@@ -450,13 +450,11 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 if WebService::load_config(&state.paths)
                     .await
-                    .is_ok_and(|config| config.auto_start)
+                    .is_ok_and(|config| config.route_access_enabled)
                 {
-                    if let Err(error) = WebService::start(Arc::new(state.clone())).await {
-                        eprintln!("Shared Web/compute-pool auto-start failed: {error}");
+                    if let Err(error) = WebService::set_route_access(&state, true).await {
+                        eprintln!("Shared Web/compute-pool route access failed to start: {error}");
                     }
-                } else {
-                    services::route_proxy_https_service::restore_auto_started_proxy(&state).await;
                 }
             });
 
@@ -589,6 +587,7 @@ pub fn run() {
             get_web_server_status,
             start_web_server,
             stop_web_server,
+            set_route_access,
             get_tailscale_status,
             create_mobile_pairing,
             start_tailscale_login,

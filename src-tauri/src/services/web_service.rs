@@ -34,7 +34,8 @@ pub struct WebServiceConfig {
     pub host: String,
     pub port: u16,
     pub token: Option<String>,
-    pub auto_start: bool,
+    #[serde(rename = "routeAccessEnabled", alias = "autoStart", default)]
+    pub route_access_enabled: bool,
     pub tailscale_enabled: bool,
     #[serde(default)]
     pub tailscale_hostname: Option<String>,
@@ -275,6 +276,11 @@ impl WebService {
             let _guard = state.web_service.config_reconciliation_lock.lock().await;
             Self::set_sensitive_command_policy(&state.web_service, false).await;
             let config = Self::load_config(&state.paths).await?;
+            RouteProxyService::set_route_access_enabled(
+                &state.route_proxy,
+                config.route_access_enabled,
+            )
+            .await;
             let status = Self::start_server_locked(Arc::clone(&state), config.clone()).await?;
             Self::reconcile_sensitive_command_policy_locked(&state, &config).await;
             Ok(status)
@@ -418,6 +424,11 @@ impl WebService {
         let _guard = state.web_service.config_reconciliation_lock.lock().await;
         Self::set_sensitive_command_policy(&state.web_service, false).await;
         let config = Self::load_config(&state.paths).await.unwrap_or_default();
+        RouteProxyService::set_route_access_enabled(
+            &state.route_proxy,
+            config.route_access_enabled,
+        )
+        .await;
         let (shutdown, join_handle, owned_listener) = {
             let mut inner = state.web_service.inner.lock().await;
             let owned_listener = inner.status.take().is_some_and(|status| status.running);
@@ -473,6 +484,37 @@ impl WebService {
         )
         .await;
         Ok(tailscale_status)
+    }
+
+    pub async fn set_route_access(
+        state: &AppState,
+        enabled: bool,
+    ) -> Result<WebServerStatus, AppError> {
+        let mut config = Self::load_config(&state.paths).await?;
+        config.route_access_enabled = enabled;
+        Self::save_config(&state.paths, &config).await?;
+        RouteProxyService::set_route_access_enabled(&state.route_proxy, enabled).await;
+
+        if enabled {
+            Self::start(Arc::new(state.clone())).await
+        } else {
+            Ok(Self::status(&state.web_service, &config).await)
+        }
+    }
+
+    pub async fn mark_standalone_listener(
+        state: &AppState,
+        host: impl Into<String>,
+        port: u16,
+        base_url: impl Into<String>,
+    ) {
+        let mut inner = state.web_service.inner.lock().await;
+        inner.status = Some(WebServerStatus {
+            running: true,
+            host: host.into(),
+            port: Some(port),
+            base_url: Some(base_url.into()),
+        });
     }
 
     pub async fn start_tailscale_login(state: &AppState) -> Result<TailscaleLogin, AppError> {
@@ -642,7 +684,7 @@ impl WebService {
                 config.port
             },
             token,
-            auto_start: config.auto_start,
+            route_access_enabled: config.route_access_enabled,
             shared_port_migrated: true,
             tailscale_enabled: config.tailscale_enabled,
             tailscale_hostname: hostname,
@@ -661,7 +703,7 @@ impl Default for WebServiceConfig {
             host: "127.0.0.1".to_string(),
             port: default_service_port(is_desktop_dev_runtime()),
             token: Some(Uuid::new_v4().to_string()),
-            auto_start: false,
+            route_access_enabled: false,
             shared_port_migrated: false,
             tailscale_enabled: false,
             tailscale_hostname: None,
@@ -1692,5 +1734,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod route_access_tests;
 #[cfg(test)]
 mod shared_listener_tests;

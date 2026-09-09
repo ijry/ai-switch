@@ -59,7 +59,7 @@ The UI code has no idea where it is running. `src/lib/transport/detect.ts` probe
 
 `run()` in `src-tauri/src/lib.rs` registers **87 commands** through `tauri::generate_handler!`, covering settings, accounts and credentials, the pool, the route proxy, HTTPS certificates, sessions, target apps, terminals, the web service, Tailscale, MCP, and skills. The command bodies live in the 13 modules under `src-tauri/src/commands/` and mostly just parse arguments — the real work happens in `services/`.
 
-The `setup()` phase also spawns several long-lived tasks: the tray menu and hide-on-close behaviour, an optional auto-start of the web service, an optional restore of the route proxy, and `RouteRecoveryService::run_loop`, which periodically re-enables accounts according to their recovery rules.
+The `setup()` phase also spawns several long-lived tasks: the tray menu and hide-on-close behaviour, restoring the shared listener according to the route-access switch, and `RouteRecoveryService::run_loop`, which periodically re-enables accounts according to their recovery rules.
 
 ### Browser: axum HTTP + WebSocket
 
@@ -149,17 +149,17 @@ Whether a given button in the UI is enabled is driven by this capability table, 
 
 `ProtocolBridgeKind` in `services/route_protocol_bridge/mod.rs` defines **seven bridge paths**: `ResponsesToChat`, `ResponsesToResponses`, `ResponsesToAnthropic`, `ResponsesToGemini`, `ClaudeToChat`, `ClaudeToResponses`, `ClaudeToGemini`. Each has its own request rewriter, response rewriter, and SSE streaming translation. For how this behaves in practice, see [protocol routing and bridging](/en/guide/protocol-routing).
 
-### Two ports that are easy to confuse
+### One shared listener
 
-| | Local route proxy | Web service |
+| | Panel traffic | Model API traffic |
 | --- | --- | --- |
-| Default address | `127.0.0.1:19527` | `127.0.0.1:3090` |
-| Defined in | `DEFAULT_ROUTE_PROXY_PORT` in `services/route_proxy_service.rs` | default config in `services/web_service.rs` |
-| Who connects | AI CLIs on this machine (Codex, Claude Code, …) | The AI Switch UI in a browser or on a phone |
-| What flows | Model inference requests, rewritten and forwarded upstream | The app's own API calls and event stream |
-| Auth | Route proxy key (written into each CLI's config) | Web access token (bearer) |
+| Default address | `127.0.0.1:19527` (the same listener) | `127.0.0.1:19527` (the same listener) |
+| Split by | Panel routes in `web/router.rs` | The shared fallback in `web/router.rs` |
+| Who connects | The AI Switch UI in a browser or on a phone | AI CLIs on this machine or remotely (Codex, Claude Code, …) |
+| What flows | The app's own API calls and event stream | Model inference requests, rewritten and forwarded upstream |
+| Auth | Web access token (bearer) | Route proxy key (written into each CLI's config) |
 
-Neither depends on the other. Managing accounts from the desktop app needs no web service; watching usage stats in a browser needs no route proxy.
+The route-access switch is independent from the listener: turning routes off only makes model APIs return `route_proxy.access_disabled` while panel traffic remains available; turning routes on starts the shared port when needed.
 
 ## Storage layer
 

@@ -128,12 +128,14 @@ Desktop and browser share one React UI. Desktop uses Tauri IPC. Browser mode use
 1. Open Settings
 2. Choose **Web Service**
 3. Set host, service port, and access token
-4. Start the service
+4. Click **Save**, then start the **shared service port** when needed
 5. Optionally enable Tailscale, choose private or public access, and click **Login with Tailscale**
 
-Like the standalone server, the GUI hosts Web pages, SaaS (when enabled), and compute-pool model APIs on one listener. Starting from either **Web Service** or the pool toolbar uses the Web Service configuration; either GUI stop control stops the shared service. Desktop dev mode defaults to port `10086` and uses a separate `web-service-dev.json`, so it never changes the installed release configuration; installed and standalone-server configurations default to service port `19527`. historical custom Web ports are reset once during the upgrade. Later changes to the service port also change the compute-pool port. A successfully started Web Service takes over any legacy independent pool listeners instead of leaving a second set of ports running.
+Like the standalone server, the GUI hosts Web pages, SaaS (when enabled), and compute-pool model APIs on one listener. Settings split this into two blocks: **Shared service port** owns the bind address, port, TLS, and listener start/stop; **Compute-pool route access** decides whether model APIs accept pool routing. Enabling route access starts the shared port when needed, while disabling it leaves the port available for Web pages. Desktop dev mode defaults to port `10086` and uses a separate `web-service-dev.json`, so it never changes the installed release configuration; installed and standalone-server configurations default to service port `19527`. A successfully started shared listener takes over any legacy independent pool listeners instead of leaving a second set of ports running.
 
-Configure HTTPS under **Web Service → TLS**, not on the legacy independent pool HTTPS port. Restart the shared service after changing its host, service port, or TLS settings, and rewrite client route configs if their endpoint changes. Sharing a port does not merge administrator, mobile, compute-pool-key, or SaaS-key permissions.
+The desktop remembers the route-access switch. If it is on when the app starts, the shared port is restored automatically, so there is no separate Web-service auto-start option. Standalone server and Docker listeners are always managed by environment variables and the process supervisor, and the browser cannot change or restart them; the route-access switch remains available in the browser.
+
+Configure HTTPS under **Web Service → TLS**, not on the legacy independent pool HTTPS port. Restart the shared service after changing its host, service port, or TLS settings, and rewrite client route configs if their endpoint changes. Sharing a port does not merge administrator, mobile, compute-pool-key, or SaaS-key permissions. When route access is disabled, model APIs return `route_proxy.access_disabled`; panel routes and the health check remain available.
 
 Default bind is `127.0.0.1:19527`. Without TLS, non-loopback hosts such as `0.0.0.0` are rejected; enable Web service TLS before binding to all interfaces.
 
@@ -188,6 +190,34 @@ On x86_64 Linux, install with one command:
 ```
 
 The installer creates the `ai-switch` system user, installs under `/opt/ai-switch`, persists `/etc/ai-switch/server.env`, and enables the systemd service. Re-running it preserves the existing token and data. It does not configure Nginx, Certbot, or firewall rules.
+
+### Docker one-click server and SaaS startup
+
+The Docker image reuses the standalone server already packaged in the GitHub Release, so no Rust compilation happens locally and desktop WebKitGTK is not required. After each stable release, CI publishes `linux/amd64` and `linux/arm64` images to `ijry/ai-switch`. By default, Redis is the log queue, PostgreSQL is the log store, and SaaS is enabled automatically:
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+Inside the container, the default log queue and store use `redis://redis:6379` and `postgresql://ai_switch:change-me@postgres:5432/ai_switch_logs?sslmode=disable`, via `SAAS_LOGS_REDIS_URL` and `SAAS_LOGS_POSTGRES_URL`. SaaS settings store only environment-name references and do not persist connection strings in the database.
+
+Common overrides:
+
+- `AI_SWITCH_PORT`: host port mapping, default `19527`.
+- `AI_SWITCH_DOCKER_IMAGE`: image reference, default `ijry/ai-switch:latest`; pin a release with `ijry/ai-switch:0.8.7` or `ijry/ai-switch:0.8`.
+- `AI_SWITCH_TOKEN`: when unset, the entrypoint generates and prints a container-local token; set it explicitly for restarts.
+- `AI_SWITCH_SAAS_ENABLE`: default `1`; set `0` to run only the standalone server.
+- `AI_SWITCH_SAAS_ACTIVATION_CODE`, `AI_SWITCH_SAAS_INSTANCE_ID`, `AI_SWITCH_SAAS_SITE_NAME`, `AI_SWITCH_SAAS_PUBLIC_BASE_URL`.
+- `AI_SWITCH_SAAS_LOGS_QUEUE`, `AI_SWITCH_SAAS_LOGS_STORE`, defaulting to `redis` and `postgres`.
+- `AI_SWITCH_SAAS_LOGS_REDIS_URL_ENV`, `AI_SWITCH_SAAS_LOGS_POSTGRES_URL_ENV`, defaulting to references to `SAAS_LOGS_REDIS_URL` and `SAAS_LOGS_POSTGRES_URL`.
+
+Data is stored in named volumes: `ai-switch-data`, `redis-data`, and `postgres-data`. For production, replace the default PostgreSQL password and terminate HTTPS at your reverse proxy.
+
+To build the image locally, the Dockerfile also downloads and verifies the release archive instead of compiling source:
+
+```bash
+docker build --build-arg AI_SWITCH_VERSION=v0.8.7 .
+```
 
 ### Security notes
 

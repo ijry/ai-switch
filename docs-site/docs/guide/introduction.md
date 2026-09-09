@@ -128,7 +128,7 @@ AI Switch 的做法是把这些差异收敛到一个地方：账号集中管理�
 - **桌面端**通过 Tauri IPC 调用核心
 - **浏览器模式**通过 HTTP 调用：`POST /api/:command` 和 `GET /ws/events`，两个端点都需要访问令牌
 
-Web 服务默认绑定 `127.0.0.1:3090`。这里有一条硬性的安全约束：**在非 loopback 地址上监听而没有启用 TLS，服务会直接拒绝启动**，报 `web.sensitive_transport_requires_tls`。想让局域网或者远程访问到，要么配好 TLS，要么走 Tailscale 这类私有网络。
+Web 服务默认绑定 `127.0.0.1:19527`。这里有一条硬性的安全约束：**在非 loopback 地址上监听而没有启用 TLS，服务会直接拒绝启动**，报 `web.sensitive_transport_requires_tls`。想让局域网或者远程访问到，要么配好 TLS，要么走 Tailscale 这类私有网络。
 
 有两种跑 Web 服务的方式：
 

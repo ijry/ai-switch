@@ -1078,11 +1078,18 @@ pub async fn dispatch_command(
                 .map_err(to_error)?,
         ),
         "save_web_service_config" => {
-            let config: WebServiceConfig = parse_arg(&args, "config")?;
-            let saved = WebService::save_config_and_reconcile(&state, &config)
-                .await
-                .map_err(to_error)?;
-            to_value(saved)
+            #[cfg(not(feature = "desktop"))]
+            {
+                Err(standalone_web_listener_managed())
+            }
+            #[cfg(feature = "desktop")]
+            {
+                let config: WebServiceConfig = parse_arg(&args, "config")?;
+                let saved = WebService::save_config_and_reconcile(&state, &config)
+                    .await
+                    .map_err(to_error)?;
+                to_value(saved)
+            }
         }
         "get_web_server_status" => {
             let config = WebService::load_config(&state.paths)
@@ -1090,12 +1097,34 @@ pub async fn dispatch_command(
                 .map_err(to_error)?;
             to_value(WebService::status(&state.web_service, &config).await)
         }
-        "start_web_server" => to_value(
-            WebService::start(Arc::clone(&state))
-                .await
-                .map_err(to_error)?,
-        ),
-        "stop_web_server" => to_value(WebService::stop(state.as_ref()).await),
+        "start_web_server" => {
+            #[cfg(not(feature = "desktop"))]
+            {
+                Err(standalone_web_listener_managed())
+            }
+            #[cfg(feature = "desktop")]
+            {
+                to_value(WebService::start(Arc::clone(&state)).await?)
+            }
+        }
+        "stop_web_server" => {
+            #[cfg(not(feature = "desktop"))]
+            {
+                Err(standalone_web_listener_managed())
+            }
+            #[cfg(feature = "desktop")]
+            {
+                to_value(WebService::stop(state.as_ref()).await)
+            }
+        }
+        "set_route_access" => {
+            let enabled = args
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| invalid_argument("enabled", None))?;
+            WebService::set_route_access(state.as_ref(), enabled).await?;
+            to_value(RouteProxyService::status(&state.route_proxy).await)
+        }
         "get_tailscale_status" => to_value(
             WebService::tailscale_status(state.as_ref())
                 .await
@@ -1164,6 +1193,17 @@ fn require_terminal_subscriber(state: &Arc<AppState>, session_id: &str) -> Resul
 
 fn to_error(error: AppError) -> ApiError {
     ApiError::from(error)
+}
+
+#[cfg(not(feature = "desktop"))]
+fn standalone_web_listener_managed() -> ApiError {
+    to_error(AppError::Validation {
+        code: "web_service.standalone_managed",
+        message: "The standalone server listener is managed by its process and environment"
+            .to_string(),
+        details: None,
+        recoverable: false,
+    })
 }
 
 fn to_value<T: Serialize>(value: T) -> Result<Value, ApiError> {
@@ -1359,6 +1399,54 @@ mod tests {
             }),
             _temp: temp,
         }
+    }
+
+    #[cfg(not(feature = "desktop"))]
+    #[tokio::test]
+    async fn standalone_rejects_web_listener_configuration_and_lifecycle_commands() {
+        let test = test_state().await;
+        let config = WebService::load_config(&test.state.paths).await.unwrap();
+
+        for (command, arguments) in [
+            ("save_web_service_config", json!({ "config": config })),
+            ("start_web_server", json!({})),
+            ("stop_web_server", json!({})),
+        ] {
+            let error = dispatch_command(test.state.clone(), command, arguments)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.code, "web_service.standalone_managed",
+                "unexpected error for {command}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn route_access_command_toggles_pool_routes_without_restarting_the_listener() {
+        let test = test_state().await;
+        let mut config = WebService::load_config(&test.state.paths).await.unwrap();
+        let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        config.port = reservation.local_addr().unwrap().port();
+        config.token = Some("0123456789abcdef".to_string());
+        drop(reservation);
+        WebService::save_config(&test.state.paths, &config)
+            .await
+            .unwrap();
+        WebService::set_route_access(&test.state, true)
+            .await
+            .unwrap();
+
+        let disabled = dispatch_command(
+            test.state.clone(),
+            "set_route_access",
+            json!({ "enabled": false }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(disabled["route_access_enabled"], false);
+        assert_eq!(disabled["running"], true);
     }
 
     #[test]

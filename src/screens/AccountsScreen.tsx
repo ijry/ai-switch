@@ -3327,6 +3327,9 @@ export function AccountsScreen({
       return routeProxyPollInterval(query.state.data, stoppedPollsRef.current - 1);
     },
   });
+  const routeAccessEnabled = Boolean(routeProxyQuery.data?.route_access_enabled);
+  const routeListenerRunning = Boolean(routeProxyQuery.data?.running);
+  const routeServiceReady = routeAccessEnabled && routeListenerRunning;
 
   useEffect(() => {
     let disposed = false;
@@ -4576,7 +4579,7 @@ export function AccountsScreen({
         activePlatform,
         storedClientSelection,
       ),
-    enabled: Boolean(routeProxyQuery.data?.running) && configWriteEnabled,
+    enabled: routeServiceReady && configWriteEnabled,
     staleTime: 0,
   });
   const configWriteStale = configWriteStaleQuery.data === true;
@@ -5047,8 +5050,8 @@ export function AccountsScreen({
   const routePoolModelsMutation = useMutation({
     mutationFn: async () => {
       const proxyStatus = routeProxyQuery.data;
-      if (!proxyStatus?.running || !proxyStatus.base_url?.trim()) {
-        throw new Error("请先启动本地路由代理，再查看算力池模型列表。");
+      if (!proxyStatus?.route_access_enabled || !proxyStatus.running || !proxyStatus.base_url?.trim()) {
+        throw new Error("请先启用算力池路由接入，再查看算力池模型列表。");
       }
       const proxyKey = await getRouteProxyKey(activePlatform);
       return fetchRouteProxyModels(proxyStatus.base_url, proxyKey, activePlatform);
@@ -5342,10 +5345,10 @@ export function AccountsScreen({
 
   const copyModelTestCurl = async (shell: ModelTestCurlShell = "posix") => {
     const proxyBaseUrl = routeProxyQuery.data?.base_url?.trim();
-    if (!routeProxyQuery.data?.running || !proxyBaseUrl) {
+    if (!routeServiceReady || !proxyBaseUrl) {
       setRoutePoolFeedback({
         type: "error",
-        message: "复制 curl 失败：本地路由代理尚未启动。",
+        message: "复制 curl 失败：算力池路由尚未启用。",
       });
       return;
     }
@@ -5844,37 +5847,45 @@ export function AccountsScreen({
                 </div>
                 <div className="hidden min-w-0 items-center gap-2 truncate text-[10px] text-stone-500 sm:flex">
                   <span className="truncate" title={routeProxyQuery.data?.base_url ?? undefined}>
-                    {routeProxyQuery.data?.running ? routeProxyQuery.data.base_url ?? "代理运行中" : "代理未启动"}
+                    {routeAccessEnabled
+                      ? routeListenerRunning
+                        ? draftPoolIds.size > 0
+                          ? routeProxyQuery.data?.base_url ?? "路由已启用"
+                          : "路由已启用，暂无可用账号"
+                        : "路由已启用，端口未启动"
+                      : routeListenerRunning
+                        ? "路由接入已关闭（端口运行中）"
+                        : "路由接入已关闭"}
                   </span>
                   {lastRouteAccount ? <span className="truncate">最近：{lastRouteAccount}</span> : null}
                 </div>
                 <span className="sr-only">已加入 {draftPoolIds.size} 个账号</span>
                 <span className="sr-only">
-                  本地代理：{routeProxyQuery.data?.running ? routeProxyQuery.data.base_url ?? "运行中" : "未启动"}
+                  算力池路由：{routeAccessEnabled ? routeListenerRunning ? routeProxyQuery.data?.base_url ?? "已启用" : "已启用，端口未启动" : routeListenerRunning ? "已关闭，端口运行中" : "已关闭"}
                 </span>
                 {lastRouteAccount ? <span className="sr-only">最近路由到：{lastRouteAccount}</span> : null}
               </div>
             </div>
 
             <div className="flex shrink-0 items-center gap-2">
-              {routeProxyQuery.data?.running ? (
+              {routeAccessEnabled ? (
                 <button
-                  aria-label="停止本地路由代理"
+                  aria-label="关闭算力池路由接入"
                   className="grid h-6 w-6 place-items-center border border-red-700 bg-red-600 text-white motion-control hover:bg-red-700 disabled:opacity-50"
-                  disabled={startProxyMutation.isPending || stopProxyMutation.isPending || Boolean(routeProxyQuery.data.shared_listener && !isDesktop())}
+                  disabled={startProxyMutation.isPending || stopProxyMutation.isPending}
                   onClick={() => stopProxyMutation.mutate()}
-                  title={routeProxyQuery.data.shared_listener ? (isDesktop() ? "停止共享服务（Web 与算力池）" : "共享监听由宿主控制，请在桌面端或服务器进程中停止服务") : "停止本地路由代理"}
+                  title="关闭算力池路由接入；共享服务端口保持运行"
                   type="button"
                 >
                   <Square aria-hidden="true" className="h-3.5 w-3.5 fill-current" />
                 </button>
               ) : (
                 <button
-                  aria-label="启动本地路由代理"
+                  aria-label="启用算力池路由接入"
                   className="grid h-6 w-6 place-items-center border border-emerald-700 bg-emerald-600 text-white motion-control hover:bg-emerald-700 disabled:opacity-50"
                   disabled={startProxyMutation.isPending || stopProxyMutation.isPending}
                   onClick={() => startProxyMutation.mutate()}
-                  title="启动共享服务（Web 与算力池）"
+                  title="启用算力池路由接入；需要时自动启动共享服务端口"
                   type="button"
                 >
                   <Play aria-hidden="true" className="h-3.5 w-3.5 fill-current" />
@@ -5890,7 +5901,7 @@ export function AccountsScreen({
                 // Platforms without a native config write still open the dialog:
                 // it is where the endpoint parameters for hand-configured clients
                 // live, and the write itself stays gated inside it.
-                disabled={!routeProxyQuery.data?.running || writeConfigsMutation.isPending}
+                disabled={!routeServiceReady || writeConfigsMutation.isPending}
                 onClick={() => setConfigWriteDialogOpen(true)}
                 title={
                   !configWriteEnabled
@@ -8277,10 +8288,10 @@ export function AccountsScreen({
           platformLabel={platformLabels[activePlatform]}
           poolApiKey={routeProxyKeyQuery.data ?? null}
           poolBaseUrl={
-            routeProxyQuery.data?.running ? routeProxyQuery.data.base_url ?? null : null
+            routeServiceReady ? routeProxyQuery.data?.base_url ?? null : null
           }
           poolHttpsBaseUrl={
-            routeProxyQuery.data?.running ? routeProxyQuery.data.https_base_url ?? null : null
+            routeServiceReady ? routeProxyQuery.data?.https_base_url ?? null : null
           }
         />
       ) : null}

@@ -220,10 +220,29 @@ A successful run attaches the following to the GitHub Release, in the order the 
 - **Per target:** `ai-switch-tsnet_<tag>_<platform>.zip` (Tailscale sidecar)
 - **macOS:** `ai-switch-updater-<version>-darwin-aarch64.app.tar.gz` and `ai-switch-updater-<version>-darwin-x86_64.app.tar.gz` (only the auto-updater downloads them)
 - **`latest.json`:** the Tauri updater manifest that drives desktop auto-updates
+- **Docker Hub:** `ijry/ai-switch:<version>`, `ijry/ai-switch:<major>.<minor>`, and `latest` for stable releases (prereleases never take `latest`)
 
 The `.sig` files are not published as separate assets; their signatures live inside `latest.json`. The release body also opens with a download table pointing straight at the first three groups above.
 
 How users get these is covered in [installation](/en/guide/installation); running the server build is covered in [standalone server](/en/deploy/standalone-server).
+
+## Publishing Docker images
+
+The `publish-image` job in `release.yml` runs after the GitHub Release is published. It downloads both `ai-switch-server_<tag>_linux-<arch>.zip` archives for the tag, verifies the `sha256` digest reported by the GitHub API, then builds and pushes a `linux/amd64` plus `linux/arm64` multi-platform image. The image does not compile source, so its runtime is dominated by downloading and unpacking the release archives.
+
+Images receive three kinds of tags: the full version (for example `0.8.7`), `major.minor` (for example `0.8`), and `latest` for stable releases. `-rc`, `-beta`, and `-alpha` prereleases never take `latest`.
+
+### What has to be configured
+
+| Secret / Variable | Kind | Purpose |
+| --- | --- | --- |
+| `DOCKERHUB_USERNAME` | secret | Docker Hub username, or a bot account with push access to the organization |
+| `DOCKERHUB_TOKEN` | secret | Docker Hub access token with read/write permission |
+| `DOCKERHUB_REPOSITORY` | variable, optional | Image repository, defaults to `ijry/ai-switch` |
+
+Create the repository on Docker Hub first and confirm the account can write to it. If the secrets are missing, `publish-image` fails with an explicit error; the GitHub Release is already published at that point, so add the secrets and rerun that job without rebuilding the installers.
+
+See the Docker one-click startup section in the root README for the user-facing command.
 
 ## Publishing to package managers (Homebrew / WinGet)
 
