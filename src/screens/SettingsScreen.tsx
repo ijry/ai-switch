@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "motion/react";
 import {
   Bell,
+  CloudCog,
   Layers3,
   LockKeyhole,
   Network,
@@ -21,12 +22,22 @@ import { SaasSettings } from "../saas";
 
 type FeatureEntry = {
   screen?: string;
-  section?: "webService" | "https" | "notification";    titleKey: "nav.sessions" | "nav.updates" | "nav.log" | "nav.webService" | "settings.https.title" | "notification.title";    descriptionKey:
+  section?: "webService" | "https" | "notification" | "saas";
+  titleKey:
+    | "nav.sessions"
+    | "nav.updates"
+    | "nav.log"
+    | "nav.webService"
+    | "settings.https.title"
+    | "settings.saas.title"
+    | "notification.title";
+  descriptionKey:
     | "settings.feature.sessions"
     | "settings.feature.updates"
     | "settings.feature.log"
     | "settings.feature.webService"
     | "settings.feature.https"
+    | "settings.feature.saas"
     | "notification.subtitle";
   icon: ComponentType<{ className?: string }>;
 };
@@ -62,6 +73,12 @@ const featureEntries: FeatureEntry[] = [
     titleKey: "settings.https.title",
     descriptionKey: "settings.feature.https",
     icon: LockKeyhole,
+  },
+  {
+    section: "saas",
+    titleKey: "settings.saas.title",
+    descriptionKey: "settings.feature.saas",
+    icon: CloudCog,
   },
   {
     section: "notification",
@@ -148,10 +165,6 @@ export function SettingsScreen({ onOpenFeature, onSaasConfigChanged }: SettingsS
               </button>
             );
           })}
-          <button type="button" aria-label={language==="en"?"SaaS plugin":"SaaS 插件"} className="rounded-xl border border-stone-200 bg-stone-50/70 px-3 py-2.5 text-left hover:bg-white" onClick={()=>setActiveSection("saas")}>
-            <span className="flex items-center gap-2 text-[13px] font-semibold"><Layers3 className="h-4 w-4" />{language==="en"?"SaaS plugin":"SaaS 插件"}</span>
-            <p className="mt-1 text-[12px] text-stone-500">{language==="en"?"User portal, GitHub login, billing and request logs":"用户面板、GitHub 登录、计费与请求日志"}</p>
-          </button>
         </div>
       </div>
 
