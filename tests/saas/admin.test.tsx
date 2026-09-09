@@ -8,7 +8,8 @@ const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("../../src/lib/transport", () => ({ getTransport: () => ({ call: invoke }), isDesktop: () => true }));
 beforeEach(() => {
   localStorage.setItem("saas.locale", "en");
-  invoke.mockReset().mockImplementation(async (_command: string, { operation }: { operation: string }) => {
+  invoke.mockReset().mockImplementation(async (_command: string, request?: { operation?: string }) => {
+    const operation = request?.operation;
     if (_command === "get_web_server_status") return { running: true, host: "127.0.0.1", port: 10086, baseUrl: "http://127.0.0.1:10086" };
     if (operation === "config.get" || operation === "config.save") return config;
     if (operation === "activation.status") return { unlocked: false };
@@ -31,6 +32,16 @@ describe("SaaS administrator", () => {
     expect(await screen.findByRole("checkbox", { name: /enable saas/i })).not.toBeChecked();
     expect(screen.getByLabelText(/^github client secret$/i)).toHaveValue("");
     expect(screen.getByText(/already configured/i)).toBeInTheDocument();
+  });
+
+  it("offers the running web service URL for the SaaS portal", async () => {
+    const actor = userEvent.setup();
+    render(<SaasSettings />);
+    const input = await screen.findByLabelText(/public site url/i);
+    expect(input).toHaveValue(config.publicBaseUrl);
+    expect(screen.getByText("http://127.0.0.1:10086")).toBeInTheDocument();
+    await actor.click(screen.getByRole("button", { name: /use current url/i }));
+    expect(input).toHaveValue("http://127.0.0.1:10086");
   });
 
   it("shows the homepage action in the SaaS panel header", async () => {
