@@ -4046,7 +4046,7 @@ fn build_official_upstream_request(
     PlatformCapabilityService::require(platform, PlatformOperation::OfficialAccountRouting)
         .map_err(format_app_error)?;
     let mappings = parse_model_capability_value(config).mappings;
-    let rewritten_body = apply_model_mappings(body, &mappings);
+    let mut rewritten_body = apply_model_mappings(body, &mappings);
     // Apply credential-provided headers first (CPA may ship extra headers).
     apply_config_headers(headers, config)?;
 
@@ -4079,6 +4079,7 @@ fn build_official_upstream_request(
     // absence, which is why it can look optional. Scoped to that host: a relay
     // holding an OAuth token has no use for it.
     if platform == PlatformId::Codex && is_codex_backend_base_url(base_url) {
+        rewritten_body = normalize_chatgpt_codex_request_body(&rewritten_body);
         let account_id = codex_chatgpt_account_id(secret, config)
             .map(str::to_string)
             .or_else(|| codex_chatgpt_account_id_from_token(secret));
@@ -4156,6 +4157,24 @@ fn request_body_requests_stream(body: &[u8]) -> bool {
         .ok()
         .and_then(|value| value.get("stream").and_then(Value::as_bool))
         .unwrap_or(false)
+}
+
+/// Normalize fields that ChatGPT's private Codex Responses endpoint rejects.
+///
+/// Some OpenAI-compatible clients always emit max_output_tokens, but the private
+/// ChatGPT Codex backend rejects that public Responses API field. It also requires
+/// requests to be non-stored. Keep this scoped to ChatGPT's endpoint so explicit
+/// third-party Responses relays retain the fields they support.
+fn normalize_chatgpt_codex_request_body(body: &[u8]) -> Vec<u8> {
+    let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
+        return body.to_vec();
+    };
+    let Some(object) = value.as_object_mut() else {
+        return body.to_vec();
+    };
+    object.remove("max_output_tokens");
+    object.insert("store".to_string(), Value::Bool(false));
+    serde_json::to_vec(&value).expect("serializing serde_json::Value cannot fail")
 }
 
 fn apply_official_grok_cli_headers(headers: &mut HeaderMap) -> Result<(), String> {
@@ -12061,6 +12080,35 @@ data: [DONE]\n\n";
     }
 
     #[test]
+    fn official_codex_normalizes_chatgpt_backend_request_body() {
+        let credential = SelectedCredential {
+            id: "official-chatgpt-body".to_string(),
+            platform: "codex".to_string(),
+            kind: "official".to_string(),
+            display_name: "ChatGPT Plus".to_string(),
+            status: "ok".to_string(),
+            route_priority: 3,
+            max_concurrency: 1,
+            secret_payload_json: serde_json::json!({"access_token": "at-chatgpt"}).to_string(),
+            config_json: serde_json::json!({"type": "codex", "auth_kind": "oauth"}).to_string(),
+        };
+        let (_, _, body) = build_upstream_request(
+            &credential,
+            "codex",
+            "/v1/responses",
+            None,
+            HeaderMap::new(),
+            br#"{"model":"gpt-5.6-sol","stream":true,"store":true,"max_output_tokens":65536,"instructions":"keep me"}"#,
+        )
+        .expect("official codex request");
+        let body: Value = serde_json::from_slice(&body).expect("body json");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["store"], false);
+        assert_eq!(body["instructions"], "keep me");
+        assert!(body.get("max_output_tokens").is_none());
+    }
+
+    #[test]
     fn official_codex_model_mappings_rewrite_the_request_body() {
         let credential = SelectedCredential {
             id: "official-mapped".to_string(),
@@ -12151,18 +12199,21 @@ data: [DONE]\n\n";
                 .to_string(),
         };
 
-        let (url, headers, _) = build_upstream_request(
+        let (url, headers, body) = build_upstream_request(
             &credential,
             "codex",
             "/v1/responses",
             None,
             HeaderMap::new(),
-            br#"{"model":"gpt-5.6-sol"}"#,
+            br#"{"model":"gpt-5.6-sol","store":true,"max_output_tokens":8192}"#,
         )
         .expect("official codex request");
 
         assert_eq!(url, "https://relay.example.com/v1/responses");
         assert!(headers.get("chatgpt-account-id").is_none());
+        let body: Value = serde_json::from_slice(&body).expect("body json");
+        assert_eq!(body["store"], true);
+        assert_eq!(body["max_output_tokens"], 8192);
     }
 
     #[test]
