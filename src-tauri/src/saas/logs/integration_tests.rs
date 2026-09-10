@@ -124,7 +124,7 @@ async fn postgres_retention_removes_expired_records_only_when_enabled() {
 #[tokio::test]
 #[ignore = "requires real Redis and PostgreSQL: SAAS_LOG_REDIS_URL, SAAS_LOG_POSTGRES_URL"]
 async fn all_four_queue_store_combinations_drain_and_query() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_test_directory();
     for queue in [LogQueueKind::Memory, LogQueueKind::Redis] {
         for store in [LogStoreKind::File, LogStoreKind::Postgres] {
             let mut config = external_config();

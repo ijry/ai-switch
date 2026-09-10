@@ -21,9 +21,16 @@ pub(super) fn record(request_id: &str, user_id: &str) -> LogRecord {
     }
 }
 
+#[test]
+fn log_test_directory_uses_a_canonical_temp_root() {
+    let directory = canonical_test_directory();
+    assert!(directory.path().is_absolute());
+    assert_eq!(directory.path(), directory.path().canonicalize().unwrap());
+}
+
 #[tokio::test]
 async fn file_rolls_local_hours_and_deduplicates_request_ids() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_test_directory();
     let store = FileLogStore::open(directory.path().join("logs"))
         .await
         .unwrap();
@@ -62,7 +69,7 @@ async fn file_rolls_local_hours_and_deduplicates_request_ids() {
 
 #[tokio::test]
 async fn file_enforces_owner_and_filters_before_pagination() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_test_directory();
     let store = FileLogStore::open(directory.path().join("logs"))
         .await
         .unwrap();
@@ -96,7 +103,7 @@ async fn file_enforces_owner_and_filters_before_pagination() {
 
 #[tokio::test]
 async fn file_recovers_partial_tail_without_exposing_bad_lines() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_test_directory();
     let store = FileLogStore::open(directory.path().join("logs"))
         .await
         .unwrap();
@@ -125,7 +132,7 @@ async fn file_recovers_partial_tail_without_exposing_bad_lines() {
 #[tokio::test]
 async fn file_rejects_unsafe_root_and_unbounded_queries() {
     assert!(FileLogStore::open("relative/logs".into()).await.is_err());
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_test_directory();
     let store = FileLogStore::open(directory.path().join("logs"))
         .await
         .unwrap();
@@ -161,7 +168,7 @@ async fn file_rejects_unsafe_root_and_unbounded_queries() {
 
 #[tokio::test]
 async fn retention_deletes_only_expired_canonical_logs() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_test_directory();
     let root = directory.path().join("logs");
     let store = FileLogStore::open(root.clone()).await.unwrap();
     let mut old = record("old", "owner");
@@ -187,7 +194,7 @@ async fn retention_deletes_only_expired_canonical_logs() {
 
 #[tokio::test]
 async fn records_redact_free_text_and_reject_negative_counters() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_test_directory();
     let store = FileLogStore::open(directory.path().join("logs"))
         .await
         .unwrap();
@@ -244,7 +251,7 @@ async fn memory_queue_enforces_byte_limit_independently_of_count() {
 
 #[tokio::test]
 async fn runtime_clones_share_worker_and_shutdown_drains_before_returning() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_test_directory();
     let runtime = LogRuntime::default();
     assert!(!runtime.status().await.unwrap().configured);
     runtime
@@ -277,7 +284,7 @@ async fn runtime_clones_share_worker_and_shutdown_drains_before_returning() {
 
 #[tokio::test]
 async fn runtime_switch_drains_old_store_and_preserves_old_on_invalid_config() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_test_directory();
     let runtime = LogRuntime::default();
     let old_root = directory.path().join("old");
     runtime
@@ -327,7 +334,7 @@ async fn runtime_switch_drains_old_store_and_preserves_old_on_invalid_config() {
 
 #[tokio::test]
 async fn runtime_reports_backpressure_retries_and_timed_out_shutdown_without_dropping() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_test_directory();
     let root = directory.path().join("logs");
     let runtime = LogRuntime::default();
     runtime
@@ -352,6 +359,13 @@ async fn runtime_reports_backpressure_retries_and_timed_out_shutdown_without_dro
     std::fs::write(&day, "blocks the date directory").unwrap();
     runtime.enqueue(first).await.unwrap();
     assert!(runtime.enqueue(record("full", "owner")).await.is_err());
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while runtime.status().await.unwrap().retries == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("log worker reports the blocked write before testing shutdown");
     assert!(runtime.shutdown().await.is_err());
     let status = runtime.status().await.unwrap();
     assert_eq!(status.pending, 1);
@@ -400,7 +414,7 @@ fn config_never_serializes_credentials_and_rejects_unsafe_limits() {
 
 #[tokio::test]
 async fn reading_historical_logs_preserves_the_recorded_timezone_offset() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_test_directory();
     let root = directory.path().join("logs");
     let store = FileLogStore::open(root.clone()).await.unwrap();
     let mut historical = record("historical-offset", "owner");
@@ -424,7 +438,7 @@ async fn reading_historical_logs_preserves_the_recorded_timezone_offset() {
 
 #[tokio::test]
 async fn runtime_advertises_no_admission_when_queue_is_full() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_test_directory();
     let root = directory.path().join("logs");
     let runtime = LogRuntime::default();
     runtime
@@ -455,7 +469,7 @@ async fn runtime_advertises_no_admission_when_queue_is_full() {
 
 #[tokio::test]
 async fn file_rejects_batches_larger_than_the_consumer_limit() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_test_directory();
     let store = FileLogStore::open(directory.path().join("logs"))
         .await
         .unwrap();
@@ -467,7 +481,7 @@ async fn file_rejects_batches_larger_than_the_consumer_limit() {
 
 #[tokio::test]
 async fn oversized_and_incomplete_jsonl_lines_are_counted_without_loading_or_disclosing_them() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_test_directory();
     let root = directory.path().join("logs");
     let store = FileLogStore::open(root.clone()).await.unwrap();
     let valid = record("bounded-reader", "owner");
@@ -493,7 +507,7 @@ async fn oversized_and_incomplete_jsonl_lines_are_counted_without_loading_or_dis
 
 #[tokio::test]
 async fn file_query_and_retention_never_follow_linked_date_directories() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_test_directory();
     let root = directory.path().join("logs");
     let outside = directory.path().join("outside");
     let store = FileLogStore::open(root.clone()).await.unwrap();
@@ -528,7 +542,9 @@ async fn file_query_and_retention_never_follow_linked_date_directories() {
         std::fs::read_to_string(outside.join("09.log")).unwrap(),
         "outside-secret"
     );
-    assert!(FileLogStore::open(link).await.is_err());
+    assert!(FileLogStore::open(link.clone()).await.is_err());
+    assert!(FileLogStore::open(link.join("nested-logs")).await.is_err());
+    assert!(!outside.join("nested-logs").exists());
 }
 
 #[test]

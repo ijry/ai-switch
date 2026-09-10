@@ -13,6 +13,14 @@ pub use runtime::LogRuntime;
 pub use types::*;
 
 #[cfg(test)]
+pub(crate) fn canonical_test_directory() -> tempfile::TempDir {
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .expect("resolve temporary directory");
+    tempfile::tempdir_in(root).expect("create canonical test directory")
+}
+
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]

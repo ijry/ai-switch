@@ -7,6 +7,12 @@ function readSource(path: string) {
 }
 
 describe("Tauri desktop configuration", () => {
+  it("keeps image generation IPC commands out of standalone builds", () => {
+    const source = readSource("src-tauri/src/imagegen/mod.rs");
+
+    expect(source).toMatch(/#\[cfg\(feature = "desktop"\)\]\s*pub mod commands;/);
+  });
+
   it("allows frontend HTML5 drag and drop on Windows", () => {
     const configPath = resolve(process.cwd(), "src-tauri/tauri.conf.json");
     const config = JSON.parse(readFileSync(configPath, "utf8")) as {

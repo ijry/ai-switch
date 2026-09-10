@@ -270,7 +270,7 @@ impl Generation {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{QueueBatch, QueueStats};
+    use super::super::{canonical_test_directory, QueueBatch, QueueStats};
     use super::*;
     use async_trait::async_trait;
 
@@ -325,7 +325,7 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_does_not_mistake_a_stale_empty_read_for_a_drained_queue() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = canonical_test_directory();
         let store = Arc::new(
             FileLogStore::open(directory.path().join("logs"))
                 .await
@@ -365,7 +365,7 @@ mod tests {
 
     #[tokio::test]
     async fn enqueue_deadline_includes_slow_external_queue_operations() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = canonical_test_directory();
         let store = Arc::new(
             FileLogStore::open(directory.path().join("logs"))
                 .await

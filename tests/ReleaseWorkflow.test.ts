@@ -50,6 +50,15 @@ describe("release workflow release notes", () => {
 describe("standalone server release archive", () => {
   const workflow = readWorkflow();
 
+  it("checks standalone features before building desktop bundles", () => {
+    const checks = workflow.indexOf("- name: Check standalone server");
+    const bundle = workflow.indexOf("- name: Build Tauri bundle");
+
+    expect(checks).toBeGreaterThan(-1);
+    expect(bundle).toBeGreaterThan(checks);
+    expect(workflow.slice(checks, bundle)).toContain("run: pnpm server:check");
+  });
+
   it("stages the frontend bundle next to the server binary", () => {
     // resolve_static_dir() only accepts a directory that holds index.html, and
     // the desktop bundle gets one from tauri.conf.json's "../dist": "web/" map.

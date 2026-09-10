@@ -1,4 +1,5 @@
 use super::*;
+use crate::saas::logs::canonical_test_directory;
 use crate::saas::{domain, repository};
 use crate::services::route_proxy_service::{build_proxy_state, RouteProxyRuntimeState};
 use axum::{routing::post, Router};
@@ -25,7 +26,7 @@ async fn fixture(
         .execute(&pool)
         .await
         .unwrap();
-    let directory = tempfile::tempdir().unwrap();
+    let directory = canonical_test_directory();
     sqlx::query("UPDATE saas_settings SET value_json=json_set(value_json,'$.logs',json(?)) WHERE key='config'")
         .bind(json!({"directory":directory.path()}).to_string()).execute(&pool).await.unwrap();
     let hits = Arc::new(AtomicUsize::new(0));
