@@ -192,6 +192,11 @@ describe("AppImage Wayland patch", () => {
 describe("package manager dry run", () => {
   const workflow = readPackageManagersWorkflow();
 
+  it("defaults Homebrew publishing to the current organization tap", () => {
+    expect(workflow).toContain("vars.HOMEBREW_TAP_REPO || 'ai-switch/homebrew-ai-switch'");
+    expect(workflow).not.toContain("vars.HOMEBREW_TAP_REPO || 'ijry/homebrew-ai-switch'");
+  });
+
   it("does not require the tokens it never reads", () => {
     // A dry run stops before both pushing steps, so gating it on the secrets made
     // the rehearsal impossible until the tap repository and the winget fork

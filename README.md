@@ -110,7 +110,7 @@ tag 去掉 `v` 前缀后的版本号，必须与 `package.json` 和 `src-tauri/t
 
 两条链路都要往别的仓库里写东西，因此各需要一个 secret。缺 secret 不会让工作流失败，只会记一条 warning 并跳过对应的那条链路：
 
-- `HOMEBREW_TAP_TOKEN` —— 对 tap 仓库（`HOMEBREW_TAP_REPO`，默认 `ijry/homebrew-ai-switch`）有 `contents: write` 权限的 PAT
+- `HOMEBREW_TAP_TOKEN` —— 对 tap 仓库（`HOMEBREW_TAP_REPO`，默认 `ai-switch/homebrew-ai-switch`）有 `contents: write` 权限的 PAT
 - `WINGET_TOKEN` —— 带 `public_repo` scope 的 classic PAT，另外还需要在 `WINGET_FORK_USER` 下有一份 `microsoft/winget-pkgs` 的 fork
 
 有两步是一次性的、无法自动化的：建好公开的 `homebrew-` 前缀 tap 仓库，以及手工把第一个 `Lingyun.AISwitch` 版本提交到 winget-pkgs —— 这个 action 只会给已经存在的包升版本。完整的准备步骤见[发布流程](https://ijry.github.io/ai-switch/dev/release)。

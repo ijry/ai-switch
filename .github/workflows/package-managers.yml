@@ -224,13 +224,13 @@ jobs:
       - name: Stage the cask in a local tap
         id: tap
         env:
-          TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'ijry/homebrew-ai-switch' }}
+          TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'ai-switch/homebrew-ai-switch' }}
         shell: bash
         run: |
           set -euo pipefail
           owner="${TAP_REPO%%/*}"
           repo_name="${TAP_REPO##*/}"
-          # `brew tap ijry/ai-switch` resolves to the repo `homebrew-ai-switch`,
+          # `brew tap ai-switch/ai-switch` resolves to the repo `homebrew-ai-switch`,
           # and every brew command wants the short form.
           tap="$owner/${repo_name#homebrew-}"
           tap_dir="$(brew --repository)/Library/Taps/$owner/$repo_name"
@@ -295,7 +295,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'ijry/homebrew-ai-switch' }}
+      TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'ai-switch/homebrew-ai-switch' }}
       VERSION: ${{ needs.resolve.outputs.version }}
 
     steps:
@@ -387,4 +387,3 @@ jobs:
           # repository they do not own.
           token: ${{ secrets.WINGET_TOKEN }}
           fork-user: ${{ vars.WINGET_FORK_USER || github.repository_owner }}
-

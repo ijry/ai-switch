@@ -271,7 +271,7 @@ git tag -d v0.6.8
 | Secret / Variable | 类型 | 用途 |
 | --- | --- | --- |
 | `HOMEBREW_TAP_TOKEN` | secret | 对 tap 仓库有 `contents: write` 的 PAT |
-| `HOMEBREW_TAP_REPO` | variable，可选 | tap 仓库名，默认 `ijry/homebrew-ai-switch` |
+| `HOMEBREW_TAP_REPO` | variable，可选 | tap 仓库名，默认 `ai-switch/homebrew-ai-switch` |
 | `WINGET_TOKEN` | secret | **classic** PAT，只需 `public_repo` scope |
 | `WINGET_FORK_USER` | variable，可选 | winget-pkgs fork 所在账号，默认仓库 owner |
 
@@ -281,7 +281,7 @@ git tag -d v0.6.8
 
 ### Homebrew：一次性准备
 
-1. 建一个**公开**仓库 `ijry/homebrew-ai-switch`（名字必须以 `homebrew-` 开头，`brew tap ijry/ai-switch` 才能解析到它）。
+1. 建一个**公开**仓库 `ai-switch/homebrew-ai-switch`（名字必须以 `homebrew-` 开头，`brew tap ai-switch/ai-switch` 才能解析到它）。
 2. 生成一个对该仓库有 `contents: write` 的 PAT，存成 `HOMEBREW_TAP_TOKEN`。
 
 之后每次发布，`homebrew` 作业在 cask 声明支持的**每一种芯片**上各跑一遍：渲染好的 cask 放进一个本地 tap、**真的 `brew install --cask` 装一遍**，确认 `/Applications/AI Switch.app` 存在且隔离属性已被清掉。两边都过了，才由 `homebrew-push` 作业推到 tap 仓库（这一步只要 git 和 gh，跑在 `ubuntu-latest` 上）。对一个 ad-hoc 签名的包来说这道安装验证是必要的：cask 语法正确但装完打不开，是这类应用最容易出的问题。

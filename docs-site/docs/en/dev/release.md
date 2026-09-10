@@ -271,7 +271,7 @@ Both paths write to **someone else's repository**, so both need a repository sec
 | Secret / Variable | Kind | Purpose |
 | --- | --- | --- |
 | `HOMEBREW_TAP_TOKEN` | secret | PAT with `contents: write` on the tap repository |
-| `HOMEBREW_TAP_REPO` | variable, optional | Tap repository, defaults to `ijry/homebrew-ai-switch` |
+| `HOMEBREW_TAP_REPO` | variable, optional | Tap repository, defaults to `ai-switch/homebrew-ai-switch` |
 | `WINGET_TOKEN` | secret | **Classic** PAT, `public_repo` scope only |
 | `WINGET_FORK_USER` | variable, optional | Account holding the winget-pkgs fork, defaults to the repo owner |
 
@@ -281,7 +281,7 @@ The tool that opens the pull request is Komac, which goes through GitHub's Graph
 
 ### Homebrew: one-time setup
 
-1. Create a **public** repository `ijry/homebrew-ai-switch`. The name has to start with `homebrew-` for `brew tap ijry/ai-switch` to resolve.
+1. Create a **public** repository `ai-switch/homebrew-ai-switch`. The name has to start with `homebrew-` for `brew tap ai-switch/ai-switch` to resolve.
 2. Generate a PAT with `contents: write` on it and store it as `HOMEBREW_TAP_TOKEN`.
 
 From then on the `homebrew` job runs once per chip family the cask claims to serve: it stages the rendered cask in a local tap, **actually runs `brew install --cask`**, and asserts `/Applications/AI Switch.app` exists with the quarantine flag cleared. Only once every leg passes does `homebrew-push` write to the tap — that job needs nothing but git and gh, so it runs on `ubuntu-latest`. For an ad-hoc signed bundle the install check is the one that matters: a cask that parses fine can still install an app that refuses to open.
