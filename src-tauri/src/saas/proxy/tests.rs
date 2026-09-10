@@ -30,7 +30,17 @@ async fn fixture(
         .bind(json!({"directory":directory.path()}).to_string()).execute(&pool).await.unwrap();
     let hits = Arc::new(AtomicUsize::new(0));
     let upstream_hits = hits.clone();
-    let app = Router::new().route("/v1/chat/completions", post(move |Json(payload):Json<Value>| {
+    let image_hits = hits.clone();
+    let app = Router::new()
+        .route("/v1/images/generations", post(move |Json(payload):Json<Value>| {
+            let image_hits = image_hits.clone();
+            async move {
+                image_hits.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(payload["model"], "gpt-test");
+                Json(json!({"data":[{"b64_json":"aGVsbG8="},{"b64_json":"d29ybGQ="}]})).into_response()
+            }
+        }))
+        .route("/v1/chat/completions", post(move |Json(payload):Json<Value>| {
         let upstream_hits = upstream_hits.clone();
         async move {
             upstream_hits.fetch_add(1,Ordering::SeqCst);
@@ -50,11 +60,12 @@ async fn fixture(
     });
     sqlx::query("UPDATE route_credentials SET secret_payload_json=?,config_json=? WHERE id IN ('account-default','account-custom')")
         .bind(r#"{"api_key":"upstream-test-key"}"#)
-        .bind(json!({"base_url":format!("http://{address}/v1"),"interface_format":"openai","model_mappings":[{"from":"gpt-test","to":"gpt-test"}]}).to_string())
+        .bind(json!({"base_url":format!("http://{address}/v1"),"interface_format":"openai","model_mappings":[{"from":"gpt-test","to":"gpt-test","capabilities":["image.generate"]}]}).to_string())
         .execute(&pool).await.unwrap();
     let mut extension = repository::test_group_payload();
     extension["models"][0]["model"] = json!("public-model");
     extension["models"][0]["upstreamModel"] = json!("gpt-test");
+    extension["models"][0]["imagePriceMicros"] = json!(25_000);
     domain::admin(&pool, "groups.save", extension)
         .await
         .unwrap();
@@ -109,6 +120,50 @@ async fn ordinary_and_sse_saas_requests_bill_once_and_never_write_sqlite_details
         assert_eq!(logs.items[0].model, "public-model");
         task.abort();
     }
+}
+
+#[tokio::test]
+async fn image_requests_use_bound_group_and_bill_successful_images() {
+    let (pool, runtime, proxy, headers, _directory, hits, task) = fixture(false).await;
+    let response = execute(
+        &pool,
+        &runtime,
+        proxy,
+        Method::POST,
+        headers,
+        "/v1/images/generations".parse().unwrap(),
+        Body::from(json!({"model":"public-model","prompt":"a fox","n":2}).to_string()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let value: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["data"].as_array().map(Vec::len), Some(2));
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    let ledger: (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*),COALESCE(SUM(amount_micros),0) FROM saas_wallet_ledger WHERE kind='usage'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(ledger, (1, -50_000));
+    let status: String = sqlx::query_scalar("SELECT status FROM saas_billing_reservations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "settled");
+    runtime.logs.shutdown().await.unwrap();
+    let logs = runtime
+        .logs
+        .query(crate::saas::logs::LogQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(logs.items[0].amount_usd_micros, 50_000);
+    assert_eq!(logs.items[0].model, "public-model");
+    task.abort();
 }
 
 #[tokio::test]

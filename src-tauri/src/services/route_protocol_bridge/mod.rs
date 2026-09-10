@@ -34,6 +34,8 @@ pub(crate) const RECOGNISED_REASONING_EFFORTS: &[&str] =
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolBridgeKind {
+    ImagesToResponses,
+    ImagesToGemini,
     ResponsesToChat,
     ResponsesToResponses,
     ResponsesToAnthropic,
@@ -82,6 +84,38 @@ pub fn prepare_request(
     let normalized_path = common::normalize_path(path);
     let is_responses = common::is_create_path(&normalized_path, "responses");
     let is_messages = common::is_create_path(&normalized_path, "messages");
+
+    if matches!(
+        normalized_path.as_str(),
+        "/images/generations" | "/v1/images/generations"
+    ) {
+        return match upstream_dialect {
+            ApiDialect::OpenAi => Ok(passthrough_request("/v1/images/generations", body, false)),
+            ApiDialect::OpenAiResponses => Ok(PreparedBridgeRequest {
+                kind: Some(ProtocolBridgeKind::ImagesToResponses),
+                upstream_path: "/responses".to_string(),
+                upstream_query: None,
+                body: crate::imagegen::protocol::openai_request_to_responses(body)?,
+                streaming: false,
+                tool_namespaces: BTreeMap::new(),
+            }),
+            ApiDialect::Gemini => {
+                let (model, body) = crate::imagegen::protocol::openai_request_to_gemini(body)?;
+                let (upstream_path, upstream_query) = common::gemini_endpoint(&model, false);
+                Ok(PreparedBridgeRequest {
+                    kind: Some(ProtocolBridgeKind::ImagesToGemini),
+                    upstream_path,
+                    upstream_query,
+                    body,
+                    streaming: false,
+                    tool_namespaces: BTreeMap::new(),
+                })
+            }
+            ApiDialect::Anthropic => {
+                Err("Anthropic interface format does not support image generation".to_string())
+            }
+        };
+    }
 
     if platform == PlatformId::Codex && is_responses {
         // Lift a Responses Lite `additional_tools` carrier before anything else
@@ -223,7 +257,21 @@ pub fn transform_response_with_tool_namespaces(
     body: &[u8],
     tool_namespaces: &BTreeMap<String, String>,
 ) -> Result<TransformedBridgeResponse, String> {
+    if !(200..300).contains(&status) {
+        return Ok(TransformedBridgeResponse {
+            body: body.to_vec(),
+            content_type: content_type.map(ToOwned::to_owned),
+        });
+    }
     match kind {
+        ProtocolBridgeKind::ImagesToResponses => Ok(TransformedBridgeResponse {
+            body: crate::imagegen::protocol::responses_to_openai_images(body)?,
+            content_type: Some("application/json".to_string()),
+        }),
+        ProtocolBridgeKind::ImagesToGemini => Ok(TransformedBridgeResponse {
+            body: crate::imagegen::protocol::gemini_to_openai_images(body)?,
+            content_type: Some("application/json".to_string()),
+        }),
         ProtocolBridgeKind::ResponsesToChat => {
             responses_chat::chat_response_to_responses(status, content_type, body, tool_namespaces)
         }

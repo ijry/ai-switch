@@ -99,7 +99,7 @@ async fn daily_subscription_migration_upgrades_an_existing_growth_schema() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     assert!(columns.iter().any(|column| column == "invite_code"));
     assert!(!columns.iter().any(|column| column == "invite_code_hash"));
     assert_eq!(table_exists, 1);

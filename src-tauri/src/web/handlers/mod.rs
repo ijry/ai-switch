@@ -132,6 +132,87 @@ pub async fn dispatch_command(
 ) -> Result<Value, ApiError> {
     match command {
         "health" => to_value(json!({ "ok": true })),
+        "imagegen_list_sessions" => to_value(
+            crate::imagegen::repository::ImageGenerationRepository::list_sessions(
+                &state.pool,
+                args.get("includeArchived")
+                    .or_else(|| args.get("include_archived"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            )
+            .await
+            .map_err(to_error)?,
+        ),
+        "imagegen_create_session" => {
+            let input = parse_arg(&args, "input")?;
+            to_value(
+                crate::imagegen::repository::ImageGenerationRepository::create_session(
+                    &state.pool,
+                    input,
+                )
+                .await
+                .map_err(to_error)?,
+            )
+        }
+        "imagegen_update_session" => {
+            let input = parse_arg(&args, "input")?;
+            to_value(
+                crate::imagegen::repository::ImageGenerationRepository::update_session(
+                    &state.pool,
+                    input,
+                )
+                .await
+                .map_err(to_error)?,
+            )
+        }
+        "imagegen_delete_session" => {
+            let id = required_string_arg(&args, "id")?;
+            crate::imagegen::repository::ImageGenerationRepository::delete_session(
+                &state.pool,
+                &id,
+            )
+            .await
+            .map_err(to_error)?;
+            crate::imagegen::storage::delete_session_assets(&state.paths.imagegen_dir, &id)
+                .await
+                .map_err(to_error)?;
+            to_value(())
+        }
+        "imagegen_get_conversation" => {
+            let id = required_string_arg(&args, "id")?;
+            to_value(
+                crate::imagegen::repository::ImageGenerationRepository::conversation(
+                    &state.pool,
+                    &id,
+                )
+                .await
+                .map_err(to_error)?,
+            )
+        }
+        "imagegen_list_models" => {
+            let platform = required_string_arg(&args, "platform")?;
+            to_value(
+                crate::imagegen::service::ImageGenerationService::list_models(&state, &platform)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "imagegen_generate" => {
+            let input = parse_arg(&args, "input")?;
+            to_value(
+                crate::imagegen::service::ImageGenerationService::generate(&state, input)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
+        "imagegen_read_asset" => {
+            let id = required_string_arg(&args, "id")?;
+            to_value(
+                crate::imagegen::service::ImageGenerationService::read_asset(&state, &id)
+                    .await
+                    .map_err(to_error)?,
+            )
+        }
         "saas_admin" => {
             let operation = required_string_arg(&args, "operation")?;
             crate::saas::admin_command(

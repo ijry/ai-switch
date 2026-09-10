@@ -2,6 +2,9 @@ pub mod batch_commands;
 pub mod disk_space_commands;
 pub mod external_client_import_commands;
 pub mod import_commands;
+pub mod imagegen_commands {
+    pub use crate::imagegen::commands::*;
+}
 pub mod notification_commands;
 pub mod platform_commands;
 pub mod route_credential_commands;

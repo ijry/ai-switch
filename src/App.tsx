@@ -39,6 +39,7 @@ import { McpScreen } from "./screens/McpScreen";
 import { SkillsScreen } from "./screens/SkillsScreen";
 import { MotionPage, MotionProvider, type MotionDirection } from "./components/motion/MotionPrimitives";
 import { SaasAdmin } from "./saas";
+import { ImageGenerationScreen } from "./imagegen/ImageGenerationScreen";
 import { adminCall } from "./saas/api";
 
 const queryClient = createQueryClient();
@@ -64,6 +65,7 @@ const implementedScreens = new Set([
   "OCR",
   "Settings",
   "SaaS",
+  "ImageGen",
   "Sessions",
   "Updates",
   "Log",
@@ -248,6 +250,7 @@ export function App() {
                   />
                 )}
                 {screen === "SaaS" && <SaasAdmin onConfigChanged={()=>void refreshSaas()} />}
+                {screen === "ImageGen" && <ImageGenerationScreen />}
                 {screen === "MCP" && <McpScreen />}
                 {screen === "Skills" && <SkillsScreen />}
                 {screen === "About" && <AboutScreen />}

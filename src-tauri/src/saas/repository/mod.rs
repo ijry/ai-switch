@@ -151,6 +151,7 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), AppError> {
             4_i64,
             include_str!("../migrations/0004_daily_subscription.sql"),
         ),
+        (5_i64, include_str!("../migrations/0005_image_billing.sql")),
     ];
     let applied: Vec<(i64, String)> =
         sqlx::query_as("SELECT version,checksum FROM saas_schema_migrations ORDER BY version")

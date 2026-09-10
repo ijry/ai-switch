@@ -372,6 +372,8 @@ pub struct ReorderRouteCredentialInput {
 pub struct ModelMapping {
     pub from: String,
     pub to: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
     #[serde(default)]
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

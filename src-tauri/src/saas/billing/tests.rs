@@ -622,3 +622,29 @@ async fn daily_subscription_quota_resets_each_utc_day_and_falls_back_to_balance(
         .unwrap();
     assert_eq!(balance, 0);
 }
+
+#[tokio::test]
+async fn image_billing_reserves_per_image_and_refunds_failed_units() {
+    let pool = repository::test_pool().await;
+    let principal = repository::test_principal(&pool, 1_000_000).await;
+    sqlx::query(r#"UPDATE route_credentials SET config_json=json_set(config_json,'$.model_mappings',json('[{"from":"gpt-test","to":"gpt-image-2.5","capabilities":["image.generate"]}]')) WHERE id IN ('account-default','account-custom')"#)
+        .execute(&pool).await.unwrap();
+    sqlx::query("UPDATE saas_group_models SET upstream_model='gpt-test',image_price_micros=25000 WHERE group_id=? AND model='gpt-test'")
+        .bind(&principal.group_id).execute(&pool).await.unwrap();
+    let reservation = super::reserve_image(&pool, &principal, "gpt-test", 3)
+        .await
+        .unwrap();
+    assert_eq!(reservation.reserved_micros, 75_000);
+    let settlement = super::settle_image(&pool, &reservation.request_id, Some(2), true)
+        .await
+        .unwrap();
+    assert_eq!(settlement.status, "settled");
+    assert_eq!(settlement.price_usd_micros, Some(50_000));
+    let user: (i64, i64) =
+        sqlx::query_as("SELECT balance_micros,frozen_micros FROM saas_users WHERE id=?")
+            .bind(&principal.user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(user, (950_000, 0));
+}

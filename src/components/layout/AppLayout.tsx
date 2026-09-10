@@ -3,6 +3,7 @@ import { motion } from "motion/react";
 import {
   ChevronDown,
   Info,
+  Images,
   Menu,
   PlugZap,
   Settings2,
@@ -485,6 +486,13 @@ export function AppLayout({
                     onClick={() => handleNavigate("SaaS")}
                   />
                 )}
+                <NavButton
+                  active={activeScreen === "ImageGen"}
+                  collapsed={sidebarContentCollapsed}
+                  icon={Images}
+                  label={t("nav.imagegen")}
+                  onClick={() => handleNavigate("ImageGen")}
+                />
                 <NavButton
                   active={activeScreen === "MCP"}
                   collapsed={sidebarContentCollapsed}

@@ -411,6 +411,33 @@ pub(crate) fn supports_requested_model(
     })
 }
 
+pub(crate) fn supports_requested_capability(
+    platform: &str,
+    capability: &ModelCapability,
+    requested_model: Option<&str>,
+    requested_capability: &str,
+) -> bool {
+    let Some(requested_model) = requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    else {
+        return false;
+    };
+    let requested_capability = requested_capability.trim();
+    if requested_capability.is_empty() || capability.mappings.is_empty() {
+        return false;
+    }
+
+    capability.mappings.iter().any(|mapping| {
+        !is_fallback_mapping(mapping)
+            && model_mapping_matches(&mapping.from, requested_model)
+            && mapping
+                .capabilities
+                .iter()
+                .any(|value| value.trim().eq_ignore_ascii_case(requested_capability))
+    }) && supports_requested_model(platform, capability, Some(requested_model))
+}
+
 /// Picks the upstream model for a request: the first *specific* match wins, and
 /// the fallback entry is consulted only when nothing specific matched. Two
 /// passes rather than one `.find()` so the fallback loses regardless of where it
@@ -819,9 +846,9 @@ mod tests {
         alias_for_model_key, catalog_members, codex_default_context_window,
         codex_effective_context_window, codex_reasoning_levels, codex_reasoning_metadata,
         codex_reasoning_profile, known_upstream_models, model_state_key, parse_model_capability,
-        requested_model_from_body, resolve_mapping_target, supports_requested_model,
-        AdvertisedModel, CatalogMemberInput, ModelCapability, ModelCatalogMember,
-        CODEX_ONE_M_CONTEXT_WINDOW,
+        requested_model_from_body, resolve_mapping_target, supports_requested_capability,
+        supports_requested_model, AdvertisedModel, CatalogMemberInput, ModelCapability,
+        ModelCatalogMember, CODEX_ONE_M_CONTEXT_WINDOW,
     };
     use crate::models::route_credential::{ModelMapping, FALLBACK_MODEL_ALIAS};
     use crate::services::route_pool_model_mode::PoolModelMode;
@@ -945,6 +972,41 @@ mod tests {
             Some("gpt-5.6-luna")
         ));
         assert!(supports_requested_model("codex", &limited, None));
+    }
+
+    #[test]
+    fn image_capabilities_require_an_explicit_mapping_declaration() {
+        let legacy = parse_model_capability(
+            r#"{"model_mappings":[{"from":"gpt-image","to":"gpt-image-2.5"}]}"#,
+        );
+        let image = parse_model_capability(
+            r#"{"model_mappings":[{"from":"gpt-image","to":"gpt-image-2.5","capabilities":["image.generate","image.edit"]}]}"#,
+        );
+
+        assert!(!supports_requested_capability(
+            "codex",
+            &legacy,
+            Some("gpt-image"),
+            "image.generate",
+        ));
+        assert!(supports_requested_capability(
+            "codex",
+            &image,
+            Some("gpt-image"),
+            "image.generate",
+        ));
+        assert!(supports_requested_capability(
+            "codex",
+            &image,
+            Some("gpt-image"),
+            "image.edit",
+        ));
+        assert!(!supports_requested_capability(
+            "codex",
+            &image,
+            Some("gpt-image"),
+            "text.generate",
+        ));
     }
 
     #[test]
