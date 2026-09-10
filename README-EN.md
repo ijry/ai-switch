@@ -204,7 +204,7 @@ Inside the container, the default log queue and store use `redis://redis:6379` a
 Common overrides:
 
 - `AI_SWITCH_PORT`: host port mapping, default `19527`.
-- `AI_SWITCH_DOCKER_IMAGE`: image reference, default `ijry/ai-switch:latest`; pin a release with `ijry/ai-switch:0.8.7` or `ijry/ai-switch:0.8`.
+- `AI_SWITCH_DOCKER_IMAGE`: image reference, default `ijry/ai-switch:latest`; pin a release with `ijry/ai-switch:0.9.0` or `ijry/ai-switch:0.9`.
 - `AI_SWITCH_TOKEN`: when unset, the entrypoint generates and prints a container-local token; set it explicitly for restarts.
 - `AI_SWITCH_SAAS_ENABLE`: default `1`; set `0` to run only the standalone server.
 - `AI_SWITCH_SAAS_ACTIVATION_CODE`, `AI_SWITCH_SAAS_INSTANCE_ID`, `AI_SWITCH_SAAS_SITE_NAME`, `AI_SWITCH_SAAS_PUBLIC_BASE_URL`.
@@ -216,7 +216,7 @@ Data is stored in named volumes: `ai-switch-data`, `redis-data`, and `postgres-d
 To build the image locally, the Dockerfile also downloads and verifies the release archive instead of compiling source:
 
 ```bash
-docker build --build-arg AI_SWITCH_VERSION=v0.8.7 .
+docker build --build-arg AI_SWITCH_VERSION=v0.9.0 .
 ```
 
 ### Security notes

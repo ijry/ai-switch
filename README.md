@@ -204,7 +204,7 @@ docker compose -f deploy/docker-compose.yml up -d
 常用覆盖参数：
 
 - `AI_SWITCH_PORT`：宿主映射端口，默认 `19527`。
-- `AI_SWITCH_DOCKER_IMAGE`：镜像地址，默认 `ijry/ai-switch:latest`；固定版本可用 `ijry/ai-switch:0.8.7` 或 `ijry/ai-switch:0.8`。
+- `AI_SWITCH_DOCKER_IMAGE`：镜像地址，默认 `ijry/ai-switch:latest`；固定版本可用 `ijry/ai-switch:0.9.0` 或 `ijry/ai-switch:0.9`。
 - `AI_SWITCH_TOKEN`：不设置时 entrypoint 会生成并打印一个容器本地令牌；跨重启请显式设置。
 - `AI_SWITCH_SAAS_ENABLE`：默认 `1`，设为 `0` 只启动独立 server。
 - `AI_SWITCH_SAAS_ACTIVATION_CODE`、`AI_SWITCH_SAAS_INSTANCE_ID`、`AI_SWITCH_SAAS_SITE_NAME`、`AI_SWITCH_SAAS_PUBLIC_BASE_URL`。
@@ -216,7 +216,7 @@ docker compose -f deploy/docker-compose.yml up -d
 如需本地构造镜像，Dockerfile 也会下载并校验 Release 包，而不是编译源码：
 
 ```bash
-docker build --build-arg AI_SWITCH_VERSION=v0.8.7 .
+docker build --build-arg AI_SWITCH_VERSION=v0.9.0 .
 ```
 
 ### 安全说明
