@@ -1,8 +1,8 @@
 use crate::error::AppError;
 use crate::saas::repository::{self, db_error, invalid};
 use crate::services::route_model_capability::{
-    advertised_model_ids, catalog_members, model_state_key, supports_requested_model,
-    CatalogMemberInput,
+    advertised_model_ids, catalog_members, model_state_key, supports_requested_capability,
+    supports_requested_model, CatalogMemberInput,
 };
 use crate::services::route_pool_model_mode::PoolModelMode;
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use sqlx::{FromRow, SqliteConnection, SqlitePool};
 use std::collections::BTreeSet;
 
-const SUPPORTED_PLATFORMS: [&str; 2] = ["codex", "claude"];
+const SUPPORTED_PLATFORMS: [&str; 3] = ["codex", "claude", "gemini"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -21,6 +21,8 @@ pub struct GroupModel {
     pub input_price_micros: i64,
     pub cache_price_micros: i64,
     pub output_price_micros: i64,
+    #[serde(default)]
+    pub image_price_micros: i64,
 }
 
 #[derive(Deserialize)]
@@ -78,7 +80,7 @@ async fn core_group(
     sqlx::query_as(
         "SELECT id,name,platform,is_internal,is_active
          FROM route_pool_groups
-         WHERE id=? AND deleted_at IS NULL AND platform IN ('codex','claude')",
+         WHERE id=? AND deleted_at IS NULL AND platform IN ('codex','claude','gemini')",
     )
     .bind(group_id)
     .fetch_optional(&mut *connection)
@@ -105,7 +107,7 @@ async fn models(
     group_id: &str,
 ) -> Result<Vec<GroupModel>, AppError> {
     sqlx::query_as(
-        "SELECT model,upstream_model,input_price_micros,cache_price_micros,output_price_micros
+        "SELECT model,upstream_model,input_price_micros,cache_price_micros,output_price_micros,image_price_micros
          FROM saas_group_models WHERE group_id=? ORDER BY model",
     )
     .bind(group_id)
@@ -138,6 +140,16 @@ pub async fn permitted_accounts(
 ) -> Result<Vec<String>, AppError> {
     let mut connection = pool.acquire().await.map_err(db_error)?;
     permitted_accounts_connection(&mut *connection, group_id, None).await
+}
+
+pub async fn permitted_accounts_for_image_model(
+    pool: &SqlitePool,
+    group_id: &str,
+    model: &str,
+) -> Result<Vec<String>, AppError> {
+    let mut connection = pool.acquire().await.map_err(db_error)?;
+    permitted_accounts_for_capability_connection(&mut connection, group_id, model, "image.generate")
+        .await
 }
 
 pub async fn permitted_accounts_for_model(
@@ -222,6 +234,56 @@ pub(crate) async fn permitted_accounts_connection(
         permitted.push(account.id.clone());
     }
     Ok(permitted)
+}
+
+pub(crate) async fn permitted_accounts_for_capability_connection(
+    connection: &mut SqliteConnection,
+    group_id: &str,
+    model: &str,
+    capability: &str,
+) -> Result<Vec<String>, AppError> {
+    let Some(group) = core_group(connection, group_id).await? else {
+        return Ok(Vec::new());
+    };
+    if group.is_internal {
+        return Ok(Vec::new());
+    }
+    let upstream_model: Option<String> = sqlx::query_scalar(
+        "SELECT upstream_model FROM saas_group_models WHERE group_id=? AND model=?",
+    )
+    .bind(group_id)
+    .bind(model)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(db_error)?;
+    let Some(upstream_model) = upstream_model else {
+        return Ok(Vec::new());
+    };
+    let accounts = eligible_accounts(&mut *connection, &group).await?;
+    let members = catalog_members(
+        &accounts
+            .iter()
+            .map(|account| CatalogMemberInput {
+                id: &account.id,
+                display_name: &account.display_name,
+                kind: &account.kind,
+                config_json: &account.config_json,
+            })
+            .collect::<Vec<_>>(),
+    );
+    Ok(accounts
+        .iter()
+        .zip(members)
+        .filter(|(_, member)| {
+            supports_requested_capability(
+                &group.platform,
+                &member.capability,
+                Some(&upstream_model),
+                capability,
+            )
+        })
+        .map(|(account, _)| account.id.clone())
+        .collect())
 }
 
 async fn group_json(connection: &mut SqliteConnection, group_id: &str) -> Result<Value, AppError> {
@@ -309,7 +371,7 @@ pub async fn list(pool: &SqlitePool, payload: Value, _user_only: bool) -> Result
         sqlx::query_as(
             "SELECT id,name,platform,is_internal,is_active
              FROM route_pool_groups
-             WHERE platform IN ('codex','claude') AND deleted_at IS NULL
+             WHERE platform IN ('codex','claude','gemini') AND deleted_at IS NULL
              ORDER BY platform,sort_order,created_at,id",
         )
         .fetch_all(&mut *connection)
@@ -341,7 +403,7 @@ pub async fn available(pool: &SqlitePool, payload: Value) -> Result<Value, AppEr
     let rows: Vec<CoreGroup> = sqlx::query_as(
         "SELECT groups.id,groups.name,groups.platform,groups.is_internal,groups.is_active
          FROM route_pool_groups groups
-         WHERE groups.platform IN ('codex','claude')
+         WHERE groups.platform IN ('codex','claude','gemini')
            AND groups.deleted_at IS NULL
            AND groups.is_internal=0
            AND NOT EXISTS (SELECT 1 FROM saas_group_models models WHERE models.group_id=groups.id)
@@ -414,6 +476,7 @@ pub async fn save(pool: &SqlitePool, payload: Value) -> Result<Value, AppError> 
                 model.input_price_micros,
                 model.cache_price_micros,
                 model.output_price_micros,
+                model.image_price_micros,
             ]
             .iter()
             .any(|price| !(0..=repository::MAX_MONEY).contains(price))
@@ -475,8 +538,8 @@ pub async fn save(pool: &SqlitePool, payload: Value) -> Result<Value, AppError> 
     for model in input.models {
         sqlx::query(
             "INSERT INTO saas_group_models
-               (group_id,model,upstream_model,input_price_micros,cache_price_micros,output_price_micros,version)
-             VALUES(?,?,?,?,?,?,?)",
+               (group_id,model,upstream_model,input_price_micros,cache_price_micros,output_price_micros,image_price_micros,version)
+             VALUES(?,?,?,?,?,?,?,?)",
         )
         .bind(&identifier)
         .bind(model.model)
@@ -484,6 +547,7 @@ pub async fn save(pool: &SqlitePool, payload: Value) -> Result<Value, AppError> 
         .bind(model.input_price_micros)
         .bind(model.cache_price_micros)
         .bind(model.output_price_micros)
+        .bind(model.image_price_micros)
         .bind(version)
         .execute(&mut *transaction)
         .await

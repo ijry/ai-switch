@@ -6,6 +6,7 @@ mod config_writer;
 mod core;
 mod database;
 mod error;
+mod imagegen;
 mod importers;
 mod mcp;
 mod models;

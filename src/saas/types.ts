@@ -1,5 +1,5 @@
 export type SaasLocale = "zh" | "en";
-export type SaasEndpoint = "codex" | "claude";
+export type SaasEndpoint = "codex" | "claude" | "gemini";
 export interface SaasHostProps { onConfigChanged?: () => void }
 export interface PageResult<Item> { items: Item[]; total: number; page?: number; pageSize?: number }
 export interface SaasErrorEnvelope { code: string; message: string; details?: unknown }
@@ -103,7 +103,7 @@ export interface AdminOverview {
   month: UsageTotals;
 }
 
-export interface ModelPrice { model: string; upstreamModel: string; inputPriceMicros: number; cachePriceMicros: number; outputPriceMicros: number }
+export interface ModelPrice { model: string; upstreamModel: string; inputPriceMicros: number; cachePriceMicros: number; outputPriceMicros: number; imagePriceMicros?: number }
 export interface SaasGroup {
   id: string;
   name: string;

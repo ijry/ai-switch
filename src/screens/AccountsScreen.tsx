@@ -808,6 +808,9 @@ function parseModelMappingsFromConfig(configJson: string): ModelMapping[] {
         return {
           from: item.from,
           to: item.to,
+          capabilities: Array.isArray(item.capabilities)
+            ? item.capabilities.filter((value): value is string => typeof value === "string")
+            : null,
           label: item.label ?? null,
           supports_1m:
             item.supports_1m === true || (item as { supports1m?: unknown }).supports1m === true
@@ -854,6 +857,12 @@ function normalizeModelMappings(mappings: ModelMapping[], platform: PlatformKey)
       };
     }
     const normalizedMapping: ModelMapping = label ? { from, to, label } : { from, to };
+    const capabilities = mapping.capabilities
+      ?.map((capability) => capability.trim())
+      .filter((capability, index, values) => capability && values.indexOf(capability) === index);
+    if (capabilities && capabilities.length > 0) {
+      normalizedMapping.capabilities = capabilities;
+    }
     // Gate on the role, not just the checkbox: a stored flag from before Haiku
     // and the Subagent/fallback rows lost their checkbox would otherwise survive
     // every save, since a hidden checkbox can never clear it.
@@ -1700,6 +1709,53 @@ type ModelMappingsEditorProps = {
  * happens to match its model's baseline keeps tracking that baseline instead of
  * freezing today's list into the config.
  */
+function ImageMappingCapabilityFields({
+  index,
+  mapping,
+  onPatch,
+}: {
+  index: number;
+  mapping: ModelMapping;
+  onPatch: (patch: Partial<ModelMapping>) => void;
+}) {
+  const capabilities = mapping.capabilities ?? [];
+  const toggle = (capability: "image.generate" | "image.edit", checked: boolean) => {
+    const next = checked
+      ? Array.from(new Set([...capabilities, capability]))
+      : capabilities.filter((value) => value !== capability);
+    onPatch({ capabilities: next.length ? next : null });
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-t border-stone-100 pt-2">
+      <span className="text-[11px] font-semibold text-stone-500">图片能力</span>
+      {([
+        ["image.generate", "文生图"],
+        ["image.edit", "图片编辑"],
+      ] as const).map(([capability, label]) => (
+        <label
+          className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px] font-semibold motion-control ${
+            capabilities.includes(capability)
+              ? "border-emerald-300 bg-emerald-100 text-emerald-900"
+              : "border-stone-200 bg-white text-stone-500 hover:bg-stone-50"
+          }`}
+          key={capability}
+        >
+          <input
+            aria-label={`图片能力 ${label} ${index + 1}`}
+            checked={capabilities.includes(capability)}
+            className="sr-only"
+            onChange={(event) => toggle(capability, event.target.checked)}
+            type="checkbox"
+          />
+          {label}
+        </label>
+      ))}
+      <span className="text-[11px] font-medium text-stone-400">插件和 SaaS 只选用显式声明能力的模型</span>
+    </div>
+  );
+}
+
 function CodexMappingCapabilityFields({
   index,
   mapping,
@@ -2042,7 +2098,18 @@ function ModelMappingsEditor({
               </div>
             );
             if (!isCodex) {
-              return <Fragment key={rowKey}>{rowControls}</Fragment>;
+              return (
+                <div className="grid gap-2 rounded-lg border border-stone-200 bg-white p-2" key={rowKey}>
+                  {rowControls}
+                  {platform === "gemini" ? (
+                    <ImageMappingCapabilityFields
+                      index={index}
+                      mapping={mapping}
+                      onPatch={(patch) => updateRow(index, patch)}
+                    />
+                  ) : null}
+                </div>
+              );
             }
             return (
               <div
@@ -2051,6 +2118,11 @@ function ModelMappingsEditor({
               >
                 {rowControls}
                 <CodexMappingCapabilityFields
+                  index={index}
+                  mapping={mapping}
+                  onPatch={(patch) => updateRow(index, patch)}
+                />
+                <ImageMappingCapabilityFields
                   index={index}
                   mapping={mapping}
                   onPatch={(patch) => updateRow(index, patch)}

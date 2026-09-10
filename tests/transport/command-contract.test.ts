@@ -77,6 +77,9 @@ describe("command contract", () => {
     for (const command of extractMatches(readSource("src/saas/api.ts"), /\.call(?:<[^>]+>)?\(\s*"([a-z0-9_]+)"/g)) {
       clientCommands.add(command);
     }
+    for (const command of extractMatches(readSource("src/imagegen/api.ts"), /\bcall(?:<[^>]+>)?\(\s*"([a-z0-9_]+)"/g)) {
+      clientCommands.add(command);
+    }
     const tauriSource = readTauriSources();
     const tauriBlock = tauriSource.match(/tauri::generate_handler!\[([\s\S]*?)\]\)/)?.[1];
     expect(tauriBlock).toBeTruthy();

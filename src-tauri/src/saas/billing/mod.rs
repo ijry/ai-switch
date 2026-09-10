@@ -107,7 +107,7 @@ pub async fn authenticate_key(
     }
     let mut transaction = pool.begin().await.map_err(db_error)?;
     config::require_enabled(&mut transaction).await?;
-    let principal: Option<ApiPrincipal> = sqlx::query_as("SELECT keys.user_id,keys.id AS key_id,keys.group_id,groups.platform FROM saas_api_keys keys JOIN saas_users users ON users.id=keys.user_id JOIN route_pool_groups groups ON groups.id=keys.group_id WHERE keys.token_hash=? AND keys.status='active' AND (keys.expires_at IS NULL OR keys.expires_at>?) AND users.status='active' AND groups.platform IN ('codex','claude') AND groups.is_internal=0 AND groups.deleted_at IS NULL")
+    let principal: Option<ApiPrincipal> = sqlx::query_as("SELECT keys.user_id,keys.id AS key_id,keys.group_id,groups.platform FROM saas_api_keys keys JOIN saas_users users ON users.id=keys.user_id JOIN route_pool_groups groups ON groups.id=keys.group_id WHERE keys.token_hash=? AND keys.status='active' AND (keys.expires_at IS NULL OR keys.expires_at>?) AND users.status='active' AND groups.platform IN ('codex','claude','gemini') AND groups.is_internal=0 AND groups.deleted_at IS NULL")
         .bind(repository::hash_secret(plaintext_key)).bind(repository::now()).fetch_optional(&mut *transaction).await.map_err(db_error)?;
     transaction.commit().await.map_err(db_error)?;
     principal.ok_or_else(|| {
@@ -116,6 +116,65 @@ pub async fn authenticate_key(
             "API key is invalid, expired or unavailable",
         )
     })
+}
+
+pub async fn reserve_image(
+    pool: &SqlitePool,
+    principal: &ApiPrincipal,
+    model: &str,
+    image_count: i64,
+) -> Result<Reservation, AppError> {
+    if !(1..=10).contains(&image_count) || model.is_empty() || model.len() > 256 {
+        return Err(invalid(
+            "saas.request_limits",
+            "Invalid image model or count",
+        ));
+    }
+    let mut transaction = repository::begin(pool).await?;
+    config::require_enabled(&mut transaction).await?;
+    let limits: Option<Limits> = sqlx::query_as("SELECT users.balance_micros,users.frozen_micros AS user_frozen,keys.spent_micros,keys.frozen_micros AS key_frozen,keys.limit_micros,settings.multiplier_micros,settings.max_output_tokens,settings.timeout_seconds,settings.max_concurrency,settings.allow_subscription,settings.allow_balance FROM saas_api_keys keys JOIN saas_users users ON users.id=keys.user_id JOIN route_pool_groups groups ON groups.id=keys.group_id JOIN saas_group_settings settings ON settings.group_id=groups.id WHERE keys.id=? AND keys.user_id=? AND keys.group_id=? AND groups.platform=? AND keys.status='active' AND (keys.expires_at IS NULL OR keys.expires_at>?) AND users.status='active' AND groups.platform IN ('codex','gemini') AND groups.is_internal=0 AND groups.deleted_at IS NULL")
+        .bind(&principal.key_id).bind(&principal.user_id).bind(&principal.group_id).bind(&principal.platform).bind(repository::now()).fetch_optional(&mut *transaction).await.map_err(db_error)?;
+    let limits =
+        limits.ok_or_else(|| invalid("saas.invalid_key", "API key is no longer available"))?;
+    let priced: Option<(i64, String)> = sqlx::query_as("SELECT image_price_micros,upstream_model FROM saas_group_models WHERE group_id=? AND model=?")
+        .bind(&principal.group_id).bind(model).fetch_optional(&mut *transaction).await.map_err(db_error)?;
+    let (image_price_micros, upstream_model) =
+        priced.filter(|(price, _)| *price > 0).ok_or_else(|| {
+            invalid(
+                "saas.model_not_allowed",
+                "Image model is not priced and allowed by this group",
+            )
+        })?;
+    let credential_ids = groups::permitted_accounts_for_capability_connection(
+        &mut transaction,
+        &principal.group_id,
+        model,
+        "image.generate",
+    )
+    .await?;
+    if credential_ids.is_empty() {
+        return Err(invalid(
+            "saas.empty_pool",
+            "No permitted account currently supports image generation",
+        ));
+    }
+    let reserved_micros = repository::money(
+        image_price_micros as i128 * image_count as i128 * limits.multiplier_micros as i128
+            / 1_000_000_i128,
+    )?;
+    let reservation = reserve_fixed(
+        &mut transaction,
+        principal,
+        model,
+        upstream_model,
+        credential_ids,
+        reserved_micros,
+        limits,
+        serde_json::json!({"kind":"image","unitPriceMicros":image_price_micros,"count":image_count}).to_string(),
+    )
+    .await?;
+    transaction.commit().await.map_err(db_error)?;
+    Ok(reservation)
 }
 
 pub async fn reserve(
@@ -137,7 +196,7 @@ pub async fn reserve(
     }
     let mut transaction = repository::begin(pool).await?;
     config::require_enabled(&mut transaction).await?;
-    let limits: Option<Limits> = sqlx::query_as("SELECT users.balance_micros,users.frozen_micros AS user_frozen,keys.spent_micros,keys.frozen_micros AS key_frozen,keys.limit_micros,settings.multiplier_micros,settings.max_output_tokens,settings.timeout_seconds,settings.max_concurrency,settings.allow_subscription,settings.allow_balance FROM saas_api_keys keys JOIN saas_users users ON users.id=keys.user_id JOIN route_pool_groups groups ON groups.id=keys.group_id JOIN saas_group_settings settings ON settings.group_id=groups.id WHERE keys.id=? AND keys.user_id=? AND keys.group_id=? AND groups.platform=? AND keys.status='active' AND (keys.expires_at IS NULL OR keys.expires_at>?) AND users.status='active' AND groups.platform IN ('codex','claude') AND groups.is_internal=0 AND groups.deleted_at IS NULL")
+    let limits: Option<Limits> = sqlx::query_as("SELECT users.balance_micros,users.frozen_micros AS user_frozen,keys.spent_micros,keys.frozen_micros AS key_frozen,keys.limit_micros,settings.multiplier_micros,settings.max_output_tokens,settings.timeout_seconds,settings.max_concurrency,settings.allow_subscription,settings.allow_balance FROM saas_api_keys keys JOIN saas_users users ON users.id=keys.user_id JOIN route_pool_groups groups ON groups.id=keys.group_id JOIN saas_group_settings settings ON settings.group_id=groups.id WHERE keys.id=? AND keys.user_id=? AND keys.group_id=? AND groups.platform=? AND keys.status='active' AND (keys.expires_at IS NULL OR keys.expires_at>?) AND users.status='active' AND groups.platform IN ('codex','claude','gemini') AND groups.is_internal=0 AND groups.deleted_at IS NULL")
         .bind(&principal.key_id).bind(&principal.user_id).bind(&principal.group_id).bind(&principal.platform).bind(repository::now()).fetch_optional(&mut *transaction).await.map_err(db_error)?;
     let limits =
         limits.ok_or_else(|| invalid("saas.invalid_key", "API key is no longer available"))?;
@@ -267,6 +326,156 @@ pub async fn reserve(
         timeout_seconds: limits.timeout_seconds,
         max_concurrency: limits.max_concurrency,
     })
+}
+
+async fn reserve_fixed(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    principal: &ApiPrincipal,
+    model: &str,
+    upstream_model: String,
+    credential_ids: Vec<String>,
+    reserved_micros: i64,
+    limits: Limits,
+    price_json: String,
+) -> Result<Reservation, AppError> {
+    let subscription_day = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let subscription_id: Option<String> = if limits.allow_subscription {
+        sqlx::query_scalar("SELECT subscriptions.id FROM saas_subscriptions subscriptions LEFT JOIN saas_subscription_daily_usage daily ON daily.subscription_id=subscriptions.id AND daily.day=? WHERE subscriptions.user_id=? AND subscriptions.status='active' AND subscriptions.starts_at<=? AND subscriptions.expires_at>? AND subscriptions.quota_micros-COALESCE(daily.used_micros,0)-COALESCE(daily.frozen_micros,0)>=? ORDER BY subscriptions.expires_at,subscriptions.created_at,subscriptions.id LIMIT 1")
+            .bind(&subscription_day).bind(&principal.user_id).bind(repository::now()).bind(repository::now()).bind(reserved_micros).fetch_optional(&mut **transaction).await.map_err(db_error)?
+    } else {
+        None
+    };
+    if reserved_micros > 0
+        && subscription_id.is_none()
+        && (!limits.allow_balance || limits.balance_micros - limits.user_frozen < reserved_micros)
+    {
+        return Err(invalid(
+            "saas.insufficient_balance",
+            "No eligible subscription or sufficient available balance",
+        ));
+    }
+    if limits.limit_micros.is_some_and(|limit| {
+        limits.spent_micros as i128 + limits.key_frozen as i128 + reserved_micros as i128
+            > limit as i128
+    }) {
+        return Err(invalid(
+            "saas.key_quota",
+            "API key spending limit has been reached",
+        ));
+    }
+    let active: (i64,i64) = sqlx::query_as("SELECT COUNT(*),COALESCE(SUM(CASE WHEN key_id=? THEN 1 ELSE 0 END),0) FROM saas_billing_reservations WHERE user_id=? AND status='reserved'")
+        .bind(&principal.key_id).bind(&principal.user_id).fetch_one(&mut **transaction).await.map_err(db_error)?;
+    if active.0 >= limits.max_concurrency || active.1 >= limits.max_concurrency {
+        return Err(invalid(
+            "saas.concurrency_limit",
+            "Too many concurrent requests",
+        ));
+    }
+    let funding_type = if subscription_id.is_some() {
+        "subscription"
+    } else {
+        "balance"
+    };
+    if subscription_id.is_none() {
+        sqlx::query("UPDATE saas_users SET frozen_micros=frozen_micros+?,updated_at=? WHERE id=?")
+            .bind(reserved_micros)
+            .bind(repository::now())
+            .bind(&principal.user_id)
+            .execute(&mut **transaction)
+            .await
+            .map_err(db_error)?;
+    } else if let Some(subscription_id) = &subscription_id {
+        sqlx::query("INSERT INTO saas_subscription_daily_usage(subscription_id,day,used_micros,frozen_micros,updated_at) VALUES(?,?,0,?,?) ON CONFLICT(subscription_id,day) DO UPDATE SET frozen_micros=frozen_micros+excluded.frozen_micros,updated_at=excluded.updated_at")
+            .bind(subscription_id).bind(&subscription_day).bind(reserved_micros).bind(repository::now()).execute(&mut **transaction).await.map_err(db_error)?;
+    }
+    sqlx::query("UPDATE saas_api_keys SET frozen_micros=frozen_micros+?,updated_at=? WHERE id=?")
+        .bind(reserved_micros)
+        .bind(repository::now())
+        .bind(&principal.key_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(db_error)?;
+    let request_id = uuid::Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO saas_billing_reservations(request_id,user_id,key_id,group_id,platform,model,price_json,reserved_micros,status,funding_type,subscription_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'reserved',?,?,?,?)")
+        .bind(&request_id).bind(&principal.user_id).bind(&principal.key_id).bind(&principal.group_id).bind(&principal.platform).bind(model).bind(price_json).bind(reserved_micros).bind(funding_type).bind(&subscription_id).bind(repository::now()).bind(repository::now()).execute(&mut **transaction).await.map_err(db_error)?;
+    Ok(Reservation {
+        request_id,
+        user_id: principal.user_id.clone(),
+        key_id: principal.key_id.clone(),
+        group_id: principal.group_id.clone(),
+        platform: principal.platform.clone(),
+        model: model.into(),
+        upstream_model,
+        credential_ids,
+        reserved_micros,
+        price: ModelPrice {
+            input_price_micros: 0,
+            cache_price_micros: 0,
+            output_price_micros: 0,
+            multiplier_micros: 1_000_000,
+        },
+        max_output_tokens: limits.max_output_tokens,
+        timeout_seconds: limits.timeout_seconds,
+        max_concurrency: limits.max_concurrency,
+    })
+}
+
+pub async fn settle_image(
+    pool: &SqlitePool,
+    request_id: &str,
+    success_count: Option<i64>,
+    success: bool,
+) -> Result<Settlement, AppError> {
+    let mut transaction = repository::begin(pool).await?;
+    let mut reservation = load_reservation(&mut transaction, request_id).await?;
+    if ["settled", "refunded"].contains(&reservation.status.as_str()) {
+        return Ok(reservation.result());
+    }
+    if success_count.is_none() && success {
+        sqlx::query("UPDATE saas_billing_reservations SET status='pending_review',updated_at=? WHERE request_id=?").bind(repository::now()).bind(request_id).execute(&mut *transaction).await.map_err(db_error)?;
+        reservation.status = "pending_review".into();
+        transaction.commit().await.map_err(db_error)?;
+        return Ok(reservation.result());
+    }
+    let snapshot: serde_json::Value = serde_json::from_str(&reservation.price_json)
+        .map_err(|_| invalid("saas.pricing_snapshot", "Invalid image price snapshot"))?;
+    if snapshot.get("kind").and_then(serde_json::Value::as_str) != Some("image") {
+        return Err(invalid(
+            "saas.pricing_snapshot",
+            "Reservation is not image billing",
+        ));
+    }
+    let count = success_count.unwrap_or(0);
+    let unit = snapshot
+        .get("unitPriceMicros")
+        .and_then(serde_json::Value::as_i64)
+        .ok_or_else(|| invalid("saas.pricing_snapshot", "Invalid image unit price"))?;
+    let requested = snapshot
+        .get("count")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    if count < 0 || count > requested {
+        return Err(invalid(
+            "saas.pricing_snapshot",
+            "Invalid successful image count",
+        ));
+    }
+    let cost = repository::money(
+        reservation.reserved_micros as i128 * count as i128 / requested.max(1) as i128,
+    )?;
+    let status = if count == 0 { "refunded" } else { "settled" };
+    let result = finish(
+        &mut transaction,
+        &reservation,
+        cost,
+        None,
+        status,
+        "proxy",
+        Some(&format!("image_count={count};unit={unit}")),
+    )
+    .await?;
+    transaction.commit().await.map_err(db_error)?;
+    Ok(result)
 }
 
 async fn load_reservation(

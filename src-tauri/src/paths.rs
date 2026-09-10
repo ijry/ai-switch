@@ -36,6 +36,7 @@ pub struct AppPaths {
     pub backups_dir: PathBuf,
     pub config_snapshots_dir: PathBuf,
     pub imports_dir: PathBuf,
+    pub imagegen_dir: PathBuf,
     pub logs_dir: PathBuf,
     pub tailscale_dir: PathBuf,
     pub route_proxy_https_dir: PathBuf,
@@ -62,6 +63,7 @@ impl AppPaths {
             backups_dir: data_dir.join("backups"),
             config_snapshots_dir: data_dir.join("backups").join("config-snapshots"),
             imports_dir: data_dir.join("imports"),
+            imagegen_dir: data_dir.join("imagegen"),
             logs_dir: data_dir.join("logs"),
             tailscale_dir: data_dir.join("tailscale"),
             route_proxy_https_dir: data_dir.join("certs").join("route-proxy"),
@@ -75,6 +77,8 @@ impl AppPaths {
         tokio::fs::create_dir_all(&self.config_snapshots_dir).await?;
         set_private_directory_permissions(&self.config_snapshots_dir).await?;
         tokio::fs::create_dir_all(&self.imports_dir).await?;
+        tokio::fs::create_dir_all(&self.imagegen_dir).await?;
+        set_private_directory_permissions(&self.imagegen_dir).await?;
         tokio::fs::create_dir_all(&self.logs_dir).await?;
         tokio::fs::create_dir_all(&self.tailscale_dir).await?;
         Ok(())

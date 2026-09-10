@@ -8,6 +8,11 @@ use commands::external_client_import_commands::{
     import_external_client_accounts, preview_external_client_import,
 };
 use commands::import_commands::import_example_json;
+use commands::imagegen_commands::{
+    imagegen_create_session, imagegen_delete_session, imagegen_generate,
+    imagegen_get_conversation, imagegen_list_models, imagegen_list_sessions,
+    imagegen_read_asset, imagegen_update_session,
+};
 use commands::notification_commands::test_notification;
 use commands::platform_commands::list_platform_capabilities;
 use commands::route_credential_commands::{
@@ -499,6 +504,14 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             crate::saas::transport::saas_admin,
+            imagegen_list_sessions,
+            imagegen_create_session,
+            imagegen_update_session,
+            imagegen_delete_session,
+            imagegen_get_conversation,
+            imagegen_list_models,
+            imagegen_generate,
+            imagegen_read_asset,
             get_settings,
             save_settings,
             create_batch,

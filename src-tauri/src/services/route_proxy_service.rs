@@ -37,7 +37,7 @@ use crate::services::route_model_capability::{
     advertised_model_catalog_entries, catalog_members, codex_effective_context_window,
     codex_reasoning_metadata, known_upstream_models, model_state_key, parse_model_capability,
     parse_model_capability_value, requested_model_from_body, resolve_mapping_target,
-    supports_requested_model, CatalogMemberInput, ModelCapability,
+    supports_requested_capability, supports_requested_model, CatalogMemberInput, ModelCapability,
 };
 use crate::services::route_pool_model_mode::{
     accepted_prefixes, is_official_model_prefix, split_prefixed_model, PoolModelMode,
@@ -786,7 +786,7 @@ fn cors_preflight_response(headers: &HeaderMap) -> Response {
     response
 }
 
-async fn forward_request(
+pub(crate) async fn forward_request(
     state: &ProxyAppState,
     method: Method,
     headers: HeaderMap,
@@ -887,6 +887,16 @@ async fn forward_request(
     // before its model key is known. It also means the all-cooling probe below
     // is now scoped to accounts that can actually serve this model.
     let candidates = filter_candidates_for_model(&platform, candidates, requested_model.as_deref());
+    let candidates = if let Some(capability) = requested_image_capability(&path) {
+        filter_candidates_for_capability(
+            &platform,
+            candidates,
+            requested_model.as_deref(),
+            capability,
+        )
+    } else {
+        candidates
+    };
     if candidates.is_empty() {
         let model = requested_model.as_deref().unwrap_or("unknown");
         return Err(format!(
@@ -3414,6 +3424,33 @@ fn filter_candidates_for_model(
         .collect()
 }
 
+fn requested_image_capability(path: &str) -> Option<&'static str> {
+    match path.trim().trim_end_matches('/') {
+        "/images/generations" | "/v1/images/generations" => Some("image.generate"),
+        "/images/edits" | "/v1/images/edits" => Some("image.edit"),
+        _ => None,
+    }
+}
+
+fn filter_candidates_for_capability(
+    platform: &str,
+    candidates: Vec<PoolCandidate>,
+    requested_model: Option<&str>,
+    requested_capability: &str,
+) -> Vec<PoolCandidate> {
+    candidates
+        .into_iter()
+        .filter(|candidate| {
+            supports_requested_capability(
+                platform,
+                &candidate_capability(candidate),
+                requested_model,
+                requested_capability,
+            )
+        })
+        .collect()
+}
+
 async fn bind_route_proxy_listener() -> Result<TcpListener, AppError> {
     bind_route_proxy_listener_from(DEFAULT_ROUTE_PROXY_PORT).await
 }
@@ -4051,13 +4088,42 @@ fn build_official_upstream_request(
     if platform == PlatformId::Codex && request_body_requests_stream(&rewritten_body) {
         insert_header(headers, "accept", "text/event-stream")?;
     }
-    let target_url = build_target_url(base_url, path, query);
+    let (upstream_path, rewritten_body, bridge_kind) = if is_openai_images_path(path) {
+        match platform {
+            PlatformId::Codex => (
+                "/responses".to_string(),
+                crate::imagegen::protocol::openai_request_to_responses(&rewritten_body)?,
+                Some(ProtocolBridgeKind::ImagesToResponses),
+            ),
+            PlatformId::Gemini => {
+                let (model, body) =
+                    crate::imagegen::protocol::openai_request_to_gemini(&rewritten_body)?;
+                (
+                    format!(
+                        "/v1beta/models/{}:generateContent",
+                        model.trim_start_matches("models/")
+                    ),
+                    body,
+                    Some(ProtocolBridgeKind::ImagesToGemini),
+                )
+            }
+            _ => {
+                return Err(format!(
+                    "Official {} credentials do not support image generation",
+                    platform.as_str()
+                ))
+            }
+        }
+    } else {
+        (path.to_string(), rewritten_body, None)
+    };
+    let target_url = build_target_url(base_url, &upstream_path, query);
     let streaming_request = request_body_requests_stream(&rewritten_body);
     Ok(BuiltUpstreamRequest {
         target_url,
         headers: headers.clone(),
         body: rewritten_body,
-        bridge_kind: None,
+        bridge_kind,
         tool_namespaces: BTreeMap::new(),
         streaming_request,
         encrypted_content_stripped: false,
@@ -4790,7 +4856,25 @@ pub fn normalize_api_upstream_path(interface_format: &str, path: &str) -> String
     if !matches!(interface_format, "openai" | "openai-responses") {
         return normalized;
     }
+    if interface_format == "openai" && is_openai_images_path(&normalized) {
+        return ensure_v1_path(&normalized);
+    }
     strip_leading_version_path_segments(&normalized)
+}
+
+fn is_openai_images_path(path: &str) -> bool {
+    matches!(
+        path.trim().trim_end_matches('/'),
+        "/images/generations" | "/images/edits" | "/v1/images/generations" | "/v1/images/edits"
+    )
+}
+
+fn ensure_v1_path(path: &str) -> String {
+    if path.starts_with("/v1/") {
+        path.to_string()
+    } else {
+        format!("/v1{path}")
+    }
 }
 
 fn normalize_request_path(path: &str) -> String {
@@ -5202,7 +5286,8 @@ fn responses_tool_name(tool: &Value) -> Option<String> {
 
 pub(crate) fn is_shared_model_api_path(path: &str) -> bool {
     let normalized = path.trim_end_matches('/');
-    normalized == "/models"
+    is_openai_images_path(normalized)
+        || normalized == "/models"
         || normalized == "/messages"
         || normalized == "/responses"
         || normalized.ends_with("/messages")
@@ -5213,6 +5298,31 @@ pub(crate) fn is_shared_model_api_path(path: &str) -> bool {
         || normalized.starts_with("/v1beta/")
         || normalized == "/v1alpha"
         || normalized.starts_with("/v1alpha/")
+}
+
+#[cfg(test)]
+mod image_path_tests {
+    use super::{is_shared_model_api_path, normalize_api_upstream_path};
+
+    #[test]
+    fn image_endpoints_are_shared_model_api_paths() {
+        assert!(is_shared_model_api_path("/v1/images/generations"));
+        assert!(is_shared_model_api_path("/v1/images/edits"));
+        assert!(is_shared_model_api_path("/images/generations"));
+        assert!(is_shared_model_api_path("/images/edits"));
+    }
+
+    #[test]
+    fn openai_images_paths_keep_the_v1_prefix() {
+        assert_eq!(
+            normalize_api_upstream_path("openai", "/v1/images/generations"),
+            "/v1/images/generations"
+        );
+        assert_eq!(
+            normalize_api_upstream_path("openai", "/v1/images/edits"),
+            "/v1/images/edits"
+        );
+    }
 }
 
 fn is_models_list_path(path: &str) -> bool {

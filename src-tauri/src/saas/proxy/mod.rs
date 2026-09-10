@@ -53,8 +53,8 @@ async fn execute(
     runtime
         .allow(format!("inference:{}", principal.user_id), 600)
         .await?;
-    let path = uri.path().trim_end_matches('/');
-    if matches!(path, "/v1/models" | "/models") && method == Method::GET {
+    let path = uri.path().trim_end_matches('/').to_string();
+    if matches!(path.as_str(), "/v1/models" | "/models") && method == Method::GET {
         let models: Vec<String> = sqlx::query_scalar(
             "SELECT model FROM saas_group_models WHERE group_id=? ORDER BY model",
         )
@@ -73,12 +73,17 @@ async fn execute(
         }
         return Ok(Json(json!({"object":"list","data":available})).into_response());
     }
-    let anthropic = matches!(path, "/v1/messages" | "/messages");
-    let responses = matches!(path, "/v1/responses" | "/responses");
-    let chat = matches!(path, "/v1/chat/completions" | "/chat/completions");
+    let anthropic = matches!(path.as_str(), "/v1/messages" | "/messages");
+    let responses = matches!(path.as_str(), "/v1/responses" | "/responses");
+    let chat = matches!(path.as_str(), "/v1/chat/completions" | "/chat/completions");
+    let images = matches!(
+        path.as_str(),
+        "/v1/images/generations" | "/images/generations"
+    );
     if method != Method::POST
-        || !(anthropic || responses || chat)
+        || !(anthropic || responses || chat || images)
         || (principal.platform == "claude" && !anthropic)
+        || (principal.platform == "gemini" && !images)
         || (principal.platform == "codex" && anthropic)
     {
         return Err(repository::invalid(
@@ -114,6 +119,12 @@ async fn execute(
         .filter(|model| !model.is_empty())
         .ok_or_else(|| repository::invalid("saas.model_not_allowed", "A model is required"))?
         .to_string();
+    if images {
+        return execute_image_request(
+            pool, runtime, proxy, principal, headers, uri, payload, model, &path,
+        )
+        .await;
+    }
     let default_output: i64 =
         sqlx::query_scalar("SELECT max_output_tokens FROM saas_group_settings WHERE group_id=?")
             .bind(&principal.group_id)
@@ -167,7 +178,7 @@ async fn execute(
         group_id: reservation.group_id.clone(),
         platform: reservation.platform.clone(),
         model,
-        path: path.to_string(),
+        path: path.clone(),
         started: Instant::now(),
         created_at: chrono::Utc::now(),
         status: StatusCode::BAD_GATEWAY.as_u16(),
@@ -239,6 +250,116 @@ async fn execute(
         },
     );
     Ok(Response::from_parts(parts, Body::from_stream(stream)))
+}
+
+async fn execute_image_request(
+    pool: &SqlitePool,
+    runtime: &SaasRuntime,
+    proxy: ProxyAppState,
+    principal: billing::ApiPrincipal,
+    mut headers: HeaderMap,
+    uri: Uri,
+    mut payload: Value,
+    model: String,
+    path: &str,
+) -> Result<Response, AppError> {
+    let object = payload.as_object_mut().ok_or_else(|| {
+        repository::invalid("saas.validation", "Request must contain a JSON object")
+    })?;
+    let count = object
+        .get("n")
+        .map(|value| {
+            value.as_i64().ok_or_else(|| {
+                repository::invalid("saas.request_limits", "Image count must be an integer")
+            })
+        })
+        .transpose()?
+        .unwrap_or(1);
+    let reservation = billing::reserve_image(pool, &principal, &model, count).await?;
+    object.insert("model".into(), json!(reservation.upstream_model));
+    let request_id = reservation.request_id.clone();
+    let deadline =
+        tokio::time::Instant::now() + Duration::from_secs(reservation.timeout_seconds as u64);
+    let proxy = proxy.with_access_scope(
+        PlatformId::parse(&reservation.platform)?,
+        reservation.credential_ids.into_iter().collect(),
+    );
+    headers.remove(header::COOKIE);
+    headers.remove("x-saas-csrf");
+    headers.remove("x-ai-switch-test-trace-id");
+    headers.remove(header::CONTENT_LENGTH);
+    headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+    let started = Instant::now();
+    let created_at = chrono::Utc::now();
+    let upstream = tokio::time::timeout_at(
+        deadline,
+        proxy_handler(
+            State(proxy),
+            Method::POST,
+            headers,
+            uri,
+            Body::from(payload.to_string()),
+        ),
+    )
+    .await;
+    let response = match upstream {
+        Ok(response) => response,
+        Err(_) => {
+            let _ = billing::settle_image(pool, &request_id, None, true).await;
+            return Ok((StatusCode::GATEWAY_TIMEOUT, Json(json!({"error":{"code":"saas.upstream_timeout","message":"Upstream request timed out"}}))).into_response());
+        }
+    };
+    let status = response.status();
+    let (mut parts, body) = response.into_parts();
+    let bytes = axum::body::to_bytes(body, 128 * 1024 * 1024)
+        .await
+        .map_err(|_| repository::invalid("saas.upstream_body", "Could not read image response"))?;
+    let success_count = if status.is_success() {
+        serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("data")
+                    .and_then(Value::as_array)
+                    .map(|items| items.len() as i64)
+            })
+    } else {
+        Some(0)
+    };
+    let settlement =
+        billing::settle_image(pool, &request_id, success_count, status.is_success()).await?;
+    let record = LogRecord {
+        request_id: request_id.clone(),
+        user_id: reservation.user_id,
+        key_id: reservation.key_id,
+        group_id: reservation.group_id,
+        platform: reservation.platform,
+        model,
+        endpoint: path.to_string(),
+        created_at,
+        utc_offset_minutes: chrono::Local::now().offset().local_minus_utc() / 60,
+        duration_ms: started.elapsed().as_millis().min(i64::MAX as u128) as i64,
+        status: status.as_u16(),
+        amount_usd_micros: settlement.price_usd_micros.unwrap_or(0),
+        settlement_status: settlement.status,
+        error_code: if status.is_success() {
+            None
+        } else {
+            Some("upstream_rejected".into())
+        },
+        ..Default::default()
+    };
+    if runtime.logs.enqueue(record).await.is_err() {
+        eprintln!("SaaS request log queue rejected a completed image request");
+    }
+    parts.headers.remove(header::SET_COOKIE);
+    parts
+        .headers
+        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    parts
+        .headers
+        .insert("x-saas-request-id", request_id.parse().unwrap());
+    Ok(Response::from_parts(parts, Body::from(bytes)))
 }
 
 struct Completion {
