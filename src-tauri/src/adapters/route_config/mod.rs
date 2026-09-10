@@ -778,7 +778,7 @@ api_key = "legacy-key"
     }
 
     #[test]
-    fn client_models_carry_context_limits_and_are_ignored_by_native_adapters() {
+    fn codex_uses_the_first_client_model_as_its_default() {
         let registry = TargetAdapterRegistry::new();
         let with_models = RouteConfigInput {
             client_models: vec![
@@ -798,8 +798,6 @@ api_key = "legacy-key"
             ..input()
         };
 
-        // The four native CLIs discover models themselves, so the list must not
-        // leak into their files.
         let codex = registry
             .by_client_and_platform("codex", PlatformId::Codex)
             .unwrap();
@@ -807,7 +805,56 @@ api_key = "legacy-key"
             .render(Path::new("config.toml"), None, &with_models)
             .unwrap();
         let rendered = String::from_utf8(rendered).unwrap();
-        assert!(!rendered.contains("gpt-5.6-sol"));
+        assert!(rendered.contains("model = \"gpt-5.6-sol\""));
+    }
+
+    #[test]
+    fn codex_preserves_an_existing_model_that_is_still_in_the_catalog() {
+        let registry = TargetAdapterRegistry::new();
+        let with_models = RouteConfigInput {
+            client_models: vec![
+                ClientModel {
+                    id: "gpt-5.6-sol".to_string(),
+                    context_window: 200_000,
+                    max_output_tokens: 128_000,
+                    reasoning_levels: Vec::new(),
+                },
+                ClientModel {
+                    id: "gpt-5.6-terra".to_string(),
+                    context_window: 200_000,
+                    max_output_tokens: 128_000,
+                    reasoning_levels: Vec::new(),
+                },
+            ],
+            ..input()
+        };
+
+        let codex = registry
+            .by_client_and_platform("codex", PlatformId::Codex)
+            .unwrap();
+        let rendered = codex
+            .render(
+                Path::new("config.toml"),
+                Some(b"model = \"gpt-5.6-terra\"\n"),
+                &with_models,
+            )
+            .unwrap();
+        let rendered = String::from_utf8(rendered).unwrap();
+        assert!(rendered.contains("model = \"gpt-5.6-terra\""));
+    }
+
+    #[test]
+    fn claude_native_adapter_ignores_client_models() {
+        let registry = TargetAdapterRegistry::new();
+        let with_models = RouteConfigInput {
+            client_models: vec![ClientModel {
+                id: "gpt-5.6-sol".to_string(),
+                context_window: 200_000,
+                max_output_tokens: 128_000,
+                reasoning_levels: Vec::new(),
+            }],
+            ..input()
+        };
 
         let claude = registry
             .by_client_and_platform("claude_code", PlatformId::Claude)

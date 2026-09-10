@@ -109,6 +109,17 @@ fn apply_managed_config(
     document["model_provider"] = value("ai-switch");
     document["model_catalog_json"] = value(CODEX_MODEL_CATALOG_FILENAME);
     document["model_reasoning_effort"] = value("high");
+    let existing_model = document
+        .get("model")
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    let selected_model = existing_model
+        .filter(|model| input.client_models.iter().any(|item| item.id == *model))
+        .or_else(|| input.client_models.first().map(|item| item.id.as_str()));
+    if let Some(model) = selected_model {
+        document["model"] = value(model);
+    }
     if document.get("model_providers").is_none() {
         document["model_providers"] = Item::Table(Table::new());
     }

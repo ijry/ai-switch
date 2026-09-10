@@ -73,33 +73,29 @@ impl RouteConfigService {
         .await?;
 
         let claude_env = Self::resolve_claude_env_plan(paths, pool, platform).await?;
-        let needs_models = adapters
+        let requires_client_models = adapters
             .iter()
             .any(|adapter| adapter.requires_client_models());
-        let client_models = if needs_models {
-            let models = Self::resolve_client_models(pool, platform).await?;
-            if models.is_empty() {
-                // A models-less provider is unselectable in ZCode, so writing one
-                // would report success and leave a dead entry.
-                if existing_route_proxy_key.is_none() {
-                    let _ = RouteProxyKeyRepository::delete_if_matches(
-                        pool,
-                        platform_key,
-                        &route_proxy_key,
-                    )
-                    .await;
-                }
-                return Err(AppError::Validation {
-                    code: "config.pool_models_empty",
-                    message: "The pool advertises no models for this platform".to_string(),
-                    details: Some(platform_key.to_string()),
-                    recoverable: true,
-                });
+        let client_models =
+            Self::resolve_models_for_config_input(pool, platform, requires_client_models).await?;
+        if requires_client_models && client_models.is_empty() {
+            // A models-less provider is unselectable in ZCode, so writing one
+            // would report success and leave a dead entry.
+            if existing_route_proxy_key.is_none() {
+                let _ = RouteProxyKeyRepository::delete_if_matches(
+                    pool,
+                    platform_key,
+                    &route_proxy_key,
+                )
+                .await;
             }
-            models
-        } else {
-            Vec::new()
-        };
+            return Err(AppError::Validation {
+                code: "config.pool_models_empty",
+                message: "The pool advertises no models for this platform".to_string(),
+                details: Some(platform_key.to_string()),
+                recoverable: true,
+            });
+        }
 
         // The Codex CLI's config.toml references this catalog, so it belongs to
         // that client and not to the platform.
@@ -241,11 +237,12 @@ impl RouteConfigService {
             let claude_env = Self::resolve_claude_env_plan(paths, pool, parsed).await?;
             // A client that carries its own model list would otherwise have that
             // list emptied by a base-URL-only rewrite.
-            let client_models = if adapter.requires_client_models() {
-                Self::resolve_client_models(pool, parsed).await?
-            } else {
-                Vec::new()
-            };
+            let client_models = Self::resolve_models_for_config_input(
+                pool,
+                parsed,
+                adapter.requires_client_models(),
+            )
+            .await?;
             requests.push(ConfigWriteRequest {
                 adapter,
                 home: home.to_path_buf(),
@@ -334,12 +331,10 @@ impl RouteConfigService {
         let claude_env = Self::resolve_claude_env_plan(paths, pool, platform).await?;
         let needs_models = adapters
             .iter()
-            .any(|adapter| adapter.requires_client_models());
-        let client_models = if needs_models {
-            Self::resolve_client_models(pool, platform).await?
-        } else {
-            Vec::new()
-        };
+            .any(|adapter| adapter.requires_client_models())
+            || platform == PlatformId::Codex;
+        let client_models =
+            Self::resolve_models_for_config_input(pool, platform, needs_models).await?;
         let aliases =
             RouteProxyKeyRepository::list_aliases_for_platform(pool, platform.as_str()).await?;
 
@@ -385,8 +380,12 @@ impl RouteConfigService {
         PlatformCapabilityService::require(platform, PlatformOperation::ConfigWrite)?;
         let claude_env = Self::resolve_claude_env_plan(paths, pool, platform).await?;
         let path_context = route_config_path_context(paths).await?;
+        let adapter = route_config_adapter(&native_client_key(platform)?, platform)?;
+        let client_models =
+            Self::resolve_models_for_config_input(pool, platform, adapter.requires_client_models())
+                .await?;
         let request = ConfigWriteRequest {
-            adapter: route_config_adapter(&native_client_key(platform)?, platform)?,
+            adapter,
             home: home.to_path_buf(),
             path_context,
             input: RouteConfigInput {
@@ -394,7 +393,7 @@ impl RouteConfigService {
                 route_proxy_key: route_proxy_key.to_string(),
                 route_proxy_key_aliases: Vec::new(),
                 claude_env,
-                client_models: Vec::new(),
+                client_models,
             },
         };
         if platform == PlatformId::Codex {
@@ -580,6 +579,18 @@ impl RouteConfigService {
                 })
                 .collect(),
         )
+    }
+
+    async fn resolve_models_for_config_input(
+        pool: &SqlitePool,
+        platform: PlatformId,
+        required_by_adapter: bool,
+    ) -> Result<Vec<ClientModel>, AppError> {
+        if required_by_adapter || platform == PlatformId::Codex {
+            Self::resolve_client_models(pool, platform).await
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     /// The pool's enabled members for this platform, as full credential rows.
@@ -1128,15 +1139,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_existing_codex_config_preserves_unmanaged_toml() {
+    async fn write_existing_codex_config_repairs_stale_model_and_preserves_unmanaged_toml() {
         let (_app_dir, paths, pool, runtime) = config_write_context().await;
+        seed_codex_pool_member(&pool, "gpt-5.6-sol").await;
         let home = tempfile::tempdir().expect("home dir");
         let codex_dir = home.path().join(".codex");
         tokio::fs::create_dir_all(&codex_dir).await.expect("mkdir");
         let codex_path = codex_dir.join("config.toml");
         tokio::fs::write(
             &codex_path,
-            r#"approval_policy = "never"
+            r#"model = "gpt-5.5"
+approval_policy = "never"
 
 [model_providers.keep]
 name = "Keep"
@@ -1167,6 +1180,7 @@ command = "npx"
             .await
             .expect("read config");
         assert!(written.contains("approval_policy = \"never\""));
+        assert!(written.contains("model = \"gpt-5.6-sol\""));
         assert!(written.contains("[model_providers.keep]"));
         assert!(written.contains("api_key_env_var = \"KEEP_KEY\""));
         assert!(written.contains("[mcp_servers.filesystem]"));
@@ -2318,6 +2332,140 @@ command = "npx"
             .await
             .expect("codex config");
         assert!(codex_config.contains("model_reasoning_effort = \"high\""));
+    }
+
+    #[tokio::test]
+    async fn codex_config_repairs_a_stale_default_model_missing_from_the_catalog() {
+        let fixture = ServiceFixture::new().await;
+        seed_codex_pool_member(&fixture.pool, "gpt-5.6-sol").await;
+        let codex_dir = fixture.home.join(".codex");
+        tokio::fs::create_dir_all(&codex_dir).await.expect("mkdir");
+        tokio::fs::write(
+            codex_dir.join("config.toml"),
+            r#"model = "gpt-5.5"
+model_provider = "ai-switch"
+"#,
+        )
+        .await
+        .expect("seed config");
+
+        RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            BASE_URL,
+            "codex",
+            &fixture.home,
+            Some(&["codex".to_string()]),
+        )
+        .await
+        .expect("write");
+
+        let codex_config = tokio::fs::read_to_string(fixture.home.join(".codex/config.toml"))
+            .await
+            .expect("codex config");
+        let document: toml::Value = codex_config.parse().expect("codex TOML");
+        let catalog: serde_json::Value = serde_json::from_slice(
+            &tokio::fs::read(fixture.home.join(".codex/ai-switch-model-catalog.json"))
+                .await
+                .expect("codex model catalog"),
+        )
+        .expect("valid codex model catalog");
+
+        assert_eq!(document["model"].as_str(), Some("gpt-5.6-sol"));
+        assert!(catalog["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .any(|model| model["slug"].as_str() == Some("gpt-5.6-sol")));
+    }
+
+    #[tokio::test]
+    async fn codex_base_url_rewrite_repairs_a_default_model_missing_from_the_catalog() {
+        let fixture = ServiceFixture::new().await;
+        seed_codex_pool_member(&fixture.pool, "gpt-5.6-sol").await;
+        RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            "http://127.0.0.1:19527",
+            "codex",
+            &fixture.home,
+            Some(&["codex".to_string()]),
+        )
+        .await
+        .expect("initial write");
+
+        let codex_path = fixture.home.join(".codex/config.toml");
+        let current = tokio::fs::read_to_string(&codex_path)
+            .await
+            .expect("codex config");
+        let stale = current.replace("model = \"gpt-5.6-sol\"", "model = \"gpt-5.5\"");
+        assert_ne!(stale, current);
+        tokio::fs::write(&codex_path, stale)
+            .await
+            .expect("make model stale");
+
+        RouteConfigService::write_existing_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            "https://127.0.0.1:19528",
+            &fixture.home,
+        )
+        .await
+        .expect("rewrite");
+
+        let document: toml::Value = tokio::fs::read_to_string(&codex_path)
+            .await
+            .expect("codex config")
+            .parse()
+            .expect("codex TOML");
+        assert_eq!(document["model"].as_str(), Some("gpt-5.6-sol"));
+        assert_eq!(
+            document["model_providers"]["ai-switch"]["base_url"].as_str(),
+            Some("https://127.0.0.1:19528/v1")
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_stale_check_detects_a_default_model_missing_from_the_catalog() {
+        let fixture = ServiceFixture::new().await;
+        seed_codex_pool_member(&fixture.pool, "gpt-5.6-sol").await;
+        let clients = vec!["codex".to_string()];
+        RouteConfigService::write_configs_for_home(
+            &fixture.paths,
+            &fixture.pool,
+            &fixture.runtime,
+            BASE_URL,
+            "codex",
+            &fixture.home,
+            Some(&clients),
+        )
+        .await
+        .expect("initial write");
+
+        let codex_path = fixture.home.join(".codex/config.toml");
+        let current = tokio::fs::read_to_string(&codex_path)
+            .await
+            .expect("codex config");
+        let stale = current.replace("model = \"gpt-5.6-sol\"", "model = \"gpt-5.5\"");
+        assert_ne!(stale, current);
+        tokio::fs::write(&codex_path, stale)
+            .await
+            .expect("make model stale");
+
+        assert!(
+            RouteConfigService::config_write_is_stale_for_home(
+                &fixture.paths,
+                &fixture.pool,
+                BASE_URL,
+                "codex",
+                &fixture.home,
+                Some(&clients),
+            )
+            .await
+        );
     }
 
     #[tokio::test]
