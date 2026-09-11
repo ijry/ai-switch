@@ -3496,3 +3496,172 @@ summary:focus-visible {
     animation-play-state: paused !important;
   }
 }
+
+/* -------------------------------------------------------------------------- */
+/* Dark theme                                                                  */
+/* -------------------------------------------------------------------------- */
+/* The app shell is styled with light "stone" utilities throughout. Rather than
+   adding `dark:` variants to every screen, `html.dark` (toggled by
+   src/lib/theme.ts) remaps the most common surfaces, borders, and text tones.
+   The Vibe screen manages its own themes/skins and is untouched. */
+.dark {
+  color-scheme: dark;
+  color: #e7e5e4;
+}
+
+.dark body {
+  background:
+    radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.05), transparent 34rem),
+    linear-gradient(135deg, #1c1917 0%, #171412 48%, #131110 100%);
+}
+
+/* Surfaces. */
+.dark .bg-white,
+.dark .bg-white\/82,
+.dark .bg-white\/80,
+.dark .bg-white\/70 {
+  background-color: #221f1c;
+}
+
+.dark .bg-white\/60,
+.dark .bg-white\/56,
+.dark .bg-white\/50 {
+  background-color: rgba(34, 31, 28, 0.72);
+}
+
+.dark .bg-stone-50,
+.dark .bg-stone-50\/70 {
+  background-color: #292523;
+}
+
+.dark .bg-stone-100 {
+  background-color: #191614;
+}
+
+.dark .bg-stone-200 {
+  background-color: #34302c;
+}
+
+.dark .bg-stone-900 {
+  background-color: #0f0d0c;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+.dark .bg-stone-950 {
+  background-color: #0c0a09;
+}
+
+/* Borders and rings. */
+.dark .border-stone-100 {
+  border-color: #2b2724;
+}
+
+.dark .border-stone-200 {
+  border-color: #38332f;
+}
+
+.dark .border-stone-300,
+.dark .border-stone-400 {
+  border-color: #4a453f;
+}
+
+.dark .border-white\/70,
+.dark .border-white\/80 {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.dark .ring-stone-200,
+.dark .ring-stone-300 {
+  --tw-ring-color: #3d3833;
+}
+
+/* Text tones. */
+.dark .text-stone-950,
+.dark .text-stone-900 {
+  color: #f2f0ee;
+}
+
+.dark .text-stone-800 {
+  color: #dedbd8;
+}
+
+.dark .text-stone-700 {
+  color: #cbc7c3;
+}
+
+.dark .text-stone-600 {
+  color: #a8a29e;
+}
+
+.dark .text-stone-500 {
+  color: #8f8a84;
+}
+
+.dark .text-stone-400 {
+  color: #736d66;
+}
+
+/* Hover states. */
+.dark .hover\:bg-white:hover,
+.dark .hover\:bg-white\/60:hover,
+.dark .hover\:bg-white\/70:hover,
+.dark .hover\:bg-stone-50:hover,
+.dark .hover\:bg-stone-100:hover {
+  background-color: #2c2825;
+}
+
+.dark .hover\:bg-stone-800:hover {
+  background-color: #1d1a17;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.dark .hover\:border-stone-300:hover,
+.dark .hover\:border-stone-400:hover {
+  border-color: #55504a;
+}
+
+.dark .hover\:text-stone-950:hover,
+.dark .hover\:text-stone-900:hover {
+  color: #f2f0ee;
+}
+
+.dark .hover\:text-stone-700:hover {
+  color: #cbc7c3;
+}
+
+/* Sidebar: swap the light gradient and decorative overlay for a dark one. */
+.dark .app-sidebar {
+  background: linear-gradient(
+    135deg,
+    rgba(28, 25, 23, 0.94),
+    rgba(23, 21, 19, 0.9) 48%,
+    rgba(25, 22, 19, 0.88)
+  );
+}
+
+.dark .app-sidebar > .pointer-events-none.absolute.inset-0 {
+  background:
+    radial-gradient(circle at 20% 15%, rgba(16, 185, 129, 0.1), transparent 34%),
+    radial-gradient(circle at 88% 8%, rgba(245, 158, 11, 0.08), transparent 30%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
+}
+
+/* Form controls: styles.css hardcodes light borders/backgrounds outside of
+   utilities, so mirror those rules for dark. */
+.dark :where(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+  border-color: #3d3833;
+}
+
+.dark input:not([type="checkbox"]):not([type="radio"])[class*="border-stone-200"],
+.dark select[class*="border-stone-200"],
+.dark textarea[class*="border-stone-200"] {
+  border-color: #3d3833;
+}
+
+.dark .accounts-screen input:not([type="checkbox"]):not([type="radio"]):not([class*="border"]),
+.dark .accounts-screen select:not([class*="border"]),
+.dark .accounts-screen textarea:not([class*="border"]) {
+  border-color: #3d3833;
+  background: #262220;
+}
+

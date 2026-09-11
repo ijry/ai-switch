@@ -234,7 +234,7 @@ describe("SettingsScreen", () => {
     expect(onAgentVisibilityChange).toHaveBeenCalledWith("claude", false);
   });
 
-  it("loads settings and saves a toggled theme value", async () => {
+  it("loads settings and saves a selected theme value", async () => {
     vi.mocked(getSettings).mockResolvedValue(settingsFixture);
     vi.mocked(saveSettings).mockImplementation(async (settings) => settings);
 
@@ -272,12 +272,13 @@ describe("SettingsScreen", () => {
     expect(await screen.findByRole("heading", { name: "共享服务端口" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /使用 OAuth 登录/ })).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: "切换主题值" }));
+    const themeSelect = screen.getByRole("combobox", { name: "主题外观" });
+    expect(themeSelect).toHaveValue(settingsFixture.theme === "dark" || settingsFixture.theme === "light" ? settingsFixture.theme : "system");
+    await userEvent.selectOptions(themeSelect, "dark");
 
     await waitFor(() => expect(saveSettings).toHaveBeenCalled());
     expect(vi.mocked(saveSettings).mock.calls[0][0]).toEqual({
       ...settingsFixture,
-      language: "zh-CN",
       theme: "dark",
     });
     expect(await screen.findByText("设置已保存。")).toBeInTheDocument();

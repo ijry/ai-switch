@@ -12,6 +12,7 @@ import {
 import type { ComponentType } from "react";
 import { getSettings, saveSettings } from "../lib/api/client";
 import { normalizeLanguage, supportedLanguages, useI18n, type Language } from "../lib/i18n";
+import { normalizeThemePreference, type ThemePreference } from "../lib/theme";
 import { AutostartSettings } from "../components/settings/autostart-settings";
 import { RouteProxyHttpsSettings } from "../components/settings/route-proxy-https-settings";
 import { NotificationSettings } from "../components/settings/notification-settings";
@@ -111,6 +112,15 @@ const agentLabelKeys = {
   openclaw: "nav.agent.openclaw",
   hermes: "nav.agent.hermes",
 } as const;
+
+const themeOptions: {
+  value: ThemePreference;
+  labelKey: "settings.theme.system" | "settings.theme.light" | "settings.theme.dark";
+}[] = [
+  { value: "system", labelKey: "settings.theme.system" },
+  { value: "light", labelKey: "settings.theme.light" },
+  { value: "dark", labelKey: "settings.theme.dark" },
+];
 
 export function SettingsScreen({
   onOpenFeature,
@@ -334,19 +344,24 @@ export function SettingsScreen({
             ))}
           </select>
         </label>
-        <button
-          type="button"
-          className="w-fit rounded-xl bg-stone-900 px-3 py-2 text-[13px] font-semibold text-white motion-control duration-150 hover:bg-stone-800"
-          onClick={() =>
-            saveMutation.mutate({
-              ...settings,
-              language,
-              theme: settings.theme === "dark" ? "system" : "dark",
-            })
-          }
-        >
-          {t("settings.themeToggle")}
-        </button>
+        <label className="flex max-w-sm flex-col gap-1.5 text-[12px] font-semibold text-stone-600">
+          <span>{t("settings.theme")}</span>
+          <select
+            aria-label={t("settings.theme")}
+            className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-medium text-stone-900 shadow-sm outline-none motion-control focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+            disabled={saveMutation.isPending}
+            onChange={(event) =>
+              saveMutation.mutate({ ...settings, theme: event.target.value })
+            }
+            value={normalizeThemePreference(settings.theme)}
+          >
+            {themeOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {t(option.labelKey)}
+              </option>
+            ))}
+          </select>
+        </label>
         {saveMutation.data && <p className="text-[13px] font-medium text-emerald-700">{t("settings.saved")}</p>}
         {saveMutation.error && <p className="text-[13px] font-medium text-red-700">{t("settings.saveError")}</p>}
       </div>

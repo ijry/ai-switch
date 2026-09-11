@@ -18,6 +18,7 @@ import {
 } from "./lib/agentVisibility";
 import { WebAuthGate } from "./components/auth/WebAuthGate";
 import { ErrorBoundary } from "./components/ui/ErrorBoundary";
+import { ThemeSync } from "./components/theme/ThemeSync";
 import { I18nProvider } from "./lib/i18n";
 import { createQueryClient } from "./lib/query/queryClient";
 import { isDesktop, isLocalWebDevRuntime } from "./lib/transport";
@@ -202,6 +203,7 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <I18nProvider>
+        <ThemeSync />
         <MotionProvider>
         <DeepLinkImportDialog onImported={handleDeepLinkImported} />
         <AutoUpdatePrompt />
