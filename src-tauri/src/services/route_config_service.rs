@@ -576,6 +576,7 @@ impl RouteConfigService {
                     } else {
                         Vec::new()
                     },
+                    supports_image_input: model.supports_image_input,
                 })
                 .collect(),
         )

@@ -105,7 +105,14 @@ impl ZCodeAdapter {
                             "context": model.context_window,
                             "output": model.max_output_tokens,
                         },
-                        "modalities": { "input": ["text"], "output": ["text"] },
+                        "modalities": {
+                            "input": if model.supports_image_input {
+                                json!(["text", "image"])
+                            } else {
+                                json!(["text"])
+                            },
+                            "output": ["text"],
+                        },
                     }),
                 )
             })
@@ -288,6 +295,7 @@ mod tests {
                     context_window: 200_000,
                     max_output_tokens: 128_000,
                     reasoning_levels: Vec::new(),
+                    supports_image_input: true,
                 })
                 .collect(),
         }
@@ -311,6 +319,34 @@ mod tests {
             .expect("render");
         serde_json::from_slice(&bytes).expect("valid JSON")
     }
+    #[test]
+    fn model_modalities_write_the_configured_image_input_support() {
+        let mut with_image = input(&["deepseek-v4.1"]);
+        with_image.client_models[0].supports_image_input = true;
+        let mut without_image = input(&["deepseek-v4-flash"]);
+        without_image.client_models[0].supports_image_input = false;
+
+        let image_bytes = codex_adapter()
+            .render(Path::new("config.json"), None, &with_image)
+            .expect("render");
+        let image_json: Value = serde_json::from_slice(&image_bytes).expect("valid JSON");
+        assert_eq!(
+            image_json["provider"]["ai-switch-codex"]["models"]["deepseek-v4.1"]["modalities"]
+                ["input"],
+            json!(["text", "image"])
+        );
+
+        let text_bytes = codex_adapter()
+            .render(Path::new("config.json"), None, &without_image)
+            .expect("render");
+        let text_json: Value = serde_json::from_slice(&text_bytes).expect("valid JSON");
+        assert_eq!(
+            text_json["provider"]["ai-switch-codex"]["models"]["deepseek-v4-flash"]["modalities"]
+                ["input"],
+            json!(["text"])
+        );
+    }
+
     #[test]
     fn adapter_identity_declares_zcode_as_a_restart_required_non_native_client() {
         for adapter in [codex_adapter(), claude_adapter()] {
@@ -369,7 +405,7 @@ mod tests {
         );
         assert_eq!(
             entry["models"]["gpt-5.6-sol"]["modalities"],
-            json!({ "input": ["text"], "output": ["text"] })
+            json!({ "input": ["text", "image"], "output": ["text"] })
         );
 
         // apiFormat is recomputed from kind, so writing it would be misleading.

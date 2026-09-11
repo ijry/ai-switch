@@ -115,7 +115,7 @@ impl QoderCliAdapter {
                     "displayName": format!("{} {}", self.display_name, model.id),
                     "contextWindow": model.context_window,
                     "maxOutputTokens": model.max_output_tokens,
-                    "capabilities": { "tools": true, "vision": true },
+                    "capabilities": { "tools": true, "vision": model.supports_image_input },
                 })
             })
             .collect()
@@ -305,6 +305,7 @@ mod tests {
                     context_window: 200_000,
                     max_output_tokens: 128_000,
                     reasoning_levels: Vec::new(),
+                    supports_image_input: true,
                 })
                 .collect(),
         }
@@ -328,6 +329,25 @@ mod tests {
             .expect("render");
         serde_json::from_slice(&bytes).expect("valid JSON")
     }
+    #[test]
+    fn model_capabilities_write_the_configured_image_input_support() {
+        let mut with_image = input(&["deepseek-v4.1"]);
+        with_image.client_models[0].supports_image_input = true;
+        let mut without_image = input(&["deepseek-v4-flash"]);
+        without_image.client_models[0].supports_image_input = false;
+
+        for (input, expected) in [(with_image, true), (without_image, false)] {
+            let bytes = codex_adapter()
+                .render(Path::new("settings.json"), None, &input)
+                .expect("render");
+            let json: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+            assert_eq!(
+                json["providers"]["ai-switch-codex"]["models"][0]["capabilities"]["vision"],
+                expected
+            );
+        }
+    }
+
     #[test]
     fn adapter_identity_declares_qoder_as_a_restart_required_non_native_client() {
         for adapter in [codex_adapter(), claude_adapter()] {
