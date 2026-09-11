@@ -41,6 +41,15 @@ pub struct AppSettings {
     /// a JSON object string. Absent means no notifications configured.
     #[serde(default)]
     pub notification_config_json: Option<String>,
+    /// Whether outbound requests from this process should go through the
+    /// user-configured HTTP proxy. Settings files written before this field
+    /// existed default to off, leaving externally-set proxy env vars untouched.
+    #[serde(default)]
+    pub proxy_enabled: bool,
+    /// Proxy endpoint applied to the process environment while
+    /// `proxy_enabled` is on, e.g. `http://127.0.0.1:7890`.
+    #[serde(default)]
+    pub proxy_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,6 +68,8 @@ pub struct AppSettingsView {
     pub config_write_clients_json: Option<String>,
     pub deepseek_harness_config_path: Option<String>,
     pub notification_config_json: Option<String>,
+    pub proxy_enabled: bool,
+    pub proxy_url: Option<String>,
 }
 
 impl AppSettingsView {
@@ -78,6 +89,8 @@ impl AppSettingsView {
             config_write_clients_json: settings.config_write_clients_json,
             deepseek_harness_config_path: settings.deepseek_harness_config_path,
             notification_config_json: settings.notification_config_json,
+            proxy_enabled: settings.proxy_enabled,
+            proxy_url: settings.proxy_url,
         }
     }
 }
@@ -98,6 +111,8 @@ impl AppSettings {
             config_write_clients_json: None,
             deepseek_harness_config_path: None,
             notification_config_json: None,
+            proxy_enabled: false,
+            proxy_url: None,
         }
     }
 }
@@ -120,5 +135,7 @@ mod tests {
         let settings: AppSettings = serde_json::from_str(json).expect("parse legacy settings");
         assert!(settings.close_to_tray);
         assert!(!settings.image_generation_enabled);
+        assert!(!settings.proxy_enabled);
+        assert!(settings.proxy_url.is_none());
     }
 }

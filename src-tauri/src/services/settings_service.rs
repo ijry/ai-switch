@@ -67,6 +67,8 @@ mod tests {
             config_write_clients_json: None,
             deepseek_harness_config_path: Some("/custom/dsh/settings.yaml".to_string()),
             notification_config_json: None,
+            proxy_enabled: true,
+            proxy_url: Some("http://127.0.0.1:7890".to_string()),
         };
 
         SettingsService::save(&paths, &settings)
@@ -88,6 +90,11 @@ mod tests {
         assert_eq!(
             loaded.deepseek_harness_config_path.as_deref(),
             Some("/custom/dsh/settings.yaml")
+        );
+        assert!(loaded.proxy_enabled);
+        assert_eq!(
+            loaded.proxy_url.as_deref(),
+            Some("http://127.0.0.1:7890")
         );
     }
 }

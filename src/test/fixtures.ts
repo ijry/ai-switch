@@ -44,4 +44,6 @@ export const settingsFixture: AppSettings = {
   close_to_tray: true,
   image_generation_enabled: false,
   claude_client_config_json: null,
+  proxy_enabled: false,
+  proxy_url: null,
 };

@@ -284,6 +284,40 @@ describe("SettingsScreen", () => {
     expect(await screen.findByText("设置已保存。")).toBeInTheDocument();
   });
 
+  it("validates and saves proxy settings", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settingsFixture);
+    vi.mocked(saveSettings).mockImplementation(async (settings) => settings);
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <I18nProvider initialLanguage="zh-CN">
+          <SettingsScreen />
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+
+    const enableToggle = await screen.findByRole("checkbox", { name: "启用代理" });
+    const addressInput = screen.getByRole("textbox", { name: "代理地址" });
+
+    // Enabling without an address is rejected client-side and nothing saves.
+    await userEvent.click(enableToggle);
+    expect(await screen.findByText("启用代理时必须填写代理地址。")).toBeInTheDocument();
+    expect(saveSettings).not.toHaveBeenCalled();
+
+    // A filled address enables the proxy and persists the trimmed URL.
+    await userEvent.type(addressInput, "http://127.0.0.1:7890 ");
+    await userEvent.click(enableToggle);
+    await userEvent.tab();
+
+    await waitFor(() => expect(saveSettings).toHaveBeenCalled());
+    expect(vi.mocked(saveSettings).mock.calls.at(-1)![0]).toEqual({
+      ...settingsFixture,
+      proxy_enabled: true,
+      proxy_url: "http://127.0.0.1:7890",
+    });
+    expect(await screen.findByText("设置已保存。")).toBeInTheDocument();
+  });
+
   it("saves language changes and updates the selector", async () => {
     const englishSettings = { ...settingsFixture, language: "en" };
     vi.mocked(getSettings).mockResolvedValue(englishSettings);

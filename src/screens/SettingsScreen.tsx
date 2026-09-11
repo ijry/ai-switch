@@ -17,8 +17,7 @@ import { AutostartSettings } from "../components/settings/autostart-settings";
 import { RouteProxyHttpsSettings } from "../components/settings/route-proxy-https-settings";
 import { NotificationSettings } from "../components/settings/notification-settings";
 import { WebServiceSettings } from "../components/settings/web-service-settings";
-import { useState } from "react";
-import { MotionPresence } from "../components/motion/MotionPrimitives";
+import { useState } from "react";import { MotionPresence } from "../components/motion/MotionPrimitives";
 import {
   agentPlatforms,
   createDefaultAgentVisibility,
@@ -133,6 +132,11 @@ export function SettingsScreen({
   const { language, setLanguage, t } = useI18n();
   const [activeSection, setActiveSection] = useState<"webService" | "https" | "notification" | "plugins">("webService");
   const [localAgentVisibility, setLocalAgentVisibility] = useState(createDefaultAgentVisibility);
+  // Proxy drafts as `null` = "follow the loaded settings"; they overlay the
+  // settings while the user edits. Hooks stay above the loading early-returns.
+  const [proxyEnabledDraft, setProxyEnabledDraft] = useState<boolean | null>(null);
+  const [proxyUrlDraft, setProxyUrlDraft] = useState<string | null>(null);
+  const [proxyError, setProxyError] = useState<string | null>(null);
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const saveMutation = useMutation({
     mutationFn: saveSettings,
@@ -162,6 +166,35 @@ export function SettingsScreen({
   const handleLanguageChange = (nextLanguage: Language) => {
     setLanguage(nextLanguage);
     saveMutation.mutate({ ...settings, language: nextLanguage });
+  };
+
+  // Proxy fields: drafts overlay the loaded settings so the card edits smoothly
+  // and resets cleanly if settings reload underneath.
+  const PROXY_EXAMPLE = "http://127.0.0.1:7890";
+  const proxyEnabled = proxyEnabledDraft ?? settings.proxy_enabled;
+  const proxyUrl = proxyUrlDraft ?? settings.proxy_url ?? "";
+
+  const saveProxy = (nextEnabled: boolean, nextUrl: string) => {
+    if (nextEnabled && !nextUrl.trim()) {
+      setProxyError(t("settings.proxy.required"));
+      return;
+    }
+    setProxyError(null);
+    saveMutation.mutate({
+      ...settings,
+      proxy_enabled: nextEnabled,
+      proxy_url: nextUrl.trim() || null,
+    });
+  };
+
+  const handleProxyEnabledChange = (next: boolean) => {
+    setProxyEnabledDraft(next);
+    if (next && !proxyUrl.trim()) {
+      setProxyError(t("settings.proxy.required"));
+      return;
+    }
+    setProxyError(null);
+    saveProxy(next, proxyUrl);
   };
 
   return (
@@ -254,6 +287,52 @@ export function SettingsScreen({
           </motion.div>
         )}
       </MotionPresence>
+
+      <div className="space-y-3 rounded-2xl border border-stone-200 bg-white/82 p-4 shadow-sm">
+        <h2 className="text-[15px] font-semibold text-stone-950">{t("settings.proxy.title")}</h2>
+        <p className="text-[12px] text-stone-500">{t("settings.proxy.subtitle")}</p>
+        <label className="flex max-w-xl items-start gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-[12px] font-semibold text-stone-700">
+          <input
+            aria-label={t("settings.proxy.enable")}
+            checked={proxyEnabled}
+            className="mt-0.5"
+            disabled={saveMutation.isPending}
+            onChange={(event) => handleProxyEnabledChange(event.target.checked)}
+            type="checkbox"
+          />
+          <span>{t("settings.proxy.enable")}</span>
+        </label>
+        <label className="flex max-w-sm flex-col gap-1.5 text-[12px] font-semibold text-stone-600">
+          <span>{t("settings.proxy.address")}</span>
+          <input
+            aria-label={t("settings.proxy.address")}
+            className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] font-medium text-stone-900 shadow-sm outline-none motion-control focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+            disabled={saveMutation.isPending}
+            onBlur={() => {
+              if (proxyEnabled && !proxyUrl.trim()) {
+                setProxyError(t("settings.proxy.required"));
+                return;
+              }
+              setProxyError(null);
+              if (proxyUrl.trim() !== (settings.proxy_url ?? "")) {
+                saveProxy(proxyEnabled, proxyUrl);
+              }
+            }}
+            onChange={(event) => {
+              setProxyUrlDraft(event.target.value);
+              if (event.target.value.trim()) setProxyError(null);
+            }}
+            placeholder={PROXY_EXAMPLE}
+            type="text"
+            value={proxyUrl}
+          />
+          {proxyError ? (
+            <span className="text-[11px] font-medium text-red-700">{proxyError}</span>
+          ) : (
+            <span className="text-[11px] font-medium text-stone-500">{t("settings.proxy.hint")}</span>
+          )}
+        </label>
+      </div>
 
       <div className="space-y-3 rounded-2xl border border-stone-200 bg-white/82 p-4 shadow-sm">
         <h2 className="text-[15px] font-semibold text-stone-950">{t("settings.app.title")}</h2>

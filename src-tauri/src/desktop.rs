@@ -308,11 +308,22 @@ pub fn run() {
     // Read once here so the close handler, which runs on the main thread and
     // cannot await, has an answer from the very first click. Unreadable settings
     // fall back to the tray, which is what the app did before this was an option.
+    let startup_settings = tauri::async_runtime::block_on(
+        services::settings_service::SettingsService::load(&paths),
+    )
+    .ok();
     let close_to_tray = CloseToTrayRuntime::new(
-        tauri::async_runtime::block_on(services::settings_service::SettingsService::load(&paths))
+        startup_settings
+            .as_ref()
             .map(|settings| settings.close_to_tray)
             .unwrap_or(true),
     );
+    // Apply the user's proxy before any HTTP client is built, so reqwest picks
+    // it up for the process's lifetime. A disabled setting leaves externally
+    // set proxy env vars untouched.
+    if let Some(settings) = &startup_settings {
+        services::proxy_service::apply_startup(settings);
+    }
     let mut builder = tauri::Builder::default();
     let tray_quit_requested = Arc::new(AtomicBool::new(false));
     let close_tray_quit_requested = Arc::clone(&tray_quit_requested);

@@ -1112,6 +1112,16 @@ export type AppSettings = {
   config_write_clients_json?: string | null;
   deepseek_harness_config_path?: string | null;
   notification_config_json?: string | null;
+  /**
+   * Whether outbound requests from the app process go through the configured
+   * HTTP proxy. Off leaves externally-set proxy env vars untouched.
+   */
+  proxy_enabled: boolean;
+  /**
+   * Proxy endpoint applied to the process environment while enabled,
+   * e.g. `http://127.0.0.1:7890`.
+   */
+  proxy_url?: string | null;
 };
 
 export type AppSettingsView = AppSettings & {
