@@ -56,6 +56,7 @@ pub struct ClientModel {
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub reasoning_levels: Vec<String>,
+    pub supports_image_input: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -787,12 +788,14 @@ api_key = "legacy-key"
                     context_window: 200_000,
                     max_output_tokens: 128_000,
                     reasoning_levels: Vec::new(),
+                    supports_image_input: true,
                 },
                 ClientModel {
                     id: "claude-sonnet-alias[1m]".to_string(),
                     context_window: 1_000_000,
                     max_output_tokens: 128_000,
                     reasoning_levels: Vec::new(),
+                    supports_image_input: true,
                 },
             ],
             ..input()
@@ -818,12 +821,14 @@ api_key = "legacy-key"
                     context_window: 200_000,
                     max_output_tokens: 128_000,
                     reasoning_levels: Vec::new(),
+                    supports_image_input: true,
                 },
                 ClientModel {
                     id: "gpt-5.6-terra".to_string(),
                     context_window: 200_000,
                     max_output_tokens: 128_000,
                     reasoning_levels: Vec::new(),
+                    supports_image_input: true,
                 },
             ],
             ..input()
@@ -852,6 +857,7 @@ api_key = "legacy-key"
                 context_window: 200_000,
                 max_output_tokens: 128_000,
                 reasoning_levels: Vec::new(),
+                supports_image_input: true,
             }],
             ..input()
         };

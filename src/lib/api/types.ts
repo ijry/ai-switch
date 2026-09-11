@@ -167,6 +167,7 @@ export type ModelMapping = {
   from: string;
   to: string;
   capabilities?: string[] | null;
+  supports_image_input?: boolean | null;
   label?: string | null;
   supports_1m?: boolean | null;
   context_window?: number | null;

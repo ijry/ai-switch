@@ -374,6 +374,10 @@ pub struct ModelMapping {
     pub to: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
+    /// `None` follows the shared built-in model table; `Some(true/false)` is the
+    /// user's explicit override and must survive a reload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_image_input: Option<bool>,
     #[serde(default)]
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

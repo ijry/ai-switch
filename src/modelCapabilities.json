@@ -1,0 +1,195 @@
+{
+  "unknownDefault": false,
+  "rules": [
+    {
+      "match": "exact",
+      "pattern": "gpt",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "gpt-",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "chatgpt",
+      "supportsImageInput": true
+    },
+    {
+      "match": "exact",
+      "pattern": "o1",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "o1-",
+      "supportsImageInput": true
+    },
+    {
+      "match": "exact",
+      "pattern": "o3",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "o3-",
+      "supportsImageInput": true
+    },
+    {
+      "match": "exact",
+      "pattern": "o4",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "o4-",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "deepseek-v4-flash",
+      "supportsImageInput": false
+    },
+    {
+      "match": "prefix",
+      "pattern": "deepseek-v4.1",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "deepseek",
+      "supportsImageInput": false
+    },
+    {
+      "match": "prefix",
+      "pattern": "glm-5.3",
+      "supportsImageInput": false
+    },
+    {
+      "match": "prefix",
+      "pattern": "glm-5.2-flash",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "glm-4v",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "glm-5v",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "glm",
+      "supportsImageInput": false
+    },
+    {
+      "match": "contains",
+      "pattern": "vision",
+      "supportsImageInput": true
+    },
+    {
+      "match": "contains",
+      "pattern": "-vl",
+      "supportsImageInput": true
+    },
+    {
+      "match": "exact",
+      "pattern": "qvq",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "qvq-",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "claude",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "gemini",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "grok",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "pixtral",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "kimi-k2",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "kimi-k3",
+      "supportsImageInput": true
+    },
+    {
+      "match": "prefix",
+      "pattern": "qwen",
+      "supportsImageInput": false
+    },
+    {
+      "match": "prefix",
+      "pattern": "doubao",
+      "supportsImageInput": false
+    },
+    {
+      "match": "prefix",
+      "pattern": "kimi",
+      "supportsImageInput": false
+    },
+    {
+      "match": "prefix",
+      "pattern": "moonshot",
+      "supportsImageInput": false
+    },
+    {
+      "match": "prefix",
+      "pattern": "mistral",
+      "supportsImageInput": false
+    },
+    {
+      "match": "prefix",
+      "pattern": "hunyuan",
+      "supportsImageInput": false
+    },
+    {
+      "match": "prefix",
+      "pattern": "ernie",
+      "supportsImageInput": false
+    },
+    {
+      "match": "prefix",
+      "pattern": "minimax",
+      "supportsImageInput": false
+    },
+    {
+      "match": "prefix",
+      "pattern": "abab",
+      "supportsImageInput": false
+    },
+    {
+      "match": "prefix",
+      "pattern": "llama",
+      "supportsImageInput": false
+    },
+    {
+      "match": "prefix",
+      "pattern": "yi",
+      "supportsImageInput": false
+    }
+  ]
+}

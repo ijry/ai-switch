@@ -95,6 +95,7 @@ import {
   CODEX_CONTEXT_WINDOW_OPTIONS,
   CODEX_REASONING_LEVEL_OPTIONS,
 } from "../lib/codexModelCapability";
+import { defaultSupportsImageInput } from "../lib/modelImageInput";
 import {
   createBatch,
   copyRouteCredential,
@@ -782,6 +783,8 @@ function isClaudeTemplateSource(value: string) {
 }
 
 function buildOneClickMappings(models: FetchedRouteModel[]) {
+  // `supports_image_input` stays absent so the row follows the built-in model
+  // table until the user explicitly overrides it.
   return models
     .filter((model) => model.id.trim())
     .map((model) => ({ from: model.id, to: model.id }));
@@ -805,12 +808,16 @@ function parseModelMappingsFromConfig(configJson: string): ModelMapping[] {
         const reasoningLevels = normalizeCodexReasoningLevels(
           Array.isArray(item.reasoning_levels) ? item.reasoning_levels : null,
         );
+        const supportsImageInput = item.supports_image_input;
         return {
           from: item.from,
           to: item.to,
           capabilities: Array.isArray(item.capabilities)
             ? item.capabilities.filter((value): value is string => typeof value === "string")
             : null,
+          ...(supportsImageInput === true || supportsImageInput === false
+            ? { supports_image_input: supportsImageInput }
+            : {}),
           label: item.label ?? null,
           supports_1m:
             item.supports_1m === true || (item as { supports1m?: unknown }).supports1m === true
@@ -857,6 +864,9 @@ function normalizeModelMappings(mappings: ModelMapping[], platform: PlatformKey)
       };
     }
     const normalizedMapping: ModelMapping = label ? { from, to, label } : { from, to };
+    if (mapping.supports_image_input === true || mapping.supports_image_input === false) {
+      normalizedMapping.supports_image_input = mapping.supports_image_input;
+    }
     const capabilities = mapping.capabilities
       ?.map((capability) => capability.trim())
       .filter((capability, index, values) => capability && values.indexOf(capability) === index);
@@ -1713,12 +1723,17 @@ function ImageMappingCapabilityFields({
   index,
   mapping,
   onPatch,
+  showImageGeneration,
 }: {
   index: number;
   mapping: ModelMapping;
   onPatch: (patch: Partial<ModelMapping>) => void;
+  showImageGeneration: boolean;
 }) {
   const capabilities = mapping.capabilities ?? [];
+  const supportsImageInput =
+    mapping.supports_image_input ??
+    defaultSupportsImageInput(mapping.to.trim() || mapping.from.trim());
   const toggle = (capability: "image.generate" | "image.edit", checked: boolean) => {
     const next = checked
       ? Array.from(new Set([...capabilities, capability]))
@@ -1728,30 +1743,64 @@ function ImageMappingCapabilityFields({
 
   return (
     <div className="flex flex-wrap items-center gap-2 border-t border-stone-100 pt-2">
-      <span className="text-[11px] font-semibold text-stone-500">图片能力</span>
-      {([
-        ["image.generate", "文生图"],
-        ["image.edit", "图片编辑"],
-      ] as const).map(([capability, label]) => (
-        <label
-          className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px] font-semibold motion-control ${
-            capabilities.includes(capability)
-              ? "border-emerald-300 bg-emerald-100 text-emerald-900"
-              : "border-stone-200 bg-white text-stone-500 hover:bg-stone-50"
-          }`}
-          key={capability}
-        >
-          <input
-            aria-label={`图片能力 ${label} ${index + 1}`}
-            checked={capabilities.includes(capability)}
-            className="sr-only"
-            onChange={(event) => toggle(capability, event.target.checked)}
-            type="checkbox"
-          />
-          {label}
-        </label>
-      ))}
-      <span className="text-[11px] font-medium text-stone-400">插件和 SaaS 只选用显式声明能力的模型</span>
+      <span className="text-[11px] font-semibold text-stone-500">模型能力</span>
+      <label className="inline-flex cursor-default items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-100 px-2 py-1 text-[11px] font-semibold text-emerald-900">
+        <input
+          aria-label={`模型能力 文本 ${index + 1}`}
+          checked
+          className="sr-only"
+          disabled
+          type="checkbox"
+        />
+        文本
+      </label>
+      <label
+        className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px] font-semibold motion-control ${
+          supportsImageInput
+            ? "border-emerald-300 bg-emerald-100 text-emerald-900"
+            : "border-stone-200 bg-white text-stone-500 hover:bg-stone-50"
+        }`}
+      >
+        <input
+          aria-label={`模型能力 图片输入 ${index + 1}`}
+          checked={supportsImageInput}
+          className="sr-only"
+          onChange={(event) =>
+            onPatch({ supports_image_input: event.target.checked })
+          }
+          type="checkbox"
+        />
+        图片输入
+      </label>
+      {showImageGeneration
+        ? (
+            ([
+              ["image.generate", "图片生成"],
+              ["image.edit", "图片编辑"],
+            ] as const).map(([capability, label]) => (
+              <label
+                className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px] font-semibold motion-control ${
+                  capabilities.includes(capability)
+                    ? "border-emerald-300 bg-emerald-100 text-emerald-900"
+                    : "border-stone-200 bg-white text-stone-500 hover:bg-stone-50"
+                }`}
+                key={capability}
+              >
+                <input
+                  aria-label={`模型能力 ${label} ${index + 1}`}
+                  checked={capabilities.includes(capability)}
+                  className="sr-only"
+                  onChange={(event) => toggle(capability, event.target.checked)}
+                  type="checkbox"
+                />
+                {label}
+              </label>
+            ))
+          )
+        : null}
+      <span className="text-[11px] font-medium text-stone-400">
+        文本始终开启；图片输入按内置模型表自动匹配，可手动覆盖。
+      </span>
     </div>
   );
 }
@@ -2101,13 +2150,12 @@ function ModelMappingsEditor({
               return (
                 <div className="grid gap-2 rounded-lg border border-stone-200 bg-white p-2" key={rowKey}>
                   {rowControls}
-                  {platform === "gemini" ? (
-                    <ImageMappingCapabilityFields
-                      index={index}
-                      mapping={mapping}
-                      onPatch={(patch) => updateRow(index, patch)}
-                    />
-                  ) : null}
+                  <ImageMappingCapabilityFields
+                    index={index}
+                    mapping={mapping}
+                    onPatch={(patch) => updateRow(index, patch)}
+                    showImageGeneration={platform === "gemini"}
+                  />
                 </div>
               );
             }
@@ -2126,6 +2174,7 @@ function ModelMappingsEditor({
                   index={index}
                   mapping={mapping}
                   onPatch={(patch) => updateRow(index, patch)}
+                  showImageGeneration
                 />
               </div>
             );

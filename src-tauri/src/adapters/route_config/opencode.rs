@@ -225,6 +225,7 @@ mod tests {
                     context_window: 200_000,
                     max_output_tokens: 128_000,
                     reasoning_levels: Vec::new(),
+                    supports_image_input: true,
                 })
                 .collect(),
         }

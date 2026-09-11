@@ -161,7 +161,7 @@ impl WorkBuddyAdapter {
             "maxInputTokens": model.context_window,
             "maxOutputTokens": model.max_output_tokens,
             "supportsToolCall": true,
-            "supportsImages": true,
+            "supportsImages": model.supports_image_input,
             "aiSwitch": { "managed": true, "platform": self.platform.as_str() },
         })
     }
@@ -333,6 +333,7 @@ mod tests {
                     context_window: 200_000,
                     max_output_tokens: 128_000,
                     reasoning_levels: Vec::new(),
+                    supports_image_input: true,
                 })
                 .collect(),
         }
@@ -365,6 +366,22 @@ mod tests {
             .map(|entry| entry["id"].as_str().unwrap_or_default().to_string())
             .collect()
     }
+    #[test]
+    fn model_records_write_the_configured_image_input_support() {
+        let mut with_image = input(&["deepseek-v4.1"]);
+        with_image.client_models[0].supports_image_input = true;
+        let mut without_image = input(&["deepseek-v4-flash"]);
+        without_image.client_models[0].supports_image_input = false;
+
+        for (input, expected) in [(with_image, true), (without_image, false)] {
+            let bytes = codex_adapter()
+                .render(Path::new("models.json"), None, &input)
+                .expect("render");
+            let json: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+            assert_eq!(json["models"][0]["supportsImages"], expected);
+        }
+    }
+
     #[test]
     fn adapter_identity_declares_workbuddy_as_a_restart_required_non_native_client() {
         for adapter in [codex_adapter(), claude_adapter()] {

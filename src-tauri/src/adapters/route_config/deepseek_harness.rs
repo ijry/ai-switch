@@ -388,6 +388,7 @@ mod tests {
                     context_window: 200_000,
                     max_output_tokens: 128_000,
                     reasoning_levels: Vec::new(),
+                    supports_image_input: true,
                 })
                 .collect(),
         }
@@ -479,12 +480,14 @@ mod tests {
                 context_window: 1_000_000,
                 max_output_tokens: 128_000,
                 reasoning_levels: Vec::new(),
+                supports_image_input: true,
             },
             ClientModel {
                 id: "gpt-5.5".to_string(),
                 context_window: 128_000,
                 max_output_tokens: 128_000,
                 reasoning_levels: Vec::new(),
+                supports_image_input: true,
             },
         ];
         let bytes = codex_adapter()
@@ -530,6 +533,7 @@ mod tests {
                             "max".to_string(),
                             "ultra".to_string(),
                         ],
+                        supports_image_input: true,
                     }],
                     ..input(&[])
                 },

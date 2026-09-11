@@ -3667,12 +3667,46 @@ describe("AccountsScreen", () => {
     expect(screen.getByLabelText("上下文长度 1")).toHaveValue("");
   });
 
+  it("auto-matches image input defaults and keeps text always enabled", async () => {
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.type(screen.getByLabelText("API 账号名称"), "Image Input API");
+    await userEvent.type(screen.getByLabelText("API Key"), "sk-image-input");
+    await userEvent.click(screen.getByRole("button", { name: "新增映射" }));
+    await userEvent.type(screen.getByLabelText("请求模型 1"), "custom-model");
+
+    const text = screen.getByLabelText("模型能力 文本 1");
+    expect(text).toBeChecked();
+    expect(text).toBeDisabled();
+
+    await userEvent.type(screen.getByLabelText("上游模型 1"), "deepseek-v4.1");
+    expect(screen.getByLabelText("模型能力 图片输入 1")).toBeChecked();
+
+    await userEvent.click(screen.getByLabelText("模型能力 图片输入 1"));
+    expect(screen.getByLabelText("模型能力 图片输入 1")).not.toBeChecked();
+    await userEvent.click(screen.getByRole("button", { name: "保存账号" }));
+
+    await waitFor(() =>
+      expect(createApiRouteCredential).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model_mappings_json:
+            '[{"from":"custom-model","to":"deepseek-v4.1","supports_image_input":false}]',
+        }),
+      ),
+    );
+  });
+
   it("keeps the Claude editor free of the Codex catalog controls", async () => {
     renderScreen("claude");
 
     await userEvent.click(await screen.findByRole("button", { name: "新增账号" }));
     await userEvent.click(screen.getByRole("button", { name: "API 账号" }));
+    await userEvent.click(screen.getByRole("button", { name: "新增映射" }));
 
+    expect(screen.getByLabelText("模型能力 图片输入 1")).toBeInTheDocument();
+    expect(screen.queryByLabelText("模型能力 图片生成 1")).not.toBeInTheDocument();
     expect(screen.getByLabelText("声明支持 1M 1")).toBeInTheDocument();
     expect(screen.queryByLabelText("上下文长度 1")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("推理程度 high 1")).not.toBeInTheDocument();

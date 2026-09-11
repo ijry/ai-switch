@@ -1,4 +1,5 @@
 use crate::models::route_credential::{is_fallback_mapping, ModelMapping};
+use crate::services::model_image_input::default_supports_image_input;
 use crate::services::route_pool_model_mode::{
     assign_member_prefixes, PoolModelMode, OFFICIAL_MODEL_PREFIX,
 };
@@ -108,6 +109,9 @@ pub(crate) struct AdvertisedModel {
     /// Efforts advertised for this alias: only the ones every source that
     /// contributed it offers. `None` keeps the baseline profile for the model id.
     pub(crate) reasoning_levels: Option<Vec<String>>,
+    /// Whether every account serving this alias accepts image input. The merge is
+    /// conservative: one text-only source must not silently receive an image.
+    pub(crate) supports_image_input: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,6 +296,11 @@ pub(crate) fn codex_model_catalog_payload(
                 codex_reasoning_metadata(&model.base_id, model.reasoning_levels.as_deref());
             let context_window =
                 codex_effective_context_window(model.context_window, &model.upstream_model);
+            let input_modalities = if model.supports_image_input {
+                json!(["text", "image"])
+            } else {
+                json!(["text"])
+            };
             json!({
                 "additional_speed_tiers": [],
                 "availability_nux": null,
@@ -303,7 +312,7 @@ pub(crate) fn codex_model_catalog_payload(
                 "display_name": model.id,
                 "effective_context_window_percent": 95,
                 "experimental_supported_tools": [],
-                "input_modalities": ["text", "image"],
+                "input_modalities": input_modalities,
                 "max_context_window": context_window,
                 "priority": index as i32 + 1,
                 "service_tiers": [],
@@ -586,6 +595,9 @@ pub(crate) fn advertised_model_catalog_entries(
                     upstream_model: fallback_target.unwrap_or(model),
                     context_window: None,
                     reasoning_levels: None,
+                    supports_image_input: default_supports_image_input(
+                        fallback_target.unwrap_or(model),
+                    ),
                 },
             );
         }
@@ -614,6 +626,9 @@ pub(crate) fn advertised_model_catalog_entries(
                 upstream_model: to,
                 context_window: mapping.context_window,
                 reasoning_levels: mapping.reasoning_levels.as_deref(),
+                supports_image_input: mapping
+                    .supports_image_input
+                    .unwrap_or_else(|| default_supports_image_input(to)),
             };
             push_unique_model(platform, &mut models, &mut seen, contribution);
 
@@ -683,6 +698,7 @@ struct ModelContribution<'a> {
     upstream_model: &'a str,
     context_window: Option<u32>,
     reasoning_levels: Option<&'a [String]>,
+    supports_image_input: bool,
 }
 
 /// One source's claim on this alias's window, with the Codex per-upstream
@@ -732,6 +748,7 @@ fn push_unique_model(
             upstream_model: contribution.upstream_model.trim().to_string(),
             context_window: claimed_window,
             reasoning_levels: contribution.reasoning_levels.map(<[String]>::to_vec),
+            supports_image_input: contribution.supports_image_input,
         });
     } else if let Some(existing) = models
         .iter_mut()
@@ -768,6 +785,8 @@ fn push_unique_model(
             (Some(current), Some(incoming)) => Some(current.max(incoming)),
             (current, incoming) => current.or(incoming),
         };
+        existing.supports_image_input =
+            existing.supports_image_input && contribution.supports_image_input;
         existing.reasoning_levels = match (
             existing.reasoning_levels.take(),
             contribution.reasoning_levels,
@@ -852,7 +871,7 @@ mod tests {
     };
     use crate::models::route_credential::{ModelMapping, FALLBACK_MODEL_ALIAS};
     use crate::services::route_pool_model_mode::PoolModelMode;
-    use serde_json::Value;
+    use serde_json::{json, Value};
 
     /// Each capability as its own API account. Aggregate mode ignores kinds and
     /// prefixes, so this describes exactly the pool the pre-mode tests meant.
@@ -1007,6 +1026,41 @@ mod tests {
             Some("gpt-image"),
             "text.generate",
         ));
+    }
+
+    #[test]
+    fn image_input_defaults_follow_the_upstream_model_and_explicit_overrides_survive() {
+        let supported = parse_model_capability(
+            r#"{"model_mappings":[{"from":"image-alias","to":"deepseek-v4.1"}]}"#,
+        );
+        let unsupported = parse_model_capability(
+            r#"{"model_mappings":[{"from":"no-image-alias","to":"deepseek-v4.1","supports_image_input":false}]}"#,
+        );
+        let text_only =
+            parse_model_capability(r#"{"model_mappings":[{"from":"glm-5.3","to":"glm-5.3"}]}"#);
+
+        let entries =
+            advertised_model_catalog_entries("codex", &[supported, unsupported, text_only]);
+
+        assert_eq!(entries[0].supports_image_input, true);
+        assert_eq!(entries[1].supports_image_input, false);
+        assert_eq!(entries[2].supports_image_input, false);
+    }
+
+    #[test]
+    fn codex_catalog_advertises_image_input_only_when_the_model_supports_it() {
+        let image_model =
+            parse_model_capability(r#"{"model_mappings":[{"from":"gpt-5.5","to":"gpt-5.5"}]}"#);
+        let text_model =
+            parse_model_capability(r#"{"model_mappings":[{"from":"glm-5.3","to":"glm-5.3"}]}"#);
+
+        let payload = codex_model_catalog_payload(&[image_model, text_model]);
+
+        assert_eq!(
+            payload["models"][0]["input_modalities"],
+            json!(["text", "image"])
+        );
+        assert_eq!(payload["models"][1]["input_modalities"], json!(["text"]));
     }
 
     #[test]
