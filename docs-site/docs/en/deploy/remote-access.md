@@ -81,7 +81,7 @@ Funnel uses port 443 by default (443, 8443, and 10000 — the ports Funnel suppo
 
 ## Bringing your own certificate for the web service
 
-If you skip Tailscale and bind the web service directly to a non-loopback address, you must supply a TLS certificate yourself. Otherwise the service refuses to start with the error `web.sensitive_transport_requires_tls`.
+Without Tailscale, the desktop app can select `0.0.0.0` and serve the LAN directly over HTTP; TLS is no longer mandatory. This exposes every Web command and leaves the token as the only protection, so bring your own TLS across untrusted networks. The standalone server's non-loopback plaintext restriction is unchanged.
 
 - Desktop: edit `~/.ai-switch/web-service.json` and set `tlsEnabled`, `tlsCertPath`, and `tlsKeyPath` (there are no UI fields for these three), then restart the web service.
 - Standalone server: set the environment variables `AI_SWITCH_TLS_CERT_PATH` and `AI_SWITCH_TLS_KEY_PATH`.
@@ -194,7 +194,7 @@ The proxy HTTPS status endpoint returns the certificate directory, the root cert
 ::: warning Ground rules for remote access
 - **Every `/api/*` and `/ws/events` request needs the access token, including over Tailscale.** Tailscale is not an authentication layer; it only provides the channel.
 - **Tailscale sign-in is a manual action.** The app never signs in at startup; it only attempts a reconnect when a saved auth key or prior tsnet state exists locally.
-- **Think before binding `0.0.0.0`.** Non-loopback listeners require TLS (or startup is refused), and it means every device on that network can touch the port.
+- **Think before binding `0.0.0.0`.** The desktop app permits plaintext startup and exposes every Web command to that network; the access token is the only protection.
 - **Think harder before enabling Funnel.** That is a public address, and the token is the only door. Prefer private mode unless you truly need otherwise.
 - **The token is equivalent to shell access.** The web API includes terminal session commands, so a leaked token costs more than config disclosure.
 - **The self-signed root is for this machine only.** Its SANs are just `localhost` and `127.0.0.1`. Never copy the root private key to another machine, and never use it to issue certificates for remote access.

@@ -5940,7 +5940,7 @@ export function AccountsScreen({
             </div>
 
             <div className="flex shrink-0 items-center gap-2">
-              {routeAccessEnabled ? (
+              {routeServiceReady ? (
                 <button
                   aria-label="关闭算力池路由接入"
                   className="grid h-6 w-6 place-items-center border border-red-700 bg-red-600 text-white motion-control hover:bg-red-700 disabled:opacity-50"
@@ -5953,11 +5953,15 @@ export function AccountsScreen({
                 </button>
               ) : (
                 <button
-                  aria-label="启用算力池路由接入"
+                  aria-label={routeAccessEnabled ? "启动算力池路由" : "启用算力池路由接入"}
                   className="grid h-6 w-6 place-items-center border border-emerald-700 bg-emerald-600 text-white motion-control hover:bg-emerald-700 disabled:opacity-50"
                   disabled={startProxyMutation.isPending || stopProxyMutation.isPending}
                   onClick={() => startProxyMutation.mutate()}
-                  title="启用算力池路由接入；需要时自动启动共享服务端口"
+                  title={
+                    routeAccessEnabled
+                      ? "启动共享服务端口并恢复算力池路由"
+                      : "启用算力池路由接入；需要时自动启动共享服务端口"
+                  }
                   type="button"
                 >
                   <Play aria-hidden="true" className="h-3.5 w-3.5 fill-current" />

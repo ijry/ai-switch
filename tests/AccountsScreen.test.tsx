@@ -6172,6 +6172,26 @@ describe("AccountsScreen", () => {
     expect(await screen.findByText("路由接入已关闭（端口运行中）")).toBeInTheDocument();
   });
 
+  it("shows a start button when route access is enabled but the shared port is stopped", async () => {
+    vi.mocked(getRouteProxyStatus).mockResolvedValue({
+      running: false,
+      route_access_enabled: true,
+      shared_listener: false,
+      bind_host: "127.0.0.1",
+      port: null,
+      base_url: null,
+    });
+    renderScreen("codex", "in_pool");
+
+    expect(await screen.findByText("路由已启用，端口未启动")).toBeInTheDocument();
+    const startButton = screen.getByLabelText("启动算力池路由");
+    expect(startButton).toHaveClass("bg-emerald-600");
+    expect(screen.queryByLabelText("关闭算力池路由接入")).not.toBeInTheDocument();
+
+    await userEvent.click(startButton);
+    await waitFor(() => expect(startRouteProxy).toHaveBeenCalledTimes(1));
+  });
+
   it("refreshes Web service status when pool controls start or stop the shared listener", async () => {
     const client = createQueryClient();
     const invalidate = vi.spyOn(client, "invalidateQueries");

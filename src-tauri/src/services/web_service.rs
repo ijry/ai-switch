@@ -3,7 +3,6 @@ use crate::error::AppError;
 use crate::paths::{is_desktop_dev_runtime, AppPaths};
 use crate::server::{
     advertised_web_host, format_web_base_url, is_loopback_host, normalize_tls_paths,
-    validate_sensitive_web_transport,
 };
 use crate::services::mobile_pairing::{
     MobilePairingPayload, MobilePairingRedeemResponse, MobilePairingStore, MobileTokenRegistry,
@@ -769,7 +768,6 @@ fn validate_start_config(
     config: &WebServiceConfig,
 ) -> Result<Option<(PathBuf, PathBuf)>, AppError> {
     let tls_paths = validate_enabled_tls_paths(config)?;
-    validate_sensitive_web_transport(&config.host, config.tls_enabled)?;
     // The default config generates a UUID token, so this only bites a
     // hand-blanked web-service.json — where the alternative is a server that
     // answers 401 to everything without saying why.
@@ -784,6 +782,9 @@ fn sensitive_commands_enabled_for_runtime(
 ) -> bool {
     if !status.running {
         return false;
+    }
+    if !is_loopback_host(&config.host) {
+        return true;
     }
 
     let Some(base_url) = status
@@ -1138,22 +1139,24 @@ mod tests {
     }
 
     #[test]
-    fn public_exposure_cannot_bypass_an_insecure_local_listener() {
+    fn desktop_all_interface_http_starts_with_sensitive_commands_enabled() {
         let config = WebServiceConfig {
             host: "0.0.0.0".to_string(),
             tls_enabled: false,
-            tailscale_enabled: true,
-            tailscale_exposure_mode: "public".to_string(),
             ..WebServiceConfig::default()
         };
+        let web_status = WebServerStatus {
+            running: true,
+            host: "127.0.0.1".to_string(),
+            port: Some(3090),
+            base_url: Some("http://127.0.0.1:3090".to_string()),
+        };
 
-        let error = validate_start_config(&config).unwrap_err();
-        assert!(matches!(
-            error,
-            crate::error::AppError::Validation {
-                code: "web.sensitive_transport_requires_tls",
-                ..
-            }
+        validate_start_config(&config).unwrap();
+        assert!(sensitive_commands_enabled_for_runtime(
+            &config,
+            &web_status,
+            None,
         ));
     }
 

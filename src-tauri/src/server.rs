@@ -86,19 +86,6 @@ pub fn validate_server_transport(
     })
 }
 
-pub fn validate_sensitive_web_transport(host: &str, tls_enabled: bool) -> Result<(), AppError> {
-    if tls_enabled || is_loopback_host(host) {
-        return Ok(());
-    }
-
-    Err(AppError::Validation {
-        code: "web.sensitive_transport_requires_tls",
-        message: "Sensitive Web commands require TLS on non-loopback listeners. Use a loopback host for HTTP, or enable TLS before binding to all interfaces".to_string(),
-        details: Some(host.trim().to_string()),
-        recoverable: true,
-    })
-}
-
 pub(crate) fn normalize_tls_paths(
     certificate_path: Option<&str>,
     private_key_path: Option<&str>,
@@ -157,7 +144,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn loopback_http_is_accepted_for_sensitive_commands() {
+    fn loopback_hosts_are_detected() {
         for host in [
             "localhost",
             "LOCALHOST",
@@ -167,12 +154,11 @@ mod tests {
             "[::1]",
         ] {
             assert!(is_loopback_host(host), "expected loopback host: {host}");
-            validate_sensitive_web_transport(host, false).unwrap();
         }
     }
 
     #[test]
-    fn non_loopback_http_is_rejected_before_binding() {
+    fn non_loopback_hosts_are_detected() {
         for host in [
             "0.0.0.0",
             "192.168.1.10",
@@ -180,32 +166,7 @@ mod tests {
             "localhost.example",
         ] {
             assert!(!is_loopback_host(host), "unexpected loopback host: {host}");
-            let error = validate_sensitive_web_transport(host, false).unwrap_err();
-            assert!(matches!(
-                error,
-                crate::error::AppError::Validation {
-                    code: "web.sensitive_transport_requires_tls",
-                    ..
-                }
-            ));
         }
-    }
-
-    #[test]
-    fn non_loopback_http_error_explains_the_safe_alternatives() {
-        let error = validate_sensitive_web_transport("0.0.0.0", false).unwrap_err();
-        let (message, details) = match error {
-            AppError::Validation {
-                message, details, ..
-            } => (message, details),
-            _ => panic!("expected a validation error"),
-        };
-
-        assert_eq!(
-            message,
-            "Sensitive Web commands require TLS on non-loopback listeners. Use a loopback host for HTTP, or enable TLS before binding to all interfaces"
-        );
-        assert_eq!(details.as_deref(), Some("0.0.0.0"));
     }
 
     #[test]
@@ -238,11 +199,6 @@ mod tests {
     #[test]
     fn standalone_defaults_to_shared_route_proxy_port() {
         assert_eq!(standalone_default_port(), 19527);
-    }
-
-    #[test]
-    fn configured_tls_allows_non_loopback_hosts() {
-        validate_sensitive_web_transport("0.0.0.0", true).unwrap();
     }
 
     #[test]

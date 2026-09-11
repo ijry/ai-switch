@@ -13,16 +13,13 @@ Web Service mode fits a few situations: switching accounts from your phone; chec
 
 1. Open **Settings** in the desktop app.
 2. Select the **Web Service** panel.
-3. Fill in **Host** and **Port** under **Shared service port**. The defaults are `127.0.0.1` and `19527`.
+3. Under **Shared service port**, choose `127.0.0.1` (local only) or `0.0.0.0` (all interfaces) from the Host dropdown and set the port. The default port is `19527`.
 4. Confirm the **Access Token**. A random UUID is generated the first time the config is written; keep it or replace it with your own string.
 5. Click **Save**, then **Start service port** when needed.
 
 Once it is up, open `http://127.0.0.1:19527` (or whatever address you configured) in a browser. The first visit asks for the access token, which is then stored in `localStorage` under the key `ai-switch.webToken`, so the same browser will not ask again.
 
-The panel has two independent toggles:
-
-- **Enable compute-pool route access**: controls whether model APIs accept pool routing. Enabling it starts the shared port when needed; disabling it leaves the port available for Web pages. The desktop remembers this switch and restores the shared port on launch when it is on.
-- **Enable secure network**: expose the service to your own devices — or the public internet — through Tailscale, with an **Access mode** of either private-only or public. See [Remote Access and HTTPS](/en/deploy/remote-access) for the details.
+Compute-pool routing is no longer a separate Settings toggle; manage it from the pool toolbar. When routing is enabled but the shared port is stopped, the toolbar shows a start button. Settings still provides **Enable secure network** for exposing the service to your own devices — or the public internet — through Tailscale, with an **Access mode** of either private-only or public. See [Remote Access and HTTPS](/en/deploy/remote-access) for the details.
 
 ## The three browser-facing endpoints
 
@@ -58,10 +55,10 @@ Web service settings persist to `~/.ai-switch/web-service.json`. Every control i
 
 | Field | Default | Notes |
 | --- | --- | --- |
-| `host` | `127.0.0.1` | Bind address. Non-loopback addresses require TLS — see the next section |
+| `host` | `127.0.0.1` | Desktop Settings offers `127.0.0.1` and `0.0.0.0`; the latter binds every interface |
 | `port` | `19527` | Listening port |
 | `token` | Random UUID written on first config creation | Access token |
-| `routeAccessEnabled` | `false` | Whether compute-pool model routes are accepted. Legacy `autoStart: true` migrates to `true` |
+| `routeAccessEnabled` | `false` | Whether compute-pool model routes are accepted, controlled from the pool toolbar. Legacy `autoStart: true` migrates to `true` |
 | `tailscaleEnabled` | `false` | Whether to expose the service through Tailscale |
 | `tailscaleExposureMode` | `private` | `private` (tailnet only) or `public` (Funnel) |
 | `tlsEnabled` | `false` | Enable TLS. **No UI toggle; file only** |
@@ -70,17 +67,13 @@ Web service settings persist to `~/.ai-switch/web-service.json`. Every control i
 
 Restart the web service after editing the file. `tlsCertPath` and `tlsKeyPath` must be supplied together; providing only one fails startup with `web.tls_paths_incomplete`.
 
-## The hard rule about bind address and TLS
+## Bind address and plaintext HTTP
 
-The default `127.0.0.1` means local-only. To reach the service from other devices on your network you must explicitly set `host` to `0.0.0.0` or a specific LAN IP — and here is the rule that is **enforced in code**:
+The default `127.0.0.1` is local-only. Desktop Settings can select `0.0.0.0` so other devices on the LAN can connect directly over HTTP; the desktop app no longer refuses startup merely because TLS is disabled.
 
-> When listening on a non-loopback address without TLS enabled, the service **refuses to start** and returns the error `web.sensitive_transport_requires_tls`.
+With `0.0.0.0`, every Web command — including terminal, credential export, proxy-key, MCP, and skill operations — is callable over plaintext HTTP. The access token is the only protection. Use a strong random token, expose it only on a trusted LAN, and configure the firewall yourself; prefer Tailscale or TLS across untrusted networks.
 
-That is a hard validation, not a warning. The reason: some commands export credentials, read proxy keys, and install MCP servers and skills. Exposing those over plaintext HTTP on a network is too risky to allow. So there are three ways to serve non-local clients:
-
-1. Expose through Tailscale and keep `host` on loopback (recommended — see [Remote Access and HTTPS](/en/deploy/remote-access)).
-2. Bring your own certificate and set `tlsEnabled` / `tlsCertPath` / `tlsKeyPath` in `web-service.json`.
-3. Stay on loopback and put a reverse proxy in front that terminates TLS itself.
+This relaxation applies only to the desktop app. The standalone server still rejects non-loopback plaintext HTTP by default unless TLS is configured or `AI_SWITCH_ALLOW_INSECURE_HTTP=1` is explicitly set.
 
 ## Commands that are unavailable in a browser
 
@@ -88,23 +81,23 @@ Two categories do not reach the browser.
 
 **Desktop-only commands** (three of them) need native desktop capabilities and return a "desktop only" result over HTTP: opening the certificate directory, launching a session in your system terminal app, and exporting credentials through a native save dialog.
 
-**Sensitive commands** sit behind a runtime gate and only open when the transport is judged safe. They are: exporting credentials, previewing a credential import, importing credentials, reading the proxy key, installing an MCP server from the marketplace, adding/updating a local MCP server, setting an MCP server's app bindings, removing an MCP server, and saving/deleting/installing skills. When the gate is closed they return 404 "Web command is not available" rather than 401 — so the response cannot be used to probe which commands exist.
+**Sensitive commands** include exporting credentials, previewing and performing credential imports, reading the proxy key, installing MCP servers, changing local MCP configuration, and saving/deleting/installing skills. On a direct desktop listener bound to `127.0.0.1` or `0.0.0.0`, they are available once the service is running and access-token authentication succeeds; plaintext `0.0.0.0` does not downgrade their permissions.
 
-The transport counts as safe when any of these hold:
+When the desktop stays on loopback and Tailscale provides the external path, the runtime gate still follows the sidecar state:
 
-- the connection is HTTPS;
-- the connection is HTTP on a loopback address and Tailscale is off;
-- the connection is HTTP on a loopback address and Tailscale is connected in public (Funnel) mode — in which case Tailscale provides HTTPS for the external hop.
+- loopback HTTP is available while Tailscale is off;
+- public Tailscale access becomes available after its HTTPS endpoint is ready;
+- while the external path is not ready, sensitive commands temporarily return 404 "Web command is not available".
 
-One more thing to know: **when the access token is empty, sensitive commands always return 401**, while ordinary commands are not authenticated at all. So although the token is technically optional, in practice it is mandatory.
+The desktop Web service refuses to start with an empty or too-short token, so the token is mandatory in practice.
 
 Terminal commands (create session, write input, resize, kill session, list sessions) **are** available over the web API. That means anyone holding the token can open a shell on your machine. Protect the token the way you would protect an SSH private key.
 
 ## Security notes
 
 ::: warning Before you turn this on
-- **Set an access token, and make it random.** Every `/api/*` and `/ws/events` request needs it. An empty token blocks all sensitive commands and leaves ordinary ones completely unprotected.
-- **Do not bind `0.0.0.0` casually.** The default `127.0.0.1` is local-only. Before changing it, know which devices share that network — and configure TLS, or the service will not start at all.
+- **Set an access token, and make it random.** Every `/api/*` and `/ws/events` request needs it, and the service rejects empty or too-short tokens at startup.
+- **Do not bind `0.0.0.0` casually.** The default `127.0.0.1` is local-only. `0.0.0.0` exposes every Web command directly to the LAN, and without TLS the token is the only protection.
 - **The token is equivalent to shell access.** The web API exposes terminal session commands, so a leaked token means command execution on that machine, not just config disclosure.
 - **The token is stored in browser localStorage.** After using a shared or public device, sign out and clear site data.
 - **Rotation is manual.** After changing the token, restart the service and re-enter it in every browser.

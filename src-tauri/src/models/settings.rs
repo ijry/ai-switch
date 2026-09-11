@@ -20,6 +20,8 @@ pub struct AppSettings {
     /// which is what the app did unconditionally back then.
     #[serde(default = "default_true")]
     pub close_to_tray: bool,
+    #[serde(default)]
+    pub image_generation_enabled: bool,
     /// Pool-wide Claude Code client behavior switches (`includeCoAuthoredBy`,
     /// `permissions`, …), as a JSON object string. These are read by Claude Code
     /// from its own settings file, which the whole pool shares — so unlike model
@@ -52,6 +54,7 @@ pub struct AppSettingsView {
     pub ccswitch_deeplink_compat_enabled: bool,
     pub ccswitch_deeplink_compat_supported: bool,
     pub close_to_tray: bool,
+    pub image_generation_enabled: bool,
     pub claude_client_config_json: Option<String>,
     pub config_write_clients_json: Option<String>,
     pub deepseek_harness_config_path: Option<String>,
@@ -70,6 +73,7 @@ impl AppSettingsView {
             ccswitch_deeplink_compat_enabled: settings.ccswitch_deeplink_compat_enabled,
             ccswitch_deeplink_compat_supported: supported,
             close_to_tray: settings.close_to_tray,
+            image_generation_enabled: settings.image_generation_enabled,
             claude_client_config_json: settings.claude_client_config_json,
             config_write_clients_json: settings.config_write_clients_json,
             deepseek_harness_config_path: settings.deepseek_harness_config_path,
@@ -89,6 +93,7 @@ impl AppSettings {
             data_dir,
             ccswitch_deeplink_compat_enabled: false,
             close_to_tray: true,
+            image_generation_enabled: false,
             claude_client_config_json: None,
             config_write_clients_json: None,
             deepseek_harness_config_path: None,
@@ -114,5 +119,6 @@ mod tests {
         }"#;
         let settings: AppSettings = serde_json::from_str(json).expect("parse legacy settings");
         assert!(settings.close_to_tray);
+        assert!(!settings.image_generation_enabled);
     }
 }

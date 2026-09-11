@@ -325,6 +325,34 @@ async fn shared_web_model_routes_do_not_trust_unauthenticated_platform_headers()
 }
 
 #[tokio::test]
+async fn desktop_all_interface_http_serves_sensitive_commands_without_tls() {
+    let (_temp, state, mut config) = fixture().await;
+    config.host = "0.0.0.0".to_string();
+    WebService::save_config(&state.paths, &config)
+        .await
+        .unwrap();
+
+    let started = WebService::start(Arc::clone(&state)).await.unwrap();
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .post(format!(
+            "{}/api/get_route_proxy_key",
+            started.base_url.as_deref().unwrap()
+        ))
+        .bearer_auth(config.token.as_deref().unwrap())
+        .json(&json!({"platform": "codex"}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert!(response.text().await.unwrap().contains("sk-ai-switch-"));
+    WebService::stop(&state).await;
+}
+
+#[tokio::test]
 async fn shared_web_https_reports_the_same_tls_endpoint_for_the_pool() {
     let (temp, state, mut config) = fixture().await;
     let rcgen::CertifiedKey { cert, key_pair } =

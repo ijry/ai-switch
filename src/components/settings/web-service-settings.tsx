@@ -5,7 +5,6 @@ import {
   getWebServerStatus,
   getWebServiceConfig,
   saveWebServiceConfig,
-  setRouteAccess,
   startWebServer,
   stopWebServer,
 } from "../../lib/api/client";
@@ -28,16 +27,11 @@ const defaultConfig: WebServiceConfig = {
 };
 
 const MINIMUM_WEB_TOKEN_LENGTH = 16;
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
-
-function isLoopbackHost(host: string) {
-  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, "");
-  return LOOPBACK_HOSTS.has(normalized);
-}
+const WEB_SERVICE_HOSTS = ["127.0.0.1", "0.0.0.0"] as const;
 
 function normalizeConfig(config: WebServiceConfig): WebServiceConfig {
   return {
-    host: config.host.trim() || defaultConfig.host,
+    host: config.host.trim() === "0.0.0.0" ? "0.0.0.0" : defaultConfig.host,
     port: Number.isFinite(config.port) && config.port > 0 ? config.port : defaultConfig.port,
     token: config.token?.trim() || "",
     routeAccessEnabled: Boolean(config.routeAccessEnabled),
@@ -112,23 +106,7 @@ export function WebServiceSettings() {
     },
   });
 
-  const routeAccessMutation = useMutation({
-    mutationFn: (enabled: boolean) => setRouteAccess(enabled),
-    onSuccess: (status) => {
-      setForm((current) => ({
-        ...current,
-        routeAccessEnabled: Boolean(status.route_access_enabled),
-      }));
-      queryClient.setQueryData(["route-proxy-status"], status);
-      void queryClient.invalidateQueries({ queryKey: ["web-server-status"] });
-    },
-    onError: () => {
-      void configQuery.refetch();
-    },
-  });
-
   const status = statusQuery.data;
-  const httpTransportRequiresTls = !form.tlsEnabled && !isLoopbackHost(form.host);
   const serviceHost = status?.host ?? form.host;
   const servicePort = status?.port ?? form.port;
 
@@ -175,13 +153,19 @@ export function WebServiceSettings() {
                 <div className="grid gap-3 sm:grid-cols-2">
                   <label className="flex flex-col gap-1.5 text-[12px] font-medium text-stone-600">
                     <span>{t("settings.webService.host")}</span>
-                    <input
-                      className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
+                    <select
+                      className="cursor-pointer rounded-xl border border-stone-200 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none motion-control focus:border-stone-400 focus:ring-2 focus:ring-stone-100"
                       onChange={(event) =>
                         setForm((current) => ({ ...current, host: event.target.value }))
                       }
                       value={form.host}
-                    />
+                    >
+                      {WEB_SERVICE_HOSTS.map((host) => (
+                        <option key={host} value={host}>
+                          {host}
+                        </option>
+                      ))}
+                    </select>
                   </label>
                   <label className="flex flex-col gap-1.5 text-[12px] font-medium text-stone-600">
                     <span>{t("settings.webService.port")}</span>
@@ -197,9 +181,9 @@ export function WebServiceSettings() {
                     />
                   </label>
                 </div>
-                {httpTransportRequiresTls ? (
+                {form.host === "0.0.0.0" ? (
                   <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-                    {t("settings.webService.hostTransportHint")}
+                    {t("settings.webService.hostNetworkWarning")}
                   </p>
                 ) : null}
                 <TokenInput
@@ -337,34 +321,6 @@ export function WebServiceSettings() {
         )}
       </section>
 
-      <section className="space-y-3 rounded-2xl border border-stone-200 bg-white/82 p-4 shadow-sm">
-        <div className="flex items-center gap-2">
-          <span className="grid h-8 w-8 place-items-center rounded-xl bg-stone-950 text-white">
-            <ShieldCheck className="h-4 w-4" />
-          </span>
-          <div>
-            <h2 className="text-[15px] font-semibold text-stone-950">
-              {t("settings.webService.routeTitle")}
-            </h2>
-            <p className="text-[12px] text-stone-500">
-              {t("settings.webService.routeSubtitle")}
-            </p>
-          </div>
-        </div>
-        <label className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-[12px] font-medium text-stone-700">
-          <input
-            checked={form.routeAccessEnabled}
-            disabled={routeAccessMutation.isPending}
-            onChange={(event) => routeAccessMutation.mutate(event.target.checked)}
-            type="checkbox"
-          />
-          {t("settings.webService.routeEnabled")}
-        </label>
-        <p className="text-[12px] text-stone-500">{t("settings.webService.routeHint")}</p>
-        {routeAccessMutation.isError ? (
-          <p className="text-[12px] text-red-700">{t("settings.webService.routeError")}</p>
-        ) : null}
-      </section>
     </>
   );
 }

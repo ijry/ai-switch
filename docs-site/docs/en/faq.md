@@ -75,7 +75,7 @@ To be clear about what that means: **the current version does not encrypt that c
 - Prefer a volume with full-disk encryption.
 - When you back the directory up, handle it as secret material (encrypted archive, offline storage).
 
-The web service adds a separate layer: every `/api/*` and `/ws/events` request requires the access token, and eleven sensitive commands (credential export/import, reading the proxy key, MCP and skill write operations) return 404 rather than 403 when the transport does not meet the security bar — the response will not even confirm the command exists. On top of that, binding to a non-loopback address without TLS configured makes the web service refuse to start rather than run in a degraded mode.
+The web service adds a separate layer: every `/api/*` and `/ws/events` request requires the access token. Direct desktop listeners on `127.0.0.1` or `0.0.0.0` open sensitive commands after startup, while loopback listeners exposed through Tailscale still follow the sidecar state. With plaintext `0.0.0.0`, the token is the only protection. The standalone server still rejects non-loopback plaintext startup by default.
 
 The data directory layout is described in [desktop deployment](/en/deploy/desktop).
 
@@ -138,7 +138,7 @@ Yes. Enable the web service, open it in your phone's browser, and enter the acce
 Things to know:
 
 - The default bind is `127.0.0.1:19527`, which only the host machine can reach. A phone requires either changing the bind address or going through Tailscale.
-- **Binding to a non-loopback address (such as `0.0.0.0`) requires TLS to be configured at the same time.** Without it the web service refuses to start and reports `web.sensitive_transport_requires_tls`. This is a hard block rather than a warning — plaintext HTTP on a LAN would expose your access token and credentials in the clear.
+- Desktop Settings can select `0.0.0.0` for LAN access without TLS. Every Web command is then served over plaintext HTTP and the access token is the only protection, so use it only on a trusted network. The standalone server's non-loopback plaintext restriction is unchanged.
 - The better option is Tailscale: install the client on your phone, join the same tailnet, and you get access without exposing a public port or sourcing certificates yourself.
 
 Setup steps are in [web service mode](/en/deploy/web-service) and [remote access and HTTPS](/en/deploy/remote-access).

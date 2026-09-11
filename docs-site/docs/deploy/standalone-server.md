@@ -178,7 +178,7 @@ AI_SWITCH_PORT=19527 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.co
 | | 桌面端 Web 服务 | 独立服务器 |
 | --- | --- | --- |
 | 配置来源 | `~/.ai-switch/web-service.json` + 设置界面 | 环境变量 |
-| 敏感命令闸门 | 按传输安全性动态判定（HTTPS / 环回 / Tailscale 状态） | 始终开放，因此令牌保护尤为关键 |
+| 敏感命令闸门 | 直接桌面监听在启动后开放；环回地址配 Tailscale 时按状态动态判定 | 始终开放，因此令牌保护尤为关键 |
 | 桌面独占命令 | 桌面窗口内可用 | 不可用（无原生桌面环境） |
 | Tailscale | 设置界面里开关与登录 | 需要自行提供 sidecar 可执行文件（`AI_SWITCH_TSNET_PATH` 或同级目录） |
 | 托盘与自动更新 | 有 | 无，需要自行做进程守护与升级 |

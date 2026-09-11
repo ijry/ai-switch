@@ -75,7 +75,7 @@ AI Switch 的核心设计目标是**一份业务逻辑，两种运行形态**。
 安全相关的实现细节：
 
 - `web/auth.rs` 的 `authorize_api_request` 中间件对 `/api/*` 与 `/ws/events` 强制校验 Bearer 令牌，且在 JSON 提取器之前生效——非法请求不会被解析正文。
-- **11 个敏感命令**（凭据导出/导入预览/导入、读取代理密钥、MCP 的四个写入命令、技能的三个写入命令）额外经过 `gate_sensitive_commands` 闸门；当传输不满足安全要求时它们直接返回 404 而不是 403，避免暴露命令存在性。
+- **敏感命令**（凭据、代理密钥、MCP 与技能写入等）额外经过 `gate_sensitive_commands` 闸门。桌面直接监听 `127.0.0.1` 或 `0.0.0.0` 时，服务启动后开放；环回监听通过 Tailscale 暴露时按 sidecar 状态动态切换。闸门关闭时返回 404 而不是 403，避免暴露命令存在性。
 - 请求体上限 12 MiB（`SENSITIVE_COMMAND_BODY_LIMIT`）。
 - 所有 `/api/*` 响应带 `Cache-Control: no-store` 与 `Pragma: no-cache`。
 - CORS 只允许 `GET`/`POST`/`OPTIONS` 与 `Authorization`/`Content-Type` 头，预检不绕过鉴权。

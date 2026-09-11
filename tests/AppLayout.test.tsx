@@ -60,6 +60,31 @@ describe("AppLayout", () => {
     expect(onNavigate).toHaveBeenCalledWith("SaaS");
   });
 
+  it("shows the image generation navigation only when its plugin is enabled", async () => {
+    const onNavigate = vi.fn();
+    const renderLayout = (imageGenerationEnabled: boolean) => (
+      <I18nProvider initialLanguage="zh-CN">
+        <AppLayout
+          activeScreen="ImageGen"
+          imageGenerationEnabled={imageGenerationEnabled}
+          onNavigate={onNavigate}
+          onToggleSidebar={vi.fn()}
+          sidebarCollapsed={false}
+        >
+          <div>content</div>
+        </AppLayout>
+      </I18nProvider>
+    );
+    const { rerender } = render(renderLayout(false));
+    expect(screen.queryByRole("button", { name: "生图" })).not.toBeInTheDocument();
+
+    rerender(renderLayout(true));
+    const imageGeneration = screen.getByRole("button", { name: "生图" });
+    expect(screen.queryByRole("button", { name: "生图插件" })).not.toBeInTheDocument();
+    await userEvent.click(imageGeneration);
+    expect(onNavigate).toHaveBeenCalledWith("ImageGen");
+  });
+
   it("renders system utility nav entries and navigates to their screens", async () => {
     const onNavigate = vi.fn();
 

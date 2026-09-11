@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/App";
 import {
   createTerminalSession,
+  getSettings,
   killTerminalSession,
   listAgentLaunchOptions,
   listSessions,
@@ -16,6 +17,7 @@ import { __resetTransportForTests } from "../src/lib/transport";
 import { VIBE_APPEARANCE_STORAGE_KEY, VIBE_SKIN_STORAGE_KEY } from "../src/lib/vibeSkin";
 import { VIBE_TABS_STORAGE_KEY } from "../src/lib/vibeTabs";
 import { VibeScreen } from "../src/screens/VibeScreen";
+import { settingsFixture } from "../src/test/fixtures";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(),
@@ -59,6 +61,7 @@ vi.mock("../src/screens/AccountsScreen", () => ({
 
 vi.mock("../src/lib/api/client", () => ({
   createTerminalSession: vi.fn(),
+  getSettings: vi.fn(),
   // App mounts the global low-disk warning, which polls this on every render.
   getDiskSpaceStatus: vi.fn(async () => ({
     threshold_bytes: 1024 * 1024 * 1024,
@@ -238,11 +241,13 @@ describe("VibeScreen", () => {
     vi.stubGlobal("Audio", MockAudioElement);
     __resetTransportForTests();
     vi.mocked(createTerminalSession).mockReset();
+    vi.mocked(getSettings).mockReset();
     vi.mocked(killTerminalSession).mockReset();
     vi.mocked(listSessions).mockReset();
     vi.mocked(listAgentLaunchOptions).mockReset();
     vi.mocked(listSessions).mockResolvedValue(sessions);
     vi.mocked(listAgentLaunchOptions).mockResolvedValue(agentLaunchOptions);
+    vi.mocked(getSettings).mockResolvedValue(settingsFixture);
     vi.mocked(createTerminalSession).mockResolvedValue({
       id: "term-1",
       title: "Fix terminal bug",
@@ -375,6 +380,18 @@ describe("VibeScreen", () => {
       await screen.findByRole("heading", { name: "Terminal workspace · Vibe mode" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("Agent accounts placeholder")).not.toBeInTheDocument();
+  });
+
+  it("loads persisted image generation visibility for the app navigation", async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      ...settingsFixture,
+      image_generation_enabled: true,
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("button", { name: "Image Studio" })).toBeInTheDocument();
   });
 
   it("keeps Vibe terminals alive when switching back to the default mode", async () => {

@@ -128,7 +128,7 @@ Desktop and browser share one React UI and one Rust core. Only the transport dif
 - **Desktop** calls the core over Tauri IPC
 - **Browser mode** calls it over HTTP: `POST /api/:command` and `GET /ws/events`, both requiring an access token
 
-The web service binds to `127.0.0.1:19527` by default. One hard safety rule applies here: **listening on a non-loopback address without TLS enabled will refuse to start**, failing with `web.sensitive_transport_requires_tls`. To reach it from your LAN or remotely, either configure TLS or use a private network such as Tailscale.
+The web service binds to `127.0.0.1:19527` by default. Desktop Settings can select `0.0.0.0` for direct LAN access without TLS; every Web command is then callable over plaintext HTTP, with the access token as the only protection. The standalone server still rejects non-loopback plaintext binds by default.
 
 There are two ways to run it:
 

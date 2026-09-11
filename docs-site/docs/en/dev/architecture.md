@@ -75,7 +75,7 @@ The `setup()` phase also spawns several long-lived tasks: the tray menu and hide
 Security details worth knowing:
 
 - The `authorize_api_request` middleware in `web/auth.rs` enforces bearer-token auth on `/api/*` and `/ws/events`, and it runs *before* the JSON extractor — an unauthorized request never gets its body parsed.
-- **Eleven sensitive commands** (credential export, import preview, import, reading the proxy key, the four MCP write commands, and the three skill write commands) additionally pass through `gate_sensitive_commands`. When the transport does not meet the security bar they return 404 rather than 403, so the response does not even confirm the command exists.
+- **Sensitive commands** covering credentials, proxy keys, MCP, and skill writes additionally pass through `gate_sensitive_commands`. Direct desktop listeners on `127.0.0.1` or `0.0.0.0` open the gate after startup; loopback listeners exposed through Tailscale follow the sidecar state. A closed gate returns 404 rather than 403, so the response does not confirm the command exists.
 - Request bodies are capped at 12 MiB (`SENSITIVE_COMMAND_BODY_LIMIT`).
 - Every `/api/*` response carries `Cache-Control: no-store` and `Pragma: no-cache`.
 - CORS allows only `GET`/`POST`/`OPTIONS` and the `Authorization`/`Content-Type` headers; preflight does not bypass auth.

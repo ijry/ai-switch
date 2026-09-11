@@ -76,6 +76,7 @@ type AppLayoutProps = {
   agentVisibility?: AgentVisibility;
   onAgentVisibilityChange?: (visibility: AgentVisibility) => void;
   saasEnabled?: boolean;
+  imageGenerationEnabled?: boolean;
 };
 
 type AgentNavItem = {
@@ -191,6 +192,7 @@ export function AppLayout({
   agentVisibility,
   onAgentVisibilityChange,
   saasEnabled = false,
+  imageGenerationEnabled = false,
 }: AppLayoutProps) {
   const { language, setLanguage, t } = useI18n();
   const appShellRef = useRef<HTMLDivElement | null>(null);
@@ -486,13 +488,15 @@ export function AppLayout({
                     onClick={() => handleNavigate("SaaS")}
                   />
                 )}
-                <NavButton
-                  active={activeScreen === "ImageGen"}
-                  collapsed={sidebarContentCollapsed}
-                  icon={Images}
-                  label={t("nav.imagegen")}
-                  onClick={() => handleNavigate("ImageGen")}
-                />
+                {imageGenerationEnabled && (
+                  <NavButton
+                    active={activeScreen === "ImageGen"}
+                    collapsed={sidebarContentCollapsed}
+                    icon={Images}
+                    label={t("nav.imagegen")}
+                    onClick={() => handleNavigate("ImageGen")}
+                  />
+                )}
                 <NavButton
                   active={activeScreen === "MCP"}
                   collapsed={sidebarContentCollapsed}

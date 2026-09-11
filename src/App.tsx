@@ -41,6 +41,7 @@ import { MotionPage, MotionProvider, type MotionDirection } from "./components/m
 import { SaasAdmin } from "./saas";
 import { ImageGenerationScreen } from "./imagegen/ImageGenerationScreen";
 import { adminCall } from "./saas/api";
+import { getSettings } from "./lib/api/client";
 
 const queryClient = createQueryClient();
 
@@ -88,6 +89,7 @@ export type PoolScopeFocus = {
 export function App() {
   const [webReady, setWebReady] = useState(canSkipWebAuthGate);
   const [saasEnabled,setSaasEnabled] = useState(false);
+  const [imageGenerationEnabled, setImageGenerationEnabled] = useState(false);
   const refreshSaas = useCallback(async()=>{
     try {
       const config = await adminCall<{enabled:boolean}>("config.get");
@@ -95,6 +97,12 @@ export function App() {
     } catch { setSaasEnabled(false); }
   },[]);
   useEffect(()=>{if (webReady) void refreshSaas();},[refreshSaas, webReady]);
+  useEffect(() => {
+    if (!webReady) return;
+    getSettings()
+      .then((settings) => setImageGenerationEnabled(settings.image_generation_enabled))
+      .catch(() => setImageGenerationEnabled(false));
+  }, [webReady]);
   const [screen, setScreen] = useState("Codex");
   const screenRef = useRef("Codex");
   const [navigationDirection, setNavigationDirection] = useState<MotionDirection>("neutral");
@@ -153,6 +161,14 @@ export function App() {
     }
     setScreen(nextScreen);
   };
+
+  useEffect(() => {
+    if (screen === "ImageGen" && !imageGenerationEnabled) {
+      setNavigationDirection("neutral");
+      screenRef.current = "Settings";
+      setScreen("Settings");
+    }
+  }, [imageGenerationEnabled, screen]);
 
   const openSessions = (platform?: string | null) => {
     setNavigationDirection("forward");
@@ -218,6 +234,7 @@ export function App() {
                 onOpenVibe={() => navigate("Vibe")}
                 onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
                 sidebarCollapsed={sidebarCollapsed}
+                imageGenerationEnabled={imageGenerationEnabled}
               >
                 <AnimatePresence initial={false} mode="wait">
                   <MotionPage direction={navigationDirection} key={screen}>
@@ -246,6 +263,7 @@ export function App() {
                       setAgentVisibility((current) => ({ ...current, [platform]: visible }))
                     }
                     onSaasConfigChanged={() => void refreshSaas()}
+                    onImageGenerationEnabledChange={setImageGenerationEnabled}
                     onOpenFeature={navigate}
                   />
                 )}

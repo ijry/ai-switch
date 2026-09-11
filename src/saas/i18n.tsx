@@ -27,3 +27,18 @@ export function SaasFrame({ children, embedded = false }: { children: ReactNode;
 }
 
 export function useSaasLocale() { return useContext(LocaleContext); }
+
+export function SaasLocaleProvider({
+  children,
+  locale,
+}: {
+  children: ReactNode;
+  locale: SaasLocale;
+}) {
+  const text = (chinese: string, english: string) => (locale === "en" ? english : chinese);
+  return (
+    <LocaleContext.Provider value={{ locale, text, toggleLocale: () => {} }}>
+      {children}
+    </LocaleContext.Provider>
+  );
+}

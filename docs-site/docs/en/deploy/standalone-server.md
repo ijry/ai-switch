@@ -177,7 +177,7 @@ With that layout you do not need `AI_SWITCH_STATIC_DIR` at all. Paths that match
 | | Desktop web service | Standalone server |
 | --- | --- | --- |
 | Configuration | `~/.ai-switch/web-service.json` plus the settings UI | Environment variables |
-| Sensitive-command gate | Decided at runtime from transport safety (HTTPS / loopback / Tailscale state) | Always open, which makes the token that much more important |
+| Sensitive-command gate | Open after direct desktop startup; loopback plus Tailscale follows sidecar state | Always open, which makes the token that much more important |
 | Desktop-only commands | Available inside the desktop window | Unavailable (no native desktop environment) |
 | Tailscale | Toggled and signed in from the settings UI | You supply the sidecar binary (`AI_SWITCH_TSNET_PATH` or a sibling file) |
 | Tray and auto-update | Yes | No — bring your own process supervisor and upgrade process |

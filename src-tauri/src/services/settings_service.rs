@@ -45,6 +45,7 @@ mod tests {
         assert_eq!(settings.language, "zh-CN");
         assert_eq!(settings.theme, "system");
         assert!(settings.close_to_tray);
+        assert!(!settings.image_generation_enabled);
         assert!(paths.settings_file.exists());
     }
 
@@ -61,6 +62,7 @@ mod tests {
             data_dir: paths.data_dir.display().to_string(),
             ccswitch_deeplink_compat_enabled: false,
             close_to_tray: false,
+            image_generation_enabled: true,
             claude_client_config_json: Some(r#"{"includeCoAuthoredBy":false}"#.to_string()),
             config_write_clients_json: None,
             deepseek_harness_config_path: Some("/custom/dsh/settings.yaml".to_string()),
@@ -78,6 +80,7 @@ mod tests {
         // `false` specifically: the field defaults to `true`, so a round trip that
         // dropped it would still read back as `true` and look like it worked.
         assert!(!loaded.close_to_tray);
+        assert!(loaded.image_generation_enabled);
         assert_eq!(
             loaded.claude_client_config_json.as_deref(),
             Some(r#"{"includeCoAuthoredBy":false}"#)

@@ -75,12 +75,19 @@ Two practical consequences follow:
 
 Nearly every command works over both transports. Exactly three are desktop-only, because they need native desktop capabilities: opening the certificate directory, launching a session in your system terminal app, and exporting credentials through a native save dialog. Calling them from a browser returns a "desktop only" result.
 
+## Plugin management
+
+Open **Settings → Plugin management** to enable or disable the built-in plugins:
+
+- **SaaS plugin**: keeps the existing activation flow. The first enable requires a beta access code. The switch only controls plugin availability and the SaaS navigation entry; users, billing data, and site configuration are never deleted.
+- **Image generation plugin**: disabled by default. When enabled, the left navigation shows **Image Studio**; when disabled, the entry is hidden but sessions and local image assets are retained. The preference is stored as `image_generation_enabled` in `settings.json` and survives restarts.
+
 ## Startup restoration
 
 Several states remember their own value and take effect at launch as needed:
 
-- **Compute-pool route access**: when `routeAccessEnabled` in `web-service.json` is true, the app restores the shared listener after launch.
-- **Local pool proxy**: `route-proxy-https.json` still stores the legacy independent-proxy restoration state; the current shared-listener path is driven by the route-access switch.
+- **Compute-pool route access**: after it is enabled from the pool toolbar, `web-service.json` remembers `routeAccessEnabled` and restores the shared listener on launch.
+- **Local pool proxy**: `route-proxy-https.json` still stores the legacy independent-proxy restoration state; the current shared-listener path is driven by the pool toolbar control.
 - **The desktop app**: enable "Start AI Switch with the system" in App preferences to launch the desktop app when you sign in. The tray and background services remain available, while the main window starts hidden; use the tray menu to show it.
 
 The app also keeps an auto-recovery scheduler running, which re-enables tripped accounts on the schedule you configured, with no manual intervention.

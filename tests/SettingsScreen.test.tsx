@@ -56,6 +56,14 @@ vi.mock("../src/lib/api/client", () => ({
 vi.mock("../src/lib/transport", () => ({
   isDesktop: vi.fn(() => true),
 }));
+vi.mock("../src/saas", () => ({
+  SaasPluginSwitch: () => (
+    <label>
+      <input aria-label="启用 SaaS 插件" type="checkbox" />
+      启用 SaaS 插件
+    </label>
+  ),
+}));
 
 const httpsStatusFixture = {
   enabled: false,
@@ -244,9 +252,9 @@ describe("SettingsScreen", () => {
     expect(screen.getByRole("button", { name: /更新/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /日志/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Web 服务/ })).toBeInTheDocument();
-    const saasCard = screen.getByRole("button", { name: /SaaS 插件/ });
-    expect(saasCard.querySelector(".lucide-cloud-cog")).toBeInTheDocument();
-    expect(saasCard).toHaveClass(
+    const pluginsCard = screen.getByRole("button", { name: /插件管理/ });
+    expect(pluginsCard.querySelector(".lucide-puzzle")).toBeInTheDocument();
+    expect(pluginsCard).toHaveClass(
       "rounded-xl",
       "border",
       "border-stone-200",
@@ -341,6 +349,36 @@ describe("SettingsScreen", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: /会话/ }));
     expect(onOpenFeature).toHaveBeenCalledWith("Sessions");
+  });
+
+  it("manages SaaS and image generation plugins in one settings section", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settingsFixture);
+    vi.mocked(saveSettings).mockImplementation(async (settings) => settings);
+    const onImageGenerationEnabledChange = vi.fn();
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <I18nProvider initialLanguage="zh-CN">
+          <SettingsScreen
+            onImageGenerationEnabledChange={onImageGenerationEnabledChange}
+          />
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /插件管理/ }));
+    expect(screen.getByRole("checkbox", { name: "启用 SaaS 插件" })).toBeInTheDocument();
+    const imageGeneration = screen.getByRole("checkbox", { name: "启用生图插件" });
+    expect(imageGeneration).not.toBeChecked();
+
+    await userEvent.click(imageGeneration);
+    await waitFor(() =>
+      expect(saveSettings).toHaveBeenCalledWith({
+        ...settingsFixture,
+        image_generation_enabled: true,
+      }),
+    );
+    expect(onImageGenerationEnabledChange).toHaveBeenCalledWith(true);
   });
 
   it("opens the HTTPS settings section and enables the local route proxy", async () => {

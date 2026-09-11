@@ -10,9 +10,29 @@ import { getWebServerStatus } from "../../lib/api/client";
 import { openExternal } from "../../lib/openExternal";
 import "../saas.css";
 
-export function SaasSettings(props: SaasHostProps) { return <SaasFrame embedded><PluginSwitch {...props} /></SaasFrame>; }
+export function SaasSettings(props: SaasHostProps) {
+  return (
+    <SaasFrame embedded>
+      <SaasSettingsContent {...props} />
+    </SaasFrame>
+  );
+}
 
-function PluginSwitch({ onConfigChanged }: SaasHostProps) {
+function SaasSettingsContent(props: SaasHostProps) {
+  const { text } = useSaasLocale();
+  return (
+    <div className="saas-admin-content">
+      <Heading
+        description={text("这里只控制插件是否启用；登录、计费和运营配置统一在 SaaS 管理面板维护。", "This switch only controls plugin availability. Manage sign-in, billing, and operations in the SaaS panel.")}
+        eyebrow={text("内置插件", "BUILT-IN PLUGIN")}
+        title={text("SaaS 插件", "SaaS plugin")}
+      />
+      <SaasPluginSwitch {...props} />
+    </div>
+  );
+}
+
+export function SaasPluginSwitch({ onConfigChanged }: SaasHostProps) {
   const { text } = useSaasLocale();
   const resource = useResource(async () => {
     const [config, activation] = await Promise.all([
@@ -29,7 +49,7 @@ function PluginSwitch({ onConfigChanged }: SaasHostProps) {
       () => { resource.reload(); onConfigChanged?.(); },
     );
   }
-  return <div className="saas-admin-content"><Heading eyebrow={text("内置插件", "BUILT-IN PLUGIN")} title={text("SaaS 插件", "SaaS plugin")} description={text("这里只控制插件是否启用；登录、计费和运营配置统一在 SaaS 管理面板维护。", "This switch only controls plugin availability. Manage sign-in, billing, and operations in the SaaS panel.")} />{resource.loading ? <Loading /> : resource.error ? <ErrorState error={resource.error} retry={resource.reload} /> : resource.data && <Card><div className="saas-settings-switch"><CheckField label={text("启用 SaaS 插件", "Enable SaaS plugin")} checked={resource.data.config.enabled} disabled={action.busy} onChange={enabled => { if (enabled && !resource.data?.activation.unlocked) setUnlockDialogOpen(true); else setEnabled(enabled); }} hint={text("启用后显示 SaaS 管理导航并开放用户站点。", "Shows the SaaS administration navigation and opens the user portal.")} /></div><ActionFeedback action={action} /></Card>}{unlockDialogOpen && <ActivationDialog onClose={() => setUnlockDialogOpen(false)} onUnlocked={() => { setUnlockDialogOpen(false); setEnabled(true); }} />}</div>;
+  return <>{resource.loading ? <Loading /> : resource.error ? <ErrorState error={resource.error} retry={resource.reload} /> : resource.data && <Card><div className="saas-settings-switch"><CheckField label={text("启用 SaaS 插件", "Enable SaaS plugin")} checked={resource.data.config.enabled} disabled={action.busy} onChange={enabled => { if (enabled && !resource.data?.activation.unlocked) setUnlockDialogOpen(true); else setEnabled(enabled); }} hint={text("启用后显示 SaaS 管理导航并开放用户站点。", "Shows the SaaS administration navigation and opens the user portal.")} /></div><ActionFeedback action={action} /></Card>}{unlockDialogOpen && <ActivationDialog onClose={() => setUnlockDialogOpen(false)} onUnlocked={() => { setUnlockDialogOpen(false); setEnabled(true); }} />}</>;
 }
 
 export function SettingsContent({ onConfigChanged }: SaasHostProps) {

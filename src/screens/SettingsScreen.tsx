@@ -2,10 +2,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "motion/react";
 import {
   Bell,
-  CloudCog,
   Layers3,
   LockKeyhole,
   Network,
+  Puzzle,
   Server,
   Settings2,
 } from "lucide-react";
@@ -24,18 +24,18 @@ import {
   type AgentPlatform,
   type AgentVisibility,
 } from "../lib/agentVisibility";
-import { SaasSettings } from "../saas";
+import { PluginManagementSettings } from "../components/settings/plugin-management-settings";
 
 type FeatureEntry = {
   screen?: string;
-  section?: "webService" | "https" | "notification" | "saas";
+  section?: "webService" | "https" | "notification" | "plugins";
   titleKey:
     | "nav.sessions"
     | "nav.updates"
     | "nav.log"
     | "nav.webService"
     | "settings.https.title"
-    | "settings.saas.title"
+    | "settings.plugins.title"
     | "notification.title";
   descriptionKey:
     | "settings.feature.sessions"
@@ -43,7 +43,7 @@ type FeatureEntry = {
     | "settings.feature.log"
     | "settings.feature.webService"
     | "settings.feature.https"
-    | "settings.feature.saas"
+    | "settings.feature.plugins"
     | "notification.subtitle";
   icon: ComponentType<{ className?: string }>;
 };
@@ -81,10 +81,10 @@ const featureEntries: FeatureEntry[] = [
     icon: LockKeyhole,
   },
   {
-    section: "saas",
-    titleKey: "settings.saas.title",
-    descriptionKey: "settings.feature.saas",
-    icon: CloudCog,
+    section: "plugins",
+    titleKey: "settings.plugins.title",
+    descriptionKey: "settings.feature.plugins",
+    icon: Puzzle,
   },
   {
     section: "notification",
@@ -99,6 +99,7 @@ type SettingsScreenProps = {
   agentVisibility?: AgentVisibility;
   onAgentVisibilityChange?: (platform: AgentPlatform, visible: boolean) => void;
   onSaasConfigChanged?: () => void;
+  onImageGenerationEnabledChange?: (enabled: boolean) => void;
 };
 
 const agentLabelKeys = {
@@ -116,10 +117,11 @@ export function SettingsScreen({
   agentVisibility,
   onAgentVisibilityChange,
   onSaasConfigChanged,
+  onImageGenerationEnabledChange,
 }: SettingsScreenProps) {
   const queryClient = useQueryClient();
   const { language, setLanguage, t } = useI18n();
-  const [activeSection, setActiveSection] = useState<"webService" | "https" | "notification" | "saas">("webService");
+  const [activeSection, setActiveSection] = useState<"webService" | "https" | "notification" | "plugins">("webService");
   const [localAgentVisibility, setLocalAgentVisibility] = useState(createDefaultAgentVisibility);
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const saveMutation = useMutation({
@@ -212,7 +214,13 @@ export function SettingsScreen({
             <WebServiceSettings />
           </motion.div>
         )}
-        {activeSection === "saas" && <SaasSettings onConfigChanged={onSaasConfigChanged} />}
+        {activeSection === "plugins" && (
+          <PluginManagementSettings
+            onImageGenerationEnabledChange={onImageGenerationEnabledChange}
+            onSaasConfigChanged={onSaasConfigChanged}
+            settings={settings}
+          />
+        )}
         {activeSection === "https" && (
           <motion.div
             key="settings-https"

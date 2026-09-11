@@ -42,5 +42,6 @@ export const settingsFixture: AppSettings = {
   data_dir: "C:/Users/example/.ai-switch",
   ccswitch_deeplink_compat_enabled: false,
   close_to_tray: true,
+  image_generation_enabled: false,
   claude_client_config_json: null,
 };

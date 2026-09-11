@@ -1095,6 +1095,7 @@ export type AppSettings = {
    * On macOS the Dock icon follows the main window while this is enabled.
    */
   close_to_tray: boolean;
+  image_generation_enabled: boolean;
   /**
    * Pool-wide Claude Code client behavior switches as a JSON object string.
    * Claude Code reads these from its own settings file, which the whole pool
